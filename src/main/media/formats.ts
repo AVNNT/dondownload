@@ -9,6 +9,14 @@ import {
 
 const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
 const SAFE_FORMAT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const HTTP_STREAM_PROTOCOLS = new Set([
+  'http',
+  'https',
+  'm3u8',
+  'm3u8_native',
+  'http_dash_segments',
+  'https_dash_segments'
+])
 
 /** Internal side of an option. Raw format IDs never leave this object. */
 export interface InternalMediaOption {
@@ -194,7 +202,7 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
 
   const protocol =
     typeof record.protocol === 'string' ? record.protocol.toLowerCase() : ''
-  if (protocol.includes('mhtml')) return null
+  if (!HTTP_STREAM_PROTOCOLS.has(protocol)) return null
 
   const ext = cleanContainer(record.ext)
   if (ext === null) return null

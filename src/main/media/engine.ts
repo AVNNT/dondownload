@@ -204,7 +204,11 @@ function ipv4IsPublic(address: string): boolean {
   if (a === 169 && b === 254) return false
   if (a === 172 && b >= 16 && b <= 31) return false
   if (a === 192 && b === 168) return false
-  if (a === 192 && b === 0 && (c === 0 || c === 2)) return false
+  if (a === 192 && b === 0) return false
+  if (a === 192 && b === 31 && c === 196) return false
+  if (a === 192 && b === 52 && c === 193) return false
+  if (a === 192 && b === 88 && c === 99) return false
+  if (a === 192 && b === 175 && c === 48) return false
   if (a === 198 && (b === 18 || b === 19)) return false
   if (a === 198 && b === 51 && c === 100) return false
   if (a === 203 && b === 0 && c === 113) return false
@@ -228,6 +232,16 @@ function ipv6IsPublic(address: string): boolean {
   if (value < 0x2000 || value > 0x3fff) return false
   if (value === 0x2002) return false
   if (value === 0x2001 && normalized.startsWith('2001:0:')) return false
+  if (value === 0x2001) {
+    const groups = normalized.split(':')
+    const second = Number.parseInt(groups[1] || '0', 16)
+    const third = Number.parseInt(groups[2] || '0', 16)
+    if (second === 0x0db8) return false
+    if (second === 0x0002 && third === 0) return false
+    if ((second & 0xfff0) === 0x0010 || (second & 0xfff0) === 0x0020) {
+      return false
+    }
+  }
   return true
 }
 
@@ -269,7 +283,7 @@ function buildOutputBase(title: string, jobId: string): string {
   if (stem.length === 0) stem = 'media'
 
   const jobPart =
-    jobId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || 'job'
+    jobId.replace(/[^A-Za-z0-9]/g, '').slice(0, 32) || 'job'
   return `${stem} [${jobPart}]`
 }
 
@@ -312,21 +326,6 @@ async function prepareOutputDir(value: unknown): Promise<string> {
     )
   }
   return resolved
-}
-
-async function cleanupArtifacts(directory: string, base: string): Promise<void> {
-  try {
-    const entries = await fs.readdir(directory, { withFileTypes: true })
-    const prefix = `${base}.`
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.startsWith(prefix)) continue
-      await fs.rm(path.join(directory, entry.name), { force: true }).catch(
-        () => undefined
-      )
-    }
-  } catch {
-    // Cleanup is best-effort. It must never hide the original failure.
-  }
 }
 
 async function findFinalFile(
@@ -588,6 +587,61 @@ export function createMediaEngine(
     }
   }
 
+  async function filterPublicFormatTargets(rawInfo: unknown): Promise<unknown> {
+    if (
+      typeof rawInfo !== 'object' ||
+      rawInfo === null ||
+      Array.isArray(rawInfo)
+    ) {
+      return rawInfo
+    }
+    const info = rawInfo as Record<string, unknown>
+    if (!Array.isArray(info.formats)) return rawInfo
+
+    // Formats often share one CDN host. Resolve each distinct hostname once
+    // during this analysis rather than issuing one DNS query per format.
+    const targetChecks = new Map<string, Promise<boolean>>()
+    const formats = await Promise.all(
+      info.formats.map(async (value): Promise<unknown | null> => {
+        if (
+          typeof value !== 'object' ||
+          value === null ||
+          Array.isArray(value)
+        ) {
+          return null
+        }
+        const format = value as Record<string, unknown>
+        if (typeof format.url !== 'string') return null
+
+        let url: string
+        try {
+          url = normalizeMediaSourceUrl(format.url)
+        } catch {
+          return null
+        }
+
+        const host = new URL(url).hostname.toLowerCase()
+        let check = targetChecks.get(host)
+        if (!check) {
+          check = assertPublicTarget(url).then(
+            () => true,
+            () => false
+          )
+          targetChecks.set(host, check)
+        }
+        if (!(await check)) return null
+        return { ...format, url }
+      })
+    )
+
+    return {
+      ...info,
+      formats: formats.filter((format): format is Record<string, unknown> =>
+        format !== null && typeof format === 'object'
+      )
+    }
+  }
+
   async function getToolState(): Promise<MediaToolState> {
     const toolchain = await resolveToolchain()
     return { ...toolchain.state }
@@ -662,7 +716,8 @@ export function createMediaEngine(
 
     let built
     try {
-      built = buildMediaAnalysis(rawInfo, {
+      const verifiedInfo = await filterPublicFormatTargets(rawInfo)
+      built = buildMediaAnalysis(verifiedInfo, {
         ffmpegAvailable: toolchain.ffmpegPath !== null,
         newOptionId: () => newOpaqueId('option')
       })
@@ -786,6 +841,10 @@ export function createMediaEngine(
       )
     }
 
+    // Re-resolve the page target immediately before starting a download. The
+    // URL came from an earlier analysis and DNS may have changed since then.
+    await assertPublicTarget(sourceUrl)
+
     const option = analysis.options.get(optionId)
     if (!option) {
       throw new AppError(
@@ -841,7 +900,9 @@ export function createMediaEngine(
       sourceUrl,
       formatSelector,
       outputTemplate,
-      mergeOutputFormat: option.mergeOutputFormat
+      mergeOutputFormat: option.mergeOutputFormat,
+      ffmpegLocation:
+        option.mergeOutputFormat === null ? null : toolchain.ffmpegPath
     })
 
     const safeProgress: (update: MediaDownloadProgress) => void =
@@ -952,7 +1013,6 @@ export function createMediaEngine(
             )
             resolve({ filePath: finalPath, totalBytes: stat.size })
           } catch {
-            await cleanupArtifacts(outputDir, base)
             reject(
               new AppError(
                 'MEDIA_DOWNLOAD_FAILED',
@@ -964,7 +1024,6 @@ export function createMediaEngine(
           return
         }
 
-        await cleanupArtifacts(outputDir, base)
         if (outcome === 'cancelled') {
           reject(
             new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
