@@ -41,6 +41,7 @@ import {
 import type { InternalMediaOption } from './formats'
 import { isFile, locateMediaTool } from './locator'
 import {
+  ProcessAbortedError,
   ProcessOutputError,
   ProcessStartError,
   ProcessTimeoutError,
@@ -48,7 +49,11 @@ import {
   runCapturedProcess,
   terminateProcessTree
 } from './process'
-import type { MediaProcess, MediaSpawn } from './process'
+import type {
+  CapturedProcessResult,
+  MediaProcess,
+  MediaSpawn
+} from './process'
 
 const DEFAULT_ANALYSIS_TTL_MS = 10 * 60_000
 const DEFAULT_ANALYSIS_TIMEOUT_MS = 60_000
@@ -96,6 +101,12 @@ export interface MediaEngine {
     onProgress: (update: MediaDownloadProgress) => void
   ): Promise<MediaDownloadResult>
   cancel(jobId: string): void
+  /**
+   * Stop every in-flight download, analysis and tool probe. Resolves after
+   * captured children have closed or the bounded abort grace elapsed. Once
+   * called, no new engine work can start.
+   */
+  cancelAll(): Promise<void>
 }
 
 export interface MediaLookupAddress {
@@ -396,6 +407,50 @@ export function createMediaEngine(
   const activeDownloads = new Map<string, ActiveDownload>()
   const pendingDownloads = new Map<string, PendingDownload>()
 
+  // Captured subprocesses (tool probes and analyses) must be terminable during
+  // shutdown, because those calls are not represented by a managed download.
+  interface ActiveCapture {
+    controller: AbortController
+    done: Promise<void>
+  }
+  const activeCaptures = new Set<ActiveCapture>()
+  let closing = false
+
+  async function runTrackedCapturedProcess(
+    command: string,
+    args: readonly string[],
+    captureOptions: {
+      cwd?: string
+      timeoutMs: number
+      maxOutputBytes: number
+    }
+  ): Promise<CapturedProcessResult> {
+    if (closing) throw new ProcessAbortedError()
+
+    const controller = new AbortController()
+    let release: () => void = () => undefined
+    const done = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const capture: ActiveCapture = { controller, done }
+    activeCaptures.add(capture)
+    try {
+      return await runCapturedProcess(command, args, {
+        spawn,
+        platform,
+        env,
+        cwd: captureOptions.cwd ?? cwd,
+        timeoutMs: captureOptions.timeoutMs,
+        maxOutputBytes: captureOptions.maxOutputBytes,
+        abortSignal: controller.signal,
+        abortGraceMs: cancellationGraceMs
+      })
+    } finally {
+      activeCaptures.delete(capture)
+      release()
+    }
+  }
+
   function newOpaqueId(prefix: 'analysis' | 'option'): string {
     const id = createId(prefix)
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
@@ -428,11 +483,7 @@ export function createMediaEngine(
     versionParser: (output: string) => string | null
   ): Promise<{ ok: boolean; version: string | null }> {
     try {
-      const result = await runCapturedProcess(command, args, {
-        spawn,
-        platform,
-        env,
-        cwd,
+      const result = await runTrackedCapturedProcess(command, args, {
         timeoutMs: TOOL_PROBE_TIMEOUT_MS,
         maxOutputBytes: 64 * 1024
       })
@@ -648,6 +699,12 @@ export function createMediaEngine(
   }
 
   async function analyze(url: string): Promise<MediaAnalysis> {
+    if (closing) {
+      throw new AppError(
+        'MEDIA_ANALYSIS_CANCELLED',
+        'The analysis was cancelled.'
+      )
+    }
     const normalized = normalizeMediaSourceUrl(url)
     await assertPublicTarget(normalized)
 
@@ -658,19 +715,21 @@ export function createMediaEngine(
 
     let result
     try {
-      result = await runCapturedProcess(
+      result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
         buildAnalyzeArgs(normalized),
         {
-          spawn,
-          platform,
-          env,
-          cwd,
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
         }
       )
     } catch (error) {
+      if (error instanceof ProcessAbortedError) {
+        throw new AppError(
+          'MEDIA_ANALYSIS_CANCELLED',
+          'The analysis was cancelled.'
+        )
+      }
       if (error instanceof ProcessTimeoutError) {
         throw new AppError(
           'MEDIA_ANALYSIS_TIMEOUT',
@@ -782,6 +841,12 @@ export function createMediaEngine(
       Array.isArray(request)
     ) {
       throw new ValidationError('Invalid media download request.')
+    }
+    if (closing) {
+      throw new AppError(
+        'MEDIA_DOWNLOAD_CANCELLED',
+        'The download was cancelled.'
+      )
     }
 
     const record = request as unknown as Record<string, unknown>
@@ -1181,5 +1246,20 @@ export function createMediaEngine(
     job.cancelTimer.unref?.()
   }
 
-  return { getToolState, analyze, download, cancel }
+  async function cancelAll(): Promise<void> {
+    closing = true
+
+    // Managed downloads already have a bounded cancellation path.
+    for (const jobId of [...pendingDownloads.keys()]) cancel(jobId)
+    for (const jobId of [...activeDownloads.keys()]) cancel(jobId)
+
+    // Analyses and probes have no job ID. Abort each tracked capture and wait
+    // for its child to close (or for the bounded abort grace) so the caller can
+    // safely close persistence afterwards.
+    const captures = [...activeCaptures]
+    for (const capture of captures) capture.controller.abort()
+    await Promise.allSettled(captures.map((capture) => capture.done))
+  }
+
+  return { getToolState, analyze, download, cancel, cancelAll }
 }

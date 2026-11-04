@@ -63,6 +63,9 @@ class FakeEngine implements MediaEnginePort {
   downloads: PendingDownload[] = []
   cancelCalls: string[] = []
   cancelError: Error | null = null
+  cancelAllCalls = 0
+  cancelAllError: Error | null = null
+  cancelAllPending: Promise<void> | null = null
 
   async getToolState(): Promise<MediaToolState> {
     if (this.toolError) throw this.toolError
@@ -90,6 +93,12 @@ class FakeEngine implements MediaEnginePort {
   cancel(jobId: string): void {
     this.cancelCalls.push(jobId)
     if (this.cancelError) throw this.cancelError
+  }
+
+  async cancelAll(): Promise<void> {
+    this.cancelAllCalls += 1
+    if (this.cancelAllPending) await this.cancelAllPending
+    if (this.cancelAllError) throw this.cancelAllError
   }
 
   get pending(): PendingDownload {
@@ -302,7 +311,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const manager of managers.splice(0)) {
     try {
-      manager.close()
+      await manager.close()
     } catch {
       // Best effort for a failing test.
     }
@@ -722,6 +731,88 @@ describe('MediaJobsManager duplicate policy', () => {
     })
     expect(fresh.id).not.toBe(first.id)
   })
+
+  it('rejects the same source+format across fresh opaque analysis IDs unless forced', async () => {
+    const engine = new FakeEngine()
+    const harness = await createHarness({ engine })
+    const firstAnalysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+    const first = await harness.manager.queueMedia({
+      analysisId: firstAnalysis.analysisId,
+      optionId: VIDEO_OPTION_ID
+    })
+    await flushMicrotasks()
+
+    // A new analysis returns different opaque IDs for the same visible format.
+    const secondOptionId = 'option_video_fresh_0123456789'
+    engine.analysis = analysisFixture({
+      analysisId: 'analysis_fresh_0123456789',
+      options: [formatOption({ optionId: secondOptionId }), audioOption()],
+      bestVideoOptionId: secondOptionId
+    })
+    const secondAnalysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1#fresh'
+    })
+    expect(secondAnalysis.analysisId).not.toBe(firstAnalysis.analysisId)
+
+    await expect(
+      harness.manager.queueMedia({
+        analysisId: secondAnalysis.analysisId,
+        optionId: secondOptionId
+      })
+    ).rejects.toMatchObject({ code: 'MEDIA_DUPLICATE_JOB' })
+    expect(harness.engine.downloads).toHaveLength(1)
+
+    const forced = await harness.manager.queueMedia({
+      analysisId: secondAnalysis.analysisId,
+      optionId: secondOptionId,
+      force: true
+    })
+    await flushMicrotasks()
+    expect(forced.id).not.toBe(first.id)
+    expect(harness.engine.downloads).toHaveLength(2)
+  })
+})
+
+describe('MediaJobsManager analysis cache', () => {
+  it('evicts analyses beyond the engine cache capacity instead of queuing an unavailable ID', async () => {
+    const engine = new FakeEngine()
+    const harness = await createHarness({ engine })
+    const analysisIds: string[] = []
+    const optionIds: string[] = []
+
+    for (let index = 0; index < 33; index += 1) {
+      const analysisId = `analysis_cache_${String(index).padStart(12, '0')}`
+      const optionId = `option_cache_${String(index).padStart(12, '0')}`
+      engine.analysis = analysisFixture({
+        analysisId,
+        options: [formatOption({ optionId, label: `Cache video ${index}` })],
+        bestVideoOptionId: optionId,
+        bestAudioOptionId: null
+      })
+      const analysis = await harness.manager.analyzeMedia({
+        url: `https://example.com/watch?v=cache-${index}`
+      })
+      analysisIds.push(analysis.analysisId)
+      optionIds.push(optionId)
+    }
+
+    await expect(
+      harness.manager.queueMedia({
+        analysisId: analysisIds[0] as string,
+        optionId: optionIds[0] as string
+      })
+    ).rejects.toMatchObject({ code: 'MEDIA_ANALYSIS_NOT_FOUND' })
+
+    // The newest analysis remains usable, so the manager never points at an
+    // ID already evicted from the engine's 32-entry cache.
+    const job = await harness.manager.queueMedia({
+      analysisId: analysisIds[32] as string,
+      optionId: optionIds[32] as string
+    })
+    expect(job.status).toBe('queued')
+  })
 })
 
 describe('MediaJobsManager recovery and persistence', () => {
@@ -929,7 +1020,7 @@ describe('MediaJobsManager tool state', () => {
     await flushMicrotasks()
 
     expect(harness.manager.getMediaJob(job.id).status).toBe('downloading')
-    harness.manager.close()
+    await harness.manager.close()
 
     expect(harness.manager.getMediaJob(job.id)).toMatchObject({
       status: 'interrupted',
@@ -937,7 +1028,57 @@ describe('MediaJobsManager tool state', () => {
       speedBps: 0
     })
     expect(harness.engine.cancelCalls).toEqual([job.id])
+    expect(harness.engine.cancelAllCalls).toBe(1)
     expect(harness.database.rows.get(job.id)?.status).toBe('interrupted')
+  })
+
+  it('waits for engine cancellation before completing close and blocks new work', async () => {
+    const harness = await createHarness()
+    let releaseCancellation: () => void = () => undefined
+    harness.engine.cancelAllPending = new Promise<void>((resolve) => {
+      releaseCancellation = resolve
+    })
+
+    let closed = false
+    const closing = harness.manager.close().then(() => {
+      closed = true
+    })
+    await flushMicrotasks()
+
+    expect(harness.engine.cancelAllCalls).toBe(1)
+    expect(closed).toBe(false)
+
+    releaseCancellation()
+    await closing
+    expect(closed).toBe(true)
+
+    await expect(
+      harness.manager.analyzeMedia({ url: 'https://example.com/watch?v=1' })
+    ).rejects.toMatchObject({ code: 'MEDIA_UNAVAILABLE' })
+    expect(harness.engine.analyzedUrls).toHaveLength(0)
+  })
+
+  it('interrupts an in-flight analysis while closing', async () => {
+    const engine = new FakeEngine()
+    let rejectAnalyze: ((error: unknown) => void) | null = null
+    engine.analyze = () =>
+      new Promise<MediaAnalysis>((_resolve, reject) => {
+        rejectAnalyze = reject
+      })
+    engine.cancelAll = async () => {
+      rejectAnalyze?.(new Error('engine shutting down'))
+    }
+    const harness = await createHarness({ engine })
+
+    const pending = harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+    await flushMicrotasks()
+    await harness.manager.close()
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'MEDIA_ANALYSIS_FAILED'
+    })
   })
 
   it('publishes a parsed tool state', async () => {

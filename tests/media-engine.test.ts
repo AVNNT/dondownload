@@ -58,6 +58,7 @@ interface HarnessOptions {
   now?: () => number
   analysisTtlMs?: number
   cancellationGraceMs?: number
+  analyze?: (call: SpawnCall) => void
   download?: (
     call: SpawnCall,
     context: { base: string; outputDir: string }
@@ -196,9 +197,11 @@ async function makeHarness(options: HarnessOptions = {}) {
   }
 
   const calls: SpawnCall[] = []
+  const childrenByPid = new Map<number, FakeChild>()
   let nextPid = 4_000
   const spawn: MediaSpawn = (command, args, spawnOptions) => {
     const child = new FakeChild((nextPid += 1))
+    childrenByPid.set(child.pid, child)
     const call: SpawnCall = {
       command,
       args: [...args],
@@ -208,7 +211,17 @@ async function makeHarness(options: HarnessOptions = {}) {
     calls.push(call)
 
     if (command === 'taskkill') {
-      queueMicrotask(() => child.close(0))
+      queueMicrotask(() => {
+        // Simulate taskkill terminating the target tree so aborted children
+        // settle like a real process would.
+        const targetPid = Number(args[1])
+        const target = childrenByPid.get(targetPid)
+        if (target && !target.closed) {
+          target.kill()
+          target.close(1)
+        }
+        child.close(0)
+      })
       return child
     }
 
@@ -239,6 +252,10 @@ async function makeHarness(options: HarnessOptions = {}) {
     }
 
     if (args.includes('--dump-single-json')) {
+      if (options.analyze) {
+        queueMicrotask(() => options.analyze?.(call))
+        return child
+      }
       queueMicrotask(() => {
         if (options.analyzeCode !== undefined && options.analyzeCode !== 0) {
           child.stderr.write('[example] ERROR: private video\n')
@@ -1224,6 +1241,38 @@ describe('media engine cancellation and failure cleanup', () => {
     const harness = await makeHarness()
     expect(() => harness.engine.cancel('not a job id')).not.toThrow()
     expect(() => harness.engine.cancel(JOB_ID)).not.toThrow()
+  })
+
+  it('cancelAll terminates an in-flight analysis child and prevents new work', async () => {
+    const harness = await makeHarness({ analyze: () => undefined })
+    const pending = harness.engine.analyze(SOURCE_URL)
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--dump-single-json'))
+    )
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    if (!analyzeCall) throw new Error('analysis did not start')
+
+    await harness.engine.cancelAll()
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'MEDIA_ANALYSIS_CANCELLED'
+    })
+    const taskkill = harness.calls.find((entry) => entry.command === 'taskkill')
+    expect(taskkill?.args).toEqual([
+      '/pid',
+      String(analyzeCall.child.pid),
+      '/T',
+      '/F'
+    ])
+    expect(analyzeCall.child.killed).toBe(true)
+
+    // The engine is closed for new work once cancellation completes.
+    await expect(harness.engine.analyze(SOURCE_URL)).rejects.toMatchObject({
+      code: 'MEDIA_ANALYSIS_CANCELLED'
+    })
+    await expect(harness.engine.cancelAll()).resolves.toBeUndefined()
   })
 
   it('preserves partial artifacts on failure and redacts errors', async () => {

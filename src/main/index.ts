@@ -250,7 +250,7 @@ if (!hasSingleInstanceLock) {
       // then close the database. Crash recovery can still rely on the bounded
       // progress snapshots written while the app was running.
       try {
-        mediaJobs?.close()
+        await mediaJobs?.close()
       } catch {
         // Media children are cancelled best-effort; the process must still quit.
       }

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { shell } from 'electron'
@@ -11,6 +11,7 @@ import {
   parseMediaQueueInput,
   parseMediaToolState,
   type MediaAnalysis,
+  type MediaFormatOption,
   type MediaJob,
   type MediaJobRecord,
   type MediaJobStatus,
@@ -63,6 +64,8 @@ export interface MediaEnginePort {
     onProgress: (progress: MediaDownloadProgress) => void
   ): Promise<MediaDownloadResult>
   cancel(jobId: string): void
+  /** Optional so narrow test doubles remain valid engine ports. */
+  cancelAll?(): void | Promise<void>
 }
 
 /**
@@ -100,12 +103,20 @@ const MEDIA_TOOL_STATE_FAILED_MESSAGE =
   'The media tool state could not be read.'
 
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
-const MAX_CACHED_ANALYSES = 100
+// Keep this aligned with the engine's 32-entry analysis cache. A larger cache
+// here would expose an opaque analysis ID that the engine has already evicted,
+// turning a valid queue request into a confusing download-time failure.
+const MAX_CACHED_ANALYSES = 32
 
 interface ManagedMediaJob {
   record: MediaJobRecord
   /** Transient progress speed; not persisted by the database schema. */
   speedBps: number
+  /**
+   * Transient duplicate-guard identity. It is derived from the normalized page
+   * URL and visible format invariants, never from random analysis/option IDs.
+   */
+  optionFingerprint: string
 }
 
 interface CachedMediaAnalysis {
@@ -153,6 +164,32 @@ function copyAnalysis(analysis: MediaAnalysis): MediaAnalysis {
     ...analysis,
     options: analysis.options.map((option) => ({ ...option }))
   }
+}
+
+/**
+ * Stable duplicate identity for a download choice. Opaque analysis and option
+ * IDs change on every fresh analysis, so they cannot detect the same format of
+ * the same page. Only visible invariants are hashed; opaque IDs and volatile
+ * byte-size estimates are deliberately excluded.
+ */
+function mediaOptionFingerprint(
+  sourceUrl: string,
+  option: MediaFormatOption
+): string {
+  const invariants = [
+    normalizeMediaSourceUrl(sourceUrl),
+    option.kind,
+    option.label,
+    option.container,
+    option.width,
+    option.height,
+    option.fps,
+    option.videoCodec,
+    option.audioCodec,
+    option.hasAudio,
+    option.requiresMerge
+  ]
+  return createHash('sha256').update(JSON.stringify(invariants)).digest('hex')
 }
 
 /** Preserve the engine's safe `MEDIA_*` category without leaking its message. */
@@ -238,6 +275,9 @@ export class MediaJobsManager {
         MEDIA_ANALYSIS_FAILED_MESSAGE
       )
     }
+    if (this.closed) {
+      throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
+    }
 
     let analysis: MediaAnalysis
     try {
@@ -276,11 +316,15 @@ export class MediaJobsManager {
       )
     }
 
+    const optionFingerprint = mediaOptionFingerprint(
+      cached.sourceUrl,
+      option
+    )
     if (input.force !== true) {
       for (const job of this.jobs.values()) {
         if (
+          job.optionFingerprint === optionFingerprint &&
           job.record.sourceUrl === cached.sourceUrl &&
-          job.record.optionId === option.optionId &&
           isActiveMediaJobStatus(job.record.status)
         ) {
           throw new AppError(
@@ -315,7 +359,7 @@ export class MediaJobsManager {
       completedAt: null
     }
 
-    const job: ManagedMediaJob = { record, speedBps: 0 }
+    const job: ManagedMediaJob = { record, speedBps: 0, optionFingerprint }
     this.jobs.set(record.id, job)
     this.persistNow(job)
     this.publish(true)
@@ -404,6 +448,7 @@ export class MediaJobsManager {
 
   /** Read the engine tool state and publish the new snapshot. */
   async refreshToolState(): Promise<MediaToolState> {
+    if (this.closed) return Object.freeze({ ...this.tool })
     try {
       this.tool = parseMediaToolState(await this.engine.getToolState())
     } catch {
@@ -427,8 +472,12 @@ export class MediaJobsManager {
     this.flushPending()
   }
 
-  /** Interrupt active children, preserve partial files and flush before DB close. */
-  close(): void {
+  /**
+   * Interrupt active children, preserve partial files and flush before DB
+   * close. Resolves only after the engine has terminated its in-flight
+   * download, analysis and probe children (or the bounded grace elapsed).
+   */
+  async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
 
@@ -451,6 +500,15 @@ export class MediaJobsManager {
       }
     }
     if (changed) this.publish(true)
+
+    // Analyses and tool probes are not tied to a job ID, so cancel them too
+    // and wait for their child trees to settle. Callers can then close the
+    // database without a late engine callback racing persistence.
+    try {
+      await this.engine.cancelAll?.()
+    } catch {
+      // Shutdown must never be blocked by engine cleanup.
+    }
     this.flushPersistence()
   }
 
@@ -468,7 +526,7 @@ export class MediaJobsManager {
 
   private async runJob(id: string): Promise<void> {
     const job = this.jobs.get(id)
-    if (!job || job.record.status !== 'queued') return
+    if (!job || job.record.status !== 'queued' || this.closed) return
 
     job.record.status = 'downloading'
     job.record.updatedAt = this.now()
@@ -684,7 +742,11 @@ export class MediaJobsManager {
         interrupted.push(record)
       }
 
-      this.jobs.set(record.id, { record, speedBps: 0 })
+      this.jobs.set(record.id, {
+        record,
+        speedBps: 0,
+        optionFingerprint: ''
+      })
     }
 
     if (interrupted.length > 0) {

@@ -110,6 +110,10 @@ export interface CapturedProcessOptions {
   cwd?: string
   timeoutMs: number
   maxOutputBytes: number
+  /** Abort while the captured child is still running, e.g. on shutdown. */
+  abortSignal?: AbortSignal
+  /** Upper bound to wait for the child to close after an abort. */
+  abortGraceMs?: number
 }
 
 export interface CapturedProcessResult {
@@ -136,6 +140,13 @@ export class ProcessOutputError extends Error {
   constructor() {
     super('The process returned too much output.')
     this.name = 'ProcessOutputError'
+  }
+}
+
+export class ProcessAbortedError extends Error {
+  constructor() {
+    super('The process was cancelled.')
+    this.name = 'ProcessAbortedError'
   }
 }
 
@@ -167,18 +178,52 @@ export function runCapturedProcess(
     let stderr = ''
     let outputBytes = 0
     let settled = false
+    let aborted = false
     let timer: NodeJS.Timeout | null = null
+    let abortTimer: NodeJS.Timeout | null = null
+    let abortListener: (() => void) | null = null
+
+    const cleanup = (): void => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (abortTimer) {
+        clearTimeout(abortTimer)
+        abortTimer = null
+      }
+      if (abortListener && options.abortSignal) {
+        options.abortSignal.removeEventListener('abort', abortListener)
+        abortListener = null
+      }
+    }
 
     const finish = (): void => {
       if (settled) return
       settled = true
-      if (timer) clearTimeout(timer)
+      cleanup()
     }
 
     const fail = (error: Error): void => {
       if (settled) return
       finish()
       reject(error)
+    }
+
+    const onAbort = (): void => {
+      if (settled || aborted) return
+      aborted = true
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      // Transfer waits for this close event, bounded by the grace timer. That
+      // lets callers await best-effort tree termination before closing state.
+      terminateProcessTree(child, options.platform, options.spawn, options.env)
+      abortTimer = setTimeout(() => {
+        fail(new ProcessAbortedError())
+      }, options.abortGraceMs ?? 2_000)
+      abortTimer.unref?.()
     }
 
     const append = (target: 'stdout' | 'stderr', chunk: unknown): void => {
@@ -199,6 +244,10 @@ export function runCapturedProcess(
     child.on('error', () => fail(new ProcessStartError()))
     child.on('close', (code: number | null) => {
       if (settled) return
+      if (aborted) {
+        fail(new ProcessAbortedError())
+        return
+      }
       finish()
       resolve({ code, stdout, stderr })
     })
@@ -208,6 +257,17 @@ export function runCapturedProcess(
         terminateProcessTree(child, options.platform, options.spawn, options.env)
         fail(new ProcessTimeoutError())
       }, options.timeoutMs)
+    }
+
+    if (options.abortSignal) {
+      if (options.abortSignal.aborted) {
+        onAbort()
+      } else {
+        abortListener = onAbort
+        options.abortSignal.addEventListener('abort', abortListener, {
+          once: true
+        })
+      }
     }
   })
 }
