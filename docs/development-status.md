@@ -630,13 +630,48 @@ Media jobs have no per-job schedule/speed/connection controls; queued media may
 wait for the policy window only in the current process and is not automatically
 restarted after relaunch.
 
-The installer rebuild was attempted after the final source build. Native-host
-compilation, vendor staging/version checks and the application build passed;
-staging recorded hashes in `build/vendor/manifest.json` for aria2 1.37.0,
-yt-dlp 2026.10.26, FFmpeg/ffprobe 9.0.2 and Deno 2.9.8. Packaging stopped
-because `electron-builder` is not installed/available in this worktree. The
-existing `dist/DonDownload-0.1.0-x64-setup.exe` is therefore stale and must not
-be treated as a build from this integrated source. No installer was executed.
+Installer dependency root cause: `electron-builder@26.18.0` was already declared
+in `package.json` and pinned in `package-lock.json`, but the main worktree's
+`node_modules` did not contain the development dependency. `npm ci --include=dev`
+restored the locked tree; no package manifest or lockfile changes were needed.
+This is the reproducible clean-checkout dependency restore path.
+
+The rebuilt current-source installer is
+`dist/DonDownload-0.1.0-x64-setup.exe` (302,265,742 bytes, SHA-256
+`649974f3f7def431114fdea0874992abde89e45fcba2ff3704651e328b9e7e04`).
+`npm run build:installer` completed with electron-builder 26.18.0. The native
+host was built (24,576 bytes); the unpacked packaged app and all five vendor
+executables are present. aria2 1.37.0, yt-dlp 2026.10.26, FFmpeg/ffprobe 9.0.2
+and Deno 2.9.8 were invoked from the packaged resource paths. Each vendor
+executable's size and SHA-256 matched `build/vendor/manifest.json`. Installer
+Authenticode status is **NotSigned**. No installer or packaged app was executed;
+install/uninstall still requires an isolated Windows Sandbox/VM, which was not
+available. Installed Helium Native Messaging communication remains unverified.
+
+Remaining release blockers include isolated install/uninstall, installed
+Helium/native-host registration and communication, code signing, GPL
+corresponding-source delivery or an approved written offer plus legal review,
+broader real scheduling/window-transition verification, and lawful Pixeldrain
+list fixture validation. Gofile remains unsupported. The successful Blender
+playlist media test is recorded above and was not repeated.
+
+### Additional bounded scheduler and dependency checks
+
+Added a real-aria2 integration case in `tests/aria2.integration.test.ts`. It uses
+the newly packaged aria2 executable, a loopback-only HTTP fixture and a unique
+temporary download directory: a scheduled item remains `waiting` with no output
+before its due time, then completes with exact fixture bytes after the due time.
+Command: `npx vitest run tests/aria2.integration.test.ts -t 'holds a scheduled download'`
+with `ARIA2_TEST_BINARY` set to `dist/win-unpacked/resources/vendor/aria2/aria2c.exe`;
+result **1 passed, 3 skipped**. This verifies one scheduled-start path against
+real aria2, not all real-window transitions, UI behavior, restart recovery or
+the one-second boundary race.
+
+`npm audit --omit=dev` found **0 vulnerabilities** in production dependencies.
+The full development/build dependency tree reports **6 moderate** advisories in
+electron-builder's transitive packaging chain (including minimatch); no
+automated upgrade was applied. Review/mitigate this build-toolchain advisory
+before release without changing the pinned installer builder unnecessarily.
 
 ## Root cause of the reported Milestone 2B failure
 

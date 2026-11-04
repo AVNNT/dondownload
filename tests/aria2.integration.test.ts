@@ -585,6 +585,63 @@ runIntegration('aria2 HTTP integration', () => {
     expect(downloaded.equals(rangePayload)).toBe(true)
   }, 60_000)
 
+  it('holds a scheduled download before submitting it to real aria2, then starts it when due', async () => {
+    if (!httpServer) throw new Error('HTTP test server is not ready.')
+
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'dondownload-schedule-integration-')
+    )
+    tempDirs.push(root)
+    const scheduledDir = path.join(root, 'downloads')
+    const filename = 'scheduled-sample.bin'
+    const filePath = path.join(scheduledDir, filename)
+    const service = new Aria2Service(() => scheduledDir)
+    const manager = new DownloadManager(
+      service,
+      scheduledDir,
+      () => undefined
+    )
+    services.push(service)
+    managers.push(manager)
+
+    await service.start()
+    const scheduledAt = Date.now() + 2_500
+    const added = await manager.add({
+      url,
+      filename,
+      controls: {
+        scheduledAt,
+        speedLimitBps: null,
+        connections: null
+      }
+    })
+    const id = added.downloads[0]?.id
+    if (!id) throw new Error('The scheduled download has no id.')
+
+    const held = getDownload(manager, id)
+    expect(held.status).toBe('waiting')
+    expect(held.blockReason).toBe('scheduled')
+    await expect(fs.stat(filePath)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    // Check before the due timestamp that the manager has not submitted a
+    // transfer or created its output. All network traffic remains loopback-only.
+    await delay(Math.max(100, scheduledAt - Date.now() - 300))
+    expect(Date.now()).toBeLessThan(scheduledAt)
+    expect(getDownload(manager, id).status).toBe('waiting')
+    await expect(fs.stat(filePath)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const completed = await waitForDownload(
+      manager,
+      id,
+      (download) => download.status === 'complete',
+      'the scheduled local download to start and complete',
+      20_000
+    )
+    expect(completed.completedBytes).toBe(payload.length)
+    const downloaded = await fs.readFile(filePath)
+    expect(downloaded.equals(payload)).toBe(true)
+  }, 30_000)
+
   it('marks a lost transfer interrupted after restart, keeps the partial file, and retries it with Range', async () => {
     const testServer = httpServer
     if (!testServer) throw new Error('HTTP test server is not ready.')
