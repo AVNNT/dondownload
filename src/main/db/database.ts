@@ -8,6 +8,15 @@ import {
   normalizeMediaSourceUrl,
   type MediaJobRecord
 } from '@shared/media'
+import {
+  isBatchItemKind,
+  isBatchItemStatus,
+  isBatchKind,
+  isBatchStatus,
+  normalizeBatchSourceUrl,
+  type BatchItemRecord,
+  type BatchRecord
+} from '@shared/batches'
 import { AppError } from '../errors'
 
 /**
@@ -17,7 +26,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -32,6 +41,11 @@ const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
 export interface StoredDownload {
   record: DownloadItem
   explicitFilename: string | null
+}
+
+export interface StoredBatch {
+  record: BatchRecord
+  items: BatchItemRecord[]
 }
 
 export interface DownloadSaveEntry {
@@ -106,6 +120,60 @@ const MIGRATIONS: readonly Migration[] = [
 
       CREATE INDEX media_jobs_created_at_idx ON media_jobs (created_at DESC);
       CREATE INDEX media_jobs_status_idx ON media_jobs (status);
+    `
+  },
+  {
+    // Additive only: v1 download and v2 media rows are never rewritten.
+    version: 3,
+    sql: `
+      CREATE TABLE batches (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('media-playlist', 'pixeldrain-list', 'direct-urls')
+        ),
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'running', 'complete', 'partial',
+            'error', 'cancelled', 'interrupted'
+          )
+        ),
+        source_url TEXT,
+        error_message TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+
+      CREATE INDEX batches_created_at_idx ON batches (created_at DESC);
+      CREATE INDEX batches_status_idx ON batches (status);
+
+      CREATE TABLE batch_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL CHECK (position >= 0),
+        kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'running', 'complete',
+            'error', 'cancelled', 'interrupted'
+          )
+        ),
+        child_id TEXT,
+        title TEXT NOT NULL,
+        label TEXT NOT NULL,
+        completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+        total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+        error_message TEXT,
+        source_url TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        UNIQUE (batch_id, position)
+      );
+
+      CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
+      CREATE INDEX batch_items_status_idx ON batch_items (status);
     `
   }
 ]
@@ -273,6 +341,69 @@ function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
   }
 }
 
+function rowToBatchRecord(row: Record<string, unknown>): BatchRecord | null {
+  const id = text(row, 'id')
+  const rawKind = text(row, 'kind')
+  const title = text(row, 'title')
+  const rawStatus = text(row, 'status')
+
+  // Ignore rows the current build cannot understand instead of crashing or
+  // deleting them. Batch files are never removed by the database layer.
+  if (!id || !rawKind || !title || !rawStatus) return null
+  if (!isBatchKind(rawKind) || !isBatchStatus(rawStatus)) return null
+
+  return {
+    id,
+    kind: rawKind,
+    title,
+    status: rawStatus,
+    sourceUrl: text(row, 'source_url'),
+    errorMessage: text(row, 'error_message'),
+    createdAt: Math.trunc(number(row, 'created_at')),
+    updatedAt: Math.trunc(number(row, 'updated_at')),
+    completedAt: nullableNumber(row, 'completed_at')
+  }
+}
+
+function rowToBatchItemRecord(
+  row: Record<string, unknown>
+): BatchItemRecord | null {
+  const id = text(row, 'id')
+  const batchId = text(row, 'batch_id')
+  const rawKind = text(row, 'kind')
+  const rawStatus = text(row, 'status')
+  const title = text(row, 'title')
+  const label = text(row, 'label')
+  const position = Math.trunc(number(row, 'position', -1))
+
+  if (!id || !batchId || !rawKind || !rawStatus || !title || !label) {
+    return null
+  }
+  if (position < 0) return null
+  if (!isBatchItemKind(rawKind) || !isBatchItemStatus(rawStatus)) return null
+
+  return {
+    id,
+    batchId,
+    position,
+    kind: rawKind,
+    status: rawStatus,
+    title,
+    label,
+    childId: text(row, 'child_id'),
+    completedBytes: Math.max(0, Math.trunc(number(row, 'completed_bytes'))),
+    totalBytes:
+      row.total_bytes === null || row.total_bytes === undefined
+        ? null
+        : Math.max(0, Math.trunc(number(row, 'total_bytes'))),
+    errorMessage: text(row, 'error_message'),
+    sourceUrl: text(row, 'source_url'),
+    createdAt: Math.trunc(number(row, 'created_at')),
+    updatedAt: Math.trunc(number(row, 'updated_at')),
+    completedAt: nullableNumber(row, 'completed_at')
+  }
+}
+
 export class DownloadDatabase {
   private readonly db: DatabaseSync
   private readonly upsertStatement: StatementSync
@@ -281,6 +412,14 @@ export class DownloadDatabase {
   private readonly mediaUpsertStatement: StatementSync
   private readonly mediaSelectAllStatement: StatementSync
   private readonly mediaDeleteStatement: StatementSync
+  private readonly batchUpsertStatement: StatementSync
+  private readonly batchSelectAllStatement: StatementSync
+  private readonly batchSelectOneStatement: StatementSync
+  private readonly batchDeleteStatement: StatementSync
+  private readonly batchItemUpsertStatement: StatementSync
+  private readonly batchItemSelectAllStatement: StatementSync
+  private readonly batchItemSelectByBatchStatement: StatementSync
+  private readonly batchItemDeleteStatement: StatementSync
   private closed = false
 
   constructor(private readonly filePath: string) {
@@ -353,6 +492,63 @@ export class DownloadDatabase {
       `)
       this.mediaDeleteStatement = this.db.prepare(
         'DELETE FROM media_jobs WHERE id = ?'
+      )
+
+      this.batchUpsertStatement = this.db.prepare(`
+        INSERT INTO batches (
+          id, kind, title, status, source_url, error_message,
+          created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          title = excluded.title,
+          status = excluded.status,
+          source_url = excluded.source_url,
+          error_message = excluded.error_message,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          completed_at = excluded.completed_at
+      `)
+      this.batchSelectAllStatement = this.db.prepare(`
+        SELECT * FROM batches ORDER BY created_at DESC, updated_at DESC
+      `)
+      this.batchSelectOneStatement = this.db.prepare(
+        'SELECT * FROM batches WHERE id = ?'
+      )
+      this.batchDeleteStatement = this.db.prepare(
+        'DELETE FROM batches WHERE id = ?'
+      )
+
+      this.batchItemUpsertStatement = this.db.prepare(`
+        INSERT INTO batch_items (
+          id, batch_id, position, kind, status, child_id, title, label,
+          completed_bytes, total_bytes, error_message, source_url,
+          created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          batch_id = excluded.batch_id,
+          position = excluded.position,
+          kind = excluded.kind,
+          status = excluded.status,
+          child_id = excluded.child_id,
+          title = excluded.title,
+          label = excluded.label,
+          completed_bytes = excluded.completed_bytes,
+          total_bytes = excluded.total_bytes,
+          error_message = excluded.error_message,
+          source_url = excluded.source_url,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          completed_at = excluded.completed_at
+      `)
+      this.batchItemSelectAllStatement = this.db.prepare(`
+        SELECT * FROM batch_items ORDER BY batch_id, position
+      `)
+      this.batchItemSelectByBatchStatement = this.db.prepare(`
+        SELECT * FROM batch_items WHERE batch_id = ? ORDER BY position
+      `)
+      this.batchItemDeleteStatement = this.db.prepare(
+        'DELETE FROM batch_items WHERE batch_id = ? AND id = ?'
       )
     } catch (error) {
       try {
@@ -482,6 +678,145 @@ export class DownloadDatabase {
     }
   }
 
+  loadBatches(): StoredBatch[] {
+    this.assertOpen()
+    try {
+      const batchRows = this.batchSelectAllStatement.all() as Record<
+        string,
+        unknown
+      >[]
+      const itemRows = this.batchItemSelectAllStatement.all() as Record<
+        string,
+        unknown
+      >[]
+
+      const itemsByBatch = new Map<string, BatchItemRecord[]>()
+      for (const row of itemRows) {
+        const item = rowToBatchItemRecord(row)
+        if (!item) continue
+        const items = itemsByBatch.get(item.batchId)
+        if (items) items.push(item)
+        else itemsByBatch.set(item.batchId, [item])
+      }
+
+      const stored: StoredBatch[] = []
+      for (const row of batchRows) {
+        const record = rowToBatchRecord(row)
+        if (!record) continue
+        stored.push({ record, items: itemsByBatch.get(record.id) ?? [] })
+      }
+      return stored
+    } catch (error) {
+      throw databaseError('Could not load batch history', error)
+    }
+  }
+
+  loadBatch(id: string): StoredBatch | null {
+    this.assertOpen()
+    try {
+      const row = this.batchSelectOneStatement.get(id) as
+        | Record<string, unknown>
+        | undefined
+      if (!row) return null
+      const record = rowToBatchRecord(row)
+      if (!record) return null
+
+      const rows = this.batchItemSelectByBatchStatement.all(id) as Record<
+        string,
+        unknown
+      >[]
+      const items: BatchItemRecord[] = []
+      for (const itemRow of rows) {
+        const item = rowToBatchItemRecord(itemRow)
+        if (item) items.push(item)
+      }
+      return { record, items }
+    } catch (error) {
+      throw databaseError('Could not load batch history', error)
+    }
+  }
+
+  saveBatch(record: BatchRecord): void {
+    this.assertOpen()
+    try {
+      this.runBatchUpsert(record)
+    } catch (error) {
+      throw databaseError('Could not save batch history', error)
+    }
+  }
+
+  /** Write a parent and all of its items atomically. */
+  saveBatchWithItems(
+    record: BatchRecord,
+    items: readonly BatchItemRecord[]
+  ): void {
+    this.assertOpen()
+    for (const item of items) {
+      if (item.batchId !== record.id) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not save batch history: item belongs to a different batch.'
+        )
+      }
+    }
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.runBatchUpsert(record)
+      for (const item of items) {
+        this.runBatchItemUpsert(item)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not save batch history', error)
+    }
+  }
+
+  /** Write item progress atomically so a batch never lands half-applied. */
+  saveManyBatchItems(items: readonly BatchItemRecord[]): void {
+    if (items.length === 0) return
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const item of items) {
+        this.runBatchItemUpsert(item)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not save batch history', error)
+    }
+  }
+
+  deleteBatch(id: string): void {
+    this.assertOpen()
+    try {
+      // batch_items is declared ON DELETE CASCADE and foreign_keys is on.
+      this.batchDeleteStatement.run(id)
+    } catch (error) {
+      throw databaseError('Could not remove batch history', error)
+    }
+  }
+
+  deleteBatchItem(batchId: string, itemId: string): void {
+    this.assertOpen()
+    try {
+      this.batchItemDeleteStatement.run(batchId, itemId)
+    } catch (error) {
+      throw databaseError('Could not remove batch item history', error)
+    }
+  }
+
   close(): void {
     if (this.closed) return
     this.closed = true
@@ -533,6 +868,52 @@ export class DownloadDatabase {
       record.errorMessage,
       record.dir,
       record.filePath,
+      Math.trunc(record.createdAt),
+      Math.trunc(record.updatedAt),
+      record.completedAt === null ? null : Math.trunc(record.completedAt)
+    )
+  }
+
+  private runBatchUpsert(record: BatchRecord): void {
+    // Reject credentials here as a final guard even if a caller skipped the
+    // shared normalizer. Fragments are removed; sourceUrl never leaves DB.
+    const sourceUrl =
+      record.sourceUrl === null
+        ? null
+        : normalizeBatchSourceUrl(record.sourceUrl)
+    this.batchUpsertStatement.run(
+      record.id,
+      record.kind,
+      record.title,
+      record.status,
+      sourceUrl,
+      record.errorMessage,
+      Math.trunc(record.createdAt),
+      Math.trunc(record.updatedAt),
+      record.completedAt === null ? null : Math.trunc(record.completedAt)
+    )
+  }
+
+  private runBatchItemUpsert(record: BatchItemRecord): void {
+    const sourceUrl =
+      record.sourceUrl === null
+        ? null
+        : normalizeBatchSourceUrl(record.sourceUrl)
+    this.batchItemUpsertStatement.run(
+      record.id,
+      record.batchId,
+      Math.max(0, Math.trunc(record.position)),
+      record.kind,
+      record.status,
+      record.childId,
+      record.title,
+      record.label,
+      Math.max(0, Math.trunc(record.completedBytes)),
+      record.totalBytes === null
+        ? null
+        : Math.max(0, Math.trunc(record.totalBytes)),
+      record.errorMessage,
+      sourceUrl,
       Math.trunc(record.createdAt),
       Math.trunc(record.updatedAt),
       record.completedAt === null ? null : Math.trunc(record.completedAt)

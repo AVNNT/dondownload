@@ -356,8 +356,8 @@ describe('schema migrations', () => {
   })
 })
 
-describe('v1 to v2 migration preservation', () => {
-  it('adds media_jobs without changing any v1 download value', async () => {
+describe('v1 to v3 migration preservation', () => {
+  it('adds media and batch tables without changing any v1 download value', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
 
@@ -426,8 +426,9 @@ describe('v1 to v2 migration preservation', () => {
     raw.close()
 
     const database = open(filePath)
-    expect(database.schemaVersion).toBe(2)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
     expect(database.loadMediaJobs()).toEqual([])
+    expect(database.loadBatches()).toEqual([])
     const loaded = database.loadAll()
     expect(loaded).toHaveLength(2)
     expect(loaded.find((entry) => entry.record.id === first.id)?.record.url).toBe(
@@ -445,10 +446,18 @@ describe('v1 to v2 migration preservation', () => {
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'media_jobs'"
       )
       .get()
+    const batchTables = (
+      verify
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('batches', 'batch_items') ORDER BY name"
+        )
+        .all() as { name: string }[]
+    ).map((table) => table.name)
     verify.close()
 
     expect(after).toEqual(before)
     expect(mediaTable).toBeDefined()
+    expect(batchTables).toEqual(['batch_items', 'batches'])
   })
 })
 

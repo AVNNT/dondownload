@@ -4,8 +4,9 @@ As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
 verified. Milestone 3A is **PASS** at `e7e28ee`, verified end to end in a headed
-Helium run against that HEAD. Milestone 3B has started in planning; no 3B
-implementation is present.
+Helium run against that HEAD. Milestone 3B implementation is **underway** with
+the first sequential foundation (shared batch/collection contracts and additive
+SQLite schema v3). Milestone 4 is explicitly deferred.
 
 ## Current milestone
 
@@ -46,9 +47,40 @@ implementation is present.
   typecheck, production build and native-host build pass. yt-dlp 2026.10.26,
   Gyan FFmpeg/ffprobe 9.0.2 and Deno 2.9.8 were used for the real runs; exact
   paths and licensing notes are in [media-tools.md](media-tools.md).
-- **Milestone 3B: started — planning only.** No 3B source, schema or product
-  scope is implemented in this tree yet. Milestone 3A is closed as PASS on the
-  evidence recorded below.
+- **Milestone 3B: implementation underway.** The first sequential foundation is
+  present: shared batch/collection contracts (`src/shared/batches.ts`), additive
+  SQLite schema v3 (`batches` and `batch_items`) and hermetic contract/migration
+  tests. It establishes stable batch kinds/statuses, opaque parent/child IDs,
+  per-item errors and aggregate progress for later parallel work. Providers, the
+  playlist engine, the orchestrator, renderer UI, IPC handlers and native-bridge
+  routes are not implemented yet. Scope is desktop-first media playlists,
+  Pixeldrain lists and direct-URL batches, with no credential/cookie/token
+  extraction and no CAPTCHA/DRM bypass. **Milestone 4 is explicitly deferred.**
+  There is no torrent functionality or torrent networking in this tree.
+
+## Milestone 3B foundation scope (in progress)
+
+The foundation is deliberately narrow and additive:
+
+- Batch kinds: `media-playlist`, `pixeldrain-list`, `direct-urls`.
+- Batch statuses: `queued`, `running`, `complete`, `partial`, `error`,
+  `cancelled`, `interrupted`. Item statuses: `queued`, `running`, `complete`,
+  `error`, `cancelled`, `interrupted`.
+- Public DTOs are exact-key, bounded and verified to exclude source URLs, disk
+  paths, tokens, headers, cookies and selectors. Internal records retain only a
+  normalized HTTP(S) source URL for retry; credentials are rejected and
+  fragments are stripped.
+- Items reference existing download/media children through opaque `childId`
+  values. Per-item errors, individual retry/cancel, group cancel, aggregate
+  progress and interrupted recovery are represented in the contracts.
+- SQLite migration v3 is transactional and additive: v1 download rows and v2
+  media rows are preserved, and a failed v3 migration rolls back completely.
+- Not included: providers, playlist/Pixeldrain resolution, orchestration,
+  renderer UI, preload/IPC wiring, native-bridge routes, Milestone 4/5 work,
+  torrents or VPN.
+
+See [batch-contracts.md](batch-contracts.md) for the full contract and schema
+description.
 
 ## Root cause of the reported Milestone 2B failure
 
@@ -561,11 +593,15 @@ checked cancellation and persisted failure handling, and ran the full suite with
 real aria2. The post-`5b6d3d4` headed Helium retest at `e7e28ee` then completed
 the selected/best workflow end to end, including exact-option matching, 144p and
 1080p outputs, hidden-window progress persistence and a safe unsupported-page
-error. Milestone 3A is PASS. Milestone 3B has started in planning only.
+error. Milestone 3A is PASS. Milestone 3B is underway from the additive
+contracts/schema foundation; providers, orchestration, UI/IPC and native routes
+remain future work.
 
 ## Safe next action
 
-1. Plan Milestone 3B scope and milestones; no 3B implementation exists yet.
+1. Continue Milestone 3B from the additive contracts/schema foundation; providers,
+   playlist resolution, orchestration, UI/IPC and native routes remain future
+   work. Milestone 4 is explicitly deferred.
 2. Keep the remaining unverified non-blockers visible rather than treating them
    as regressions or silently closing them.
 3. Preserve the documented caveats: disposable-profile unpacked extension,
