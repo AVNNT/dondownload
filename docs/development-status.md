@@ -452,6 +452,20 @@ The application's media destination during the verified runs was the user's real
 Downloads path. This record does not claim that the user's data was modified or
 cleaned.
 
+## Testing workflow (2026-11-04)
+
+The test commands are now split into three tiers without changing the full
+suite: `npm run test:fast` for hermetic unit/component work,
+`npm run test:integration` for native-host/registration and optional real-aria2
+work, and `npm run test:gate` for the full `npm test` suite plus the production
+build. The native-host 22 s bridge-timeout regression is preserved and selected
+explicitly with `npm run test:native-host:timeout`; it is not part of the fast
+loop. See [testing-workflow.md](testing-workflow.md) for commands, subsystem
+filters, measured durations, the strict no-desktop-input rule, manual-only real
+browser permission checks, the mocked-renderer vs native-Electron-IPC
+distinction, and the historical 3A timing/caveat record. This workflow change
+did not rerun or reopen the 3A evidence.
+
 ## Not complete / not claimed
 
 - **Media handling is explicit and bounded.** Analysis is an explicit user

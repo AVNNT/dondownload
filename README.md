@@ -36,12 +36,18 @@ npm run dev
 Other scripts:
 
 ```powershell
-npm test          # focused unit tests (Vitest)
+npm run test:fast # Tier 1: hermetic unit/component tests
+npm test          # Tier 3: full Vitest suite (compatibility command)
+npm run test:gate # Tier 3: full suite + typecheck + production build
 npm run typecheck # main/preload and renderer TypeScript projects
 npm run build     # typecheck + electron-vite production build
 npm run build:native-host # optional: compile the browser native messaging host
 npm start         # preview an existing production build
 ```
+
+Focused process/native-host and optional real-aria2 checks are separated from
+the fast loop. See [docs/testing-workflow.md](docs/testing-workflow.md) for the
+tier table, subsystem commands, measured durations and input-isolation rules.
 
 ## Installing aria2
 
@@ -506,12 +512,29 @@ by the top-frame registration.
 
 ## Testing
 
-The default suite is hermetic and needs no network or aria2 binary:
+The fast development tier is hermetic and needs no network, Electron launch or
+aria2 binary:
 
 ```powershell
-npm test        # focused unit tests; optional host/aria2 tests skip if unavailable
+npm run test:fast   # Tier 1: unit/component/policy tests
+npm run test:gate   # Tier 3: full suite + typecheck + production build
 npm run typecheck
 ```
+
+`npm test` remains the full suite. The native-host process tests, including its
+22 s bridge-timeout regression, and the optional real-aria2 tests are Tier 2:
+
+```powershell
+npm run test:integration          # native host + registration + optional aria2
+npm run test:native-host          # routine native-host tests, 22 s test skipped
+npm run test:native-host:timeout  # only the 22 s regression
+npm run test:aria2                # optional; skips without ARIA2_TEST_BINARY
+```
+
+See [docs/testing-workflow.md](docs/testing-workflow.md) for tier commands,
+subsystem filters, historical and current timings, the strict no-desktop-input
+rule, manual-only real-browser permission checks, and the mocked-renderer vs
+native-Electron-IPC distinction.
 
 The browser-bridge tests cover frame lengths and limits, strict schemas, URL
 validation, exact allowed-origin manifest generation, unavailable-app responses,
@@ -549,9 +572,10 @@ not redistributed):
 
 ```powershell
 $env:ARIA2_TEST_BINARY = 'C:\tools\aria2\aria2c.exe'
-npm test
+npm run test:aria2   # focused real-aria2 integration
+npm test             # full suite also picks it up, including the native host
 
-# Or run only the integration file:
+# Or run the file directly:
 npx vitest run tests/aria2.integration.test.ts
 ```
 
