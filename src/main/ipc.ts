@@ -1,13 +1,25 @@
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { IPC } from '@shared/ipc'
+import type {
+  MediaAnalysis,
+  MediaJob,
+  MediaSnapshot
+} from '@shared/media'
 import type { ApiResult, AppSnapshot } from '@shared/types'
 import type { Aria2Service } from './aria2/service'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
+import type { MediaJobsManager } from './mediaJobs/manager'
 
-interface IpcContext {
+export interface IpcContext {
   manager: DownloadManager
   aria2: Aria2Service
+  /**
+   * Optional until the orchestrator wires the manager in `index.ts`. Existing
+   * download channels are unchanged; media channels report a safe error while
+   * the property is absent.
+   */
+  mediaJobs?: MediaJobsManager
   getWindow: () => BrowserWindow | null
 }
 
@@ -73,5 +85,46 @@ export function registerIpc(context: IpcContext): void {
   )
   invoke<null>(IPC.showInFolder, (_event, id) =>
     context.manager.showInFolder(id)
+  )
+
+  // Additive media channels. They reuse the same trusted-sender wrapper and
+  // never widen the existing download capabilities.
+  const media = (): MediaJobsManager => {
+    if (!context.mediaJobs) {
+      throw new AppError('MEDIA_UNAVAILABLE', 'Media support is not available.')
+    }
+    return context.mediaJobs
+  }
+
+  invoke<MediaAnalysis>(IPC.analyzeMedia, (_event, input) =>
+    media().analyzeMedia(input)
+  )
+
+  invoke<MediaSnapshot>(IPC.queueMedia, async (_event, input) => {
+    const manager = media()
+    await manager.queueMedia(input)
+    return manager.getMediaSnapshot()
+  })
+
+  invoke<MediaSnapshot>(IPC.getMediaSnapshot, () =>
+    media().getMediaSnapshot()
+  )
+
+  invoke<MediaJob>(IPC.getMediaJob, (_event, jobId) =>
+    media().getMediaJob(jobId)
+  )
+
+  invoke<MediaSnapshot>(IPC.cancelMedia, async (_event, jobId) => {
+    const manager = media()
+    await manager.cancelMedia(jobId)
+    return manager.getMediaSnapshot()
+  })
+
+  invoke<MediaSnapshot>(IPC.removeMedia, (_event, jobId) =>
+    media().removeMedia(jobId)
+  )
+
+  invoke<null>(IPC.showMediaInFolder, (_event, jobId) =>
+    media().showMediaInFolder(jobId)
   )
 }
