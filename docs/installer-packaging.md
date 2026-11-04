@@ -62,10 +62,15 @@ version flag and copies the verified file.
 ## Commands
 
 ```powershell
-npm install
+npm ci --include=dev      # restore the exact locked build toolchain
 npm run stage:vendor      # stage and verify binaries into build/vendor
 npm run build:installer   # native host + stage + app build + NSIS x64 installer
 ```
+
+`electron-builder` is a development dependency required by the installer script.
+The lockfile pins it at 26.18.0; using `npm ci --include=dev` ensures a clean
+checkout restores it rather than relying on a partially populated `node_modules`
+directory.
 
 If npm's `allow-scripts` policy skips Electron's postinstall step, run
 `node node_modules/electron/install.js` once before building. That step only

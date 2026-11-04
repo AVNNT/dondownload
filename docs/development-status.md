@@ -632,9 +632,12 @@ restarted after relaunch.
 
 Installer dependency root cause: `electron-builder@26.18.0` was already declared
 in `package.json` and pinned in `package-lock.json`, but the main worktree's
-`node_modules` did not contain the development dependency. `npm ci --include=dev`
-restored the locked tree; no package manifest or lockfile changes were needed.
-This is the reproducible clean-checkout dependency restore path.
+`node_modules` did not contain the development dependency. There is no project
+`.npmrc`, and npm's current `omit` setting is empty; the exact earlier
+provisioning action that left the partial tree is not recorded. `npm ci
+--include=dev` restored the locked tree; no package manifest or lockfile changes
+were needed. This is the reproducible clean-checkout dependency restore path and
+is now the documented installer setup command.
 
 The rebuilt current-source installer is
 `dist/DonDownload-0.1.0-x64-setup.exe` (302,265,742 bytes, SHA-256
