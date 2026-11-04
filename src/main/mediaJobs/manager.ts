@@ -181,6 +181,7 @@ export class MediaJobsManager {
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private lastPublished: string | null = null
   private persistenceErrorLogged = false
+  private closed = false
   private tool: MediaToolState = {
     status: 'stopped',
     version: null,
@@ -222,6 +223,9 @@ export class MediaJobsManager {
   }
 
   async analyzeMedia(rawInput: unknown): Promise<MediaAnalysis> {
+    if (this.closed) {
+      throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
+    }
     const input = parseAnalyzeMediaInput(rawInput)
 
     let raw: unknown
@@ -256,6 +260,9 @@ export class MediaJobsManager {
    * whole list use `getMediaSnapshot`.
    */
   async queueMedia(rawInput: unknown): Promise<MediaJob> {
+    if (this.closed) {
+      throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
+    }
     const input = parseMediaQueueInput(rawInput)
     const cached = this.requireAnalysis(input.analysisId)
 
@@ -420,8 +427,30 @@ export class MediaJobsManager {
     this.flushPending()
   }
 
-  /** Stop timers and flush. The injected database is closed by its owner. */
+  /** Interrupt active children, preserve partial files and flush before DB close. */
   close(): void {
+    if (this.closed) return
+    this.closed = true
+
+    const updatedAt = this.now()
+    let changed = false
+    for (const job of this.jobs.values()) {
+      if (!isActiveMediaJobStatus(job.record.status)) continue
+
+      job.record.status = 'interrupted'
+      job.record.errorMessage = MEDIA_INTERRUPTED_MESSAGE
+      job.record.updatedAt = updatedAt
+      job.speedBps = 0
+      this.persistNow(job)
+      changed = true
+
+      try {
+        this.engine.cancel(job.record.id)
+      } catch {
+        // Shutdown remains bounded even if a child already exited.
+      }
+    }
+    if (changed) this.publish(true)
     this.flushPersistence()
   }
 

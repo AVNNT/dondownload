@@ -1,9 +1,12 @@
 import { app, BrowserWindow } from 'electron'
+import path from 'node:path'
 import { IPC } from '@shared/ipc'
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
+import { createMediaEngine } from './media/engine'
+import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
 import { decideWindowClose, shouldQuitWhenAllWindowsClosed } from './lifecycle'
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
@@ -14,6 +17,7 @@ let mainWindow: BrowserWindow | null = null
 let appTray: AppTray | null = null
 let aria2: Aria2Service | null = null
 let manager: DownloadManager | null = null
+let mediaJobs: MediaJobsManager | null = null
 let nativeBridge: NativeBridge | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
@@ -111,11 +115,28 @@ if (!hasSingleInstanceLock) {
       database
     )
 
+    const mediaDir = path.join(downloadDir, 'Media')
+    mediaJobs = new MediaJobsManager({
+      engine: createMediaEngine(),
+      mediaDir,
+      database,
+      onUpdate: (snapshot) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
+        }
+      }
+    })
+
     registerIpc({
       manager,
       aria2,
+      mediaJobs,
       getWindow: () => mainWindow
     })
+
+    // Probe external media tools without delaying the first window. The media
+    // job manager publishes the verified state when the probe settles.
+    void mediaJobs.refreshToolState()
 
     // The browser bridge is intentionally started without touching the
     // window. It keeps working while the app lives only in the tray and only
@@ -209,6 +230,12 @@ if (!hasSingleInstanceLock) {
       // Persist the last known lifecycle/progress state, stop aria2 cleanly,
       // then close the database. Crash recovery can still rely on the bounded
       // progress snapshots written while the app was running.
+      try {
+        mediaJobs?.close()
+      } catch {
+        // Media children are cancelled best-effort; the process must still quit.
+      }
+      mediaJobs = null
       try {
         manager?.flushPersistence()
       } catch {

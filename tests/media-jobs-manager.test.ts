@@ -923,6 +923,23 @@ describe('MediaJobsManager removal and show-in-folder', () => {
 })
 
 describe('MediaJobsManager tool state', () => {
+  it('marks active work interrupted, cancels its child and flushes before close', async () => {
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    expect(harness.manager.getMediaJob(job.id).status).toBe('downloading')
+    harness.manager.close()
+
+    expect(harness.manager.getMediaJob(job.id)).toMatchObject({
+      status: 'interrupted',
+      errorMessage: MEDIA_INTERRUPTED_MESSAGE,
+      speedBps: 0
+    })
+    expect(harness.engine.cancelCalls).toEqual([job.id])
+    expect(harness.database.rows.get(job.id)?.status).toBe('interrupted')
+  })
+
   it('publishes a parsed tool state', async () => {
     const harness = await createHarness()
     harness.engine.toolState = {
