@@ -47,7 +47,7 @@ export interface MediaDownloadProgress {
 
 export interface MediaDownloadResult {
   filePath: string
-  totalBytes: number
+  totalBytes: number | null
 }
 
 /**
@@ -524,9 +524,11 @@ export class MediaJobsManager {
       return
     }
 
-    const reportedTotal = nonNegativeInteger(result.totalBytes, 0)
+    const reportedTotal = nullableNonNegativeInteger(result.totalBytes)
     const totalBytes =
-      reportedTotal > 0 ? reportedTotal : job.record.totalBytes
+      reportedTotal !== null && reportedTotal > 0
+        ? reportedTotal
+        : job.record.totalBytes
     const completedAt = this.now()
 
     job.record.status = 'complete'
