@@ -26,10 +26,12 @@ implementation and verification record.
   contracts and SQLite v2 persistence are integrated at `e76055f`; review fixes
   rejecting credential-bearing media URLs and adding a safe job title are at
   `f55b0fc`. Media option validation and desktop UI are integrated at
-  `d0f5049` and `eae3e3f`. The current baseline has 231 tests passed / 3 skipped;
-  typecheck and build pass. Engine, Helium bridge/overlay, and media-job
-  orchestration remain in progress in isolated DeepSeek worktrees. yt-dlp and
-  FFmpeg are not installed/found; no real media integration has been verified.
+  `d0f5049` and `eae3e3f`; persistent job orchestration and IPC are integrated at
+  `eb099b8` with an API-alignment fix at `8f3b2f1`. Current integrated baseline:
+  256 tests passed / 3 skipped and typecheck passed. Engine and Helium
+  bridge/overlay remain in isolated DeepSeek worktrees; `index.ts` startup and
+  bridge wiring await those interfaces. yt-dlp and FFmpeg are not installed or
+  found; no real media integration has been verified.
 
 ## Root cause of the reported Milestone 2B failure
 
