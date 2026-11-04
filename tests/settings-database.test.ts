@@ -1,0 +1,943 @@
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  MAX_SPEED_LIMIT_BPS,
+  defaultDownloadSettings,
+  type DownloadSettings
+} from '../src/shared/settings'
+import type { DownloadItem } from '../src/shared/types'
+import {
+  DATABASE_FILENAME,
+  SCHEMA_VERSION,
+  openDownloadDatabase,
+  type DownloadDatabase
+} from '../src/main/db/database'
+
+const tempDirs: string[] = []
+const openDatabases: DownloadDatabase[] = []
+
+async function makeDatabasePath(): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dondownload-settings-db-'))
+  tempDirs.push(dir)
+  return path.join(dir, 'nested', DATABASE_FILENAME)
+}
+
+function open(filePath: string): DownloadDatabase {
+  const database = openDownloadDatabase(filePath)
+  openDatabases.push(database)
+  return database
+}
+
+function close(database: DownloadDatabase): void {
+  database.close()
+  const index = openDatabases.indexOf(database)
+  if (index >= 0) openDatabases.splice(index, 1)
+}
+
+const NOW = Date.UTC(2026, 10, 4, 5, 6, 7)
+
+const V1_DOWNLOADS_SCHEMA = `
+  CREATE TABLE downloads (
+    id TEXT PRIMARY KEY NOT NULL,
+    gid TEXT NOT NULL,
+    url TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    explicit_filename TEXT,
+    dir TEXT NOT NULL,
+    file_path TEXT,
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'active', 'waiting', 'paused',
+        'complete', 'error', 'interrupted'
+      )
+    ),
+    total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    error_message TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+    max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts >= 1),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+  CREATE INDEX downloads_created_at_idx ON downloads (created_at DESC);
+  CREATE INDEX downloads_status_idx ON downloads (status);
+`
+
+const V2_MEDIA_SCHEMA = `
+  CREATE TABLE media_jobs (
+    id TEXT PRIMARY KEY NOT NULL,
+    source_url TEXT NOT NULL,
+    analysis_id TEXT NOT NULL,
+    option_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('video', 'audio')),
+    title TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'analyzing', 'downloading', 'merging',
+        'complete', 'error', 'cancelled', 'interrupted'
+      )
+    ),
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+    error_message TEXT,
+    dir TEXT NOT NULL,
+    file_path TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+  CREATE INDEX media_jobs_created_at_idx ON media_jobs (created_at DESC);
+  CREATE INDEX media_jobs_status_idx ON media_jobs (status);
+`
+
+const V3_BATCH_SCHEMA = `
+  CREATE TABLE batches (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (
+      kind IN ('media-playlist', 'pixeldrain-list', 'direct-urls')
+    ),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'running', 'complete', 'partial',
+        'error', 'cancelled', 'interrupted'
+      )
+    ),
+    source_url TEXT,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+
+  CREATE INDEX batches_created_at_idx ON batches (created_at DESC);
+  CREATE INDEX batches_status_idx ON batches (status);
+`
+
+const V3_BATCH_ITEMS_SCHEMA = `
+  CREATE TABLE batch_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'running', 'complete',
+        'error', 'cancelled', 'interrupted'
+      )
+    ),
+    child_id TEXT,
+    title TEXT NOT NULL,
+    label TEXT NOT NULL,
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+    error_message TEXT,
+    source_url TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    UNIQUE (batch_id, position)
+  );
+
+  CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
+  CREATE INDEX batch_items_status_idx ON batch_items (status);
+`
+
+const V4_BATCH_ITEMS_SCHEMA = `
+  CREATE TABLE batch_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'running', 'complete', 'error',
+        'unavailable', 'skipped', 'cancelled', 'interrupted'
+      )
+    ),
+    child_id TEXT,
+    title TEXT NOT NULL,
+    label TEXT NOT NULL,
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+    error_message TEXT,
+    source_url TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    UNIQUE (batch_id, position)
+  );
+
+  CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
+  CREATE INDEX batch_items_status_idx ON batch_items (status);
+`
+
+function downloadRecord(overrides: Partial<DownloadItem> = {}): DownloadItem {
+  return {
+    id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+    gid: '0123456789abcdef',
+    url: 'https://example.com/files/sample.zip',
+    filename: 'sample.zip',
+    dir: 'C:\\Users\\Test\\Downloads\\DonDownload',
+    filePath: null,
+    status: 'active',
+    totalBytes: 1_000,
+    completedBytes: 250,
+    speedBps: 100,
+    etaSeconds: 8,
+    errorMessage: null,
+    attempts: 1,
+    maxAttempts: 3,
+    createdAt: NOW,
+    updatedAt: NOW,
+    completedAt: null,
+    ...overrides
+  }
+}
+
+function rowsOf(
+  database: DatabaseSync,
+  table: string
+): Record<string, unknown>[] {
+  return (
+    database.prepare(`SELECT * FROM ${table} ORDER BY id`).all() as Record<
+      string,
+      unknown
+    >[]
+  ).map((row) => ({ ...row }))
+}
+
+function project(
+  rows: readonly Record<string, unknown>[],
+  columns: readonly string[]
+): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const selected: Record<string, unknown> = {}
+    for (const column of columns) selected[column] = row[column]
+    return selected
+  })
+}
+
+function columnNames(database: DatabaseSync, table: string): string[] {
+  return (
+    database.prepare(`PRAGMA table_info('${table}')`).all() as {
+      name: string
+    }[]
+  ).map((column) => column.name)
+}
+
+function indexNames(database: DatabaseSync, table: string): string[] {
+  return (
+    database
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? ORDER BY name"
+      )
+      .all(table) as { name: string }[]
+  ).map((index) => index.name)
+}
+
+function userVersion(database: DatabaseSync): number {
+  return (
+    database.prepare('PRAGMA user_version').get() as { user_version: number }
+  ).user_version
+}
+
+function tableExists(database: DatabaseSync, table: string): boolean {
+  return Boolean(
+    database
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+      )
+      .get(table)
+  )
+}
+
+const DOWNLOAD_COLUMNS = [
+  'id',
+  'gid',
+  'url',
+  'filename',
+  'explicit_filename',
+  'dir',
+  'file_path',
+  'status',
+  'total_bytes',
+  'completed_bytes',
+  'error_message',
+  'attempts',
+  'max_attempts',
+  'created_at',
+  'updated_at',
+  'completed_at'
+]
+
+interface LegacyFixture {
+  downloads: Record<string, unknown>[]
+  media: Record<string, unknown>[]
+  batches: Record<string, unknown>[]
+  batchItems: Record<string, unknown>[]
+}
+
+function insertDownloads(database: DatabaseSync): void {
+  const insert = database.prepare(`
+    INSERT INTO downloads (
+      id, gid, url, filename, explicit_filename, dir, file_path, status,
+      total_bytes, completed_bytes, error_message, attempts, max_attempts,
+      created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  const active = downloadRecord()
+  insert.run(
+    active.id,
+    active.gid,
+    active.url,
+    active.filename,
+    'chosen-name.zip',
+    active.dir,
+    active.filePath,
+    active.status,
+    active.totalBytes,
+    active.completedBytes,
+    active.errorMessage,
+    active.attempts,
+    active.maxAttempts,
+    active.createdAt,
+    active.updatedAt,
+    active.completedAt
+  )
+
+  const complete = downloadRecord({
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    gid: 'aaaaaaaaaaaaaaaa',
+    url: 'https://example.com/files/completed.bin',
+    filename: 'completed.bin',
+    status: 'complete',
+    totalBytes: 42,
+    completedBytes: 42,
+    attempts: 2,
+    maxAttempts: 5,
+    createdAt: Date.UTC(2001, 0, 1),
+    updatedAt: Date.UTC(2001, 0, 1),
+    completedAt: Date.UTC(2001, 0, 1)
+  })
+  insert.run(
+    complete.id,
+    complete.gid,
+    complete.url,
+    complete.filename,
+    null,
+    complete.dir,
+    complete.filePath,
+    complete.status,
+    complete.totalBytes,
+    complete.completedBytes,
+    complete.errorMessage,
+    complete.attempts,
+    complete.maxAttempts,
+    complete.createdAt,
+    complete.updatedAt,
+    complete.completedAt
+  )
+}
+
+function insertMedia(database: DatabaseSync): void {
+  database
+    .prepare(
+      `INSERT INTO media_jobs (
+        id, source_url, analysis_id, option_id, kind, title, label, status,
+        completed_bytes, total_bytes, error_message, dir, file_path,
+        created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      'https://example.com/watch?v=abc',
+      'analysis_0123456789abcdef',
+      'option_video_0123456789',
+      'video',
+      'Example media',
+      '1080p MP4 - H.264 + AAC',
+      'complete',
+      1_000,
+      1_000,
+      null,
+      'C:\\Users\\Test\\Downloads\\DonDownload\\Media',
+      'C:\\Users\\Test\\Downloads\\DonDownload\\Media\\video.mp4',
+      NOW,
+      NOW,
+      NOW
+    )
+}
+
+function insertBatch(
+  database: DatabaseSync,
+  version: number
+): void {
+  database
+    .prepare(
+      `INSERT INTO batches (
+        id, kind, title, status, source_url, error_message,
+        created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      'batch_0123456789abcdef',
+      'media-playlist',
+      'Example playlist',
+      'partial',
+      'https://example.com/playlist?list=abc',
+      null,
+      NOW,
+      NOW,
+      NOW
+    )
+
+  const insert = database.prepare(`
+    INSERT INTO batch_items (
+      id, batch_id, position, kind, status, child_id, title, label,
+      completed_bytes, total_bytes, error_message, source_url,
+      created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  insert.run(
+    'bitem_complete',
+    'batch_0123456789abcdef',
+    0,
+    'media',
+    'complete',
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'Completed media',
+    '1080p MP4',
+    1_000,
+    1_000,
+    null,
+    'https://example.com/watch?v=abc',
+    NOW,
+    NOW,
+    NOW
+  )
+  insert.run(
+    'bitem_error',
+    'batch_0123456789abcdef',
+    1,
+    'download',
+    'error',
+    'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+    'Failed archive',
+    'archive.zip',
+    12,
+    200,
+    'The remote file was not found.',
+    'https://example.com/archive.zip',
+    NOW,
+    NOW,
+    null
+  )
+
+  if (version >= 4) {
+    insert.run(
+      'bitem_unavailable',
+      'batch_0123456789abcdef',
+      2,
+      'media',
+      'unavailable',
+      null,
+      'Unavailable media',
+      'Private video',
+      0,
+      null,
+      'This entry is private.',
+      'https://example.com/private',
+      NOW,
+      NOW,
+      NOW
+    )
+    insert.run(
+      'bitem_skipped',
+      'batch_0123456789abcdef',
+      3,
+      'media',
+      'skipped',
+      null,
+      'Skipped media',
+      'Not selected',
+      0,
+      null,
+      null,
+      'https://example.com/skipped',
+      NOW,
+      NOW,
+      NOW
+    )
+  }
+}
+
+function createLegacyDatabase(filePath: string, version: number): LegacyFixture {
+  const raw = new DatabaseSync(filePath)
+  raw.exec(V1_DOWNLOADS_SCHEMA)
+  insertDownloads(raw)
+
+  if (version >= 2) {
+    raw.exec(V2_MEDIA_SCHEMA)
+    insertMedia(raw)
+  }
+
+  if (version >= 3) {
+    raw.exec(V3_BATCH_SCHEMA)
+    raw.exec(version >= 4 ? V4_BATCH_ITEMS_SCHEMA : V3_BATCH_ITEMS_SCHEMA)
+    insertBatch(raw, version)
+  }
+
+  raw.exec(`PRAGMA user_version = ${version}`)
+
+  const fixture: LegacyFixture = {
+    downloads: rowsOf(raw, 'downloads'),
+    media: version >= 2 ? rowsOf(raw, 'media_jobs') : [],
+    batches: version >= 3 ? rowsOf(raw, 'batches') : [],
+    batchItems: version >= 3 ? rowsOf(raw, 'batch_items') : []
+  }
+  raw.close()
+  return fixture
+}
+
+afterEach(async () => {
+  for (const database of openDatabases.splice(0)) {
+    try {
+      database.close()
+    } catch {
+      // Best effort cleanup for a failing test.
+    }
+  }
+  for (const dir of tempDirs.splice(0)) {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+describe('download settings persistence', () => {
+  it('creates one defaults row on a new schema-v5 database', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+
+    expect(database.schemaVersion).toBe(5)
+    expect(SCHEMA_VERSION).toBe(5)
+    expect(database.loadSettings()).toEqual(defaultDownloadSettings())
+    close(database)
+
+    const raw = new DatabaseSync(filePath)
+    const rows = rowsOf(raw, 'download_settings')
+    raw.close()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id: 1,
+      max_concurrent_downloads: 3,
+      per_host_connections: 4,
+      global_speed_limit_bps: 0,
+      allowed_hours_enabled: 0,
+      allowed_hours_start: '00:00',
+      allowed_hours_end: '00:00'
+    })
+  })
+
+  it('round-trips custom values, including an overnight window', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+    const custom: DownloadSettings = {
+      maxConcurrentDownloads: 16,
+      perHostConnections: 12,
+      globalSpeedLimitBps: 32 * 1024 * 1024,
+      allowedHours: {
+        enabled: true,
+        start: '22:00',
+        end: '06:00'
+      }
+    }
+    first.saveSettings(custom)
+    expect(first.loadSettings()).toEqual(custom)
+    close(first)
+
+    const second = open(filePath)
+    expect(second.loadSettings()).toEqual(custom)
+    second.saveSettings({
+      ...custom,
+      maxConcurrentDownloads: 1,
+      perHostConnections: 1,
+      globalSpeedLimitBps: MAX_SPEED_LIMIT_BPS,
+      allowedHours: { enabled: true, start: '00:00', end: '00:00' }
+    })
+    expect(second.loadSettings()).toEqual({
+      maxConcurrentDownloads: 1,
+      perHostConnections: 1,
+      globalSpeedLimitBps: MAX_SPEED_LIMIT_BPS,
+      allowedHours: { enabled: true, start: '00:00', end: '00:00' }
+    })
+    close(second)
+
+    const raw = new DatabaseSync(filePath)
+    expect(rowsOf(raw, 'download_settings')).toHaveLength(1)
+    raw.close()
+  })
+
+  it('rejects invalid settings without changing the stored row', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const invalid: DownloadSettings[] = [
+      { ...defaultDownloadSettings(), maxConcurrentDownloads: 0 },
+      { ...defaultDownloadSettings(), maxConcurrentDownloads: 17 },
+      { ...defaultDownloadSettings(), perHostConnections: 0 },
+      { ...defaultDownloadSettings(), perHostConnections: 17 },
+      { ...defaultDownloadSettings(), globalSpeedLimitBps: -1 },
+      {
+        ...defaultDownloadSettings(),
+        globalSpeedLimitBps: MAX_SPEED_LIMIT_BPS + 1
+      },
+      {
+        ...defaultDownloadSettings(),
+        allowedHours: { enabled: true, start: '24:00', end: '06:00' }
+      },
+      {
+        ...defaultDownloadSettings(),
+        allowedHours: { enabled: true, start: '22:00', end: '6:00' }
+      }
+    ]
+
+    for (const settings of invalid) {
+      expect(() => database.saveSettings(settings)).toThrow()
+      expect(database.loadSettings()).toEqual(defaultDownloadSettings())
+    }
+    close(database)
+  })
+
+  it('enforces one row and every settings CHECK at the database layer', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    close(database)
+
+    const raw = new DatabaseSync(filePath)
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO download_settings (
+            id, max_concurrent_downloads, per_host_connections,
+            global_speed_limit_bps, allowed_hours_enabled,
+            allowed_hours_start, allowed_hours_end, updated_at
+          ) VALUES (2, 3, 4, 0, 0, '00:00', '00:00', 0)`
+        )
+        .run()
+    ).toThrow()
+
+    const invalidUpdates = [
+      'UPDATE download_settings SET max_concurrent_downloads = 0',
+      'UPDATE download_settings SET max_concurrent_downloads = 17',
+      'UPDATE download_settings SET per_host_connections = 0',
+      'UPDATE download_settings SET per_host_connections = 17',
+      'UPDATE download_settings SET global_speed_limit_bps = -1',
+      `UPDATE download_settings SET global_speed_limit_bps = ${MAX_SPEED_LIMIT_BPS + 1}`,
+      'UPDATE download_settings SET allowed_hours_enabled = 2',
+      "UPDATE download_settings SET allowed_hours_start = '24:00'",
+      "UPDATE download_settings SET allowed_hours_start = '9:05'",
+      "UPDATE download_settings SET allowed_hours_end = '23:60'"
+    ]
+    for (const sql of invalidUpdates) {
+      expect(() => raw.exec(sql)).toThrow()
+    }
+
+    raw.exec(
+      "UPDATE download_settings SET max_concurrent_downloads = 1, per_host_connections = 16, global_speed_limit_bps = 1073741824, allowed_hours_enabled = 1, allowed_hours_start = '23:59', allowed_hours_end = '23:59'"
+    )
+    expect(rowsOf(raw, 'download_settings')[0]).toMatchObject({
+      max_concurrent_downloads: 1,
+      per_host_connections: 16,
+      global_speed_limit_bps: 1_073_741_824,
+      allowed_hours_enabled: 1,
+      allowed_hours_start: '23:59',
+      allowed_hours_end: '23:59'
+    })
+    raw.close()
+  })
+
+  it('stores only settings fields and no URL, path or secret columns', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    close(database)
+
+    const raw = new DatabaseSync(filePath)
+    const columns = columnNames(raw, 'download_settings')
+    raw.close()
+
+    expect(columns).toEqual([
+      'id',
+      'max_concurrent_downloads',
+      'per_host_connections',
+      'global_speed_limit_bps',
+      'allowed_hours_enabled',
+      'allowed_hours_start',
+      'allowed_hours_end',
+      'updated_at'
+    ])
+    expect(columns.filter((name) => /url|path|token|secret|cookie|header/i.test(name))).toEqual(
+      []
+    )
+  })
+})
+
+describe('per-download control persistence', () => {
+  it('defaults migrated and new download rows to unscheduled and unlimited', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    database.save({ record: downloadRecord(), explicitFilename: 'chosen-name.zip' })
+
+    const stored = database.loadAll()
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toMatchObject({
+      explicitFilename: 'chosen-name.zip',
+      scheduledAt: null,
+      speedLimitBps: null
+    })
+    expect(stored[0]?.record.status).toBe('active')
+    close(database)
+  })
+
+  it('round-trips custom per-download controls without touching other values', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+    const record = downloadRecord()
+    first.save({ record, explicitFilename: 'chosen-name.zip' })
+    first.saveDownloadControls(record.id, {
+      scheduledAt: Date.UTC(2026, 10, 5, 1, 2, 3),
+      speedLimitBps: 4 * 1024 * 1024
+    })
+    first.saveDownloadControls(record.id, {
+      scheduledAt: null,
+      speedLimitBps: null
+    })
+    first.saveDownloadControls(record.id, {
+      scheduledAt: 0,
+      speedLimitBps: MAX_SPEED_LIMIT_BPS
+    })
+    close(first)
+
+    const second = open(filePath)
+    const stored = second.loadAll()[0]
+    expect(stored).toMatchObject({
+      explicitFilename: 'chosen-name.zip',
+      scheduledAt: 0,
+      speedLimitBps: MAX_SPEED_LIMIT_BPS
+    })
+    expect(stored?.record).toEqual({
+      ...record,
+      // Speed and ETA are transient and start fresh after a relaunch.
+      speedBps: 0,
+      etaSeconds: null
+    })
+    close(second)
+  })
+
+  it('rejects invalid per-download controls and unknown download ids', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const record = downloadRecord()
+    database.save({ record, explicitFilename: null })
+
+    for (const controls of [
+      { scheduledAt: -1, speedLimitBps: null },
+      { scheduledAt: 1.5, speedLimitBps: null },
+      { scheduledAt: null, speedLimitBps: 0 },
+      { scheduledAt: null, speedLimitBps: -1 },
+      { scheduledAt: null, speedLimitBps: MAX_SPEED_LIMIT_BPS + 1 }
+    ]) {
+      expect(() => database.saveDownloadControls(record.id, controls)).toThrow()
+    }
+    expect(database.loadAll()[0]).toMatchObject({
+      scheduledAt: null,
+      speedLimitBps: null
+    })
+    expect(() =>
+      database.saveDownloadControls('00000000-0000-4000-8000-000000000000', {
+        scheduledAt: null,
+        speedLimitBps: null
+      })
+    ).toThrow(/not found/)
+    close(database)
+  })
+
+  it('enforces the per-download CHECK constraints at the database layer', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const record = downloadRecord()
+    database.save({ record, explicitFilename: null })
+    close(database)
+
+    const raw = new DatabaseSync(filePath)
+    expect(columnNames(raw, 'downloads')).toEqual([
+      ...DOWNLOAD_COLUMNS,
+      'scheduled_at',
+      'speed_limit_bps'
+    ])
+    const invalidUpdates = [
+      'UPDATE downloads SET scheduled_at = -1',
+      'UPDATE downloads SET scheduled_at = 9007199254740991',
+      'UPDATE downloads SET speed_limit_bps = 0',
+      'UPDATE downloads SET speed_limit_bps = -1',
+      `UPDATE downloads SET speed_limit_bps = ${MAX_SPEED_LIMIT_BPS + 1}`
+    ]
+    for (const sql of invalidUpdates) {
+      expect(() => raw.exec(sql)).toThrow()
+    }
+
+    raw.exec(
+      `UPDATE downloads SET scheduled_at = 0, speed_limit_bps = ${MAX_SPEED_LIMIT_BPS}`
+    )
+    expect(rowsOf(raw, 'downloads')[0]).toMatchObject({
+      scheduled_at: 0,
+      speed_limit_bps: MAX_SPEED_LIMIT_BPS
+    })
+    raw.close()
+  })
+})
+
+describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
+  it('preserves existing rows, statuses, indexes and foreign keys', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const fixture = createLegacyDatabase(filePath, version)
+
+    const beforeRaw = new DatabaseSync(filePath)
+    const downloadIndexes = indexNames(beforeRaw, 'downloads')
+    const mediaIndexes =
+      version >= 2 ? indexNames(beforeRaw, 'media_jobs') : []
+    const batchParentIndexes =
+      version >= 3 ? indexNames(beforeRaw, 'batches') : []
+    const batchItemIndexes =
+      version >= 3 ? indexNames(beforeRaw, 'batch_items') : []
+    beforeRaw.close()
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(database.loadSettings()).toEqual(defaultDownloadSettings())
+
+    const downloads = database.loadAll()
+    expect(downloads).toHaveLength(2)
+    for (const entry of downloads) {
+      expect(entry.scheduledAt).toBeNull()
+      expect(entry.speedLimitBps).toBeNull()
+    }
+    expect(
+      downloads.find((entry) => entry.record.id === 'f47ac10b-58cc-4372-a567-0e02b2c3d479')
+    ).toMatchObject({
+      explicitFilename: 'chosen-name.zip',
+      record: { status: 'active', completedBytes: 250 }
+    })
+    expect(
+      downloads.find((entry) => entry.record.id === 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    ).toMatchObject({
+      explicitFilename: null,
+      record: { status: 'complete', completedAt: Date.UTC(2001, 0, 1) }
+    })
+
+    if (version >= 2) {
+      expect(database.loadMediaJobs()).toHaveLength(1)
+      expect(database.loadMediaJobs()[0]).toMatchObject({
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'complete',
+        completedBytes: 1_000
+      })
+    } else {
+      expect(database.loadMediaJobs()).toEqual([])
+    }
+
+    if (version >= 3) {
+      const batches = database.loadBatches()
+      expect(batches).toHaveLength(1)
+      expect(batches[0]?.record).toMatchObject({
+        id: 'batch_0123456789abcdef',
+        status: 'partial',
+        sourceUrl: 'https://example.com/playlist?list=abc'
+      })
+      const itemStatuses = batches[0]?.items.map((item) => item.status)
+      if (version >= 4) {
+        expect(itemStatuses).toEqual([
+          'complete',
+          'error',
+          'unavailable',
+          'skipped'
+        ])
+      } else {
+        expect(itemStatuses).toEqual(['complete', 'error'])
+      }
+    } else {
+      expect(database.loadBatches()).toEqual([])
+    }
+    close(database)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(5)
+    expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
+    expect(tableExists(verify, 'download_settings')).toBe(true)
+    expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
+    expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
+      project(fixture.downloads, DOWNLOAD_COLUMNS)
+    )
+    if (version >= 2) {
+      expect(rowsOf(verify, 'media_jobs')).toEqual(fixture.media)
+      expect(indexNames(verify, 'media_jobs')).toEqual(mediaIndexes)
+    }
+    if (version >= 3) {
+      expect(rowsOf(verify, 'batches')).toEqual(fixture.batches)
+      expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
+      expect(indexNames(verify, 'batches')).toEqual(batchParentIndexes)
+      expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
+      const foreignKeys = verify
+        .prepare("PRAGMA foreign_key_list('batch_items')")
+        .all() as { table: string; on_delete: string }[]
+      expect(foreignKeys).toHaveLength(1)
+      expect(foreignKeys[0]).toMatchObject({
+        table: 'batches',
+        on_delete: 'CASCADE'
+      })
+    }
+    verify.close()
+  })
+})
+
+describe('v5 migration rollback', () => {
+  it('rolls back added columns and settings when the migration fails', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const fixture = createLegacyDatabase(filePath, 4)
+
+    const conflict = new DatabaseSync(filePath)
+    const downloadIndexes = indexNames(conflict, 'downloads')
+    const batchItemIndexes = indexNames(conflict, 'batch_items')
+    conflict.exec(
+      "CREATE TABLE download_settings (id INTEGER PRIMARY KEY, marker TEXT NOT NULL DEFAULT 'conflict')"
+    )
+    conflict.close()
+
+    expect(() => openDownloadDatabase(filePath)).toThrow(/migrate/i)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(4)
+    expect(columnNames(verify, 'downloads')).toEqual(DOWNLOAD_COLUMNS)
+    expect(columnNames(verify, 'downloads')).not.toContain('scheduled_at')
+    expect(columnNames(verify, 'downloads')).not.toContain('speed_limit_bps')
+    expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
+      project(fixture.downloads, DOWNLOAD_COLUMNS)
+    )
+    expect(rowsOf(verify, 'media_jobs')).toEqual(fixture.media)
+    expect(rowsOf(verify, 'batches')).toEqual(fixture.batches)
+    expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
+    expect(rowsOf(verify, 'download_settings')).toEqual([])
+    expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
+    expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
+    expect(columnNames(verify, 'download_settings')).toEqual(['id', 'marker'])
+    expect(tableExists(verify, 'download_settings')).toBe(true)
+    verify.close()
+  })
+})

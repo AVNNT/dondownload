@@ -649,7 +649,7 @@ describe('batch persistence', () => {
   })
 })
 
-describe('v2 to v4 batch migration', () => {
+describe('v2 to v5 batch migration', () => {
   it('adds batch tables without changing any v2 download or media value', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -683,7 +683,14 @@ describe('v2 to v4 batch migration', () => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(rowsOf(verify, 'downloads')).toEqual(downloadsBefore)
+    const downloadsAfter = rowsOf(verify, 'downloads')
+    expect(downloadsAfter).toHaveLength(downloadsBefore.length)
+    for (const [index, row] of downloadsAfter.entries()) {
+      // The v5 migration adds two null control columns; prior values are equal.
+      expect(row).toMatchObject(downloadsBefore[index] ?? {})
+      expect(row.scheduled_at).toBeNull()
+      expect(row.speed_limit_bps).toBeNull()
+    }
     expect(rowsOf(verify, 'media_jobs')).toEqual(mediaBefore)
     const tables = (
       verify
@@ -729,7 +736,7 @@ describe('v2 to v4 batch migration', () => {
   })
 })
 
-describe('v3 to v4 batch_items migration', () => {
+describe('v3 to v5 batch_items migration', () => {
   it('rebuilds a genuine prior-v3 table and preserves every row, index and cascade', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -747,7 +754,7 @@ describe('v3 to v4 batch_items migration', () => {
     expect(oldItemSql).not.toContain("'skipped'")
 
     const database = open(filePath)
-    expect(database.schemaVersion).toBe(4)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
     expect(database.loadAll()).toHaveLength(1)
     expect(database.loadMediaJobs()).toHaveLength(1)
     const migrated = database.loadBatch(fixture.batch.id)
@@ -779,7 +786,7 @@ describe('v3 to v4 batch_items migration', () => {
     expect(
       (verify.prepare('PRAGMA user_version').get() as { user_version: number })
         .user_version
-    ).toBe(4)
+    ).toBe(SCHEMA_VERSION)
     const beforeTables: [string, Record<string, unknown>[]][] = [
       ['downloads', beforeDownloads],
       ['media_jobs', beforeMedia],
@@ -789,7 +796,15 @@ describe('v3 to v4 batch_items migration', () => {
     for (const [table, rows] of beforeTables) {
       const after = new Map<string, Record<string, unknown>>()
       for (const row of rowsOf(verify, table)) after.set(String(row.id), row)
-      for (const row of rows) expect(after.get(String(row.id))).toEqual(row)
+      for (const row of rows) {
+        // v5 adds nullable control columns to downloads only; every prior
+        // column and value must still match.
+        expect(after.get(String(row.id))).toMatchObject(row)
+      }
+    }
+    for (const row of rowsOf(verify, 'downloads')) {
+      expect(row.scheduled_at).toBeNull()
+      expect(row.speed_limit_bps).toBeNull()
     }
     const itemSql = schemaSql(verify, 'batch_items')
     expect(itemSql).toContain("'unavailable'")

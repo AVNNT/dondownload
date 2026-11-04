@@ -17,6 +17,12 @@ import {
   type BatchItemRecord,
   type BatchRecord
 } from '@shared/batches'
+import {
+  parseDownloadControls,
+  parseDownloadSettings,
+  type DownloadControls,
+  type DownloadSettings
+} from '@shared/settings'
 import { AppError } from '../errors'
 
 /**
@@ -26,7 +32,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -41,6 +47,9 @@ const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
 export interface StoredDownload {
   record: DownloadItem
   explicitFilename: string | null
+  /** Optional per-download controls; null means unscheduled/unlimited. */
+  scheduledAt: number | null
+  speedLimitBps: number | null
 }
 
 export interface StoredBatch {
@@ -225,6 +234,55 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
       CREATE INDEX batch_items_status_idx ON batch_items (status);
     `
+  },
+  {
+    // Additive only: existing download/media/batch rows are not rewritten.
+    // New download columns default to null, which keeps every existing row
+    // unscheduled and unlimited. The single settings row is created with the
+    // documented defaults, which also preserves all-day/unlimited behavior.
+    version: 5,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN scheduled_at INTEGER
+        CHECK (
+          scheduled_at IS NULL OR
+          (scheduled_at >= 0 AND scheduled_at <= 8640000000000000)
+        );
+
+      ALTER TABLE downloads ADD COLUMN speed_limit_bps INTEGER
+        CHECK (
+          speed_limit_bps IS NULL OR
+          (speed_limit_bps >= 1 AND speed_limit_bps <= 1073741824)
+        );
+
+      CREATE TABLE download_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        max_concurrent_downloads INTEGER NOT NULL DEFAULT 3
+          CHECK (max_concurrent_downloads BETWEEN 1 AND 16),
+        per_host_connections INTEGER NOT NULL DEFAULT 4
+          CHECK (per_host_connections BETWEEN 1 AND 16),
+        global_speed_limit_bps INTEGER NOT NULL DEFAULT 0
+          CHECK (global_speed_limit_bps BETWEEN 0 AND 1073741824),
+        allowed_hours_enabled INTEGER NOT NULL DEFAULT 0
+          CHECK (allowed_hours_enabled IN (0, 1)),
+        allowed_hours_start TEXT NOT NULL DEFAULT '00:00'
+          CHECK (
+            allowed_hours_start GLOB '[01][0-9]:[0-5][0-9]' OR
+            allowed_hours_start GLOB '2[0-3]:[0-5][0-9]'
+          ),
+        allowed_hours_end TEXT NOT NULL DEFAULT '00:00'
+          CHECK (
+            allowed_hours_end GLOB '[01][0-9]:[0-5][0-9]' OR
+            allowed_hours_end GLOB '2[0-3]:[0-5][0-9]'
+          ),
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT INTO download_settings (
+        id, max_concurrent_downloads, per_host_connections,
+        global_speed_limit_bps, allowed_hours_enabled,
+        allowed_hours_start, allowed_hours_end, updated_at
+      ) VALUES (1, 3, 4, 0, 0, '00:00', '00:00', 0);
+    `
   }
 ]
 
@@ -335,8 +393,23 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
       updatedAt: Math.trunc(number(row, 'updated_at')),
       completedAt: nullableNumber(row, 'completed_at')
     },
-    explicitFilename: text(row, 'explicit_filename')
+    explicitFilename: text(row, 'explicit_filename'),
+    scheduledAt: nullableNumber(row, 'scheduled_at'),
+    speedLimitBps: nullableNumber(row, 'speed_limit_bps')
   }
+}
+
+function rowToSettings(row: Record<string, unknown>): DownloadSettings {
+  return parseDownloadSettings({
+    maxConcurrentDownloads: number(row, 'max_concurrent_downloads'),
+    perHostConnections: number(row, 'per_host_connections'),
+    globalSpeedLimitBps: number(row, 'global_speed_limit_bps'),
+    allowedHours: {
+      enabled: number(row, 'allowed_hours_enabled') === 1,
+      start: text(row, 'allowed_hours_start'),
+      end: text(row, 'allowed_hours_end')
+    }
+  })
 }
 
 function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
@@ -459,6 +532,9 @@ export class DownloadDatabase {
   private readonly upsertStatement: StatementSync
   private readonly selectAllStatement: StatementSync
   private readonly deleteStatement: StatementSync
+  private readonly downloadControlsStatement: StatementSync
+  private readonly settingsSelectStatement: StatementSync
+  private readonly settingsUpsertStatement: StatementSync
   private readonly mediaUpsertStatement: StatementSync
   private readonly mediaSelectAllStatement: StatementSync
   private readonly mediaDeleteStatement: StatementSync
@@ -513,6 +589,29 @@ export class DownloadDatabase {
         SELECT * FROM downloads ORDER BY created_at DESC, updated_at DESC
       `)
       this.deleteStatement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
+      this.downloadControlsStatement = this.db.prepare(`
+        UPDATE downloads
+        SET scheduled_at = ?, speed_limit_bps = ?
+        WHERE id = ?
+      `)
+      this.settingsSelectStatement = this.db.prepare(
+        'SELECT * FROM download_settings WHERE id = 1'
+      )
+      this.settingsUpsertStatement = this.db.prepare(`
+        INSERT INTO download_settings (
+          id, max_concurrent_downloads, per_host_connections,
+          global_speed_limit_bps, allowed_hours_enabled,
+          allowed_hours_start, allowed_hours_end, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          max_concurrent_downloads = excluded.max_concurrent_downloads,
+          per_host_connections = excluded.per_host_connections,
+          global_speed_limit_bps = excluded.global_speed_limit_bps,
+          allowed_hours_enabled = excluded.allowed_hours_enabled,
+          allowed_hours_start = excluded.allowed_hours_start,
+          allowed_hours_end = excluded.allowed_hours_end,
+          updated_at = excluded.updated_at
+      `)
 
       this.mediaUpsertStatement = this.db.prepare(`
         INSERT INTO media_jobs (
@@ -671,6 +770,69 @@ export class DownloadDatabase {
       this.deleteStatement.run(id)
     } catch (error) {
       throw databaseError('Could not remove download history', error)
+    }
+  }
+
+  /** Persist optional scheduling and speed controls for one download row. */
+  saveDownloadControls(id: string, controls: DownloadControls): void {
+    this.assertOpen()
+    try {
+      const parsed = parseDownloadControls(controls)
+      const result = this.downloadControlsStatement.run(
+        parsed.scheduledAt,
+        parsed.speedLimitBps,
+        id
+      )
+      if (Number(result.changes) === 0) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update download controls: download was not found.'
+        )
+      }
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not update download controls', error)
+    }
+  }
+
+  loadSettings(): DownloadSettings {
+    this.assertOpen()
+    try {
+      const row = this.settingsSelectStatement.get() as
+        | Record<string, unknown>
+        | undefined
+      if (!row) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not load download settings: the settings row is missing.'
+        )
+      }
+      return rowToSettings(row)
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not load download settings', error)
+    }
+  }
+
+  saveSettings(settings: DownloadSettings): void {
+    this.assertOpen()
+    try {
+      const parsed = parseDownloadSettings(settings)
+      this.settingsUpsertStatement.run(
+        parsed.maxConcurrentDownloads,
+        parsed.perHostConnections,
+        parsed.globalSpeedLimitBps,
+        parsed.allowedHours.enabled ? 1 : 0,
+        parsed.allowedHours.start,
+        parsed.allowedHours.end,
+        Date.now()
+      )
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not save download settings', error)
     }
   }
 

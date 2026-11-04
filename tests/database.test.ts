@@ -120,6 +120,18 @@ function rowsOf(database: DatabaseSync, table: string): Record<string, unknown>[
   >[]).map((row) => ({ ...row }))
 }
 
+/** Compare only the columns a prior schema had; new columns are checked apart. */
+function projectRows(
+  rows: readonly Record<string, unknown>[],
+  keys: readonly string[]
+): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const projected: Record<string, unknown> = {}
+    for (const key of keys) projected[key] = row[key]
+    return projected
+  })
+}
+
 afterEach(async () => {
   for (const database of openDatabases.splice(0)) {
     try {
@@ -356,7 +368,7 @@ describe('schema migrations', () => {
   })
 })
 
-describe('v1 to v4 migration preservation', () => {
+describe('v1 to v5 migration preservation', () => {
   it('adds media and batch tables without changing any v1 download value', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -441,6 +453,11 @@ describe('v1 to v4 migration preservation', () => {
 
     const verify = new DatabaseSync(filePath)
     const after = rowsOf(verify, 'downloads')
+    const afterProjected = projectRows(after, Object.keys(before[0] ?? {}))
+    for (const row of after) {
+      expect(row.scheduled_at).toBeNull()
+      expect(row.speed_limit_bps).toBeNull()
+    }
     const mediaTable = verify
       .prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'media_jobs'"
@@ -455,7 +472,7 @@ describe('v1 to v4 migration preservation', () => {
     ).map((table) => table.name)
     verify.close()
 
-    expect(after).toEqual(before)
+    expect(afterProjected).toEqual(before)
     expect(mediaTable).toBeDefined()
     expect(batchTables).toEqual(['batch_items', 'batches'])
   })

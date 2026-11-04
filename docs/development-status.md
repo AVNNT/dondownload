@@ -10,7 +10,10 @@ preload wiring, a desktop-first renderer batch UI, opt-in local batch
 integration coverage, and an opt-in live playlist preview/selection check.
 Neither new check downloads public media. There is still no
 native-bridge batch route, and no live-provider verification was run for the UI.
-Milestone 4 is explicitly deferred.
+Milestone 4 is explicitly deferred. Milestone 5A now has its shared
+download-settings contract and additive SQLite schema v5 foundation; settings
+are not applied at runtime and no IPC/preload/UI/installer or torrent/VPN work
+is included.
 
 ## Current milestone
 
@@ -97,6 +100,14 @@ Milestone 4 is explicitly deferred.
   direct-URL batches, with no credential/cookie/token extraction and no
   CAPTCHA/DRM bypass. **Milestone 4 is explicitly deferred.** There is no torrent
   functionality or torrent networking in this tree.
+- **Milestone 5A foundation: shared download-control settings and SQLite v5.**
+  `src/shared/settings.ts` defines exact-key settings/per-download DTOs and
+  parsers with safe bounds. The additive v5 migration creates one
+  `download_settings` row and adds nullable `scheduled_at` /
+  `speed_limit_bps` columns to `downloads`. Existing rows become null
+  (unscheduled/unlimited), so all existing behavior is preserved. No runtime
+  application, IPC/preload, renderer UI, installer, torrent/VPN or privileged
+  work is included. See [download-settings.md](download-settings.md).
 
 ## Milestone 3B foundation scope (contracts and schema)
 
@@ -122,10 +133,11 @@ The foundation is deliberately narrow and additive:
   values. Per-item errors, independent `unavailable`/`skipped` states,
   `skippedItems` aggregate progress, individual retry/cancel, group cancel,
   aggregate progress and interrupted recovery are represented in the contracts.
-- SQLite schema v4 is transactional and additive: v1 download rows, v2 media
-  rows and v3 batch parents are preserved, and a failed v4 rebuild rolls back
-  completely. v4 rebuilds only `batch_items` to accept `unavailable`/`skipped`
-  while preserving every row, index and cascade. `SCHEMA_VERSION` is 4.
+- Batch persistence was introduced in transactional, additive SQLite schema v4:
+  v1 download rows, v2 media rows and v3 batch parents are preserved, and a
+  failed v4 rebuild rolls back completely. v4 rebuilt only `batch_items` to
+  accept `unavailable`/`skipped` while preserving every row, index and cascade.
+  Milestone 5A adds schema v5 additively; `SCHEMA_VERSION` is now 5.
 - Still not included by the foundation contracts themselves: renderer UI,
   native-bridge batch routes, live provider verification, Milestone 4/5 work,
   torrents or VPN.
@@ -273,6 +285,65 @@ Known gaps for the UI slice:
 
 See [batch-contracts.md](batch-contracts.md) for the full contract and schema
 description.
+
+## Milestone 5A foundation (settings contract and SQLite v5)
+
+Status: implemented in the working tree. This is a contract and persistence
+foundation only; no settings are applied to aria2, the download manager, media
+jobs, IPC/preload, the renderer, the installer or any torrent/VPN path.
+
+Implementation:
+
+- `src/shared/settings.ts` (new) defines `DownloadSettings`, `AllowedHours`,
+  `DownloadControls`, defaults, limits and exact-key parsers
+  (`parseDownloadSettings`, `parseAllowedHours`, `parseClockTime`,
+  `parseDownloadControls`, `parseScheduledAt`,
+  `parsePerDownloadSpeedLimitBps`). Unknown/missing fields, wrong types,
+  out-of-range values and malformed clock strings are rejected rather than
+  clamped. The DTOs contain no URL, path or secret field.
+- Defaults preserve current behavior: 3 concurrent downloads, 4 per-host
+  connections, global speed `0` (unlimited), allowed hours disabled with
+  `00:00`/`00:00` (all day). Allowed-hours time is the system local clock;
+  overnight windows are supported and `start === end` is a full 24-hour window.
+- `src/main/db/database.ts`: `SCHEMA_VERSION` is 5. The v5 migration runs in the
+  existing transactional migration loop and only uses additive `ALTER TABLE
+  downloads ADD COLUMN` plus `CREATE TABLE download_settings`. It adds
+  `scheduled_at` and `speed_limit_bps` to downloads (null for every existing
+  row = unscheduled/unlimited) and inserts one default settings row.
+- `loadSettings()` / `saveSettings()` parse through the shared contract and fail
+  closed. `saveDownloadControls(id, controls)` can persist per-download controls
+  for one existing row; the manager does not call it yet.
+- `SCHEMA_VERSION` remains the only version source. A newer database is still
+  refused, and a failed v5 migration leaves the database at v4 with no partial
+  columns, settings table or rows.
+- No `src/shared/types.ts`, `AddDownloadInput`, `DownloadManager`, IPC, preload,
+  renderer, installer or packaging file was changed.
+
+Verification for this working tree:
+
+| Command | Result |
+| --- | --- |
+| `npx vitest run tests/settings-contract.test.ts tests/settings-database.test.ts tests/database.test.ts tests/batch-database.test.ts` | **53 passed**, 4 files |
+| `npm run test:fast` | **449 passed**, 28 files |
+| `npm run typecheck` | **passed** |
+
+Migration coverage includes genuine v1, v2, v3 and v4 databases upgraded to v5
+with download/media/batch rows, statuses, indexes and the `batch_items` cascade
+FK preserved; invalid settings rejected by both parsers and CHECK constraints;
+default and custom round-trips; and a forced v5 failure after the `ALTER TABLE`
+steps that rolls back to v4 completely.
+
+Known gaps for this foundation:
+
+- No runtime application: concurrency, per-host connections, global speed limit,
+  allowed-hours enforcement and per-download scheduling/speed limits are not
+  wired to aria2 or the media engine.
+- No settings or per-download-control IPC/preload/UI.
+- No `AddDownloadInput` additions and no manager behavior change.
+- No installer, torrent, VPN or privileged OS change.
+
+See [download-settings.md](download-settings.md) for the contract and schema
+details.
 
 ## Milestone 3B local batch and live playlist integration coverage
 
