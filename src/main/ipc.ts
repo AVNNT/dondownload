@@ -15,11 +15,13 @@ import type {
   BatchSnapshot,
   SmartBatchSubmitResult
 } from '@shared/types'
+import type { DownloadSettings } from '@shared/settings'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
+import type { SettingsManager } from './settings/manager'
 
 export interface IpcContext {
   manager: DownloadManager
@@ -32,6 +34,8 @@ export interface IpcContext {
   mediaJobs?: MediaJobsManager
   /** Additive Milestone 3B batch orchestration. */
   batches?: BatchManager
+  /** Additive Milestone 5A runtime download settings. */
+  settings?: SettingsManager
   getWindow: () => BrowserWindow | null
 }
 
@@ -191,5 +195,24 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<null>(IPC.openBatchSource, (_event, input) =>
     batches().openBatchSource(input)
+  )
+
+  // Additive Milestone 5A settings channels. The manager validates the complete
+  // exact-key object before persisting and before changing aria2; this wrapper
+  // only enforces the trusted-sender boundary.
+  const settings = (): SettingsManager => {
+    if (!context.settings) {
+      throw new AppError(
+        'SETTINGS_UNAVAILABLE',
+        'Download settings are not available.'
+      )
+    }
+    return context.settings
+  }
+
+  invoke<DownloadSettings>(IPC.getSettings, () => settings().getSettings())
+
+  invoke<DownloadSettings>(IPC.updateSettings, (_event, input) =>
+    settings().update(input)
   )
 }

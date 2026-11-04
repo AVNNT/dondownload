@@ -10,6 +10,7 @@ import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMediaEngine } from './media/engine'
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
+import { SettingsManager } from './settings/manager'
 import {
   decideBeforeQuit,
   decideWindowClose,
@@ -114,6 +115,13 @@ if (!hasSingleInstanceLock) {
       console.error(`Download history is unavailable: ${detail}`)
     }
 
+    // Runtime download settings are loaded once before aria2 starts. The
+    // service applies the persisted limits after aria2 answers but before it
+    // reports ready, and live updates use aria2.changeGlobalOption without
+    // restarting aria2 or touching active downloads.
+    const settings = new SettingsManager({ store: database, aria2 })
+    aria2.onBeforeReady = (client) => settings.applyStartup(client)
+
     manager = new DownloadManager(
       aria2,
       downloadDir,
@@ -160,6 +168,7 @@ if (!hasSingleInstanceLock) {
       aria2,
       mediaJobs,
       batches,
+      settings,
       getWindow: () => mainWindow
     })
 

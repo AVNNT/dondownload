@@ -24,6 +24,7 @@ import type {
   SmartBatchSubmitInput,
   SmartBatchSubmitResult
 } from '../shared/types'
+import type { DownloadSettings } from '../shared/settings'
 
 const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
@@ -123,7 +124,13 @@ const api: DonDownloadApi = {
     return () => {
       ipcRenderer.removeListener(IPC.batchSnapshotChanged, handler)
     }
-  }
+  },
+  getSettings: () =>
+    ipcRenderer.invoke(IPC.getSettings) as Promise<ApiResult<DownloadSettings>>,
+  updateSettings: (settings: DownloadSettings) =>
+    ipcRenderer.invoke(IPC.updateSettings, settings) as Promise<
+      ApiResult<DownloadSettings>
+    >
 }
 
 contextBridge.exposeInMainWorld('donDownload', api)

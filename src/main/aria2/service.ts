@@ -52,6 +52,13 @@ export class Aria2Service {
   }
 
   onStateChange: (() => void) | null = null
+  /**
+   * Applied after aria2 answers but before this service reports `ready` (and
+   * before `start()` resolves), so a persisted settings snapshot is in effect
+   * for the first download. A failure aborts startup instead of running with a
+   * silently different configuration.
+   */
+  onBeforeReady: ((client: Aria2Client) => Promise<void>) | null = null
 
   constructor(private readonly downloadDir: () => string) {}
 
@@ -208,6 +215,35 @@ export class Aria2Service {
         lastError = error instanceof Error ? error : new Error('aria2 did not respond.')
         await delay(READY_POLL_INTERVAL_MS)
         continue
+      }
+
+      if (generation !== this.startGeneration) {
+        child.kill()
+        throw new AppError('ARIA2_STOPPED', 'aria2 startup was cancelled.')
+      }
+
+      // Apply persisted global settings before exposing a ready engine. This is
+      // deliberately before both the state update and the start() resolution.
+      try {
+        await this.onBeforeReady?.(client)
+      } catch {
+        if (generation !== this.startGeneration) {
+          child.kill()
+          throw new AppError('ARIA2_STOPPED', 'aria2 startup was cancelled.')
+        }
+        this.child = null
+        this.client = null
+        if (child.exitCode === null) child.kill()
+        const message =
+          'aria2 started but the download settings could not be applied.'
+        this.setState({
+          status: 'error',
+          version: version.version,
+          binaryPath,
+          message,
+          hint: 'Use Retry aria2. If this continues, reset the download settings.'
+        })
+        throw new AppError('ARIA2_SETTINGS_FAILED', message, this.state.hint ?? undefined)
       }
 
       if (generation !== this.startGeneration) {

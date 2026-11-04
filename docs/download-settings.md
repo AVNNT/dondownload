@@ -1,10 +1,10 @@
-# Download settings contract (Milestone 5A foundation)
+# Download settings contract and runtime application (Milestone 5A)
 
-Status: shared settings contract and additive SQLite schema v5 persistence.
-This milestone intentionally does **not** apply the settings at runtime, expose
-IPC/preload methods, add renderer UI, touch the installer, or add torrent/VPN
-behavior. It also does not change any existing download, media or batch
-history.
+Status: shared settings contract, additive SQLite schema v5 persistence, runtime
+settings service, trusted IPC/preload API, and startup/live aria2 application.
+This milestone still does **not** add renderer UI, scheduling or individual
+download controls, touch the installer, or add torrent/VPN behavior. It also
+does not change existing download, media or batch history.
 
 ## Scope
 
@@ -13,28 +13,90 @@ history.
 - `src/main/db/database.ts` migrates the database from v4 to v5 transactionally
   and exposes `loadSettings()` / `saveSettings()` plus
   `saveDownloadControls()` for one download row.
-- `tests/settings-contract.test.ts` and `tests/settings-database.test.ts` cover
-  the contract, defaults, bounds, CHECK constraints, v1-v4 upgrades and failed
-  migration rollback.
-- No settings are sent over IPC or the native bridge. No secret, URL or
-  filesystem path is stored in the settings table.
+- `src/main/settings/manager.ts` loads the persisted settings once, exposes a
+  safe runtime copy, validates updates, applies the three global aria2 limits,
+  and keeps persistence/runtime state consistent on failure.
+- `src/main/aria2/service.ts` applies the current settings through
+  `aria2.changeGlobalOption` after aria2 answers but before it reports ready or
+  `start()` resolves.
+- `src/main/ipc.ts`, `src/shared/ipc.ts`, `src/shared/types.ts` and
+  `src/preload/index.ts` expose `getSettings` / `updateSettings` through the
+  existing trusted-sender wrapper.
+- `tests/settings-contract.test.ts`, `tests/settings-database.test.ts`,
+  `tests/settings-manager.test.ts`, `tests/settings-ipc.test.ts` and
+  `tests/aria2-args.test.ts` cover the contract, defaults, bounds, CHECK
+  constraints, v1-v4 upgrades, failed migration rollback, live apply/rollback,
+  startup apply and IPC trust.
+- No secret, URL or filesystem path is stored in the settings table or sent in
+  a settings response.
 
 ## Global settings
 
 One row (`id = 1`) is persisted in `download_settings`. Defaults preserve the
-previous behavior: all-day downloads and unlimited speed.
+previous all-day, unlimited-speed behavior:
 
 | Field | Default | Allowed range | Meaning |
 | --- | --- | --- | --- |
-| `maxConcurrentDownloads` | `3` | `1..16` | Maximum concurrent downloads when the setting is later applied. |
-| `perHostConnections` | `4` | `1..16` | Maximum connections per host when later applied. |
-| `globalSpeedLimitBps` | `0` | `0..1073741824` | Global bytes/second; `0` means unlimited. Upper bound is 1 GiB/s. |
+| `maxConcurrentDownloads` | `3` | `1..16` | Maximum concurrent downloads; applied to aria2. |
+| `perHostConnections` | `4` | `1..16` | Maximum connections per host; applied to aria2. |
+| `globalSpeedLimitBps` | `0` | `0..1073741824` | Global bytes/second; `0` means unlimited; applied to aria2. |
 | `allowedHours.enabled` | `false` | boolean | When false, there is no time restriction (all day). |
 | `allowedHours.start` | `"00:00"` | exact `HH:mm` | Local-clock start of the allowed window. |
 | `allowedHours.end` | `"00:00"` | exact `HH:mm` | Local-clock end of the allowed window. |
 
 The database also enforces these bounds with CHECK constraints, including
 `id = 1`, integer-only flags and zero-padded 24-hour clock strings.
+
+### Runtime defaults and the 5/8 to 3/4 change
+
+Before this slice aria2 was launched with hard-coded
+`--max-concurrent-downloads=5` and `--max-connection-per-server=8`. Runtime
+settings now use the contract defaults (`3` concurrent downloads and `4`
+connections per host) and apply them on every start. This is an explicit
+behavior change from the previous hard-coded values; it is documented rather
+than silently migrated because the v5 settings row was already created with
+these defaults.
+
+`buildAria2Args` now launches with the same shared defaults, and the
+`onBeforeReady` hook applies the persisted values before the first download can
+start. `globalSpeedLimitBps` is always applied (`0` = unlimited). No automatic
+aria2 restart is performed when settings change.
+
+### Runtime application
+
+- **Startup:** `SettingsManager` loads `loadSettings()` once. `Aria2Service`
+  calls the settings hook after aria2 answers `aria2.getVersion()` and before it
+  sets `status: 'ready'` or resolves `start()`. A rejected
+  `aria2.changeGlobalOption` aborts startup with `ARIA2_SETTINGS_FAILED` rather
+  than reporting ready with stale options.
+- **Live update:** `updateSettings` validates the complete exact-key object with
+  `parseDownloadSettings` before persistence or aria2. When aria2 is ready, the
+  three global options are applied first; the row is saved only after aria2
+  accepts them. If the live apply fails, the previous options are re-applied
+  (rollback when aria2 is reachable) and neither the persisted row nor the
+  cached runtime settings change. If saving fails after a successful apply, the
+  previous options are re-applied and the update is reported as failed.
+- **No restart:** settings changes use `aria2.changeGlobalOption` only. The
+  managed aria2 process and active downloads are not restarted, paused or
+  otherwise altered.
+- **Not applied yet:** allowed-hours enforcement and per-download
+  `scheduledAt` / `speedLimitBps` remain contract/persistence only. No
+  scheduler, download-manager wiring or UI is part of this slice.
+
+## Settings API
+
+| Surface | Name | Behavior |
+| --- | --- | --- |
+| IPC | `settings:get` | Returns the validated `DownloadSettings` snapshot. |
+| IPC | `settings:update` | Accepts one complete `DownloadSettings` object; validates before persistence and before changing aria2. |
+| Preload | `getSettings()` | `Promise<ApiResult<DownloadSettings>>`. |
+| Preload | `updateSettings(settings)` | Replaces the full settings object and returns the applied snapshot. |
+
+Both IPC channels use the same trusted-sender wrapper as the existing download,
+media and batch channels. The payload is the exact-key DTO above; unknown,
+missing, wrong-typed or out-of-range values are rejected with `ValidationError`
+and are never clamped.
+
 
 ### Allowed-hours semantics
 
@@ -93,15 +155,17 @@ other secrets have no place in the contract.
 
 | Command | Result |
 | --- | --- |
-| `npx vitest run tests/settings-contract.test.ts tests/settings-database.test.ts tests/database.test.ts tests/batch-database.test.ts` | **53 passed**, 4 files |
-| `npm run test:fast` | **passed** |
+| `npx vitest run tests/settings-manager.test.ts tests/settings-ipc.test.ts tests/settings-contract.test.ts tests/settings-database.test.ts tests/aria2-args.test.ts` | **44 passed**, 5 files |
+| `npm run test:fast` | **465 passed**, 30 files |
 | `npm run typecheck` | **passed** |
+| `npm run build` | **passed** |
 
 ## Not included
 
-- No runtime application of concurrency, per-host connection, speed-limit or
-  allowed-hours values to aria2 or the media engine.
+- No allowed-hours enforcement and no scheduler. The window is persisted but has
+  no effect on downloads yet.
 - No `AddDownloadInput`/`DownloadManager` wiring for `scheduledAt` or
-  `speedLimitBps`.
-- No IPC/preload/renderer UI, no installer change, no torrent/VPN work and no
+  `speedLimitBps`; `saveDownloadControls` remains uncalled by the manager.
+- No renderer UI for settings, no installer change, no torrent/VPN work and no
   privileged OS behavior.
+- No automatic aria2 restart on settings changes.

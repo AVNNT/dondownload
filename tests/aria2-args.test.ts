@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import {
+  DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
+  DEFAULT_MAX_CONCURRENT_DOWNLOADS,
+  DEFAULT_PER_HOST_CONNECTIONS
+} from '../src/shared/settings'
 import { buildAria2Args } from '../src/main/aria2/args'
 
 describe('buildAria2Args', () => {
@@ -27,5 +32,19 @@ describe('buildAria2Args', () => {
     expect(args).toContain('--auto-file-renaming=true')
     expect(args).toContain('--check-certificate=true')
     expect(args).toContain('--file-allocation=none')
+  })
+
+  it('launches with the shared default global download limits', () => {
+    const args = buildAria2Args({ port: 1, secret: 's', downloadDir: 'D:\\x' })
+
+    expect(args).toContain(
+      `--max-concurrent-downloads=${DEFAULT_MAX_CONCURRENT_DOWNLOADS}`
+    )
+    expect(args).toContain(
+      `--max-connection-per-server=${DEFAULT_PER_HOST_CONNECTIONS}`
+    )
+    expect(args).toContain(
+      `--max-overall-download-limit=${DEFAULT_GLOBAL_SPEED_LIMIT_BPS}`
+    )
   })
 })

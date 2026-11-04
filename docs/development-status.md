@@ -11,9 +11,10 @@ integration coverage, and an opt-in live playlist preview/selection check.
 Neither new check downloads public media. There is still no
 native-bridge batch route, and no live-provider verification was run for the UI.
 Milestone 4 is explicitly deferred. Milestone 5A now has its shared
-download-settings contract and additive SQLite schema v5 foundation; settings
-are not applied at runtime and no IPC/preload/UI/installer or torrent/VPN work
-is included.
+download-settings contract, additive SQLite schema v5 foundation, runtime
+settings service, trusted IPC/preload API and startup/live aria2 application.
+Scheduling, individual download controls, renderer UI and installer work remain
+outside this slice.
 
 ## Current milestone
 
@@ -105,9 +106,20 @@ is included.
   parsers with safe bounds. The additive v5 migration creates one
   `download_settings` row and adds nullable `scheduled_at` /
   `speed_limit_bps` columns to `downloads`. Existing rows become null
-  (unscheduled/unlimited), so all existing behavior is preserved. No runtime
-  application, IPC/preload, renderer UI, installer, torrent/VPN or privileged
-  work is included. See [download-settings.md](download-settings.md).
+  (unscheduled/unlimited), so all existing behavior is preserved. Runtime
+  settings application, trusted IPC/preload API and live/startup aria2 changes
+  are described in the next section. No renderer UI, installer, torrent/VPN or
+  privileged work is included. See [download-settings.md](download-settings.md).
+- **Milestone 5A runtime settings: implemented.** The settings service loads the
+  persisted row, validates full exact-key updates, and applies
+  `max-concurrent-downloads`, `max-connection-per-server` and
+  `max-overall-download-limit` through `aria2.changeGlobalOption`. Startup
+  applies the snapshot after aria2 answers but before `ready`/`start()`
+  resolves; live updates apply first and persist after aria2 accepts, with
+  rollback to the previous options if either step fails. Trusted
+  `settings:get` / `settings:update` IPC and preload methods are wired, with no
+  renderer UI. Allowed-hours enforcement, scheduling, individual download
+  controls and automatic restarts are still absent.
 
 ## Milestone 3B foundation scope (contracts and schema)
 
@@ -288,9 +300,9 @@ description.
 
 ## Milestone 5A foundation (settings contract and SQLite v5)
 
-Status: implemented in the working tree. This is a contract and persistence
-foundation only; no settings are applied to aria2, the download manager, media
-jobs, IPC/preload, the renderer, the installer or any torrent/VPN path.
+Status: foundation slice, superseded by the runtime application section below
+for runtime behavior. This slice itself added the contract and persistence; the
+later slice wires runtime, IPC/preload and aria2.
 
 Implementation:
 
@@ -343,6 +355,72 @@ Known gaps for this foundation:
 - No installer, torrent, VPN or privileged OS change.
 
 See [download-settings.md](download-settings.md) for the contract and schema
+details.
+
+## Milestone 5A runtime settings application
+
+Status: implemented in the working tree. Global concurrency, per-host
+connection and global speed-limit settings are now loaded from SQLite and
+applied to aria2 at startup and on live update. Scheduling, allowed-hours
+enforcement, individual download controls, renderer UI and installer work are
+still outside this slice. No renderer UI, browser, OS input or real download was
+used for verification.
+
+Implementation:
+
+- `src/main/settings/manager.ts` (new) owns the runtime settings snapshot. It
+  loads once through `DownloadDatabase.loadSettings()`, re-validates with the
+  shared `parseDownloadSettings()` contract, and returns a defensive copy.
+  Unknown/missing keys, wrong types and out-of-range values are rejected before
+  persistence or aria2.
+- `updateSettings` applies `max-concurrent-downloads`,
+  `max-connection-per-server` and `max-overall-download-limit` through
+  `aria2.changeGlobalOption` when aria2 is ready, then saves the row. A failed
+  live apply re-applies the previous options and leaves persisted/cached state
+  unchanged; a failed save after a successful apply also rolls aria2 back.
+- `src/main/aria2/service.ts` gains an `onBeforeReady` hook. It runs after
+  `aria2.getVersion()` succeeds and before the service sets `status: 'ready'` or
+  resolves `start()`, so persisted settings are in effect before the first
+  download. A failed apply aborts startup with `ARIA2_SETTINGS_FAILED` instead of
+  reporting a ready engine with stale options.
+- `src/main/aria2/args.ts` now launches with the shared defaults
+  (3 concurrent downloads, 4 connections per host, unlimited global speed)
+  instead of the former hard-coded 5/8. This is an intentional, documented
+  behavior change; no schema migration is needed because the v5 row already
+  seeded these defaults.
+- `src/main/ipc.ts`, `src/shared/ipc.ts`, `src/shared/types.ts` and
+  `src/preload/index.ts` add trusted `settings:get` / `settings:update` channels
+  and `getSettings` / `updateSettings` preload methods. The update is a full
+  exact-key `DownloadSettings` object; no secret, URL or path is added.
+- No automatic aria2 restart is performed on settings change. Active downloads
+  are not paused, resumed or otherwise touched.
+- `tests/settings-manager.test.ts` uses a fake store and fake aria2 client to
+  cover defaults, validation-before-side-effects, startup apply, live apply,
+  apply failure rollback and save failure rollback.
+  `tests/settings-ipc.test.ts` covers channel registration, trusted routing,
+  validation errors and untrusted-sender rejection. `tests/aria2-args.test.ts`
+  asserts the launch defaults match the shared contract.
+
+Verification for this working tree:
+
+| Command | Result |
+| --- | --- |
+| `npx vitest run tests/settings-manager.test.ts tests/settings-ipc.test.ts tests/settings-contract.test.ts tests/settings-database.test.ts tests/aria2-args.test.ts` | **44 passed**, 5 files |
+| `npm run test:fast` | **465 passed**, 30 files |
+| `npm run typecheck` | **passed** |
+| `npm run build` | **passed** |
+
+Behavior and gaps:
+
+- The three global aria2 limits are live. `allowedHours` is persisted and parsed
+  but not enforced, and per-download `scheduledAt` / `speedLimitBps` are not
+  wired to `AddDownloadInput` or `DownloadManager`.
+- There is no settings renderer UI and no installer change.
+- If aria2 is not ready, an update persists for the next start instead of
+  starting aria2 early. The startup hook applies the snapshot before ready.
+- No torrent, VPN or privileged OS behavior was added.
+
+See [download-settings.md](download-settings.md) for the contract and runtime
 details.
 
 ## Milestone 3B local batch and live playlist integration coverage

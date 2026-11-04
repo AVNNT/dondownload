@@ -28,5 +28,9 @@ export const IPC = {
   retryBatchItem: 'batch:retry-item',
   removeBatch: 'batch:remove',
   openBatchSource: 'batch:open-source',
-  batchSnapshotChanged: 'batch:snapshot-changed'
+  batchSnapshotChanged: 'batch:snapshot-changed',
+  // Milestone 5A runtime settings (additive). Both channels reuse the existing
+  // trusted-sender wrapper; values are the exact-key download-settings DTO.
+  getSettings: 'settings:get',
+  updateSettings: 'settings:update'
 } as const

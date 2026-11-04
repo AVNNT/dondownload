@@ -13,6 +13,7 @@ import type {
   MediaQueueInput,
   MediaSnapshot
 } from './media'
+import type { DownloadSettings } from './settings'
 
 export type DownloadStatus =
   | 'queued'
@@ -183,4 +184,12 @@ export interface DonDownloadApi {
   onBatchSnapshotChanged: (
     listener: (snapshot: BatchSnapshot) => void
   ) => () => void
+
+  // Milestone 5A runtime settings. The update replaces the complete, exact-key
+  // settings object; values are validated before persistence and before aria2
+  // is changed. No secret, URL or path is part of this contract.
+  getSettings: () => Promise<ApiResult<DownloadSettings>>
+  updateSettings: (
+    settings: DownloadSettings
+  ) => Promise<ApiResult<DownloadSettings>>
 }
