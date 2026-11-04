@@ -52,3 +52,36 @@
   border: 2px solid #000000;
   border-radius: 999px;
 }
+
+@keyframes media-progress-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+.media-progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 32%;
+  border-radius: 999px;
+  background: rgb(52 211 153 / 0.8);
+  animation: media-progress-sweep 1.6s ease-in-out infinite;
+}
+
+.media-progress-indeterminate.media-progress-merging::after {
+  background: rgb(251 191 36 / 0.8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-progress-indeterminate::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.35;
+  }
+}
