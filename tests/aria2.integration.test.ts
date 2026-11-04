@@ -32,6 +32,7 @@ import { Aria2Service } from '../src/main/aria2/service'
 import { openDownloadDatabase } from '../src/main/db/database'
 import { DownloadManager } from '../src/main/downloads/manager'
 import { INTERRUPTED_MESSAGE } from '../src/main/downloads/recovery'
+import { defaultDownloadSettings } from '../src/shared/settings'
 import type { DownloadItem } from '../src/shared/types'
 
 /**
@@ -641,6 +642,90 @@ runIntegration('aria2 HTTP integration', () => {
     const downloaded = await fs.readFile(filePath)
     expect(downloaded.equals(payload)).toBe(true)
   }, 30_000)
+
+  it('holds outside-hours work, honors Start Now, and lets active work finish after close', async () => {
+    if (!httpServer) throw new Error('HTTP test server is not ready.')
+
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'dondownload-hours-integration-')
+    )
+    tempDirs.push(root)
+    const hoursDir = path.join(root, 'downloads')
+    const service = new Aria2Service(() => hoursDir)
+    let fakeNow = new Date(2026, 10, 4, 18, 0, 0).getTime()
+    const manager = new DownloadManager(
+      service,
+      hoursDir,
+      () => undefined,
+      null,
+      {
+        now: () => fakeNow,
+        settings: () => ({
+          ...defaultDownloadSettings(),
+          allowedHours: { enabled: true, start: '09:00', end: '17:00' }
+        })
+      }
+    )
+    services.push(service)
+    managers.push(manager)
+    await service.start()
+
+    const queuedName = 'outside-hours-sample.bin'
+    const queued = await manager.add({ url, filename: queuedName })
+    const queuedId = queued.downloads[0]?.id
+    if (!queuedId) throw new Error('The outside-hours download has no id.')
+    expect(getDownload(manager, queuedId)).toMatchObject({
+      status: 'waiting',
+      blockReason: 'allowed-hours'
+    })
+    await expect(
+      fs.stat(path.join(hoursDir, queuedName))
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await manager.startNow(queuedId)
+    const overrideComplete = await waitForDownload(
+      manager,
+      queuedId,
+      (download) => download.status === 'complete',
+      'Start Now to override closed allowed hours',
+      20_000
+    )
+    expect(overrideComplete.completedBytes).toBe(payload.length)
+
+    // Start a throttled loopback transfer just before the exclusive end. After
+    // the policy pass at 17:00, it must remain active and complete normally.
+    fakeNow = new Date(2026, 10, 4, 16, 59, 0).getTime()
+    const activeName = 'active-after-hours-sample.bin'
+    const active = await manager.add({ url: rangeUrl, filename: activeName })
+    const activeId = active.downloads.find(
+      (download) => download.filename === activeName
+    )?.id
+    if (!activeId) throw new Error('The active-hours download has no id.')
+    const progressing = await waitForDownload(
+      manager,
+      activeId,
+      (download) => download.status === 'active' && download.completedBytes > 0,
+      'the in-hours transfer to make progress',
+      20_000
+    )
+    expect(progressing.totalBytes).toBe(rangePayload.length)
+
+    fakeNow = new Date(2026, 10, 4, 17, 0, 0).getTime()
+    await manager.refreshPolicy()
+    expect(getDownload(manager, activeId).status).toBe('active')
+
+    const completed = await waitForDownload(
+      manager,
+      activeId,
+      (download) => download.status === 'complete',
+      'an active transfer to finish after allowed hours close',
+      60_000
+    )
+    expect(completed.completedBytes).toBe(rangePayload.length)
+    expect(
+      (await fs.readFile(path.join(hoursDir, activeName))).equals(rangePayload)
+    ).toBe(true)
+  }, 90_000)
 
   it('marks a lost transfer interrupted after restart, keeps the partial file, and retries it with Range', async () => {
     const testServer = httpServer

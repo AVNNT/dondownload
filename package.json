@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:fast": "vitest run --exclude tests/native-host.test.ts --exclude tests/native-host-registration.test.ts --exclude tests/aria2.integration.test.ts --exclude tests/batches.integration.test.ts --exclude tests/pixeldrain.live.integration.test.ts --exclude tests/playlist.live.integration.test.ts --exclude tests/playlist-download.live.integration.test.ts",
+    "test:fast": "vitest run --exclude tests/native-host.test.ts --exclude tests/native-host-registration.test.ts --exclude tests/aria2.integration.test.ts --exclude tests/batches.integration.test.ts --exclude tests/pixeldrain.live.integration.test.ts --exclude tests/playlist.live.integration.test.ts --exclude tests/playlist-download.live.integration.test.ts --exclude tests/packaged-resources.integration.test.ts",
     "test:integration": "vitest run tests/native-host.test.ts tests/native-host-registration.test.ts tests/aria2.integration.test.ts tests/batches.integration.test.ts",
     "test:native-host": "vitest run tests/native-host.test.ts -t \"^(?!.*outlast the regular 20s bridge timeout)\"",
     "test:native-host:timeout": "vitest run tests/native-host.test.ts -t \"outlast the regular 20s bridge timeout\"",
@@ -26,6 +26,7 @@
     "test:pixeldrain:live": "vitest run tests/pixeldrain.live.integration.test.ts",
     "test:playlist:live": "vitest run tests/playlist.live.integration.test.ts",
     "test:playlist-download:live": "vitest run tests/playlist-download.live.integration.test.ts",
+    "test:packaged-resources": "vitest run tests/packaged-resources.integration.test.ts",
     "test:extension": "vitest run tests/extension-bridge.test.ts tests/extension-manifest.test.ts tests/extension-media-bridge.test.ts tests/extension-overlay-controller.test.ts tests/extension-overlay.test.ts tests/extension-site-policy.test.ts",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
     "test:gate": "npm test && npm run build"

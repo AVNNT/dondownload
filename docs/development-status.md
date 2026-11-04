@@ -445,8 +445,10 @@ Verification after integration:
 | `npm run build:installer` | Native-host build, vendor staging and app build passed; script stopped because `electron-builder` is not installed in the main worktree |
 | electron-builder 26.18.0 invoked from the installer worktree | **passed**, NSIS x64 artifact built locally without running it |
 
-The refreshed artifact is `dist/DonDownload-0.1.0-x64-setup.exe` (302,260,785
-bytes, SHA-256 `4138a78ccabc3d3c656fa8cb70fe54c37d383d43ce33a06c7c84d779cd4d2e61`).
+The artifact produced at that historical checkpoint was
+`dist/DonDownload-0.1.0-x64-setup.exe` (302,260,785 bytes, SHA-256
+`4138a78ccabc3d3c656fa8cb70fe54c37d383d43ce33a06c7c84d779cd4d2e61`); it has
+since been superseded by the final extracted-payload validation recorded below.
 All five packaged vendor executable hashes matched `build/vendor/manifest.json`.
 The installer was not executed. It remains unsigned; GPL corresponding-source
 delivery/legal review, a fresh-path install/uninstall test, browser native-host
@@ -675,6 +677,45 @@ The full development/build dependency tree reports **6 moderate** advisories in
 electron-builder's transitive packaging chain (including minimatch); no
 automated upgrade was applied. Review/mitigate this build-toolchain advisory
 before release without changing the pinned installer builder unnecessarily.
+
+## Final extracted-payload validation
+
+After the above test-harness and packaging-document updates, the installer was
+rebuilt from the current checkpoint with `npm run build:installer` (electron-
+builder 26.18.0). Final artifact:
+`dist/DonDownload-0.1.0-x64-setup.exe`, 302,265,855 bytes, SHA-256
+`f0e271c3644b21a8182023e8351ab7495067ae80565cba699eb6b0abcc4cf3fd`;
+Authenticode is **NotSigned**.
+
+7-Zip listed and extracted the NSIS payload to a unique
+`%LOCALAPPDATA%\Temp\opencode\dondownload-final-payload-*` directory without
+running setup. The package contains the app executable, `app.asar`, native host,
+extension manifest, manual native-host registration helper, vendor manifest,
+all five tools, app MIT license, third-party notices and all seven license
+files. Extracted vendor sizes/hashes and license/notice hashes matched their
+staging manifest/repository sources. Version commands passed from extracted
+tool paths. The production media/aria2 path locators resolved all packaged tools
+against the extracted resource directory (`npm run test:packaged-resources`: **1
+passed**). Archive inspection found no obvious test/coverage, dotenv, SQLite or
+log files. This is payload and locator verification only: the app was not
+launched, installed or uninstalled; no registry, browser profile, physical
+input, or existing download directory was touched.
+
+Focused real-aria2 runs using only loopback fixtures passed **2 tests**: future
+scheduled submission, and outside-hours queue + Start Now + active completion
+after the allowed-hours close. The first test attempt exposed a test-only
+snapshot selection issue; it was corrected to select by filename and the rerun
+passed. `npm run test:fast` passed **504 tests**. The last full `test:gate`
+passed **544 tests / 11 skipped**, with typecheck and production build passing.
+The opt-in packaged-resource and real-aria2 checks were also run separately and
+passed. Source archive candidates and their locally computed hashes are
+documented in [licensing-release-audit.md](licensing-release-audit.md).
+
+Overall release readiness remains **BLOCKED** on legal/corresponding-source
+review, signing, isolated install/startup/uninstall and installed Helium bridge
+verification, plus review of moderate build-toolchain advisories. Pixeldrain
+list validation remains fixture-blocked; Gofile folders and torrents/VPN remain
+out of scope/deferred.
 
 ## Root cause of the reported Milestone 2B failure
 

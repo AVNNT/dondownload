@@ -106,3 +106,60 @@ archives or a reviewed written offer. Redistribution clearance is therefore
 
 These references are leads for release review and do not replace counsel's
 review of the exact binaries and distribution.
+
+## Current extracted installer candidate (2026-11-04)
+
+Candidate installer: `dist/DonDownload-0.1.0-x64-setup.exe`, 302,265,855 bytes,
+SHA-256 `f0e271c3644b21a8182023e8351ab7495067ae80565cba699eb6b0abcc4cf3fd`.
+Its NSIS payload was listed and extracted with 7-Zip into a unique disposable
+directory; setup was not run. The extracted package contains `LICENSE.txt`,
+`licenses/THIRD_PARTY_NOTICES.md`, every file under `licenses/third-party/`, the
+native host, extension and manual registration helper. Staged binary and
+license-file SHA-256 values matched the vendor manifest and repository inputs.
+The extension/package payload contained no obvious dotenv, SQLite, log, test or
+coverage artifacts. This validates payload contents only, not install behavior,
+startup, installed registry state or legal sufficiency.
+
+The project-source candidates below were downloaded from the URLs already
+recorded in `third-party/NOTICE.md` and passed 7-Zip archive integrity tests.
+They are stored locally, not committed, under
+`build/release-source-candidates-20261104/` (the directory is git-ignored and is
+not in the installer):
+
+| Candidate archive | Bytes | Local SHA-256 | Source status |
+| --- | ---: | --- | --- |
+| `aria2-1.37.0.tar.bz2` | 2,392,193 | `a75c8534902ff1a64a23d7a47c033032329002553634251a89d53a9cb8b20efa` | Upstream aria2 source only; Windows build inputs/linked libraries not assembled. |
+| `yt-dlp-2026.10.26.tar.gz` | 3,084,414 | `7d5da51731c3f5f5db13d16249fae085e170cc58807c43d68dcb41b7ede99a0d` | Tag source; standalone executable build recipe not established. |
+| `FFmpeg-946fcce07b.tar.gz` | 17,333,895 | `0aa2b1de2a5698b20a23e93d539a9a8e82ca0117496c5bdf05d198805f42bb3b` | FFmpeg source commit; Gyan scripts/configuration and linked components are not all assembled. |
+| `deno-v2.9.8.tar.gz` | 35,540,806 | `1e7c94089b077ca9b8ee1528a37793b47a476336bc2e3e902381cb528055f0be` | Deno tag source; embedded third-party inventory is not established. |
+
+These are locally computed transfer hashes, not upstream-published signature or
+checksum verification. A successful archive test establishes readable archive
+structure, not authenticity or completeness for the shipped executable. In
+particular, the candidate archives do **not** close the GPL corresponding-source
+gates. Obtain reviewed, exact-build source packages or a valid written offer,
+and legal approval before redistribution.
+
+Version/licensing output from the extracted binaries also showed aria2's GPLv2+
+notice and its bundled library/compiler inventory; FFmpeg reports a GPL license
+and the Gyan build configuration includes both `--enable-gpl` and
+`--enable-version3`, consistent with the GPLv3-or-later build notice. Authenticode
+inspection on this host reported Deno as **Valid** (Deno Land Inc. certificate
+with a Microsoft timestamp) and aria2, yt-dlp, FFmpeg, ffprobe, the native host,
+Electron app and installer as **NotSigned**. This local signature observation
+does not replace source provenance or legal review.
+
+## Development-toolchain advisory triage
+
+`npm audit --omit=dev` reports zero production dependency vulnerabilities. The
+full locked tree reports six moderate npm findings that fan out from
+`GHSA-g3hv-75wg-m249` in `minimatch`'s globparts-amplification denial-of-service
+range. The affected builder chain includes `minimatch` 9.0.9 and 10.2.6 through
+`@electron/universal`/`app-builder-lib`/`electron-builder`; `npm audit` also
+reports their parent packages. The app payload excludes `node_modules`, so this
+is a build-toolchain exposure, not a reported production-runtime dependency.
+The plausible impact is build availability if an attacker can supply a crafted
+glob pattern to the packaging process; the reviewed configuration uses
+repository-controlled patterns. No artifact-integrity exploit was identified
+by this triage. No automatic downgrade/upgrade was applied; review a compatible
+fix with the builder maintainers before release and rerun package verification.
