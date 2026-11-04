@@ -1,9 +1,10 @@
-# Batch and collection contracts (Milestone 3B foundation)
+# Batch and collection contracts (Milestone 3B)
 
-Status: foundation only. This document describes the shared contracts and SQLite
-v3 persistence added by the first Milestone 3B task. Providers, the playlist
-engine, the batch orchestrator, renderer UI, IPC handlers and native-bridge
-routes are deliberately **not** part of this layer.
+Status: shared contracts, SQLite v4 persistence and a main-process batch
+orchestration slice are implemented. This document describes the contracts and
+schema. The orchestrator, desktop IPC/preload wiring and hermetic tests are
+covered in [development-status.md](development-status.md). Renderer UI and
+native-bridge batch routes are deliberately **not** part of this layer.
 
 ## Scope and safety boundaries
 
@@ -25,8 +26,12 @@ The implementation lives in:
 - `src/shared/batches.ts` — kinds, statuses, collection-preview DTOs,
   public/internal shapes, strict parsers and the safe `toPublicBatch`
   conversion.
-- `src/main/db/database.ts` — additive schema v3 and batch persistence methods.
-- `tests/batch-contract.test.ts`, `tests/batch-database.test.ts`.
+- `src/main/db/database.ts` — additive schema v4 and batch persistence methods.
+- `src/main/batches/manager.ts` — persistent batch orchestration.
+- `src/shared/ipc.ts`, `src/main/ipc.ts`, `src/preload/index.ts` — trusted desktop
+  IPC/preload surface.
+- `tests/batch-contract.test.ts`, `tests/batch-database.test.ts`,
+  `tests/batches-manager.test.ts`, `tests/batches-ipc.test.ts`.
 
 ## Kinds
 
@@ -149,10 +154,12 @@ Internal `BatchRecord` / `BatchItemRecord` add `sourceUrl` only. They are used b
 the main process and are never sent over IPC or the native bridge. Existing
 `DownloadItem` and `MediaJob` public contracts are unchanged.
 
-## SQLite schema v3
+## SQLite schema v4
 
-Migration v3 is additive and transactional. It never rewrites v1 download rows or
-v2 media rows.
+Migration v4 is additive and transactional. It preserves v1 download rows, v2
+media rows and v3 batch parent rows, and rebuilds only `batch_items` to accept the
+`unavailable`/`skipped` item statuses. A failed v4 rebuild rolls back completely
+and leaves the prior v3 schema and rows intact.
 
 `batches`:
 
@@ -167,18 +174,10 @@ v2 media rows.
 
 Indexes cover batch creation/status and item ordering/status. Item positions are
 unique per batch. There are no cookie, token, header, selector, guest-token or
-disk-path columns. Collection previews are ephemeral and are not persisted in
-this layer.
+disk-path columns. Collection previews are ephemeral and are not persisted.
 
 The `batch_items.status` CHECK accepts `queued`, `running`, `complete`, `error`,
-`unavailable`, `skipped`, `cancelled` and `interrupted`. Schema v3 is still
-unreleased in this tree, so the constraint was extended in place before release
-instead of adding a v4 migration. `SCHEMA_VERSION` remains 3, no previous row is
-rewritten and no table is rebuilt. A local v3 database created from the earlier
-foundation commit keeps its old constraint, but no code in this layer writes the
-new statuses yet; the first orchestrator that persists `unavailable`/`skipped`
-must either recreate that unreleased local database or add the migration when
-the schema is actually shipped.
+`unavailable`, `skipped`, `cancelled` and `interrupted`. `SCHEMA_VERSION` is 4.
 
 Persistence lifecycle API added in this layer:
 
@@ -193,17 +192,17 @@ These are additive; existing download/media methods and behavior are unchanged.
 
 ## Recovery semantics
 
-A later orchestrator can mark active batches/items `interrupted` through the same
-save methods after a restart. Completed, cancelled, errored, unavailable and
-skipped items stay untouched. Retry is expected to move an item back to `queued`
-and clear its error; group cancel is expected to set the parent to `cancelled`
-and cancel active children. None of that orchestration is implemented in this
-foundation task.
+The batch manager marks active batches/items `interrupted` on startup and on
+graceful shutdown, then persists the result. Completed, cancelled, errored,
+unavailable and skipped items stay untouched. Nothing is auto-resumed. Retry moves
+one failed/interrupted item back to `queued` and re-resolves its source; group
+cancel sets the parent to `cancelled` and cancels/pauses active children. Removing
+a batch deletes only its parent row (and item rows by cascade), never a child
+download/media record or a file.
 
 ## Explicitly deferred
 
-- Provider implementations and network calls.
-- Playlist/Pixeldrain resolution engines and preview storage/expiry.
-- Batch orchestration, retry/cancel wiring and recovery execution.
-- Renderer components, IPC handlers, preload APIs and native-bridge routes.
+- Renderer batch/selection components.
+- Native-bridge batch routes.
+- Live-provider verification for playlist, Pixeldrain and Gofile behavior.
 - Milestone 4 and 5, torrents, VPN and desktop automation.

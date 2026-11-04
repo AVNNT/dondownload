@@ -3,8 +3,10 @@ import path from 'node:path'
 import { IPC } from '@shared/ipc'
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
+import { BatchManager } from './batches/manager'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
+import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMediaEngine } from './media/engine'
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
@@ -23,6 +25,7 @@ let appTray: AppTray | null = null
 let aria2: Aria2Service | null = null
 let manager: DownloadManager | null = null
 let mediaJobs: MediaJobsManager | null = null
+let batches: BatchManager | null = null
 let nativeBridge: NativeBridge | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
@@ -123,8 +126,9 @@ if (!hasSingleInstanceLock) {
     )
 
     const mediaDir = path.join(downloadDir, 'Media')
+    const mediaEngine = createMediaEngine()
     mediaJobs = new MediaJobsManager({
-      engine: createMediaEngine(),
+      engine: mediaEngine,
       mediaDir,
       database,
       onUpdate: (snapshot) => {
@@ -134,10 +138,28 @@ if (!hasSingleInstanceLock) {
       }
     })
 
+    // Milestone 3B: the batch manager reuses the existing download and media
+    // managers as ports, so duplicate policy and child lifecycles stay owned by
+    // those systems. It loads persisted batches and marks any active work
+    // interrupted instead of auto-resuming it.
+    batches = new BatchManager({
+      downloads: manager,
+      mediaJobs,
+      collectionEngine: mediaEngine,
+      pixeldrain: createPixeldrainAdapter(),
+      database,
+      onUpdate: (snapshot) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.batchSnapshotChanged, snapshot)
+        }
+      }
+    })
+
     registerIpc({
       manager,
       aria2,
       mediaJobs,
+      batches,
       getWindow: () => mainWindow
     })
 
@@ -245,6 +267,16 @@ if (!hasSingleInstanceLock) {
         // Never block quitting on bridge cleanup.
       }
       nativeBridge = null
+
+      // Persist batch recovery state first: active parents/items become
+      // interrupted and are never auto-resumed. Child cancellation remains the
+      // media/download managers' responsibility below.
+      try {
+        batches?.close()
+      } catch {
+        // Batch recovery state is best effort; quitting must still proceed.
+      }
+      batches = null
 
       // Persist the last known lifecycle/progress state, stop aria2 cleanly,
       // then close the database. Crash recovery can still rely on the bounded

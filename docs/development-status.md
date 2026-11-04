@@ -4,9 +4,10 @@ As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
 verified. Milestone 3A is **PASS** at `e7e28ee`, verified end to end in a headed
-Helium run against that HEAD. Milestone 3B implementation is **underway** with
-the first sequential foundation (shared batch/collection contracts and additive
-SQLite schema v3). Milestone 4 is explicitly deferred.
+Helium run against that HEAD. Milestone 3B now has the committed contracts/schema
+foundation plus a persistent backend orchestration slice with desktop IPC and
+preload wiring. There is still **no renderer UI** and no native-bridge batch
+route. Milestone 4 is explicitly deferred.
 
 ## Current milestone
 
@@ -47,24 +48,48 @@ SQLite schema v3). Milestone 4 is explicitly deferred.
   typecheck, production build and native-host build pass. yt-dlp 2026.10.26,
   Gyan FFmpeg/ffprobe 9.0.2 and Deno 2.9.8 were used for the real runs; exact
   paths and licensing notes are in [media-tools.md](media-tools.md).
-- **Milestone 3B: implementation underway.** The first sequential foundations
-  are present: shared batch/collection contracts (`src/shared/batches.ts`),
-  additive SQLite schema v3 (`batches` and `batch_items`) and hermetic
-  contract/migration tests. It establishes stable batch kinds/statuses, opaque
-  parent/child IDs, per-item errors and aggregate progress for later parallel
-  work. The shared layer now also has safe `CollectionPreview`/`CollectionEntry`
-  DTOs and exact-key analyze/selected-batch inputs: playlist and Pixeldrain-list
-  sources resolve to an ephemeral preview, unavailable entries stay independent,
-  and a batch can only be created from 1–500 explicit entry IDs. Item statuses
-  include `unavailable`/`skipped`, with an independent `skippedItems` count.
-  Providers, the playlist engine, the orchestrator, renderer UI, IPC handlers and
-  native-bridge routes are not implemented yet. Scope is desktop-first media
+- **Milestone 3B: backend slice implemented; UI and native routes still absent.**
+  The committed foundation remains shared batch/collection contracts
+  (`src/shared/batches.ts`), additive SQLite schema v4 (`batches` and
+  `batch_items`) and hermetic contract/migration tests. This slice adds
+  `src/main/batches/manager.ts`, secure batch IPC/preload methods, and main-process
+  wiring:
+  - Smart multi-URL submit returns a typed result with an optional created
+    direct-item batch, separately pending collection previews, and independent
+    invalid/unsupported/failed entries. Nothing from a preview is auto-queued.
+  - Direct HTTP(S) items reuse `DownloadManager.add`, including its duplicate
+    policy. Pixeldrain single files are resolved through the isolated adapter to
+    the documented raw endpoint before `add`.
+  - Pixeldrain lists and obvious playlist URLs are analyzed into ephemeral
+    previews. `createCollectionBatch` accepts only explicit preview entry IDs.
+    Playlist entries are resolved with `MediaEngine.resolveCollectionEntries`,
+    then analyzed and queued one entry at a time through `MediaJobsManager`,
+    preferring `bestVideoOptionId` and falling back to `bestAudioOptionId`.
+  - Persisted parents/items keep child-ID mappings, per-item progress/errors and
+    aggregate status. Startup marks active parents/items `interrupted`; nothing
+    auto-resumes. Removing a batch deletes only its DB row and never a child
+    download/media record or file. Group cancel cancels media children or pauses
+    direct children without deleting files. Individual retry re-resolves the
+    stored source and never runs an automatic retry loop.
+  - Gofile share/folder links are kept as truthful `unavailable` items. They are
+    never scraped for tokens; only an explicit safe browser action can open an
+    exact canonical `https://gofile.io/{d|f}/{id}` link with no credentials,
+    query or fragment.
+  - URL/selection counts are bounded by the shared limits (500 URLs, 500 selected
+    entries). Direct adds are serialized, aria2 still owns transfer concurrency,
+    and media queueing is globally serialized to one active playlist job.
+  - Desktop IPC exposes analyze/submit/create/read/list/cancel/retry/remove/open
+    and snapshot-update observation, all through the existing trusted-sender
+    wrapper. Public results are parsed `Batch`/`CollectionPreview` DTOs and never
+    include a source URL, path, token or header.
+  Providers, renderer components, native-bridge batch routes and live provider
+  verification are still not implemented. Scope remains desktop-first media
   playlists, Pixeldrain lists and direct-URL batches, with no
   credential/cookie/token extraction and no CAPTCHA/DRM bypass. **Milestone 4 is
   explicitly deferred.** There is no torrent functionality or torrent networking
   in this tree.
 
-## Milestone 3B foundation scope (in progress)
+## Milestone 3B foundation scope (contracts and schema)
 
 The foundation is deliberately narrow and additive:
 
@@ -88,14 +113,88 @@ The foundation is deliberately narrow and additive:
   values. Per-item errors, independent `unavailable`/`skipped` states,
   `skippedItems` aggregate progress, individual retry/cancel, group cancel,
   aggregate progress and interrupted recovery are represented in the contracts.
-- SQLite migration v3 is transactional and additive: v1 download rows and v2
-  media rows are preserved, and a failed v3 migration rolls back completely. The
-  still-unreleased v3 item-status CHECK was extended in place for
-  `unavailable`/`skipped`; `SCHEMA_VERSION` stays 3, no v4 migration or row
-  rewrite was added.
-- Not included: providers, playlist/Pixeldrain resolution, preview
-  storage/expiry, orchestration, renderer UI, preload/IPC wiring, native-bridge
-  routes, Milestone 4/5 work, torrents or VPN.
+- SQLite schema v4 is transactional and additive: v1 download rows, v2 media
+  rows and v3 batch parents are preserved, and a failed v4 rebuild rolls back
+  completely. v4 rebuilds only `batch_items` to accept `unavailable`/`skipped`
+  while preserving every row, index and cascade. `SCHEMA_VERSION` is 4.
+- Still not included by the foundation contracts themselves: renderer UI,
+  native-bridge batch routes, live provider verification, Milestone 4/5 work,
+  torrents or VPN.
+
+See [batch-contracts.md](batch-contracts.md) for the full contract and schema
+description.
+
+## Milestone 3B backend orchestration slice
+
+Status: implemented in the working tree, hermetic tests and typecheck/build
+passing. No renderer UI or native-bridge batch route is part of this slice.
+
+Implementation:
+
+- `src/main/batches/manager.ts` owns persisted parent/item state and consumes
+  narrow ports for downloads, media jobs, playlist resolution and Pixeldrain.
+- `src/main/ipc.ts` registers additive batch channels through the existing
+  trusted-sender wrapper; `src/preload/index.ts` exposes the same methods and a
+  snapshot-update subscription.
+- `src/main/index.ts` wires the manager with the existing `DownloadManager`,
+  `MediaJobsManager`, media engine and Pixeldrain adapter, and marks active batch
+  work interrupted before media shutdown.
+- `tests/batches-manager.test.ts` and `tests/batches-ipc.test.ts` cover recovery,
+  duplicate/invalid isolation, explicit collection selection, child mapping,
+  cancel/retry/remove isolation, Gofile open allowlisting, Pixeldrain routing and
+  trusted-sender rejection.
+
+Behavioral boundaries:
+
+- `submitSmartBatch` returns a typed result containing an optional direct-item
+  batch, separately pending collection previews, and independent
+  invalid/unsupported/failed entries. It never auto-queues a preview.
+- Direct HTTP(S) items go through `DownloadManager.add`, so duplicate and retry
+  policy is unchanged. Pixeldrain single files resolve through the adapter to the
+  documented raw endpoint before `add`; Pixeldrain lists require explicit entry
+  selection.
+- Playlist selection resolves entry URLs, analyzes each selected entry through
+  `MediaJobsManager`, and queues exactly one best verified video+audio option (or
+  the best actual audio option when no video exists). Media queueing is serialized
+  globally to one active playlist item; direct adds are serialized while aria2
+  retains its own transfer concurrency.
+- Batch creation, item transitions, child IDs and terminal aggregate status are
+  persisted. Startup marks active parents/items `interrupted` and never resumes.
+  Group cancel cancels media children or pauses direct children; individual retry
+  re-resolves the source and does not loop. Removing a batch only deletes its DB
+  row; child jobs and files are never removed.
+- Gofile share links are `unavailable` items with a stable browser-required
+  message. A separate explicit action opens only the stored canonical
+  `https://gofile.io/{d|f}/{id}` URL via main-process `shell.openExternal`; query,
+  fragment and credentials are rejected.
+
+Verification for this working tree:
+
+| Command | Result |
+| --- | --- |
+| `npx vitest run tests/batches-manager.test.ts tests/batches-ipc.test.ts` | **22 passed**, 2 files |
+| `npm run test:fast` | **423 passed**, 26 files |
+| `npm run typecheck` | **passed** |
+| `npm run build` | **passed** |
+
+Known gaps for this slice:
+
+- No renderer batch/selection UI and no native-bridge batch routes.
+- No live provider or media-download verification was run for this backend slice;
+  tests use hermetic fake managers/adapters and never fetch a provider or file
+  body.
+- Smart submit only probes obvious playlist URLs (a `list` query parameter or
+  common playlist/set/album paths). Ambiguous playlist URLs can still use the
+  explicit collection-analysis action, but are otherwise handled as direct URLs.
+- Direct children are submitted one at a time and media jobs one at a time. This
+  is intentionally conservative, not a throughput optimization.
+- The shared item contract has no `paused` status, so a direct child paused
+  outside the batch is observed as a running batch item until it completes,
+  fails or is cancelled from the batch.
+- Retry creates a new child mapping and never deletes the previous child record
+  or partial file.
+- No batch-level retry, pause/resume or item-row removal action is exposed.
+- No Milestone 4/5, torrent, VPN or renderer work is included.
 
 See [batch-contracts.md](batch-contracts.md) for the full contract and schema
 description.
@@ -592,8 +691,9 @@ Milestone 3A PASS above.
   itself is only covered by the next reload (see Known issues).
 - **Cross-origin iframes and restricted pages.** Top-frame only; browser-internal
   and Web Store pages are ineligible.
-- **Playlists/collections and 3B features.** Out of scope for 3A and not
-  exercised.
+- **Playlists/collections and 3B features.** The 3B backend orchestration slice
+  is covered by hermetic tests, but playlist, Pixeldrain-list and Gofile behavior
+  has not been exercised against live providers and there is no renderer UI yet.
 
 ## Model handoff status
 
@@ -611,20 +711,22 @@ checked cancellation and persisted failure handling, and ran the full suite with
 real aria2. The post-`5b6d3d4` headed Helium retest at `e7e28ee` then completed
 the selected/best workflow end to end, including exact-option matching, 144p and
 1080p outputs, hidden-window progress persistence and a safe unsupported-page
-error. Milestone 3A is PASS. Milestone 3B is underway from the additive
-contracts/schema foundation; providers, orchestration, UI/IPC and native routes
-remain future work.
+error. Milestone 3A is PASS. The Milestone 3B backend slice now adds persistent
+batch orchestration, trusted desktop IPC/preload and hermetic coverage; renderer
+UI, native-bridge batch routes and live-provider verification remain future work.
 
 ## Safe next action
 
-1. Continue Milestone 3B from the additive contracts/schema foundation; providers,
-   playlist resolution, orchestration, UI/IPC and native routes remain future
-   work. Milestone 4 is explicitly deferred.
-2. Keep the remaining unverified non-blockers visible rather than treating them
+1. Continue Milestone 3B with the renderer batch/selection UI and native-bridge
+   batch routes if requested; the backend manager/IPC slice and its hermetic
+   tests are already present. Milestone 4 is explicitly deferred.
+2. Verify the 3B backend behavior against real Pixeldrain/playlist sources only in
+   an explicit live run; do not treat the hermetic tests as live verification.
+3. Keep the remaining unverified non-blockers visible rather than treating them
    as regressions or silently closing them.
-3. Preserve the documented caveats: disposable-profile unpacked extension,
+4. Preserve the documented caveats: disposable-profile unpacked extension,
    automated CDP/UIA/Win32 input rather than human hardware, no visible YouTube
    permission bubble in that run, synthetic video on `example.com`, best-video
    completion observed while the app was hidden, and no FFmpeg child during
    cancellation.
-4. Do not push or create a release without separate approval.
+5. Do not push or create a release without separate approval.

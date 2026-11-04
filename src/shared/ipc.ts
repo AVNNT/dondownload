@@ -15,5 +15,18 @@ export const IPC = {
   cancelMedia: 'media:cancel',
   removeMedia: 'media:remove',
   showMediaInFolder: 'media:show-in-folder',
-  mediaSnapshotChanged: 'media:snapshot-changed'
+  mediaSnapshotChanged: 'media:snapshot-changed',
+  // Milestone 3B batch orchestration (additive). All batch channels reuse the
+  // existing trusted-sender wrapper and never return a source URL or path.
+  analyzeBatchCollection: 'batch:analyze-collection',
+  submitSmartBatch: 'batch:submit-smart',
+  createCollectionBatch: 'batch:create-collection',
+  getBatchSnapshot: 'batch:get-snapshot',
+  getBatch: 'batch:get',
+  cancelBatchItem: 'batch:cancel-item',
+  cancelBatch: 'batch:cancel',
+  retryBatchItem: 'batch:retry-item',
+  removeBatch: 'batch:remove',
+  openBatchSource: 'batch:open-source',
+  batchSnapshotChanged: 'batch:snapshot-changed'
 } as const

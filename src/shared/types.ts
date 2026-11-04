@@ -1,4 +1,12 @@
 import type {
+  AnalyzeCollectionInput,
+  Batch,
+  BatchItemTargetInput,
+  BatchTargetInput,
+  CollectionPreview,
+  CreateCollectionBatchInput
+} from './batches'
+import type {
   AnalyzeMediaInput,
   MediaAnalysis,
   MediaJob,
@@ -75,6 +83,57 @@ export type ApiResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: AppErrorInfo }
 
+/* ------------------------------------------------------------------------- *
+ * Milestone 3B batch orchestration (renderer-safe)
+ * ------------------------------------------------------------------------- */
+
+/** Safe snapshot of every persisted parent batch. */
+export interface BatchSnapshot {
+  batches: Batch[]
+}
+
+/** Input for the smart multi-URL submit action. */
+export interface SmartBatchSubmitInput {
+  urls: string[]
+}
+
+export const SMART_BATCH_ENTRY_OUTCOMES = [
+  'batch-item',
+  'collection-preview',
+  'unsupported',
+  'invalid',
+  'failed'
+] as const
+export type SmartBatchEntryOutcome =
+  (typeof SMART_BATCH_ENTRY_OUTCOMES)[number]
+
+/**
+ * Per-input outcome of a smart batch submit. `index` maps back to the caller's
+ * input order. No source URL, path, token or header is ever included: entry
+ * text is limited to stable codes and safe messages.
+ */
+export interface SmartBatchSubmitEntry {
+  index: number
+  outcome: SmartBatchEntryOutcome
+  batchId: string | null
+  itemId: string | null
+  previewId: string | null
+  code: string | null
+  message: string | null
+}
+
+/**
+ * Result of a smart submit: a created direct-item batch (when at least one URL
+ * became a direct item), separately pending collection previews that require an
+ * explicit selection, and independent invalid/failed entries. Nothing from a
+ * collection preview is queued automatically.
+ */
+export interface SmartBatchSubmitResult {
+  batch: Batch | null
+  previews: CollectionPreview[]
+  entries: SmartBatchSubmitEntry[]
+}
+
 export interface DonDownloadApi {
   getSnapshot: () => Promise<ApiResult<AppSnapshot>>
   addDownload: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
@@ -97,5 +156,31 @@ export interface DonDownloadApi {
   showMediaInFolder: (jobId: string) => Promise<ApiResult<null>>
   onMediaSnapshotChanged: (
     listener: (snapshot: MediaSnapshot) => void
+  ) => () => void
+
+  // Batch orchestration (Milestone 3B). Collection previews are ephemeral and
+  // batches are created only from an explicit selection of preview entry IDs.
+  analyzeBatchCollection: (
+    input: AnalyzeCollectionInput
+  ) => Promise<ApiResult<CollectionPreview>>
+  submitSmartBatch: (
+    input: SmartBatchSubmitInput
+  ) => Promise<ApiResult<SmartBatchSubmitResult>>
+  createCollectionBatch: (
+    input: CreateCollectionBatchInput
+  ) => Promise<ApiResult<Batch>>
+  getBatchSnapshot: () => Promise<ApiResult<BatchSnapshot>>
+  getBatch: (batchId: string) => Promise<ApiResult<Batch>>
+  cancelBatchItem: (
+    input: BatchItemTargetInput
+  ) => Promise<ApiResult<BatchSnapshot>>
+  cancelBatch: (input: BatchTargetInput) => Promise<ApiResult<BatchSnapshot>>
+  retryBatchItem: (
+    input: BatchItemTargetInput
+  ) => Promise<ApiResult<BatchSnapshot>>
+  removeBatch: (input: BatchTargetInput) => Promise<ApiResult<BatchSnapshot>>
+  openBatchSource: (input: BatchItemTargetInput) => Promise<ApiResult<null>>
+  onBatchSnapshotChanged: (
+    listener: (snapshot: BatchSnapshot) => void
   ) => () => void
 }

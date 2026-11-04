@@ -5,8 +5,18 @@ import type {
   MediaJob,
   MediaSnapshot
 } from '@shared/media'
-import type { ApiResult, AppSnapshot } from '@shared/types'
+import type {
+  Batch,
+  CollectionPreview
+} from '@shared/batches'
+import type {
+  ApiResult,
+  AppSnapshot,
+  BatchSnapshot,
+  SmartBatchSubmitResult
+} from '@shared/types'
 import type { Aria2Service } from './aria2/service'
+import type { BatchManager } from './batches/manager'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
@@ -20,6 +30,8 @@ export interface IpcContext {
    * the property is absent.
    */
   mediaJobs?: MediaJobsManager
+  /** Additive Milestone 3B batch orchestration. */
+  batches?: BatchManager
   getWindow: () => BrowserWindow | null
 }
 
@@ -126,5 +138,58 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<null>(IPC.showMediaInFolder, (_event, jobId) =>
     media().showMediaInFolder(jobId)
+  )
+
+  // Additive Milestone 3B batch channels. Every handler goes through the same
+  // trusted-sender wrapper above, and public results are safe Batch or
+  // CollectionPreview DTOs only (no source URL, path, token or headers).
+  const batches = (): BatchManager => {
+    if (!context.batches) {
+      throw new AppError(
+        'BATCH_UNAVAILABLE',
+        'Batch support is not available.'
+      )
+    }
+    return context.batches
+  }
+
+  invoke<CollectionPreview>(IPC.analyzeBatchCollection, (_event, input) =>
+    batches().analyzeCollection(input)
+  )
+
+  invoke<SmartBatchSubmitResult>(IPC.submitSmartBatch, (_event, input) =>
+    batches().submitSmartBatch(input)
+  )
+
+  invoke<Batch>(IPC.createCollectionBatch, (_event, input) =>
+    batches().createCollectionBatch(input)
+  )
+
+  invoke<BatchSnapshot>(IPC.getBatchSnapshot, () =>
+    batches().getBatchSnapshot()
+  )
+
+  invoke<Batch>(IPC.getBatch, (_event, batchId) =>
+    batches().getBatch(batchId)
+  )
+
+  invoke<BatchSnapshot>(IPC.cancelBatchItem, (_event, input) =>
+    batches().cancelBatchItem(input)
+  )
+
+  invoke<BatchSnapshot>(IPC.cancelBatch, (_event, input) =>
+    batches().cancelBatch(input)
+  )
+
+  invoke<BatchSnapshot>(IPC.retryBatchItem, (_event, input) =>
+    batches().retryBatchItem(input)
+  )
+
+  invoke<BatchSnapshot>(IPC.removeBatch, (_event, input) =>
+    batches().removeBatch(input)
+  )
+
+  invoke<null>(IPC.openBatchSource, (_event, input) =>
+    batches().openBatchSource(input)
   )
 }

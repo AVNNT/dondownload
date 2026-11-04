@@ -1,6 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc'
 import type {
+  AnalyzeCollectionInput,
+  Batch,
+  BatchItemTargetInput,
+  BatchTargetInput,
+  CollectionPreview,
+  CreateCollectionBatchInput
+} from '../shared/batches'
+import type {
   AnalyzeMediaInput,
   MediaAnalysis,
   MediaJob,
@@ -11,7 +19,10 @@ import type {
   AddDownloadInput,
   ApiResult,
   AppSnapshot,
-  DonDownloadApi
+  BatchSnapshot,
+  DonDownloadApi,
+  SmartBatchSubmitInput,
+  SmartBatchSubmitResult
 } from '../shared/types'
 
 const api: DonDownloadApi = {
@@ -63,6 +74,54 @@ const api: DonDownloadApi = {
     ipcRenderer.on(IPC.mediaSnapshotChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC.mediaSnapshotChanged, handler)
+    }
+  },
+  analyzeBatchCollection: (input: AnalyzeCollectionInput) =>
+    ipcRenderer.invoke(IPC.analyzeBatchCollection, input) as Promise<
+      ApiResult<CollectionPreview>
+    >,
+  submitSmartBatch: (input: SmartBatchSubmitInput) =>
+    ipcRenderer.invoke(IPC.submitSmartBatch, input) as Promise<
+      ApiResult<SmartBatchSubmitResult>
+    >,
+  createCollectionBatch: (input: CreateCollectionBatchInput) =>
+    ipcRenderer.invoke(IPC.createCollectionBatch, input) as Promise<
+      ApiResult<Batch>
+    >,
+  getBatchSnapshot: () =>
+    ipcRenderer.invoke(IPC.getBatchSnapshot) as Promise<
+      ApiResult<BatchSnapshot>
+    >,
+  getBatch: (batchId: string) =>
+    ipcRenderer.invoke(IPC.getBatch, batchId) as Promise<ApiResult<Batch>>,
+  cancelBatchItem: (input: BatchItemTargetInput) =>
+    ipcRenderer.invoke(IPC.cancelBatchItem, input) as Promise<
+      ApiResult<BatchSnapshot>
+    >,
+  cancelBatch: (input: BatchTargetInput) =>
+    ipcRenderer.invoke(IPC.cancelBatch, input) as Promise<
+      ApiResult<BatchSnapshot>
+    >,
+  retryBatchItem: (input: BatchItemTargetInput) =>
+    ipcRenderer.invoke(IPC.retryBatchItem, input) as Promise<
+      ApiResult<BatchSnapshot>
+    >,
+  removeBatch: (input: BatchTargetInput) =>
+    ipcRenderer.invoke(IPC.removeBatch, input) as Promise<
+      ApiResult<BatchSnapshot>
+    >,
+  openBatchSource: (input: BatchItemTargetInput) =>
+    ipcRenderer.invoke(IPC.openBatchSource, input) as Promise<ApiResult<null>>,
+  onBatchSnapshotChanged: (listener: (snapshot: BatchSnapshot) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: BatchSnapshot
+    ): void => {
+      listener(snapshot)
+    }
+    ipcRenderer.on(IPC.batchSnapshotChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.batchSnapshotChanged, handler)
     }
   }
 }
