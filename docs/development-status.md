@@ -12,10 +12,10 @@ Neither new check downloads public media. There is still no
 native-bridge batch route, and no live-provider verification was run for the UI.
 Milestone 4 is explicitly deferred. Milestone 5A has its shared download-settings
 contract, additive SQLite schema v5, runtime settings service, trusted
-IPC/preload API and startup/live aria2 application. The Windows installer
-baseline is integrated locally, and packaged Deno is wired into yt-dlp calls.
-Scheduling, individual download controls, settings UI and final installer
-rebuild/release checks remain open.
+IPC/preload API, startup/live aria2 application and a renderer form for global
+limits. The Windows installer baseline is integrated locally, and packaged
+Deno is wired into yt-dlp calls. Scheduling, allowed-hours enforcement,
+individual download controls and final installer/release checks remain open.
 
 ## Current milestone
 
@@ -416,13 +416,39 @@ Behavior and gaps:
 - The three global aria2 limits are live. `allowedHours` is persisted and parsed
   but not enforced, and per-download `scheduledAt` / `speedLimitBps` are not
   wired to `AddDownloadInput` or `DownloadManager`.
-- There is no settings renderer UI and no installer change.
+- `SettingsSection` exposes the global concurrency, per-host connections and
+  speed-limit settings. It does not expose or imply enforcement of allowed hours
+  or per-download controls yet.
 - If aria2 is not ready, an update persists for the next start instead of
   starting aria2 early. The startup hook applies the snapshot before ready.
 - No torrent, VPN or privileged OS behavior was added.
 
 See [download-settings.md](download-settings.md) for the contract and runtime
 details.
+
+## Milestone 5 local installer and packaged Deno update
+
+The installer baseline from `badf256` is integrated at `f5c251e`. The media tool
+locator now resolves the packaged Deno executable and supplies it as a fixed
+yt-dlp JS-runtime argument for analysis, playlist preview and media download.
+`tests/media-js-runtime.test.ts` covers vendor lookup and argument placement.
+
+Verification after integration:
+
+| Check | Result |
+| --- | --- |
+| `npm run test:fast` | **467 passed**, 31 files |
+| `npm run typecheck` | **passed** |
+| `npm run build` | **passed** |
+| `npm run build:installer` | Native-host build, vendor staging and app build passed; script stopped because `electron-builder` is not installed in the main worktree |
+| electron-builder 26.18.0 invoked from the installer worktree | **passed**, NSIS x64 artifact built locally without running it |
+
+The refreshed artifact is `dist/DonDownload-0.1.0-x64-setup.exe` (302,260,785
+bytes, SHA-256 `4138a78ccabc3d3c656fa8cb70fe54c37d383d43ce33a06c7c84d779cd4d2e61`).
+All five packaged vendor executable hashes matched `build/vendor/manifest.json`.
+The installer was not executed. It remains unsigned; GPL corresponding-source
+delivery/legal review, a fresh-path install/uninstall test, browser native-host
+registration verification, and release signing remain manual release gates.
 
 ## Milestone 3B local batch and live playlist integration coverage
 

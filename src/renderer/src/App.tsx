@@ -12,6 +12,7 @@ import { DownloadCard } from './components/DownloadCard'
 import { MediaSection } from './components/MediaSection'
 import { QuickAdd } from './components/QuickAdd'
 import { RuntimeNotice } from './components/RuntimeNotice'
+import { SettingsSection } from './components/SettingsSection'
 
 function runtimeLabel(aria2: Aria2State | null): string {
   if (!aria2) return 'Connecting…'
@@ -165,6 +166,8 @@ export default function App(): JSX.Element {
 
       <main className="mx-auto w-full max-w-[800px] px-5 pb-12 pt-7">
         <QuickAdd disabled={adding || snapshot === null} onAdd={handleAdd} />
+
+        <SettingsSection />
 
         {banner ? (
           <div
