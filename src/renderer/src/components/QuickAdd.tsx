@@ -9,6 +9,7 @@ interface QuickAddProps {
 }
 
 const MAX_SPEED_MIB = 1024
+const BYTES_PER_MIB = 1024 * 1024
 
 function parseControls(
   startAt: string,
@@ -31,14 +32,10 @@ function parseControls(
   let speedLimitBps: number | null = null
   if (hasSpeed) {
     const value = Number(speedMib)
-    if (
-      !Number.isFinite(value) ||
-      value <= 0 ||
-      value > MAX_SPEED_MIB
-    ) {
+    if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEED_MIB) {
       throw new Error(`Speed limit must be between 0.01 and ${MAX_SPEED_MIB} MiB/s.`)
     }
-    speedLimitBps = Math.max(1, Math.round(value * 1024 * 1024))
+    speedLimitBps = Math.max(1, Math.round(value * BYTES_PER_MIB))
   }
 
   let connectionCount: number | null = null
@@ -57,6 +54,15 @@ function parseControls(
   }
 }
 
+/** Show the exact byte/sec value the backend receives for the entered MiB/s. */
+function speedLimitPreview(speedMib: string): string | null {
+  const trimmed = speedMib.trim()
+  if (trimmed.length === 0) return null
+  const value = Number(trimmed)
+  if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEED_MIB) return null
+  return `${Math.max(1, Math.round(value * BYTES_PER_MIB)).toLocaleString()} B/s`
+}
+
 export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
   const [url, setUrl] = useState('')
   const [filename, setFilename] = useState('')
@@ -67,6 +73,8 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
   const [duplicateInput, setDuplicateInput] = useState<AddDownloadInput | null>(
     null
   )
+
+  const speedPreview = speedLimitPreview(speedMib)
 
   function resetDuplicate(): void {
     setDuplicateInput(null)
@@ -126,11 +134,22 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
 
   return (
     <form
+      aria-labelledby="quick-add-heading"
       onSubmit={(event) => {
         void handleSubmit(event)
       }}
-      className="rounded-2xl border border-white/10 bg-[#070707] p-3 sm:p-4"
+      className="rounded-xl border border-white/10 bg-[#080808] p-3"
     >
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h2
+          id="quick-add-heading"
+          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
+        >
+          Quick add
+        </h2>
+        <span className="text-[10px] text-zinc-400">Direct HTTP(S) links</span>
+      </div>
+
       <div className="flex flex-col gap-2 sm:flex-row">
         <label className="sr-only" htmlFor="download-url">
           Download URL
@@ -148,7 +167,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
           }}
           placeholder="https://example.com/file.zip"
           disabled={disabled}
-          className="h-11 min-w-0 flex-1 rounded-xl border border-white/10 bg-black px-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
         />
         <label className="sr-only" htmlFor="download-filename">
           Custom file name (optional)
@@ -165,22 +184,23 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
           }}
           placeholder="File name (optional)"
           disabled={disabled}
-          className="h-11 min-w-0 rounded-xl border border-white/10 bg-black px-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50 sm:w-44 lg:w-52"
+          className="h-10 min-w-0 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50 sm:w-40 lg:w-48"
         />
         <button
           type="submit"
           disabled={disabled || url.trim().length === 0}
-          className="h-11 shrink-0 rounded-xl bg-emerald-400 px-5 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {disabled ? 'Adding…' : 'Add download'}
         </button>
       </div>
-      <details className="mt-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2">
-        <summary className="cursor-pointer text-[11px] font-medium text-zinc-400">
+
+      <details className="mt-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2">
+        <summary className="cursor-pointer text-[11px] font-medium text-zinc-400 transition hover:text-zinc-200">
           Schedule &amp; limits (optional)
         </summary>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <label className="text-[11px] text-zinc-500">
+          <label className="text-[11px] text-zinc-400">
             Start at (local time)
             <input
               aria-label="Scheduled start (local time)"
@@ -191,17 +211,18 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
           </label>
-          <label className="text-[11px] text-zinc-500">
-            Speed limit (MiB/s, blank = unlimited)
+          <label className="text-[11px] text-zinc-400">
+            Speed limit (MiB/s)
             <input
               aria-label="Download speed limit in MiB per second"
+              aria-describedby="download-speed-help"
               type="number"
               min={0.01}
               max={MAX_SPEED_MIB}
-              step={0.01}
+              step="any"
               placeholder="Unlimited"
               value={speedMib}
               onChange={(event) => {
@@ -209,35 +230,47 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
+            <span
+              id="download-speed-help"
+              className="mt-1 block min-h-4 text-[10px] leading-4 text-zinc-400"
+            >
+              {speedPreview
+                ? `Backend value: ${speedPreview}`
+                : 'Blank means unlimited.'}
+            </span>
           </label>
-          <label className="text-[11px] text-zinc-500">
-            Connections (1–16, blank = global)
+          <label className="text-[11px] text-zinc-400">
+            Connections (1–16)
             <input
               aria-label="Download connections"
               type="number"
               min={1}
               max={16}
               step={1}
-              placeholder="Global"
+              placeholder="Global default"
               value={connections}
               onChange={(event) => {
                 setConnections(event.target.value)
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
+            <span className="mt-1 block min-h-4 text-[10px] leading-4 text-zinc-400">
+              Blank uses the global setting.
+            </span>
           </label>
         </div>
-        <p className="mt-2 text-[10px] leading-4 text-zinc-600">
+        <p className="mt-2 text-[10px] leading-4 text-zinc-500">
           The start time uses this computer&apos;s local clock. Allowed hours
-          are enforced separately in Download settings.
+          are enforced separately in Settings.
         </p>
       </details>
+
       {duplicateInput ? (
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/25 bg-amber-400/5 px-3 py-2">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2">
           <p className="text-[11px] leading-5 text-amber-200">
             This URL is already queued or downloading. The entered URL and name
             were kept.
@@ -248,15 +281,16 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
               void handleDownloadAgain()
             }}
             disabled={disabled}
-            className="h-8 shrink-0 rounded-lg border border-amber-300/30 px-3 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-8 shrink-0 rounded-lg border border-amber-300/30 px-3 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Download again
           </button>
         </div>
       ) : null}
-      <div className="flex items-start justify-between gap-3 px-1 pt-2">
-        <p className="text-[11px] leading-5 text-zinc-600">
-          Direct HTTP(S) links. Saved to Downloads\DonDownload.
+
+      <div className="flex items-start justify-between gap-3 px-0.5 pt-2">
+        <p className="text-[11px] leading-5 text-zinc-400">
+          Saved to Downloads\DonDownload.
         </p>
         {localError ? (
           <p role="alert" className="text-right text-[11px] leading-5 text-red-400">

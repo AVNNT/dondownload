@@ -144,7 +144,7 @@ export function MediaAnalyzer({
               </span>
             ) : null}
           </span>
-          <span className="mt-0.5 block text-[11px] leading-5 text-zinc-500">
+          <span className="mt-0.5 block text-[11px] leading-5 text-zinc-400">
             {describeOption(option)}
           </span>
         </span>
@@ -157,7 +157,7 @@ export function MediaAnalyzer({
       onSubmit={(event) => {
         void handleSubmit(event)
       }}
-      className="rounded-2xl border border-white/10 bg-[#070707] p-3 sm:p-4"
+      className="rounded-xl border border-white/10 bg-[#080808] p-3"
     >
       <div className="flex items-center justify-between gap-3">
         <label
@@ -166,7 +166,7 @@ export function MediaAnalyzer({
         >
           Analyze media page
         </label>
-        <span className="shrink-0 text-[10px] text-zinc-600">
+        <span className="shrink-0 text-[10px] text-zinc-500">
           Video and audio
         </span>
       </div>
@@ -188,19 +188,19 @@ export function MediaAnalyzer({
             localError ? 'media-url-help media-url-error' : 'media-url-help'
           }
           aria-invalid={localError !== null}
-          className="h-11 min-w-0 flex-1 rounded-xl border border-white/10 bg-black px-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={disabled || busy || url.trim().length === 0}
-          className="h-11 shrink-0 rounded-xl bg-emerald-400 px-5 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {analyzing ? 'Analyzing…' : 'Analyze'}
         </button>
       </div>
       <p
         id="media-url-help"
-        className="mt-2 px-1 text-[11px] leading-5 text-zinc-600"
+        className="mt-2 px-1 text-[11px] leading-5 text-zinc-400"
       >
         Analyzes the page first. Nothing downloads until you pick an option.
       </p>
@@ -230,7 +230,7 @@ export function MediaAnalyzer({
       ) : null}
 
       {analysis ? (
-        <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-3 sm:p-4">
+        <div className="mt-3 rounded-lg border border-white/10 bg-black/40 p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
@@ -242,7 +242,7 @@ export function MediaAnalyzer({
               >
                 {analysis.title}
               </h3>
-              <p className="mt-1 text-[11px] leading-5 text-zinc-500">
+              <p className="mt-1 text-[11px] leading-5 text-zinc-400">
                 {analysis.durationSeconds !== null
                   ? `${formatDuration(analysis.durationSeconds)} · `
                   : ''}
@@ -258,7 +258,7 @@ export function MediaAnalyzer({
                 onClear()
               }}
               disabled={busy}
-              className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Clear
             </button>
@@ -278,7 +278,7 @@ export function MediaAnalyzer({
               </button>
               <p className="mt-2 text-[11px] leading-5 text-zinc-400">
                 {bestVideo.label}
-                <span className="text-zinc-600">
+                <span className="text-zinc-500">
                   {' '}
                   · includes audio
                   {bestVideo.requiresMerge ? ' · merges video + audio' : ''}
@@ -320,7 +320,7 @@ export function MediaAnalyzer({
 
           {selectedOption ? (
             <div className="mt-4 flex flex-col gap-2 border-t border-white/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="min-w-0 text-[11px] leading-5 text-zinc-500">
+              <p className="min-w-0 text-[11px] leading-5 text-zinc-400">
                 Selected:{' '}
                 <span className="text-zinc-300">{selectedOption.label}</span>
               </p>

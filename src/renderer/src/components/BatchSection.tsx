@@ -430,16 +430,16 @@ export function BatchSection(): JSX.Element {
   const interactionBusy = actionPending || queueingPreviewId !== null
 
   return (
-    <section className="mt-7" aria-labelledby="batches-heading">
-      <div className="mb-3 flex items-baseline justify-between">
+    <section aria-labelledby="batches-heading">
+      <div className="mb-2 flex items-baseline justify-between">
         <h2
           id="batches-heading"
-          className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500"
+          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
         >
           Batch downloads
         </h2>
         {batches.length > 0 ? (
-          <span className="text-[11px] tabular-nums text-zinc-600">
+          <span className="text-[11px] tabular-nums text-zinc-500">
             {batches.length} {batches.length === 1 ? 'batch' : 'batches'}
           </span>
         ) : null}
@@ -449,7 +449,7 @@ export function BatchSection(): JSX.Element {
         onSubmit={(event) => {
           void handleSubmit(event)
         }}
-        className="rounded-2xl border border-white/10 bg-[#070707] p-3 sm:p-4"
+        className="rounded-xl border border-white/10 bg-[#080808] p-3"
       >
         <div className="flex flex-col gap-2">
           <div className="flex items-baseline justify-between gap-3 px-1">
@@ -459,7 +459,7 @@ export function BatchSection(): JSX.Element {
             >
               Batch URLs
             </label>
-            <span className="text-[10px] tabular-nums text-zinc-600">
+            <span className="text-[10px] tabular-nums text-zinc-500">
               {parsedUrlCount > 0
                 ? `${parsedUrlCount} ${
                     parsedUrlCount === 1 ? 'URL' : 'URLs'
@@ -469,7 +469,7 @@ export function BatchSection(): JSX.Element {
           </div>
           <textarea
             id="batch-urls"
-            rows={4}
+            rows={3}
             autoComplete="off"
             spellCheck={false}
             value={urlsText}
@@ -482,11 +482,11 @@ export function BatchSection(): JSX.Element {
             }
             disabled={submitting}
             aria-describedby="batch-urls-help"
-            className="min-h-[96px] w-full resize-y rounded-xl border border-white/10 bg-black px-3.5 py-3 text-sm leading-6 text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 bg-black px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
           />
           <p
             id="batch-urls-help"
-            className="px-1 text-[11px] leading-5 text-zinc-500"
+            className="px-1 text-[11px] leading-5 text-zinc-400"
           >
             One HTTP(S) URL per line. Direct links and Pixeldrain files are
             queued immediately. Playlists and Pixeldrain lists return a preview
@@ -656,7 +656,7 @@ function SubmitOutcomes({
   onOpenSource: (batchId: string, itemId: string) => void
 }): JSX.Element {
   return (
-    <div className="mt-3 rounded-2xl border border-white/10 bg-[#070707] p-3">
+    <div className="mt-3 rounded-xl border border-white/10 bg-[#080808] p-3">
       <h3 className="px-1 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
         Submit results
       </h3>
@@ -742,7 +742,7 @@ function PreviewCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-2xl border border-white/10 bg-[#070707] p-4"
+      className="rounded-xl border border-white/10 bg-[#080808] p-3"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -845,7 +845,7 @@ function PreviewCard({
                   }`}
                 >
                   <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-200">
-                    <span className="text-[10px] tabular-nums text-zinc-600">
+                    <span className="text-[10px] tabular-nums text-zinc-500">
                       {index + 1}.
                     </span>
                     <span className="break-words">{entry.title}</span>
@@ -871,7 +871,7 @@ function PreviewCard({
       </ul>
 
       {preview.availableCount > MAX_COLLECTION_SELECTION ? (
-        <p className="mt-2 text-[10px] leading-4 text-zinc-600">
+        <p className="mt-2 text-[10px] leading-4 text-zinc-500">
           Selection is limited to {MAX_COLLECTION_SELECTION} items per batch.
         </p>
       ) : null}
@@ -896,7 +896,7 @@ function PreviewCard({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
-        <p className="max-w-sm text-[10px] leading-4 text-zinc-600">
+        <p className="max-w-sm text-[10px] leading-4 text-zinc-500">
           Only available entries can be queued. Unavailable entries stay
           unselected and do not block the rest of the collection.
         </p>
@@ -947,7 +947,7 @@ function BatchCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-2xl border border-white/10 bg-[#070707] p-4 transition-colors hover:border-white/20"
+      className="rounded-xl border border-white/10 bg-[#080808] p-3 transition-colors hover:border-white/20"
     >
       <div className="flex items-start justify-between gap-3">
         <button
@@ -989,7 +989,7 @@ function BatchCard({
         </span>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-3">
         <div
           role="progressbar"
           aria-label={`Batch progress for ${batch.title}`}
@@ -1060,7 +1060,7 @@ function BatchCard({
           danger
         />
       </div>
-      <p className="mt-2 text-[10px] leading-4 text-zinc-600">
+      <p className="mt-2 text-[10px] leading-4 text-zinc-500">
         Removing this group card clears only the batch history. Child downloads,
         media jobs and files on disk are kept.
       </p>
@@ -1068,7 +1068,7 @@ function BatchCard({
       {expanded ? (
         <div id={itemsId} className="mt-3 border-t border-white/5 pt-3">
           {batch.items.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-white/10 bg-black/30 px-3 py-4 text-center text-[11px] text-zinc-600">
+            <p className="rounded-lg border border-dashed border-white/10 bg-black/30 px-3 py-4 text-center text-[11px] text-zinc-500">
               No child items.
             </p>
           ) : (
@@ -1119,7 +1119,7 @@ function BatchItemRow({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-zinc-200">
-            <span className="text-[10px] tabular-nums text-zinc-600">
+            <span className="text-[10px] tabular-nums text-zinc-500">
               {index + 1}.
             </span>
             <span className="break-words" title={item.title}>
@@ -1133,11 +1133,11 @@ function BatchItemRow({
               {ITEM_STATUS_LABEL[item.status]}
             </span>
           </p>
-          <p className="mt-0.5 truncate text-[10px] text-zinc-500" title={item.label}>
+          <p className="mt-0.5 truncate text-[10px] text-zinc-400" title={item.label}>
             {item.label}
           </p>
           {item.completedBytes > 0 || item.totalBytes !== null ? (
-            <p className="mt-1 text-[10px] tabular-nums text-zinc-600">
+            <p className="mt-1 text-[10px] tabular-nums text-zinc-500">
               {formatBytes(item.completedBytes)} /{' '}
               {item.totalBytes !== null
                 ? formatBytes(item.totalBytes)
@@ -1273,16 +1273,16 @@ function LoadingState(): JSX.Element {
   return (
     <div
       role="status"
-      className="mt-3 rounded-2xl border border-white/10 bg-[#050505] px-6 py-10 text-center"
+      className="mt-3 rounded-xl border border-white/10 bg-[#050505] px-6 py-8 text-center"
     >
       <div
         aria-hidden="true"
-        className="mx-auto flex h-10 w-10 animate-pulse items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-base text-zinc-500"
+        className="mx-auto flex h-9 w-9 animate-pulse items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
       >
         ↓
       </div>
-      <p className="mt-3 text-sm font-medium text-zinc-300">Loading batches…</p>
-      <p className="mt-1 text-xs text-zinc-600">
+      <p className="mt-2.5 text-sm font-medium text-zinc-300">Loading batches…</p>
+      <p className="mt-1 text-xs text-zinc-500">
         Reading local batch history and progress.
       </p>
     </div>
@@ -1297,7 +1297,7 @@ function SnapshotErrorState({
   onRetry: () => void
 }): JSX.Element {
   return (
-    <div className="mt-3 rounded-2xl border border-red-400/25 bg-red-400/5 px-6 py-10 text-center">
+    <div className="mt-3 rounded-xl border border-red-400/25 bg-red-400/5 px-6 py-8 text-center">
       <p className="text-sm font-medium text-red-200">
         Batch history could not be loaded
       </p>
@@ -1322,15 +1322,15 @@ function SnapshotErrorState({
 
 function BatchEmptyState(): JSX.Element {
   return (
-    <div className="mt-3 rounded-2xl border border-dashed border-white/10 bg-[#050505] px-6 py-10 text-center">
+    <div className="mt-3 rounded-xl border border-dashed border-white/10 bg-[#050505] px-6 py-8 text-center">
       <div
         aria-hidden="true"
-        className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-base text-zinc-500"
+        className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
       >
         ≡
       </div>
-      <p className="mt-3 text-sm font-medium text-zinc-300">No batches yet</p>
-      <p className="mt-1 text-xs text-zinc-600">
+      <p className="mt-2.5 text-sm font-medium text-zinc-300">No batches yet</p>
+      <p className="mt-1 text-xs text-zinc-400">
         Submit one or more URLs above. Collections appear as previews until you
         select items.
       </p>

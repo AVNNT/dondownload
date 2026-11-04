@@ -276,8 +276,12 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
     // Probe external media tools without delaying the first window. The media
     // job manager publishes the verified state when the probe settles. Smoke
     // verification awaits the same production probe below.
+    const interactiveSmoke =
+      smoke !== null && process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1'
     const initialMediaProbe =
-      smoke === null ? mediaJobs.refreshToolState() : null
+      smoke === null || interactiveSmoke
+        ? mediaJobs.refreshToolState()
+        : null
     if (initialMediaProbe !== null) void initialMediaProbe
 
     // The browser bridge is intentionally started without touching the
@@ -313,8 +317,6 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       })
     }
 
-    const interactiveSmoke =
-      smoke !== null && process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1'
     const window = openMainWindow(smoke === null, interactiveSmoke)
     mainWindow = window
 

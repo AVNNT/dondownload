@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import type { DownloadItem, DownloadStatus } from '@shared/types'
 import { formatBytes, formatEta, formatPercent, formatSpeed } from '@shared/format'
 
@@ -76,7 +76,11 @@ export function DownloadCard({
   onRemove,
   onShowInFolder
 }: DownloadCardProps): JSX.Element {
-  const percent = formatPercent(item.completedBytes, item.totalBytes)
+  const [expanded, setExpanded] = useState(false)
+  const isComplete = item.status === 'complete'
+  const percent = isComplete
+    ? 100
+    : formatPercent(item.completedBytes, item.totalBytes)
   const canPause =
     item.status === 'active' ||
     item.status === 'waiting' ||
@@ -88,98 +92,116 @@ export function DownloadCard({
   const canRetry =
     item.status === 'interrupted' ||
     (item.status === 'error' && item.attempts < item.maxAttempts)
-  const isComplete = item.status === 'complete'
   const scheduledLabel = formatLocalTime(item.scheduledAt)
+  const updatedLabel = formatLocalTime(item.updatedAt)
+  const detailsId = `download-${item.id}-details`
 
   return (
-    <article className="rounded-2xl border border-white/10 bg-[#070707] p-4 transition-colors hover:border-white/20">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3
-            className="truncate text-sm font-medium text-zinc-100"
-            title={item.filename}
-          >
-            {item.filename}
-          </h3>
-          <p className="mt-0.5 truncate text-[11px] text-zinc-500" title={item.url}>
-            {hostnameOf(item.url)}
-          </p>
-        </div>
-        <span
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[item.status]}`}
-        >
-          {statusLabel(item)}
-        </span>
-      </div>
+    <article
+      aria-busy={busy}
+      className="overflow-hidden rounded-xl border border-white/10 bg-[#080808] transition-colors hover:border-white/20"
+    >
+      <div className="flex items-start gap-2.5 p-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h3
+              className="truncate text-[13px] font-medium leading-5 text-zinc-100"
+              title={item.filename}
+            >
+              {item.filename}
+            </h3>
+            <span
+              className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[item.status]}`}
+            >
+              {statusLabel(item)}
+            </span>
+          </div>
 
-      <div className="mt-4">
-        <div
-          role="progressbar"
-          aria-label={`Download progress for ${item.filename}`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(percent)}
-          className="h-1.5 overflow-hidden rounded-full bg-white/10"
-        >
-          <div
-            className={`h-full rounded-full transition-[width] duration-500 ${BAR_STYLE[item.status]} ${
-              item.status === 'active' ? 'animate-pulse' : ''
-            }`}
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-          <span>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
+            <span className="tabular-nums">
+              <span className="text-zinc-300">
+                {formatBytes(item.completedBytes)}
+              </span>{' '}
+              / {item.totalBytes > 0 ? formatBytes(item.totalBytes) : 'unknown'}
+            </span>
+            <span aria-hidden="true" className="text-zinc-600">
+              ·
+            </span>
             <span className="tabular-nums text-zinc-300">
-              {formatBytes(item.completedBytes)}
-            </span>{' '}
-            / {item.totalBytes > 0 ? formatBytes(item.totalBytes) : 'unknown'}
-            <span className="ml-2 tabular-nums text-zinc-600">
               {Math.round(percent)}%
             </span>
-          </span>
-          <span className="flex items-center gap-3 tabular-nums">
             {item.status === 'active' ? (
               <>
-                <span>{formatSpeed(item.speedBps)}</span>
-                <span>ETA {formatEta(item.etaSeconds)}</span>
+                <span aria-hidden="true" className="text-zinc-600">
+                  ·
+                </span>
+                <span className="tabular-nums text-zinc-300">
+                  {formatSpeed(item.speedBps)}
+                </span>
+                <span aria-hidden="true" className="text-zinc-600">
+                  ·
+                </span>
+                <span className="tabular-nums">
+                  ETA {formatEta(item.etaSeconds)}
+                </span>
               </>
             ) : null}
-            {isComplete ? <span>{formatBytes(item.totalBytes)}</span> : null}
             {item.status === 'error' || item.status === 'interrupted' ? (
-              <span>
-                Attempt {item.attempts} of {item.maxAttempts}
-              </span>
+              <>
+                <span aria-hidden="true" className="text-zinc-600">
+                  ·
+                </span>
+                <span className="tabular-nums">
+                  Attempt {item.attempts} of {item.maxAttempts}
+                </span>
+              </>
             ) : null}
-          </span>
-        </div>
-      </div>
+          </div>
 
-      {scheduledLabel ||
-      typeof item.speedLimitBps === 'number' ||
-      typeof item.connections === 'number' ? (
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-600">
-          {scheduledLabel ? <span>Scheduled {scheduledLabel}</span> : null}
-          {typeof item.speedLimitBps === 'number' ? (
-            <span>Limit {formatSpeed(item.speedLimitBps)}</span>
-          ) : null}
-          {typeof item.connections === 'number' ? (
-            <span>{item.connections} connections</span>
-          ) : null}
-        </p>
-      ) : null}
+          <div
+            role="progressbar"
+            aria-label={`Download progress for ${item.filename}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(percent)}
+            className="mt-2 h-1 overflow-hidden rounded-full bg-white/10"
+          >
+            <div
+              className={`h-full rounded-full transition-[width] duration-500 ${BAR_STYLE[item.status]}`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          aria-controls={expanded ? detailsId : undefined}
+          aria-label={`${expanded ? 'Hide' : 'Show'} details for ${item.filename}`}
+          title={expanded ? 'Hide details' : 'Show details'}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[10px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+        >
+          <span
+            aria-hidden="true"
+            className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
+          >
+            ▾
+          </span>
+        </button>
+      </div>
 
       {item.errorMessage ? (
         <p
           role="alert"
-          className="mt-3 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-[11px] leading-5 text-red-300"
+          title={item.errorMessage}
+          className="mx-3 mb-2 line-clamp-2 rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1.5 text-[11px] leading-5 text-red-300"
         >
           {item.errorMessage}
         </p>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-white/5 px-3 py-2">
         {canStartNow ? (
           <CardAction
             disabled={busy}
@@ -198,10 +220,65 @@ export function DownloadCard({
           <CardAction disabled={busy} onClick={onRetry} label="Retry" accent />
         ) : null}
         {isComplete ? (
-          <CardAction disabled={busy} onClick={onShowInFolder} label="Show in folder" />
+          <CardAction
+            disabled={busy}
+            onClick={onShowInFolder}
+            label="Show in folder"
+          />
         ) : null}
         <CardAction disabled={busy} onClick={onRemove} label="Remove" danger />
       </div>
+
+      {expanded ? (
+        <dl
+          id={detailsId}
+          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-white/5 bg-black/40 px-3 py-2 text-[11px] leading-5"
+        >
+          <dt className="text-zinc-400">Source</dt>
+          <dd
+            className="truncate text-right text-zinc-300"
+            title={item.url}
+          >
+            {hostnameOf(item.url)}
+          </dd>
+          {scheduledLabel ? (
+            <>
+              <dt className="text-zinc-400">Scheduled</dt>
+              <dd className="text-right text-zinc-300">{scheduledLabel}</dd>
+            </>
+          ) : null}
+          {typeof item.speedLimitBps === 'number' ? (
+            <>
+              <dt className="text-zinc-400">Speed limit</dt>
+              <dd className="text-right text-zinc-300">
+                {formatSpeed(item.speedLimitBps)}
+              </dd>
+            </>
+          ) : null}
+          {typeof item.connections === 'number' ? (
+            <>
+              <dt className="text-zinc-400">Connections</dt>
+              <dd className="text-right text-zinc-300">
+                {item.connections}
+              </dd>
+            </>
+          ) : null}
+          {item.status === 'error' || item.status === 'interrupted' ? (
+            <>
+              <dt className="text-zinc-400">Attempts</dt>
+              <dd className="text-right text-zinc-300">
+                {item.attempts} of {item.maxAttempts}
+              </dd>
+            </>
+          ) : null}
+          {updatedLabel ? (
+            <>
+              <dt className="text-zinc-400">Updated</dt>
+              <dd className="text-right text-zinc-300">{updatedLabel}</dd>
+            </>
+          ) : null}
+        </dl>
+      ) : null}
     </article>
   )
 }
@@ -222,7 +299,7 @@ function CardAction({
   const tone = accent
     ? 'border-emerald-400/30 text-emerald-300 hover:bg-emerald-400/10'
     : danger
-      ? 'border-white/10 text-zinc-500 hover:border-red-400/30 hover:text-red-300'
+      ? 'border-white/10 text-zinc-400 hover:border-red-400/30 hover:text-red-300'
       : 'border-white/10 text-zinc-300 hover:bg-white/5'
 
   return (
@@ -230,7 +307,7 @@ function CardAction({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${tone}`}
+      className={`min-h-8 rounded-lg border px-2.5 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${tone}`}
     >
       {label}
     </button>

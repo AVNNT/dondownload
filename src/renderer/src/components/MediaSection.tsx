@@ -164,16 +164,16 @@ export function MediaSection(): JSX.Element {
     tool !== null && (tool.status === 'unavailable' || tool.status === 'error')
 
   return (
-    <section className="mt-7" aria-labelledby="media-heading">
-      <div className="mb-3 flex items-baseline justify-between">
+    <section aria-labelledby="media-heading">
+      <div className="mb-2 flex items-baseline justify-between">
         <h2
           id="media-heading"
-          className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500"
+          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
         >
           Media downloads
         </h2>
         {jobs.length > 0 ? (
-          <span className="text-[11px] tabular-nums text-zinc-600">
+          <span className="text-[11px] tabular-nums text-zinc-500">
             {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'}
           </span>
         ) : null}
@@ -224,22 +224,22 @@ export function MediaSection(): JSX.Element {
       />
 
       {jobs.length === 0 ? (
-        <div className="mt-2.5 rounded-2xl border border-dashed border-white/10 bg-[#050505] px-6 py-10 text-center">
+        <div className="mt-2 rounded-xl border border-dashed border-white/10 bg-[#050505] px-6 py-8 text-center">
           <div
             aria-hidden="true"
-            className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-base text-zinc-500"
+            className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
           >
             ▶
           </div>
-          <p className="mt-3 text-sm font-medium text-zinc-300">
+          <p className="mt-2.5 text-sm font-medium text-zinc-300">
             No media downloads yet
           </p>
-          <p className="mt-1 text-xs text-zinc-600">
+          <p className="mt-1 text-xs text-zinc-400">
             Analyze a media page above to choose a video or audio download.
           </p>
         </div>
       ) : (
-        <div className="mt-2.5 space-y-2.5">
+        <div className="mt-2 space-y-2">
           {jobs.map((job) => (
             <MediaJobCard
               key={job.id}

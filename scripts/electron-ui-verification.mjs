@@ -249,6 +249,33 @@ async function clickButton(label, scopeSelector = 'body') {
   if (!clicked) throw new Error(`Could not click enabled button: ${label}`)
 }
 
+async function selectPage(label) {
+  const selected = await cdp.evaluate(`(() => {
+    const button = [...document.querySelectorAll('nav[aria-label="Sections"] button')]
+      .find(item => item.innerText.trim() === ${JSON.stringify(label)})
+    button?.click()
+    return button !== undefined
+  })()`)
+  if (!selected) throw new Error(`Could not select ${label} page.`)
+  const pageText = {
+    Downloads: 'Quick add',
+    Media: 'MEDIA DOWNLOADS',
+    Batches: 'BATCH DOWNLOADS',
+    Settings: 'Download settings'
+  }[label]
+  await waitFor(
+    () => cdp.evaluate(`({
+      current: document.querySelector('nav[aria-label="Sections"] [aria-current="page"]')?.innerText.trim(),
+      text: document.querySelector('main')?.innerText ?? ''
+    })`),
+    state => state?.current === label && state.text.toLowerCase().includes(pageText.toLowerCase())
+  )
+  await cdp.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+  // Wait for the offscreen compositor to publish the React commit before
+  // capturing pixels; a DOM-ready read alone can race the last painted tab.
+  await sleep(200)
+}
+
 async function scrollCardIntoView() {
   const found = await cdp.evaluate(`(() => {
     const heading = [...document.querySelectorAll('article h3')]
@@ -357,14 +384,26 @@ async function run() {
   await waitFor(async () => cardState(), state => state && state.percent > paused.percent, 15_000)
   record('resume-control', { status: 'downloading', percentAfterResume: (await cardState()).percent })
 
+  await selectPage('Settings')
   await scrollSettingsIntoView()
   await cdp.screenshot('04-settings-before-change.png')
-  await setInput('input[aria-label="Global speed limit in bytes per second"]', 262144)
+  await setInput('input[aria-label="Global speed limit in MB per second"]', 0.262144)
   await clickButton('Save settings')
-  const saveMessage = await waitFor(() => cdp.evaluate(`document.querySelector('[role="status"]')?.innerText ?? ''`), text => text.includes('Settings saved and applied.'))
+  const saveMessage = await waitFor(() => cdp.evaluate(`document.querySelector('section[aria-labelledby="settings-heading"] [role="status"]')?.innerText ?? ''`), text => text.includes('Settings saved and applied.'))
   const liveLimit = await waitFor(getAria2Limit, value => value === '262144', 10_000)
   await cdp.screenshot('05-settings-saved.png')
   record('settings-live-engine', { uiMessage: saveMessage, aria2MaxOverallDownloadLimitBps: liveLimit, screenshot: path.join(screenshotDir, '05-settings-saved.png') })
+
+  await selectPage('Media')
+  await cdp.screenshot('08-media.png')
+  record('media-page-screenshot', { path: path.join(screenshotDir, '08-media.png'), actualElectron: true })
+  await selectPage('Batches')
+  await cdp.screenshot('09-batches.png')
+  record('batches-page-screenshot', { path: path.join(screenshotDir, '09-batches.png'), actualElectron: true })
+  await selectPage('Settings')
+  await cdp.screenshot('10-settings.png')
+  record('settings-page-screenshot', { path: path.join(screenshotDir, '10-settings.png'), actualElectron: true })
+  await selectPage('Downloads')
 
   const completed = await waitFor(cardState, state => state && state.text.toLowerCase().includes('complete'), 120_000)
   const outputPath = path.join(downloadDir, fileName)
@@ -400,6 +439,18 @@ async function run() {
   await scrollCardIntoView()
   await cdp.screenshot('07-relaunched-persisted.png')
   record('relaunch-persistence', { downloadStatus: persistedItem.status, globalSpeedLimitBps: persisted[1].value.globalSpeedLimitBps, aria2RestoredLimitBps: relaunchedLimit, screenshot: path.join(screenshotDir, '07-relaunched-persisted.png') })
+
+  await cdp.command('Emulation.setDeviceMetricsOverride', {
+    width: 375,
+    height: 820,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  await cdp.screenshot('11-narrow-downloads.png')
+  const narrowMetrics = await cdp.evaluate(`({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, navWidth: document.querySelector('nav[aria-label="Sections"]')?.getBoundingClientRect().width })`)
+  if (narrowMetrics.scrollWidth > narrowMetrics.width) throw new Error(`Narrow layout overflows horizontally: ${JSON.stringify(narrowMetrics)}`)
+  record('narrow-layout', { ...narrowMetrics, screenshot: path.join(screenshotDir, '11-narrow-downloads.png') })
+  await cdp.command('Emulation.clearDeviceMetricsOverride')
 
   const report = { status: 'PASS', startedAt, app: appPath, renderer: 'actual packaged Electron renderer + production preload + trusted IPC', fixtureUrl, fixtureBytes: fileSize, userData, downloadDir, screenshots: screenshotDir, checks: results }
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(report, null, 2))

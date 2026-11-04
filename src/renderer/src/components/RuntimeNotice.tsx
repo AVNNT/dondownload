@@ -22,7 +22,7 @@ export function RuntimeNotice({
   return (
     <div
       role={isFailure ? 'alert' : 'status'}
-      className={`mt-3 rounded-xl border px-4 py-3 text-xs leading-5 ${
+      className={`rounded-xl border px-3 py-2.5 text-xs leading-5 ${
         isFailure
           ? 'border-amber-400/25 bg-amber-400/5 text-amber-200'
           : 'border-white/10 bg-white/[0.02] text-zinc-400'

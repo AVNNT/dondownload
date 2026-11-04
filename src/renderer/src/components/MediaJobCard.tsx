@@ -70,7 +70,7 @@ export function MediaJobCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-2xl border border-white/10 bg-[#070707] p-4 transition-colors hover:border-white/20"
+      className="rounded-xl border border-white/10 bg-[#080808] p-3 transition-colors hover:border-white/20"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -97,7 +97,7 @@ export function MediaJobCard({
         </span>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-3">
         <div
           role="progressbar"
           aria-label={`Media download progress for ${job.title}`}
@@ -123,7 +123,7 @@ export function MediaJobCard({
           )}
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-zinc-400">
           <span>
             <span className="tabular-nums text-zinc-300">
               {formatBytes(job.completedBytes)}
@@ -132,7 +132,7 @@ export function MediaJobCard({
             {job.totalBytes !== null && job.totalBytes > 0
               ? formatBytes(job.totalBytes)
               : 'unknown'}
-            <span className="ml-2 tabular-nums text-zinc-600">
+            <span className="ml-2 tabular-nums text-zinc-500">
               {indeterminate ? STATUS_LABEL[job.status] : `${Math.round(percent)}%`}
             </span>
           </span>

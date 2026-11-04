@@ -1,6 +1,6 @@
 # Development status
 
-As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
+As of 2026-11-05. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
 verified. Milestone 3A is **PASS** at `e7e28ee`, verified end to end in a headed
@@ -18,7 +18,7 @@ by tests. The Windows installer baseline is integrated locally, and packaged
 Deno is wired into yt-dlp calls. Isolated installer execution, signing, legal
 clearance, and other release checks remain open.
 
-## Current runtime summary (2026-11-04)
+## Current runtime summary (2026-11-05)
 
 The packaged production Electron UI has now completed a real, CDP-driven local
 download flow through the renderer, production preload/IPC, DownloadManager,
@@ -1421,6 +1421,48 @@ actual active/paused/completed states.
 This makes the **basic HTTP download path materially better verified**, but is
 not enough to claim the whole product ready as a daily driver. Visible native
 window behavior, external HTTP servers, real-user Downloads placement, broad
-restart/pause schedules, Helium/native messaging and the other media/batch
-scenarios remain separate coverage gaps. No installer was rebuilt or executed,
-and no push/release was made.
+restart/pause schedules, Helium/native messaging and live media/batch scenarios
+remain separate coverage gaps. No installer was rebuilt or executed, and no
+push/release was made.
+
+## Compact renderer redesign and packaged UI verification (2026-11-05)
+
+The renderer now has a centered compact layout with OLED-black surfaces, higher
+contrast supporting text, restrained green accents and a non-floating compact
+top navigation: Downloads (default), Media, Batches and Settings. Only the
+selected view renders. Downloads puts Quick Add first, prioritizes active/queued
+work over completed history, and uses smaller expandable cards with visible
+progress, speed/ETA and actions. Empty states are reduced. Media, batch and
+settings workflows remain on their existing renderer/preload/IPC contracts.
+Settings uses decimal MB/s for the editable global limit and shows the exact
+stored B/s alongside the human-readable KB/s/MB/s value; saved backend values
+remain byte/sec. No aria2, yt-dlp, SQLite or IPC implementation was rewritten.
+
+The actual rebuilt unpacked Electron app was re-run with isolated CDP on
+2026-11-04/05 (run directory `artifacts/test-runs/electron-ui-2026-11-04T23-02-08-182Z/`). The production renderer/preload/IPC accepted Quick Add and downloaded
+the throttled 16 MiB loopback fixture; progress, pause, resume, completion/hash,
+live limit application and settings/completed-record persistence after relaunch
+passed. The same run captured actual Electron screenshots for Downloads default,
+active, paused, completed, Media, Batches, Settings and a 375px-wide Downloads
+viewport. The narrow viewport reported `documentElement.scrollWidth=365` at a
+375px layout width (no horizontal overflow). No physical input or visible
+desktop window was used; narrow layout was exercised using CDP viewport metrics.
+
+Screenshots are under that run's `screenshots/` directory (`01-quick-add.png`,
+`02-in-progress.png`, `03-paused.png`, `06-completed.png`, `08-media.png`,
+`09-batches.png`, `10-settings.png`, `11-narrow-downloads.png`). `result.json`
+and the renderer trace are retained in the run directory, outside Git. A
+before/after pair is available from the prior actual Electron run at
+`artifacts/test-runs/electron-ui-2026-11-04T22-35-20-186Z/screenshots/01-quick-add.png`
+and this redesign run's `01-quick-add.png`; the before screenshot visibly had
+all sections stacked in one long page.
+
+Verification: `npm run build` (typecheck and production build passed),
+`npx electron-builder --win --x64 --dir` (unpacked app rebuilt),
+`node --check scripts/electron-ui-verification.mjs`,
+`node scripts/electron-ui-verification.mjs` (real packaged CDP flow and required
+views passed), and `npm run smoke:packaged` (11/11 checks, zero renderer
+diagnostics). No unit tests were added or run; no installer was rebuilt. The
+only harness adjustments were selectors/page waits and additional screenshots
+for the newly navigable renderer. Visible-native-window behavior remains
+untested because verification avoided desktop interference.
