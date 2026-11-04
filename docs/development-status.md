@@ -31,6 +31,14 @@ visible native window. No OS input, real Downloads path, Helium profile,
 installer or external download host was used. Screenshots and a bounded renderer
 trace are recorded in the dedicated verification section below.
 
+On 2026-11-04, packaged Electron also passed one bounded real media job and the
+external HTTP redirect/Range/error checks, with screenshots and traces under
+`artifacts/test-runs/`. Playlist preview and explicit one-entry selection were
+confirmed in the packaged Batches page. Its automatic best-video choice exceeded
+the intended 25 MiB check during that attempt, so the transfer was stopped and
+no completed GUI playlist-batch download is claimed. Smart direct-URL batch UI
+and disposable-profile Helium integration were not completed in this pass.
+
 The earlier live selected-playlist media download remains a successful,
 separate Milestone 3B result (see its section below); it is not superseded by
 this local HTTP flow. Pixeldrain list and Gofile-folder coverage remain open.
@@ -1295,6 +1303,78 @@ Milestone 3A PASS above.
   exercised in actual packaged Electron with isolated local HTTP and IPC, but
   not in a visible native window or a real Helium profile. See the dedicated
   3B and runtime-verification sections for exact evidence and gaps.
+
+## Packaged Electron real-world verification (2026-11-04)
+
+The following checks used the unpacked production package at
+`dist/win-unpacked/DonDownload.exe`, the actual renderer/preload/IPC and isolated
+smoke user-data/download locations. The window was headless/offscreen; no OS
+input, real Downloads folder, browser profile or installed application was used.
+The CDP harnesses and machine-local artifacts are under `scripts/` and
+`artifacts/test-runs/` respectively.
+
+### Media GUI: PASS
+
+- The real Media page probed yt-dlp `2026.10.26` and FFmpeg `9.0.2`, analyzed
+  the public CC-BY Blender Open Movies Caminandes entry and displayed 33 real
+  format options.
+- Exactly one 144p merged VP9/Opus option was explicitly selected in the UI.
+  The job completed at **3,974,423 bytes**. Bundled ffprobe confirmed 256×144
+  VP9 video and stereo Opus audio; exit code 0. SHA-256:
+  `ee27795000223b9eeae75c50fe47a78a4b3435b00f61620315586cc8a6752f65`.
+- Evidence: `artifacts/test-runs/electron-media-2026-11-04T23-12-40-813Z/`
+  (`result.json`, renderer trace, input/analysis/selection/active/completion
+  captures, isolated output). One initial harness sample observed the engine's
+  transient `stopped` state before the asynchronous tool probe settled; the
+  corrected run waited for `ready` and passed without an extra provider request.
+- Audio-only was not repeated; prior 3A audio-only verification remains the
+  separate evidence for that path.
+
+### External HTTP GUI: PASS
+
+- GitHub raw redirect completed in the packaged app with inferred filename
+  `Windows.gitignore`; 290-byte output SHA-256 matched the public fixture.
+- A completed URL could be intentionally added again. An unfinished active
+  duplicate instead showed the explicit warning and did not add another job.
+- The OVH 1 MiB Range-capable file paused at 16 KiB, resumed, and completed with
+  matching 1 MiB size and SHA-256. A raw-GitHub 404 ended in a readable error.
+- Evidence: `artifacts/test-runs/electron-http-2026-11-04T23-19-19-139Z/`
+  (`result.json`, renderer trace, screenshots and isolated files).
+
+### Playlist and batch GUI: PARTIAL / BLOCKED
+
+- In the actual Batches page, Smart Batch returned a real Blender playlist
+  preview of 18 entries with zero selected and no batch created. The operator
+  selected only the pinned Caminandes CC-BY entry and queued a batch with
+  exactly one matching item.
+- The batch worker automatically chose its best-video format; unlike the Media
+  page, this collection UI does not let the user pin a lower quality. Its
+  observed progress exceeded the harness's 25 MiB guard, so the run was stopped
+  immediately. No completed selected-playlist GUI download, group progress,
+  independent HTTP failures, cancellation or persisted batch restart is claimed
+  from this run. This is a verification/scope limitation, not a confirmed
+  product defect; the playlist batch path should not be used for size-sensitive
+  selections until a quality/size bound is available.
+- Captures and the partial isolated run are under
+  `artifacts/test-runs/electron-playlist-2026-11-04T23-21-56-032Z/`.
+- Focused batch integration: **2/2 passed** with the packaged real aria2 binary
+  and SQLite. That deterministic suite is local loopback coverage, not evidence
+  of the packaged renderer UI. Pixeldrain lists remain blocked on a lawful,
+  bounded public fixture; no Gofile workaround was attempted.
+
+### Helium and daily-use assessment
+
+- Helium was **not rerun** in this pass. Although a previous Milestone 3A headed
+  test passed in a disposable profile, creating a new isolated native-host
+  registration would write the shared Chromium-compatible current-user registry
+  key; safe isolation from the user's existing browser registration was not
+  established. Manual permission dialogs remain untested here.
+- The tested direct HTTP and individual Media flows work in the production
+  package, but Smart Batch renderer lifecycle, playlist batch size/quality
+  behavior, packaged batch restart persistence and current Helium integration
+  remain open. Therefore this verification alone does **not** establish
+  all-features readiness for daily personal use; it does not reveal a product
+  failure in the tested HTTP or individual media flows.
 
 ## Model handoff status
 
