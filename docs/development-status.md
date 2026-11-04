@@ -701,11 +701,13 @@ log files. This is payload and locator verification only: the app was not
 launched, installed or uninstalled; no registry, browser profile, physical
 input, or existing download directory was touched.
 
-Focused real-aria2 runs using only loopback fixtures passed **2 tests**: future
-scheduled submission, and outside-hours queue + Start Now + active completion
-after the allowed-hours close. The first test attempt exposed a test-only
-snapshot selection issue; it was corrected to select by filename and the rerun
-passed. `npm run test:fast` passed **504 tests**. The last full `test:gate`
+Focused real-aria2 runs using only loopback fixtures passed **3 tests**: future
+scheduled submission; outside-hours queue + Start Now + active completion after
+the allowed-hours close; and restart recovery of an in-flight transfer (partial
+file retained, no silent auto-resume, explicit retry completes via HTTP Range).
+The first allowed-hours test attempt exposed a test-only snapshot selection
+issue; it was corrected to select by filename and the rerun passed.
+`npm run test:fast` passed **504 tests**. The final full `npm run test:gate`
 passed **544 tests / 11 skipped**, with typecheck and production build passing.
 The opt-in packaged-resource and real-aria2 checks were also run separately and
 passed. Source archive candidates and their locally computed hashes are

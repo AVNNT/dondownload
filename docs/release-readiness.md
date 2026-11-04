@@ -27,8 +27,10 @@ This checklist is not legal clearance or an install certification.
       set; both were run separately and passed.
 - [x] Real aria2/local-fixture scheduling: scheduled start, queue outside
       allowed hours, Start Now override, and active transfer completion after
-      the allowed-hours end all passed in focused integration runs. Existing
-      fake-clock tests cover boundaries and recovery invariants.
+      the allowed-hours end all passed in focused integration runs. Real aria2
+      restart recovery also passed: an in-flight transfer was interrupted,
+      partial data was retained, and an explicit Range retry completed. Fake-
+      clock tests cover boundary rules and policy-held recovery invariants.
 - [x] Production dependency audit: zero findings (`npm audit --omit=dev`).
 - [x] Source candidates (aria2 1.37.0, yt-dlp 2026.10.26, FFmpeg commit,
       Deno 2.9.8) downloaded and archive-tested; local hashes and completeness
