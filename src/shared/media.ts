@@ -102,6 +102,8 @@ export interface MediaJob {
   analysisId: string
   optionId: string
   kind: MediaFormatKind
+  /** Safe page title captured from analysis for useful download cards. */
+  title: string
   label: string
   status: MediaJobStatus
   completedBytes: number
@@ -148,6 +150,7 @@ export interface MediaJobRecord {
   analysisId: string
   optionId: string
   kind: MediaFormatKind
+  title: string
   label: string
   status: MediaJobStatus
   completedBytes: number
@@ -315,10 +318,7 @@ export function parseMediaJobId(value: unknown): string {
   return value
 }
 
-/**
- * Accept ordinary web page URLs and remove credentials and fragments before
- * the value can reach the analyzer or the persistence layer.
- */
+/** Accept ordinary web page URLs; credential-bearing URLs are rejected. */
 export function normalizeMediaSourceUrl(value: unknown): string {
   if (typeof value !== 'string') {
     throw new ValidationError('Enter a media page URL.')
@@ -348,9 +348,9 @@ export function normalizeMediaSourceUrl(value: unknown): string {
   if (!parsed.hostname) {
     throw new ValidationError('The URL must include a host name.')
   }
-
-  parsed.username = ''
-  parsed.password = ''
+  if (parsed.username || parsed.password) {
+    throw new ValidationError('URLs containing credentials are not supported.')
+  }
   parsed.hash = ''
 
   if (parsed.href.length > MAX_MEDIA_URL_LENGTH) {
@@ -470,6 +470,7 @@ export function parseMediaJob(value: unknown): MediaJob {
     'analysisId',
     'optionId',
     'kind',
+    'title',
     'label',
     'status',
     'completedBytes',
@@ -494,6 +495,7 @@ export function parseMediaJob(value: unknown): MediaJob {
     analysisId: parseMediaAnalysisId(record.analysisId),
     optionId: parseMediaOptionId(record.optionId),
     kind,
+    title: textValue(record, 'title', MAX_MEDIA_TITLE_LENGTH),
     label: textValue(record, 'label', MAX_MEDIA_LABEL_LENGTH),
     status: record.status,
     completedBytes: integerValue(record, 'completedBytes', 0),

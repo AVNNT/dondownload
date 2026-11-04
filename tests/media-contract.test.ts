@@ -80,6 +80,7 @@ function job(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     analysisId: ANALYSIS_ID,
     optionId: VIDEO_OPTION_ID,
     kind: 'video',
+    title: 'Example media',
     label: '1080p MP4 - H.264 + AAC',
     status: 'downloading',
     completedBytes: 512,
@@ -209,9 +210,9 @@ describe('media public schema', () => {
 })
 
 describe('media source URL normalization', () => {
-  it('accepts http(s) and strips credentials and fragments', () => {
-    expect(normalizeMediaSourceUrl('https://user:secret@example.com/watch?v=1#part')).toBe(
-      'https://example.com/watch?v=1'
+  it('accepts http(s), rejects credentials, and strips fragments', () => {
+    expect(() => normalizeMediaSourceUrl('https://user:secret@example.com/watch?v=1#part')).toThrow(
+      /credentials/
     )
     expect(normalizeMediaSourceUrl('  http://example.com/a  ')).toBe('http://example.com/a')
     expect(parseAnalyzeMediaInput({ url: 'https://example.com/watch#x' })).toEqual({
@@ -222,6 +223,7 @@ describe('media source URL normalization', () => {
   it('rejects non-web, control-character and oversized URLs', () => {
     expect(() => normalizeMediaSourceUrl('file:///C:/secret.mp4')).toThrow()
     expect(() => normalizeMediaSourceUrl('javascript:alert(1)')).toThrow()
+    expect(() => normalizeMediaSourceUrl('https://user@example.com/watch')).toThrow(/credentials/)
     expect(() => normalizeMediaSourceUrl('https://example.com/\u0000')).toThrow()
     expect(() => normalizeMediaSourceUrl(`https://example.com/${'a'.repeat(5000)}`)).toThrow()
   })

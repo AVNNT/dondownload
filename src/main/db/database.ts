@@ -86,6 +86,7 @@ const MIGRATIONS: readonly Migration[] = [
         analysis_id TEXT NOT NULL,
         option_id TEXT NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('video', 'audio')),
+        title TEXT NOT NULL,
         label TEXT NOT NULL,
         status TEXT NOT NULL CHECK (
           status IN (
@@ -226,6 +227,7 @@ function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
   const analysisId = text(row, 'analysis_id')
   const optionId = text(row, 'option_id')
   const rawKind = text(row, 'kind')
+  const title = text(row, 'title')
   const label = text(row, 'label')
   const rawStatus = text(row, 'status')
   const dir = text(row, 'dir')
@@ -238,6 +240,7 @@ function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
     !analysisId ||
     !optionId ||
     !rawKind ||
+    !title ||
     !label ||
     !rawStatus ||
     !dir
@@ -253,6 +256,7 @@ function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
     analysisId,
     optionId,
     kind: rawKind as MediaJobRecord['kind'],
+    title,
     label,
     status: rawStatus,
     completedBytes: Math.max(0, Math.trunc(number(row, 'completed_bytes'))),
@@ -323,15 +327,16 @@ export class DownloadDatabase {
 
       this.mediaUpsertStatement = this.db.prepare(`
         INSERT INTO media_jobs (
-          id, source_url, analysis_id, option_id, kind, label, status,
+          id, source_url, analysis_id, option_id, kind, title, label, status,
           completed_bytes, total_bytes, error_message, dir, file_path,
           created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           source_url = excluded.source_url,
           analysis_id = excluded.analysis_id,
           option_id = excluded.option_id,
           kind = excluded.kind,
+          title = excluded.title,
           label = excluded.label,
           status = excluded.status,
           completed_bytes = excluded.completed_bytes,
@@ -511,8 +516,8 @@ export class DownloadDatabase {
   }
 
   private runMediaUpsert(record: MediaJobRecord): void {
-    // Strip credentials/fragments here as a final guard even if a caller
-    // skipped the shared normalizer. The source URL never leaves this table.
+    // Reject credentials here as a final guard even if a caller skipped the
+    // shared normalizer. Fragments are removed; sourceUrl never leaves DB.
     const sourceUrl = normalizeMediaSourceUrl(record.sourceUrl)
     this.mediaUpsertStatement.run(
       record.id,
@@ -520,6 +525,7 @@ export class DownloadDatabase {
       record.analysisId,
       record.optionId,
       record.kind,
+      record.title,
       record.label,
       record.status,
       Math.max(0, Math.trunc(record.completedBytes)),

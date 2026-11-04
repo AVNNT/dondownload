@@ -98,6 +98,7 @@ function mediaRecord(overrides: Partial<MediaJobRecord> = {}): MediaJobRecord {
     analysisId: 'analysis_0123456789abcdef',
     optionId: 'option_video_0123456789',
     kind: 'video',
+    title: 'Example media',
     label: '1080p MP4 - H.264 + AAC',
     status: 'queued',
     completedBytes: 0,
@@ -452,14 +453,19 @@ describe('v1 to v2 migration preservation', () => {
 })
 
 describe('media job persistence', () => {
-  it('persists only the normalized internal source URL, progress, lifecycle and paths', async () => {
+  it('persists only the normalized internal source URL, title, progress, lifecycle and paths', async () => {
     const filePath = await makeDatabasePath()
     const first = open(filePath)
 
+    expect(() =>
+      first.saveMediaJob(
+        mediaRecord({
+          sourceUrl: 'https://user:secret@example.com/watch?v=abc#fragment'
+        })
+      )
+    ).toThrow(/credentials/)
     first.saveMediaJob(
-      mediaRecord({
-        sourceUrl: 'https://user:secret@example.com/watch?v=abc#fragment'
-      })
+      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc#fragment' })
     )
 
     const stored = first.loadMediaJobs()
@@ -547,6 +553,7 @@ describe('media job persistence', () => {
       'analysis_id',
       'option_id',
       'kind',
+      'title',
       'label',
       'status',
       'completed_bytes',
