@@ -8,7 +8,12 @@ import { DownloadManager } from './downloads/manager'
 import { createMediaEngine } from './media/engine'
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
-import { decideWindowClose, shouldQuitWhenAllWindowsClosed } from './lifecycle'
+import {
+  decideBeforeQuit,
+  decideWindowClose,
+  isCleanupRunning,
+  shouldQuitWhenAllWindowsClosed
+} from './lifecycle'
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
 import { createAppTray, type AppTray } from './tray'
 import { createMainWindow } from './window'
@@ -23,6 +28,8 @@ let nativeBridge: NativeBridge | null = null
 let quitRequested = false
 /** The orderly flush/stop/close sequence is running; never run it twice. */
 let cleanupStarted = false
+/** Cleanup completed; only then may the final internal app.quit proceed. */
+let cleanupFinished = false
 
 function isMainWindowVisible(): boolean {
   return Boolean(
@@ -198,7 +205,13 @@ if (!hasSingleInstanceLock) {
       shouldQuitWhenAllWindowsClosed({
         platform: process.platform,
         isQuitting: quitRequested || cleanupStarted,
-        trayAvailable: appTray !== null
+        trayAvailable: appTray !== null,
+        // Closing the window during cleanup fires this event; the pending
+        // internal quit owns the shutdown, so do not start a parallel one.
+        cleanupRunning: isCleanupRunning({
+          started: cleanupStarted,
+          finished: cleanupFinished
+        })
       })
     ) {
       app.quit()
@@ -208,15 +221,20 @@ if (!hasSingleInstanceLock) {
   app.on('before-quit', (event) => {
     quitRequested = true
 
-    if (cleanupStarted) {
+    const action = decideBeforeQuit({
+      cleanup: { started: cleanupStarted, finished: cleanupFinished },
+      servicesReady: aria2 !== null
+    })
+    if (action === 'allow') {
+      // Startup never reached the services, or cleanup already finished and
+      // this is the final internal quit.
       return
     }
-    if (!aria2) {
-      // Startup has not reached the services yet; there is nothing to flush.
-      return
-    }
-
+    // Cancel every request that arrives while cleanup is still running so it
+    // cannot jump ahead of the flush/stop/close sequence.
     event.preventDefault()
+    if (action === 'block') return
+
     cleanupStarted = true
     void (async () => {
       // Stop accepting browser requests before stopping aria2, so a late
@@ -258,6 +276,9 @@ if (!hasSingleInstanceLock) {
         // The tray may already be gone.
       }
       appTray = null
+      // Mark the sequence complete immediately before the final internal
+      // quit, so that this one request is allowed through.
+      cleanupFinished = true
       app.quit()
     })()
   })

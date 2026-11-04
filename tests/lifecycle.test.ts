@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  decideBeforeQuit,
   decideWindowClose,
+  isCleanupRunning,
   shouldQuitWhenAllWindowsClosed,
   trayMenuLabel
 } from '../src/main/lifecycle'
@@ -52,7 +54,12 @@ describe('last window closed policy', () => {
     'platform=%s quitting=%s trayAvailable=%s -> quit=%s',
     (platform, isQuitting, trayAvailable, expected) => {
       expect(
-        shouldQuitWhenAllWindowsClosed({ platform, isQuitting, trayAvailable })
+        shouldQuitWhenAllWindowsClosed({
+          platform,
+          isQuitting,
+          trayAvailable,
+          cleanupRunning: false
+        })
       ).toBe(expected)
     }
   )
@@ -62,8 +69,86 @@ describe('last window closed policy', () => {
       shouldQuitWhenAllWindowsClosed({
         platform: 'win32',
         isQuitting: false,
-        trayAvailable: true
+        trayAvailable: true,
+        cleanupRunning: false
       })
     ).toBe(false)
+  })
+
+  it('never starts a parallel quit while cleanup is still running', () => {
+    expect(
+      shouldQuitWhenAllWindowsClosed({
+        platform: 'win32',
+        isQuitting: true,
+        trayAvailable: true,
+        cleanupRunning: true
+      })
+    ).toBe(false)
+  })
+})
+
+describe('quit reentrancy policy', () => {
+  it('starts cleanup once services are ready', () => {
+    expect(
+      decideBeforeQuit({
+        cleanup: { started: false, finished: false },
+        servicesReady: true
+      })
+    ).toBe('start-cleanup')
+  })
+
+  it('allows quitting before services exist', () => {
+    expect(
+      decideBeforeQuit({
+        cleanup: { started: false, finished: false },
+        servicesReady: false
+      })
+    ).toBe('allow')
+  })
+
+  it('blocks a second quit while cleanup is running', () => {
+    expect(
+      decideBeforeQuit({
+        cleanup: { started: true, finished: false },
+        servicesReady: true
+      })
+    ).toBe('block')
+  })
+
+  it('allows only the final quit after cleanup has finished', () => {
+    expect(
+      decideBeforeQuit({
+        cleanup: { started: true, finished: true },
+        servicesReady: true
+      })
+    ).toBe('allow')
+  })
+
+  it('treats cleanup as running only between start and finish', () => {
+    expect(isCleanupRunning({ started: false, finished: false })).toBe(false)
+    expect(isCleanupRunning({ started: true, finished: false })).toBe(true)
+    expect(isCleanupRunning({ started: true, finished: true })).toBe(false)
+  })
+
+  it('regression: a window-close quit during cleanup is cancelled, not allowed to bypass cleanup', () => {
+    const cleanup = { started: true, finished: false }
+
+    // window-all-closed must not call app.quit again, and if some other quit
+    // request still arrives, before-quit must preventDefault.
+    expect(
+      shouldQuitWhenAllWindowsClosed({
+        platform: 'win32',
+        isQuitting: true,
+        trayAvailable: true,
+        cleanupRunning: isCleanupRunning(cleanup)
+      })
+    ).toBe(false)
+    expect(decideBeforeQuit({ cleanup, servicesReady: true })).toBe('block')
+
+    // Only the internal quit after cleanup finishes is allowed through.
+    const finished = { started: true, finished: true }
+    expect(decideBeforeQuit({ cleanup: finished, servicesReady: true })).toBe(
+      'allow'
+    )
   })
 })
