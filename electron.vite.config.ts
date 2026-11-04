@@ -13,8 +13,7 @@ const PRODUCTION_CSP = [
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'"
+  "form-action 'none'"
 ].join('; ')
 
 const DEVELOPMENT_CSP = [
@@ -26,8 +25,7 @@ const DEVELOPMENT_CSP = [
   "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*",
   "object-src 'none'",
   "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'"
+  "form-action 'none'"
 ].join('; ')
 
 /**
