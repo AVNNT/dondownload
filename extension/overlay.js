@@ -398,7 +398,10 @@
     on(trigger, 'pointerleave', scheduleHide)
 
     on(panel, 'pointerdown', stopPointerEvent)
-    on(panel, 'click', stopPlayerEvent)
+    // Isolate panel clicks from page player handlers without cancelling the
+    // browser's native label/radio activation. Buttons still call
+    // stopPlayerEvent explicitly.
+    on(panel, 'click', stopPropagationOnly)
     on(panel, 'pointerenter', cancelHide)
     on(panel, 'pointerleave', scheduleHide)
     on(panel, 'keydown', function (event) {
@@ -431,16 +434,20 @@
     })
   }
 
-  function stopPointerEvent(event) {
-    // Do not preventDefault on pointerdown: that can suppress the follow-up
-    // click event and make the overlay button feel dead.
+  function stopPropagationOnly(event) {
     if (!event) return
     if (typeof event.stopPropagation === 'function') event.stopPropagation()
   }
 
+  function stopPointerEvent(event) {
+    // Do not preventDefault on pointerdown: that can suppress the follow-up
+    // click event and make the overlay button feel dead.
+    stopPropagationOnly(event)
+  }
+
   function stopPlayerEvent(event) {
     if (!event) return
-    if (typeof event.stopPropagation === 'function') event.stopPropagation()
+    stopPropagationOnly(event)
     if (typeof event.preventDefault === 'function') event.preventDefault()
   }
 

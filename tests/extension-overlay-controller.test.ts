@@ -498,6 +498,11 @@ describe('popup overlay status copy', () => {
     expect(status.state).toBe('off')
     expect(status.label).toBe('Off')
     expect(status.hint).not.toContain('Overlay is on for')
+    expect(status.hint).toContain('Analyze')
+    expect(status.hint).toContain('verified options')
+    expect(status.hint).toContain('only when you pick one')
+    expect(status.hint).toContain('exact origin')
+    expect(status.hint).not.toMatch(/does not download|no download|no format|milestone/i)
   })
 
   it('reports On only when the registration and the page overlay are both verified', () => {
@@ -506,7 +511,11 @@ describe('popup overlay status copy', () => {
     expect(status.label).toBe('On')
     expect(status.hint).toContain('Overlay is on for example.com')
     expect(status.hint).toContain('Alt+Shift+D')
-    expect(status.hint).toContain('no download, format or quality choice')
+    expect(status.hint).toContain('Analyze')
+    expect(status.hint).toContain('verified options')
+    expect(status.hint).toContain('only when you pick one')
+    expect(status.hint).toContain('exact origin')
+    expect(status.hint).not.toMatch(/does not download|no download|no format|milestone/i)
   })
 
   it('never turns a bare permission grant into success', () => {

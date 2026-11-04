@@ -1037,6 +1037,29 @@ function collectByClass(node: FakeNode, className: string): FakeNode[] {
   return values
 }
 
+/**
+ * Simulate a real click on a quality <label>: the click bubbles to the panel
+ * and, unless a handler cancels it, the browser activates the nested radio and
+ * fires a change event.
+ */
+function clickQualityLabel(label: FakeNode): any {
+  const input = label.children.find((child) => child.tagName === 'INPUT')
+  if (!input) throw new Error('expected a radio input inside the quality label')
+
+  const click = pointerEvent(label, [label, harness.qualityList, harness.panel])
+  label.dispatch('click', click)
+  harness.qualityList.dispatch('click', click)
+  harness.panel.dispatch('click', click)
+
+  if (!click.defaultPrevented) {
+    for (const other of collectByClass(harness.qualityList, 'quality-input')) {
+      other.checked = other === input
+    }
+    input.dispatch('change', pointerEvent(input, [input, label, harness.panel]))
+  }
+  return click
+}
+
 describe('overlay media flow', () => {
   it('analyzes only on the explicit button and renders verified response options', () => {
     harness = createHarness({
@@ -1148,14 +1171,21 @@ describe('overlay media flow', () => {
       pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
     )
 
+    const labels = collectByClass(harness.qualityList, 'quality-option')
+    expect(labels).toHaveLength(2)
     const inputs = collectByClass(harness.qualityList, 'quality-input')
-    expect(inputs).toHaveLength(2)
     expect(inputs[0]?.checked).toBe(true)
 
-    const second = inputs[1]
-    if (!second) throw new Error('expected a second quality option')
-    second.checked = true
-    second.dispatch('change', {})
+    const secondLabel = labels[1]
+    if (!secondLabel) throw new Error('expected a second quality option')
+    const click = clickQualityLabel(secondLabel)
+
+    // Panel-level isolation must not cancel the browser's label/radio
+    // activation, or the change handler never runs.
+    expect(click.defaultPrevented).toBe(false)
+    expect(click.propagationStopped).toBe(true)
+    expect(inputs[0]?.checked).toBe(false)
+    expect(inputs[1]?.checked).toBe(true)
 
     harness.queueSelectedButton.dispatch(
       'click',
