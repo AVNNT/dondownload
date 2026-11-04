@@ -1,8 +1,9 @@
 # Development status
 
-As of 2026-11-04. Previous checkpoint: `f03886d`
-(`feat: verify Helium native messaging support`). This Milestone 2B checkpoint
-contains the completed, reviewed overlay implementation and verification record.
+As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
+(`feat: complete per-site video overlay milestone`), following the Milestone 2A
+checkpoint `f03886d`. This checkpoint contains the completed, reviewed overlay
+implementation and verification record.
 
 ## Current milestone
 
