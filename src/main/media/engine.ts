@@ -1043,7 +1043,17 @@ export function createMediaEngine(
         void finalize('cancelled')
       }
 
+      const markMerging = (): void => {
+        if (mergingSeen) return
+        mergingSeen = true
+        emitSnapshot('merging', null)
+      }
+
       const handleStdoutLine = (line: string): void => {
+        // yt-dlp writes post-processing markers such as `[Merger] Merging
+        // formats into ...` to stdout (older releases used stderr).
+        if (isMergingLine(line)) markMerging()
+
         const progress = parseProgressLine(line)
         if (progress !== null) {
           const previous = streams.get(progress.streamId)
@@ -1068,12 +1078,6 @@ export function createMediaEngine(
         if (stdoutRemainder.length > 256 * 1024) {
           stdoutRemainder = stdoutRemainder.slice(-64 * 1024)
         }
-      }
-
-      const markMerging = (): void => {
-        if (mergingSeen) return
-        mergingSeen = true
-        emitSnapshot('merging', null)
       }
 
       const handleStderrText = (text: string): void => {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMediaEngine } from '../src/main/media/engine'
 import type {
   MediaDownloadProgress,
+  MediaDownloadResult,
   MediaLookup,
   MediaLookupAddress
 } from '../src/main/media/engine'
@@ -330,6 +331,36 @@ function downloadCall(calls: SpawnCall[]): SpawnCall {
   const call = calls.find((entry) => entry.args.includes('--format'))
   if (!call) throw new Error('download process was not spawned')
   return call
+}
+
+async function startDownload(
+  harness: Awaited<ReturnType<typeof makeHarness>>
+): Promise<{
+  promise: Promise<MediaDownloadResult>
+  updates: MediaDownloadProgress[]
+  child: FakeChild
+  finalPath: string
+}> {
+  const analysis = await harness.engine.analyze(SOURCE_URL)
+  const updates: MediaDownloadProgress[] = []
+  const promise = harness.engine.download(
+    downloadRequest(
+      analysis.analysisId,
+      analysis.bestVideoOptionId as string,
+      harness.downloadDir
+    ),
+    (update) => updates.push(update)
+  )
+  await waitFor(() =>
+    harness.calls.some((call) => call.args.includes('--format'))
+  )
+  const call = downloadCall(harness.calls)
+  return {
+    promise,
+    updates,
+    child: call.child,
+    finalPath: `${outputBase(call)}.${downloadOutputExt(call)}`
+  }
 }
 
 afterEach(async () => {
@@ -963,7 +994,7 @@ describe('media engine subprocess arguments and progress', () => {
       filePath: null
     })
 
-    child.stderr.write('[Merger] Merging formats into "ignored"\n')
+    child.stdout.write('[Merger] Merging formats into "ignored"\n')
     await tick()
     expect(updates.at(-1)).toMatchObject({
       status: 'merging',
@@ -986,6 +1017,71 @@ describe('media engine subprocess arguments and progress', () => {
       speedBps: 0,
       filePath: finalPath
     })
+  })
+
+  it('detects a post-processing marker split across stdout chunks', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const { promise, updates, child, finalPath } = await startDownload(harness)
+
+    child.stdout.write('DONDOWNLOAD_PROGRESS|100|1000|NA|50|137\n')
+    child.stdout.write('[Merger] Merging for')
+    await tick()
+    expect(updates.some((update) => update.status === 'merging')).toBe(false)
+
+    child.stdout.write('mats into "ignored"\n')
+    await tick()
+    expect(updates.at(-1)).toMatchObject({
+      status: 'merging',
+      completedBytes: 100,
+      totalBytes: 1_000
+    })
+
+    await fs.writeFile(finalPath, Buffer.from('merged'))
+    child.close(0)
+    await promise
+    expect(updates.at(-1)).toMatchObject({
+      status: 'merging',
+      filePath: finalPath
+    })
+  })
+
+  it('detects a trailing post-processing marker without a newline at close', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const { promise, updates, child, finalPath } = await startDownload(harness)
+
+    child.stdout.write('[Merger] Merging formats into "ignored"')
+    await tick()
+    expect(updates.some((update) => update.status === 'merging')).toBe(false)
+
+    await fs.writeFile(finalPath, Buffer.from('merged'))
+    child.close(0)
+    await promise
+    expect(updates.at(-1)).toMatchObject({
+      status: 'merging',
+      filePath: finalPath
+    })
+  })
+
+  it('detects post-processing markers on stdout and stderr', async () => {
+    const cases = [
+      { stream: 'stdout' as const, line: '[Merger] Merging formats into x\n' },
+      { stream: 'stderr' as const, line: '[Merger] Merging formats into x\n' },
+      { stream: 'stdout' as const, line: '[ExtractAudio] Destination: x.m4a\n' },
+      { stream: 'stderr' as const, line: '[ExtractAudio] Destination: x.m4a\n' }
+    ]
+
+    for (const testCase of cases) {
+      const harness = await makeHarness({ download: () => undefined })
+      const { promise, updates, child, finalPath } = await startDownload(harness)
+
+      child[testCase.stream].write(testCase.line)
+      await tick()
+      expect(updates.at(-1)?.status).toBe('merging')
+
+      await fs.writeFile(finalPath, Buffer.from('merged'))
+      child.close(0)
+      await promise
+    }
   })
 
   it('parses total estimates and rejects malformed progress records', () => {

@@ -128,7 +128,7 @@ export function parseProgressLine(line: string): ParsedProgressLine | null {
 
 const MERGING_MARKERS = /\[(?:Merger|Muxer|VideoRemuxer|ExtractAudio)\]/i
 
-/** yt-dlp reports post-processing on stderr. */
+/** yt-dlp reports post-processing markers on stdout (stderr in older releases). */
 export function isMergingLine(line: string): boolean {
   return MERGING_MARKERS.test(line)
 }
