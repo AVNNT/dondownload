@@ -9,7 +9,8 @@ using System.Web.Script.Serialization;
 
 // DonDownload native messaging host.
 //
-// Protocol: Chrome/Edge standard native messaging framing on stdin/stdout:
+// Protocol: Chromium-compatible native messaging framing (Helium, Chrome,
+// Edge) on stdin/stdout:
 //   4-byte little-endian length, then UTF-8 JSON. One request per frame.
 //
 // The only supported request is:
@@ -57,9 +58,10 @@ internal static class NativeHost
     {
         try
         {
-            // Chrome and Edge pass the caller origin as the first argument.
-            // The browser manifest's allowed_origins is the authoritative
-            // origin check; this rejects obviously non-extension launches too.
+            // Chromium-compatible browsers (Helium, Chrome, Edge) pass the
+            // caller origin as the first argument. The browser manifest's
+            // allowed_origins is the authoritative origin check; this rejects
+            // obviously non-extension launches too.
             if (args.Length > 0 && !ExtensionOriginPattern.IsMatch(args[0]))
             {
                 Console.Error.WriteLine("DonDownload native host: unsupported caller origin.");

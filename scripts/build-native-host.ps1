@@ -6,8 +6,9 @@ Framework C# compiler that ships with Windows.
 
 .DESCRIPTION
 No .NET SDK, Visual Studio or NuGet package is required. The output is a real
-Windows executable, which is what Chrome/Edge native messaging manifests must
-point at. The compiler produces C# 5 code targeting .NET Framework 4.x.
+Windows executable, which is what Chromium-compatible native messaging manifests
+(Helium, Chrome, Edge) must point at. The compiler produces C# 5 code targeting
+.NET Framework 4.x.
 
 .PARAMETER OutputPath
 Optional output executable path. Defaults to native\dondownload-native-host.exe.

@@ -4,8 +4,10 @@ A Windows-first, open-source download manager for ordinary HTTP(S) downloads.
 This repository contains the **Milestone 1 foundation** (a working Electron
 desktop app with a React renderer, a real aria2 engine, durable SQLite download
 history, conservative restart reconciliation, and a Windows tray) plus
-**Milestone 2A**: an optional Chrome/Edge Manifest V3 extension for **manual**
-HTTP(S) capture through a strict native messaging bridge.
+**Milestone 2A**: an optional Helium/Chrome/Edge Manifest V3 extension for
+**manual** HTTP(S) capture through a strict native messaging bridge. The local
+setup is verified with Helium 0.20.3.1 (Chromium 156.0.8078.79); Chrome and Edge
+remain supported for future installs.
 
 The UI is deliberately small: an OLED-black, centered (~800 px) layout with a
 compact top bar, a Quick Add form, and download cards with live status,
@@ -80,9 +82,9 @@ legal advice.
 
 ## Browser extension: manual HTTP(S) capture (Milestone 2A)
 
-The `extension/` folder is a Chrome/Edge Manifest V3 extension that sends an
-explicitly chosen HTTP(S) URL to the running desktop app. It is **manual
-capture only**:
+The `extension/` folder is a Chromium-compatible Manifest V3 extension (verified
+locally with Helium 0.20.3.1 / Chromium 156.0.8078.79) that sends an explicitly
+chosen HTTP(S) URL to the running desktop app. It is **manual capture only**:
 
 - Permissions are just `activeTab`, `contextMenus` and `nativeMessaging`. There
   are no `downloads`, `webRequest`, `notifications`, host permissions, content
@@ -119,39 +121,84 @@ git-ignored.
 
 ### 2. Load the unpacked extension and note its ID
 
-Chrome:
+Helium (the verified local browser):
+
+1. Open `chrome://extensions` in Helium. Current Helium builds are Chromium-
+   based and use Chromium's standard extension manager.
+2. Turn on **Developer mode**.
+3. Choose **Load unpacked** and select this repository's `extension` folder.
+4. Copy the extension's 32-character ID. The local verification used
+   `efakbfgkcnfjpomeejapmhpaihompngo`; use the ID your own copy shows.
+
+Chrome (future/non-local setup):
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked** and select this repository's `extension` folder.
 4. Copy the extension's 32-character ID.
 
-Edge:
+Edge (future/non-local setup):
 
 1. Open `edge://extensions`.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked** and select the same `extension` folder.
 4. Copy the extension's ID.
 
-Chrome and Edge can derive different IDs for the same folder. If you want both
-browsers to work, keep both IDs. An unpacked extension's ID is derived from its
-folder path, so moving or copying the folder changes the ID; reload the
-extension and register again with the new ID.
+Helium, Chrome and Edge can derive different IDs for the same folder. If you
+want more than one browser to work, keep every ID. An unpacked extension's ID is
+derived from its folder path, so moving or copying the folder changes the ID;
+reload the extension and register again with the new ID.
+
+Helium uses the same current-user registry key as Chrome (the verified
+Chromium-compatible path), so those two browsers share one manifest. Register
+with all of their IDs in one command instead of registering each separately;
+otherwise the later command replaces the earlier manifest's `allowed_origins`.
 
 ### 3. Register or unregister the native host (current user)
 
 Register the exact ID(s). IDs are comma-separated and are validated as
-lowercase `[a-p]{32}` — wildcards are rejected:
+lowercase `[a-p]{32}` — wildcards are rejected.
+
+Helium (the verified local setup):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser Helium -ExtensionId <helium-id>
+```
+
+Chrome and Edge (retained for future installs):
 
 ```powershell
 # Chrome only:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
   -Browser Chrome -ExtensionId <chrome-id>
 
+# Edge only:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser Edge -ExtensionId <edge-id>
+
 # Chrome and Edge:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
   -Browser Both -ExtensionId <chrome-id>,<edge-id>
 ```
+
+Helium and Chrome share the Chromium-compatible key. Register them together in
+one command so their IDs stay in the same manifest:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser Helium -ExtensionId <helium-id>,<chrome-id>
+```
+
+For Helium plus Edge, use `-Browser Both` with the Helium and Edge IDs. This
+writes both registry keys, and Helium uses the Chrome-compatible one:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser Both -ExtensionId <helium-id>,<edge-id>
+```
+
+Add a Chrome ID to that command too if Chrome is also used.
 
 The script:
 
@@ -159,11 +206,19 @@ The script:
   with explicit `allowed_origins` entries such as
   `chrome-extension://<id>/` (never `*`);
 - requires the manifest `path` to be a real `.exe`;
-- writes the current-user registry value:
-  - Chrome: `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
+- writes current-user registry values:
+  - Helium: `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
+    (the Chrome-compatible key verified locally with Helium 0.20.3.1;
+    no Helium-specific key is written)
+  - Chrome: the same `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
   - Edge: `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.dondownload.bridge`
 - does not require administrator rights;
 - is safe to run repeatedly.
+
+`-Browser Helium` is an explicit option. `-Browser Both` keeps its historical
+Chrome + Edge meaning and also covers Helium because Helium reads the Chrome
+key. Because Helium and Chrome share one manifest, re-registering only one of
+them replaces the shared `allowed_origins` with the IDs you pass.
 
 Inspect the manifest without writing anything:
 
@@ -172,9 +227,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-ho
   -PrintManifest -ExtensionId <id>
 ```
 
-Remove the registrations and generated manifest:
+Show the resolved registry keys and manifest path without writing anything,
+including Helium's shared-key mapping:
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -PrintRegistration -Browser Helium -ExtensionId <helium-id>
+```
+
+Remove registrations and the generated manifest:
+
+```powershell
+# Helium: removes the shared Chrome-compatible key and the manifest.
+# If Chrome also uses that key, re-register Chrome afterwards.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Unregister -Browser Helium
+
+# Chrome and Edge: also removes Helium's shared registration.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
   -Unregister -Browser Both
 ```
@@ -273,7 +342,8 @@ The browser-bridge tests cover frame lengths and limits, strict schemas, URL
 validation, exact allowed-origin manifest generation, unavailable-app responses,
 oversized bodies and duplicate responses that never claim acceptance. The real
 native-host tests run when `native\dondownload-native-host.exe` has been built;
-the registration tests run on Windows.
+the registration tests (including Helium's explicit Chrome-compatible key
+mapping and unregister planning) run on Windows.
 
 An optional end-to-end test drives a real aria2 process against a local
 throttled HTTP server that implements Range requests. It checks full HTTP
@@ -474,9 +544,10 @@ with no way to restore it.
 
 ## Implemented in Milestone 2A
 
-- Chrome/Edge Manifest V3 extension with only `activeTab`, `contextMenus` and
-  `nativeMessaging` permissions: an explicit popup action and a link context
-  menu. No downloads/webRequest interception, no notifications permission.
+- Helium/Chrome/Edge-compatible Manifest V3 extension with only `activeTab`,
+  `contextMenus` and `nativeMessaging` permissions: an explicit popup action and
+  a link context menu. No downloads/webRequest interception, no notifications
+  permission.
 - Toolbar badge and popup feedback that report success only after the desktop
   app accepts the URL, with actionable errors for unsupported URLs, missing
   native host, unauthorized extension origin, connection failure and app
@@ -484,8 +555,10 @@ with no way to restore it.
 - A real C# Windows native messaging executable built with the .NET Framework
   compiler (no SDK), using standard bounded length-prefixed UTF-8 JSON framing,
   strict schema/type/URL validation, stderr-only diagnostics and no URL logging.
-- Repeatable current-user PowerShell registration/unregistration for Chrome and
-  Edge with exact, validated `allowed_origins`; no wildcard and no admin rights.
+- Repeatable current-user PowerShell registration/unregistration for Helium,
+  Chrome and Edge with exact, validated `allowed_origins`; no wildcard and no
+  admin rights. Helium is an explicit option that maps to the locally verified
+  Chromium-compatible Chrome key; no unverified Helium-specific key is written.
 - A loopback-only authenticated main-process bridge that can only call the
   existing `DownloadManager.add`. It works while the window is hidden in the
   tray, returns acceptance only after add succeeds, removes endpoint state on
@@ -535,7 +608,7 @@ src/preload/index.ts      contextBridge API
 src/renderer/             React UI
 src/shared/               Types, IPC channels, validation, format, policy,
                           native bridge protocol constants
-extension/                Chrome/Edge MV3 popup, context menu and native client
+extension/                Helium/Chrome/Edge MV3 popup, context menu and native client
 native/NativeHost.cs      C# native messaging host source
 scripts/                  Native host build and current-user registration
 tests/                    Vitest unit tests, bridge/host tests and optional
@@ -570,6 +643,13 @@ git-ignored; compile it with `npm run build:native-host`.
 - The native host must be registered separately for each browser profile/ID.
   Moving the unpacked extension folder changes its derived ID, so re-register
   after moving it.
+- Helium is verified locally with 0.20.3.1 / Chromium 156.0.8078.79 using the
+  Chrome-compatible current-user key. No Helium-specific key is written, and
+  other Chromium forks or future Helium builds are not verified.
+- Helium and Chrome share one current-user key and manifest. Registering either
+  one with a different ID list replaces the shared `allowed_origins`, so include
+  all IDs in one command. Unregistering Helium removes the shared key; re-register
+  Chrome afterwards if Chrome is still needed.
 - The bridge does not launch DonDownload. If the app is not running, the
   extension gets a prompt error and the user must start it.
 - The bridge endpoint file is per-user and removed on a clean quit. After an
