@@ -387,7 +387,7 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
     throw new ValidationError('Invalid media container.')
   }
 
-  return {
+  const option: MediaFormatOption = {
     kind,
     optionId: parseMediaOptionId(record.optionId),
     label: textValue(record, 'label', MAX_MEDIA_LABEL_LENGTH),
@@ -401,6 +401,14 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
     requiresMerge: booleanValue(record, 'requiresMerge'),
     filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0)
   }
+
+  if (kind === 'video' && !option.hasAudio) {
+    throw new ValidationError('A video option must produce video with audio.')
+  }
+  if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
+    throw new ValidationError('An audio option must not contain video.')
+  }
+  return option
 }
 
 export function parseMediaAnalysis(value: unknown): MediaAnalysis {
@@ -431,8 +439,10 @@ export function parseMediaAnalysis(value: unknown): MediaAnalysis {
       : parseMediaOptionId(record.bestVideoOptionId)
   if (bestVideoOptionId !== null) {
     const option = byId.get(bestVideoOptionId)
-    if (!option || option.kind !== 'video') {
-      throw new ValidationError('The best video option is not a video option.')
+    if (!option || option.kind !== 'video' || !option.hasAudio) {
+      throw new ValidationError(
+        'The best video option must produce video with audio.'
+      )
     }
   }
 
@@ -442,8 +452,15 @@ export function parseMediaAnalysis(value: unknown): MediaAnalysis {
       : parseMediaOptionId(record.bestAudioOptionId)
   if (bestAudioOptionId !== null) {
     const option = byId.get(bestAudioOptionId)
-    if (!option || option.kind !== 'audio') {
-      throw new ValidationError('The best audio option is not an audio option.')
+    if (
+      !option ||
+      option.kind !== 'audio' ||
+      !option.hasAudio ||
+      option.videoCodec !== null
+    ) {
+      throw new ValidationError(
+        'The best audio option must produce audio without video.'
+      )
     }
   }
 

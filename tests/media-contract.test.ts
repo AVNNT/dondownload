@@ -111,6 +111,8 @@ describe('media public schema', () => {
     expect(() => parseMediaFormatOption(videoOption({ container: 'MP4/../../x' }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ filesizeBytes: -1 }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ width: 1.5 }))).toThrow()
+    expect(() => parseMediaFormatOption(videoOption({ hasAudio: false }))).toThrow(/audio/)
+    expect(() => parseMediaFormatOption(audioOption({ videoCodec: 'avc1' }))).toThrow(/video/)
   })
 
   it('parses an analysis and enforces opaque best-option references', () => {
@@ -122,10 +124,10 @@ describe('media public schema', () => {
 
     expect(() =>
       parseMediaAnalysis(analysis({ bestVideoOptionId: AUDIO_OPTION_ID }))
-    ).toThrow(/not a video option/)
+    ).toThrow(/video with audio/)
     expect(() =>
       parseMediaAnalysis(analysis({ bestAudioOptionId: 'option_missing_0123456789' }))
-    ).toThrow(/not an audio option/)
+    ).toThrow(/audio without video/)
     expect(() =>
       parseMediaAnalysis(analysis({ options: [videoOption(), videoOption()] }))
     ).toThrow(/Duplicate/)

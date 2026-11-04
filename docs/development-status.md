@@ -22,6 +22,13 @@ implementation and verification record.
   hover/click/keyboard/disable, and external revoke tears down an already-open
   tracked tab without a reload. This commit is the local checkpoint; no push or
   release was made.
+- **Milestone 3A:** in progress; not verified or complete. Additive media
+  contracts and SQLite v2 persistence are integrated at `e76055f`; review fixes
+  rejecting credential-bearing media URLs and adding a safe job title are at
+  `f55b0fc`. The current baseline has 231 tests passed / 3 skipped and
+  typecheck passed. Four isolated DeepSeek workers are implementing the engine,
+  desktop UI, Helium bridge/overlay, and media-job orchestration. yt-dlp and
+  FFmpeg are not installed/found; no real media integration has been verified.
 
 ## Root cause of the reported Milestone 2B failure
 
