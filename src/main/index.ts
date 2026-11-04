@@ -144,6 +144,7 @@ if (!hasSingleInstanceLock) {
     try {
       nativeBridge = await startNativeBridge({
         manager,
+        mediaBridge: mediaJobs,
         userDataPath: app.getPath('userData'),
         logger: (message) => console.error(message)
       })

@@ -31,10 +31,14 @@ implementation and verification record.
   integrated at `2923489`; review fixes for FFmpeg path passing, public stream
   filtering, DNS revalidation and preserving partial files are at `a747c67`.
   `index.ts` startup and conservative shutdown recovery are wired at `1954022`.
-  Current integrated baseline: 285 tests passed / 3 skipped; typecheck and build
-  pass. Helium bridge/overlay remains in an isolated DeepSeek worktree. yt-dlp
-  and FFmpeg are not installed or found; no real media integration has been
-  verified.
+  The authenticated Helium/native media bridge and overlay are integrated at
+  `318aaa5`, with the media manager connected as its target. Extension-side DTO
+  validation now enforces the shared audio/video invariants. Current integrated
+  baseline: 349 tests passed / 3 skipped; typecheck, production build, and
+  native-host build pass. No real Helium/browser end-to-end run has been
+  performed. yt-dlp and FFmpeg are not installed or found; no real media
+  analysis/download/merge has been verified, so Milestone 3A remains in
+  verification and 3B remains gated.
 
 ## Root cause of the reported Milestone 2B failure
 
