@@ -8,9 +8,9 @@ suite: `npm test` still runs every Vitest test file.
 
 | Tier | Command | Use when | What it runs |
 | --- | --- | --- | --- |
-| 1 — fast development | `npm run test:fast` | Routine edit/refactor loop; unit, component and policy changes | All hermetic unit/component tests. It excludes the compiled native-host process tests, the native-host registration script tests and the optional real-aria2 integration file. |
-| 2 — focused integration | `npm run test:integration` | A change crosses a process, native-host framing/registration or aria2 boundary | The compiled native-host process suite (including the 22 s timeout regression), the registration script suite, and the optional real-aria2 integration file. |
-| 3 — milestone gate | `npm run test:gate` | Before closing a milestone or checkpointing a release candidate | `npm test` (the full existing suite) followed by `npm run build` (typecheck plus Electron production build). |
+| 1 — fast development | `npm run test:fast` | Routine edit/refactor loop; unit, component and policy changes | All hermetic unit/component tests. It excludes the compiled native-host process tests, the native-host registration script tests, the optional real-aria2 integration file, the local persistent-batch integration file and the two opt-in live provider files. |
+| 2 — focused integration | `npm run test:integration` | A change crosses a process, native-host framing/registration, aria2 or persistent-batch boundary | The compiled native-host process suite (including the 22 s timeout regression), the registration script suite, the optional real-aria2 integration file and the optional local persistent-batch integration file (skipped without `ARIA2_TEST_BINARY`). |
+| 3 — milestone gate | `npm run test:gate` | Before closing a milestone or checkpointing a release candidate | `npm test` (the full existing suite) followed by `npm run build` (typecheck plus Electron production build). Real-aria2 and live provider files skip themselves unless their environment is configured. |
 
 `npm test` remains the full suite and is intentionally unchanged for backwards
 compatibility. `npm run test:gate` adds the build milestone gate; it does not
@@ -27,6 +27,9 @@ npm run test:native-host            # routine native-host tests; 22 s regression
 npm run test:native-host:timeout    # only the 22 s bridge-timeout regression
 npm run test:native-host:registration
 npm run test:aria2                  # optional real aria2; skips without ARIA2_TEST_BINARY
+npm run test:batches:integration    # local loopback batch + SQLite; skips without ARIA2_TEST_BINARY
+npm run test:pixeldrain:live        # opt-in live single-file provider check
+npm run test:playlist:live          # opt-in live playlist preview; no media download
 ```
 
 The timeout split uses Vitest's `--testNamePattern` filter, so
@@ -35,7 +38,14 @@ Tier 1. `npm run test:integration` includes the timeout regression explicitly.
 
 The aria2 semantics are unchanged: `tests/aria2.integration.test.ts` runs only
 when `ARIA2_TEST_BINARY` points at a local `aria2c` binary. Without it, those
-three tests skip and the rest of Tier 2 still runs.
+three tests skip and the rest of Tier 2 still runs. The local
+`tests/batches.integration.test.ts` follows the same gate: it needs a real
+`aria2c` and otherwise skips both tests. It uses only a deterministic loopback
+HTTP fixture and a unique approved temp directory, with real `Aria2Service`,
+`DownloadManager`, SQLite and `BatchManager`; it never uses external network,
+media tools, OS input or user downloads. The live playlist file additionally
+requires `DONDOWNLOAD_LIVE_PLAYLIST=1` and `DONDOWNLOAD_YTDLP_PATH`, and performs
+preview/selection resolution only, never a media download.
 
 ### Subsystem-focused commands
 
@@ -66,6 +76,16 @@ These are actual wall-clock results from the commands below, not estimates.
 | `npm run test:aria2` (`ARIA2_TEST_BINARY` set) | 3 passed | 17.31 s | 16.75 s |
 | `npm run test:extension` | 6 files, 87 passed | 0.74 s | 0.15 s |
 | `npm run test:media` | 4 files, 81 passed | 1.56 s | 0.99 s |
+
+Additional 3B coverage runs on 2026-11-04 (not part of the historical table):
+
+| Command | Result | Vitest duration |
+| --- | --- | --- |
+| `npx vitest run tests/batches.integration.test.ts` (`ARIA2_TEST_BINARY` set) | 2 passed, 1 file | 2.99 s |
+| `npm run test:integration` (`ARIA2_TEST_BINARY` set) | 45 passed, 4 files | 27.58 s |
+| `npx vitest run tests/playlist.live.integration.test.ts` (live env set) | 1 passed, 1 file | 3.34 s |
+| `npm run test:fast` | 423 passed, 26 files | 1.27 s |
+| `npm test` (`ARIA2_TEST_BINARY` set; live files skipped) | 468 passed / 2 skipped, 32 files | 27.73 s |
 
 The combined `npm run test:integration` command was not rerun after its three
 constituent files passed in the focused runs above; repeating the same 22 s and
