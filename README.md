@@ -536,6 +536,19 @@ subsystem filters, historical and current timings, the strict no-desktop-input
 rule, manual-only real-browser permission checks, and the mocked-renderer vs
 native-Electron-IPC distinction.
 
+The opt-in production smoke test launches a packaged/unpacked build against a
+fresh isolated userData directory and reports machine-readable PASS/FAIL
+details. It never shows a window, creates a tray, starts the browser bridge,
+uses OS input or touches the normal profile. See
+[docs/smoke-test.md](docs/smoke-test.md) for the exact command, checks and
+limits:
+
+```powershell
+npm run build
+npx electron-builder --win --x64 --dir
+npm run smoke:packaged
+```
+
 The browser-bridge tests cover frame lengths and limits, strict schemas, URL
 validation, exact allowed-origin manifest generation, unavailable-app responses,
 oversized bodies and duplicate responses that never claim acceptance. The real
