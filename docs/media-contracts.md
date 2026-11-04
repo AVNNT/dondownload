@@ -1,9 +1,9 @@
 # Media contracts (Milestone 3A foundation)
 
-Status: foundation only. This branch does not ship the media engine, media
-manager, renderer media UI, native-bridge routes, C# host or extension changes.
-It freezes the contracts those workers must implement. Milestone 3A and 3B are
-not complete.
+Status: contracts plus integrated implementation. The media engine, media
+manager, renderer media UI, native-bridge routes, C# host and extension bridge
+have since been integrated (see `docs/development-status.md`). Milestone 3A is
+PARTIAL pending the post-`5b6d3d4` Helium retest; Milestone 3B has not started.
 
 ## Public API
 

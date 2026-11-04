@@ -2,8 +2,10 @@
 
 As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
-checkpoint `f03886d`. This checkpoint contains the completed, reviewed overlay
-implementation and verification record.
+checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
+verified. Milestone 3A now has real media-engine verification through
+`5b6d3d4`, but remains **PARTIAL** pending the active post-fix Helium retest;
+Milestone 3B has not started.
 
 ## Current milestone
 
@@ -22,23 +24,30 @@ implementation and verification record.
   hover/click/keyboard/disable, and external revoke tears down an already-open
   tracked tab without a reload. This commit is the local checkpoint; no push or
   release was made.
-- **Milestone 3A:** in progress; not verified or complete. Additive media
-  contracts and SQLite v2 persistence are integrated at `e76055f`; review fixes
-  rejecting credential-bearing media URLs and adding a safe job title are at
-  `f55b0fc`. Media option validation and desktop UI are integrated at
-  `d0f5049` and `eae3e3f`; persistent job orchestration and IPC are integrated at
-  `eb099b8` with an API-alignment fix at `8f3b2f1`. The yt-dlp/FFmpeg engine is
-  integrated at `2923489`; review fixes for FFmpeg path passing, public stream
-  filtering, DNS revalidation and preserving partial files are at `a747c67`.
-  `index.ts` startup and conservative shutdown recovery are wired at `1954022`.
-  The authenticated Helium/native media bridge and overlay are integrated at
-  `318aaa5`, with the media manager connected as its target. Extension-side DTO
-  validation now enforces the shared audio/video invariants. Current integrated
-  baseline: 349 tests passed / 3 skipped; typecheck, production build, and
-  native-host build pass. No real Helium/browser end-to-end run has been
-  performed. yt-dlp and FFmpeg are not installed or found; no real media
-  analysis/download/merge has been verified, so Milestone 3A remains in
-  verification and 3B remains gated.
+- **Milestone 3A (media analysis and download): PARTIAL — verification in
+  progress, not complete.** Additive media contracts and SQLite v2 persistence
+  are integrated at `e76055f`; review fixes rejecting credential-bearing media
+  URLs and adding a safe job title are at `f55b0fc`. Media option validation and
+  desktop UI are integrated at `d0f5049` and `eae3e3f`; persistent job
+  orchestration and IPC are integrated at `eb099b8` with an API-alignment fix at
+  `8f3b2f1`. The yt-dlp/FFmpeg engine is integrated at `2923489`; review fixes
+  for FFmpeg path passing, public stream filtering, DNS revalidation and
+  preserving partial files are at `a747c67`. `index.ts` startup and conservative
+  shutdown recovery are wired at `1954022`. The authenticated Helium/native
+  media bridge and overlay are integrated at `318aaa5`, with the media manager
+  connected as its target. Extension-side DTO validation enforces the shared
+  audio/video invariants. Follow-up fixes for post-processing markers, bridge
+  timeouts, duplicate jobs, analysis/cancel shutdown and cancelled downloads are
+  at `9e4651e`, `8a39b47`, `16e61b2`, `dda951e` and `852b074`; the overlay
+  quality radio and popup copy fixes are at `5b6d3d4`. Current verified
+  baseline: **372 tests passed / 0 skipped** with `ARIA2_TEST_BINARY` set,
+  including 3/3 real-aria2 integration tests; typecheck, production build and
+  native-host build pass. yt-dlp 2026.10.26, Gyan FFmpeg/ffprobe 9.0.2 and Deno
+  2.9.8 are installed locally and were used for real analysis, merge,
+  audio-only, cancellation and failure-persistence checks (details and exact
+  paths below). The remaining gate is the post-`5b6d3d4` headed Helium retest of
+  the selected/best workflow, which is running and has not produced a result.
+  Milestone 3A is not PASS and Milestone 3B has not begun.
 
 ## Root cause of the reported Milestone 2B failure
 
@@ -298,7 +307,8 @@ Caveats:
   (`SetCursorPos` + `mouse_event`), not a human hand on a mouse. The browser
   delivered real pointer events to the page.
 - Keyboard checks used OS-level `keybd_event`.
-- No media playback or actual download is involved; the overlay is UI-only.
+- In that Milestone 2B run, no media playback or actual download was involved;
+  that overlay version was UI-only.
 
 ### Review round 2 external revoke (same date, separate fresh profile)
 
@@ -323,20 +333,92 @@ Caveats:
   `Alt+Shift+D` did nothing. Full evidence and input caveats:
   `docs/verification-helium-external-revoke-2026-11-04.md`.
 
+## Milestone 3A verification checkpoint (2026-11-04)
+
+Status: **PARTIAL**. This section records what was actually run for the
+integrated 3A media path. It does not mark 3A complete and does not begin 3B.
+
+### Local external tools
+
+These are machine-local installations, not repository contents or bundled
+artifacts. DonDownload neither bundles nor auto-downloads them; see
+[media-tools.md](media-tools.md) for install sources, licensing and
+redistribution notes.
+
+| Tool | Verified version | Exact path used |
+| --- | --- | --- |
+| yt-dlp | `2026.10.26` | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe` |
+| FFmpeg | `9.0.2-full_build` (Gyan) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe` |
+| ffprobe | `9.0.2-full_build` (Gyan) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffprobe.exe` |
+| Deno | `2.9.8` (stable, `x86_64-pc-windows-msvc`) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe` (user-scoped WinGet install) |
+
+- The native messaging host was rebuilt with `npm run build:native-host`, which
+  wrote the git-ignored `native\dondownload-native-host.exe`.
+- FFmpeg was passed to yt-dlp explicitly for separate-stream merges
+  (`--ffmpeg-location`); ffprobe was used independently to validate outputs.
+  FFmpeg is required only for options that need a merge.
+- Deno is an external runtime dependency used by yt-dlp for JavaScript
+  extraction. DonDownload does not ship or manage it.
+
+### Real media verification
+
+- **YouTube, CC-BY "Caminandes"**: analysis returned 31 verified options. The
+  best-video choice used separate H.264 video and Opus audio streams and merged
+  at 1080p. A selected 144p video option and an audio-only option were also
+  downloaded. Every output was checked with ffprobe and a full decode; all
+  returned exit code 0.
+- **Wikimedia Commons, "Big Buck Bunny"**: a single muxed VP9/Opus file was
+  downloaded and also passed ffprobe plus a full decode (exit code 0).
+- **Live post-fix merge**: after `5b6d3d4`, a 144p separate-stream download
+  emitted the merge step in engine output, and the merged file decoded cleanly.
+- **Cancellation**: cancelling a live yt-dlp job killed the real process tree
+  with `taskkill /T`. No FFmpeg child process was present at that moment, so this
+  run verifies the yt-dlp/process-tree path, not mid-merge cancellation.
+- **Persisted failure state**: a real engine analysis used a deliberately missing
+  FFmpeg path before spawn. The failure was written to SQLite; the database was
+  closed and reopened, and the failed state was still reported instead of a
+  reset or stuck "running" row.
+- **aria2**: real-aria2 integration tests passed 3/3 with `ARIA2_TEST_BINARY`
+  pointed at `aria2c` 1.37.0
+  (`C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\aria2.aria2_Microsoft.Winget.Source_8wekyb3d8bbwe\aria2-1.37.0-win-64bit-build1\aria2c.exe`).
+- **Full suite**: 372/372 passed with `ARIA2_TEST_BINARY` set (0 skipped).
+  Without it, the 3 optional integration tests are skipped by design.
+- **Static/build checks**: `npm run typecheck`, `npm run build` and
+  `npm run build:native-host` passed.
+
+### Helium browser run and pending retest
+
+The previous headed Helium run was **partial**. It completed the overlay flow,
+analysis and an audio-only download, and it verified normal HTTP capture plus
+HTTP progress reporting while the app window was hidden. It found two UI
+defects: the quality radio control did not activate correctly, and the popup
+copy was inaccurate. Those defects were fixed in `5b6d3d4`
+(`fix: preserve overlay radio activation and refresh popup copy`).
+
+A fresh headed Helium retest against the fixed build is active. As of this
+writing it has not finished, and the selected-option/best-option download
+workflow has **not** been verified post-fix. Milestone 3A is therefore not PASS,
+and Milestone 3B has not begun.
+
+The previous run used disposable Helium and application profiles. However, the
+application's media destination was the user's real Downloads path, and this
+record does not claim that the user's data was modified or cleaned.
+
 ## Not complete / not claimed
 
-- **No media extraction, sniffing, decoding or downloading exists.** The
-  overlay never inspects media source URLs, formats, qualities, network
-  requests, cookies, DRM, authentication or CAPTCHAs. There is no fabricated
-  quality/format choice and no success claim.
-- **Human hardware input was not used.** Automation limitations and the exact
-  input mechanism are recorded above; the functional flow is verified with real
-  browser prompts and real page pointer/keyboard events.
+- **Media handling is explicit and bounded.** Analysis is an explicit user
+  action, and options come from yt-dlp rather than network sniffing. The path
+  does not read cookies, bypass DRM/authentication/CAPTCHA, or fabricate
+  formats/qualities. Only the runs recorded above are verified.
+- **Human hardware input was not used for the Milestone 2B checks.**
+  Automation limitations and the exact input mechanism are recorded above; the
+  functional flow was verified with real browser prompts and real page
+  pointer/keyboard events. The partial 3A Helium run does not change that.
 - Cross-origin iframe videos are not covered (registration and injection are
   top-frame only). Restricted pages such as `chrome://`, `edge://`, the Chrome
   Web Store and `file://` are ineligible.
-- No push or release was made. `f03886d` remains the previous Milestone 2A
-  checkpoint; this commit records the Milestone 2B checkpoint.
+- No push or release was made. `e15c772` remains the Milestone 2B checkpoint;
+  this 3A verification record is documentation only and is not a release.
 - The disposable Helium profiles, fixture server and probe scripts were local
   task-owned files under the approved temporary directory. The user’s real
   Helium profile and existing unpacked extension were not modified or removed.
@@ -366,8 +448,10 @@ Caveats:
   event, as with any in-page UI.
 - **Top-frame only.** Videos in cross-origin iframes are not covered.
 - **Restricted pages.** Browser-internal and Web Store pages cannot be injected.
-- **UI only.** There is no media download, format probing, network sniffing,
-  quality selection, DRM/auth/CAPTCHA bypass or fabricated option.
+- **Milestone 3A media UI is under verification.** The integrated path supports
+  analysis, option selection and download, but the post-`5b6d3d4` Helium
+  selected/best workflow is not yet verified. The overlay is a launcher, not a
+  network sniffer; it does not bypass DRM/auth/CAPTCHA or invent options.
 - **Optional pattern declaration tradeoff.** Chromium requires broad optional
   HTTP(S) pattern families in the manifest before an exact origin can be
   requested later. The declaration grants nothing by itself; the narrow
@@ -386,10 +470,18 @@ typecheck and build passed, and headed Helium checks verified both enable and
 tracked-tab external revoke in disposable profiles. The Milestone 2B work is
 locally checkpointed; no push or release was made.
 
+For Milestone 3A, the implementation worker installed and verified the external
+toolchain, exercised real YouTube and Wikimedia analysis/download/merge paths,
+checked cancellation and persisted failure handling, and ran the full suite with
+real aria2. The headed Helium run is still partial: the final selected/best
+workflow retest after `5b6d3d4` is outstanding, so 3A remains PARTIAL.
+
 ## Safe next action
 
-1. Keep this file current as later milestones change.
-2. Preserve the documented caveat that physical human hardware input was not
+1. Finish the active post-`5b6d3d4` headed Helium retest of the selected/best
+   workflow before changing the 3A status. Do not begin Milestone 3B before that.
+2. Keep this file current as later milestones change.
+3. Preserve the documented caveat that physical human hardware input was not
    used; all headed Helium checks used OS-level input and UI Automation for the
    **Allow** prompt.
-3. Do not push or create a release without separate approval.
+4. Do not push or create a release without separate approval.
