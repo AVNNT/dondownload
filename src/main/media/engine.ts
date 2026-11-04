@@ -58,6 +58,7 @@ import type {
 const DEFAULT_ANALYSIS_TTL_MS = 10 * 60_000
 const DEFAULT_ANALYSIS_TIMEOUT_MS = 60_000
 const DEFAULT_CANCEL_GRACE_MS = 5_000
+const DOWNLOAD_SETTLE_MARGIN_MS = 250
 const TOOL_PROBE_TIMEOUT_MS = 5_000
 const MAX_ANALYSIS_OUTPUT_BYTES = 32 * 1024 * 1024
 const MAX_ANALYSES = 32
@@ -103,8 +104,8 @@ export interface MediaEngine {
   cancel(jobId: string): void
   /**
    * Stop every in-flight download, analysis and tool probe. Resolves after
-   * captured children have closed or the bounded abort grace elapsed. Once
-   * called, no new engine work can start.
+   * downloads have settled and captured children have closed, or the bounded
+   * abort/cancel grace elapsed. Once called, no new engine work can start.
    */
   cancelAll(): Promise<void>
 }
@@ -406,6 +407,10 @@ export function createMediaEngine(
   const analyses = new Map<string, StoredAnalysis>()
   const activeDownloads = new Map<string, ActiveDownload>()
   const pendingDownloads = new Map<string, PendingDownload>()
+  // Every in-flight download run promise. `cancel(jobId)` only signals the
+  // child; shutdown also needs to know when the run promise has settled so a
+  // late finalize/progress callback cannot race persistence close.
+  const downloadTasks = new Set<Promise<unknown>>()
 
   // Captured subprocesses (tool probes and analyses) must be terminable during
   // shutdown, because those calls are not represented by a managed download.
@@ -862,9 +867,12 @@ export function createMediaEngine(
     // cannot both start a download with the same job ID.
     const pending: PendingDownload = { cancelRequested: false }
     pendingDownloads.set(jobId, pending)
+    const task = runDownload(request, jobId, pending, onProgress)
+    downloadTasks.add(task)
     try {
-      return await runDownload(request, jobId, pending, onProgress)
+      return await task
     } finally {
+      downloadTasks.delete(task)
       pendingDownloads.delete(jobId)
     }
   }
@@ -1246,6 +1254,26 @@ export function createMediaEngine(
     job.cancelTimer.unref?.()
   }
 
+  /**
+   * Await the currently tracked download run promises, but never longer than
+   * `timeoutMs`. Each download already has its own bounded cancellation timer;
+   * this outer bound protects shutdown from a child that never closes or a
+   * pending download stuck before its child exists.
+   */
+  function waitForDownloads(timeoutMs: number): Promise<void> {
+    const tasks = [...downloadTasks]
+    if (tasks.length === 0) return Promise.resolve()
+
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs)
+      timer.unref?.()
+      void Promise.allSettled(tasks).then(() => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+  }
+
   async function cancelAll(): Promise<void> {
     closing = true
 
@@ -1258,7 +1286,15 @@ export function createMediaEngine(
     // safely close persistence afterwards.
     const captures = [...activeCaptures]
     for (const capture of captures) capture.controller.abort()
-    await Promise.allSettled(captures.map((capture) => capture.done))
+
+    // A cancelled download settles when its child closes or the cancel grace
+    // force-finalizes it. Wait for those run promises as well, so close() does
+    // not resolve while a late finalize/progress callback can still run. The
+    // extra margin caps the wait if a child or pending validation never settles.
+    await Promise.allSettled([
+      ...captures.map((capture) => capture.done),
+      waitForDownloads(cancellationGraceMs + DOWNLOAD_SETTLE_MARGIN_MS)
+    ])
   }
 
   return { getToolState, analyze, download, cancel, cancelAll }

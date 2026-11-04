@@ -1275,6 +1275,138 @@ describe('media engine cancellation and failure cleanup', () => {
     await expect(harness.engine.cancelAll()).resolves.toBeUndefined()
   })
 
+  it('cancelAll waits for a running download cancellation to settle', async () => {
+    const harness = await makeHarness({
+      download: () => undefined,
+      cancellationGraceMs: 5_000
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const promise = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir
+      ),
+      () => undefined
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const call = downloadCall(harness.calls)
+    const partialPath = `${outputBase(call)}.part`
+    await fs.writeFile(partialPath, 'partial bytes')
+
+    // Hold the child's close event so this proves cancelAll waits for the
+    // download run promise instead of resolving as soon as cancellation starts.
+    let releaseChildClose: () => void = () => undefined
+    const childCloseGate = new Promise<void>((resolve) => {
+      releaseChildClose = resolve
+    })
+    let requestedCloseCode: number | null = null
+    const originalClose = call.child.close.bind(call.child)
+    call.child.close = (code: number) => {
+      requestedCloseCode = code
+      void childCloseGate.then(() => originalClose(code))
+    }
+
+    let closed = false
+    const closing = harness.engine.cancelAll().then(() => {
+      closed = true
+    })
+    await tick()
+
+    expect(call.child.killed).toBe(true)
+    expect(requestedCloseCode).toBe(1)
+    expect(closed).toBe(false)
+
+    releaseChildClose()
+    await closing
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'MEDIA_DOWNLOAD_CANCELLED'
+    })
+    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe(
+      'partial bytes'
+    )
+  })
+
+  it('cancelAll stays bounded when a cancelled download child never closes', async () => {
+    const harness = await makeHarness({
+      download: () => undefined,
+      cancellationGraceMs: 30
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const promise = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir
+      ),
+      () => undefined
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const call = downloadCall(harness.calls)
+    const partialPath = `${outputBase(call)}.part`
+    await fs.writeFile(partialPath, 'partial bytes')
+    // Simulate a process tree that ignores termination and never emits close.
+    call.child.close = () => undefined
+
+    const startedAt = Date.now()
+    await harness.engine.cancelAll()
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    await expect(promise).rejects.toMatchObject({
+      code: 'MEDIA_DOWNLOAD_CANCELLED'
+    })
+    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe(
+      'partial bytes'
+    )
+  })
+
+  it('cancelAll bounds its wait when a pending download never settles', async () => {
+    let sourceLookups = 0
+    const lookup: MediaLookup = vi.fn(async (hostname: string) => {
+      if (hostname === 'example.com') {
+        sourceLookups += 1
+        if (sourceLookups > 1) {
+          // The download is stuck re-validating the page target; cancellation
+          // cannot reach a pending download that has no child yet.
+          return new Promise<never>(() => undefined)
+        }
+      }
+      return [{ address: '93.184.216.34', family: 4 }]
+    }) as unknown as MediaLookup
+    const harness = await makeHarness({ lookup, cancellationGraceMs: 30 })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+
+    let settled = false
+    const promise = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir
+      ),
+      () => undefined
+    )
+    void promise.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    await tick()
+
+    const startedAt = Date.now()
+    await harness.engine.cancelAll()
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    expect(settled).toBe(false)
+  })
+
   it('preserves partial artifacts on failure and redacts errors', async () => {
     const harness = await makeHarness({
       download: (call, { base }) => {
