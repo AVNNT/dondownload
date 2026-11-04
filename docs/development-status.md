@@ -47,16 +47,22 @@ SQLite schema v3). Milestone 4 is explicitly deferred.
   typecheck, production build and native-host build pass. yt-dlp 2026.10.26,
   Gyan FFmpeg/ffprobe 9.0.2 and Deno 2.9.8 were used for the real runs; exact
   paths and licensing notes are in [media-tools.md](media-tools.md).
-- **Milestone 3B: implementation underway.** The first sequential foundation is
-  present: shared batch/collection contracts (`src/shared/batches.ts`), additive
-  SQLite schema v3 (`batches` and `batch_items`) and hermetic contract/migration
-  tests. It establishes stable batch kinds/statuses, opaque parent/child IDs,
-  per-item errors and aggregate progress for later parallel work. Providers, the
-  playlist engine, the orchestrator, renderer UI, IPC handlers and native-bridge
-  routes are not implemented yet. Scope is desktop-first media playlists,
-  Pixeldrain lists and direct-URL batches, with no credential/cookie/token
-  extraction and no CAPTCHA/DRM bypass. **Milestone 4 is explicitly deferred.**
-  There is no torrent functionality or torrent networking in this tree.
+- **Milestone 3B: implementation underway.** The first sequential foundations
+  are present: shared batch/collection contracts (`src/shared/batches.ts`),
+  additive SQLite schema v3 (`batches` and `batch_items`) and hermetic
+  contract/migration tests. It establishes stable batch kinds/statuses, opaque
+  parent/child IDs, per-item errors and aggregate progress for later parallel
+  work. The shared layer now also has safe `CollectionPreview`/`CollectionEntry`
+  DTOs and exact-key analyze/selected-batch inputs: playlist and Pixeldrain-list
+  sources resolve to an ephemeral preview, unavailable entries stay independent,
+  and a batch can only be created from 1–500 explicit entry IDs. Item statuses
+  include `unavailable`/`skipped`, with an independent `skippedItems` count.
+  Providers, the playlist engine, the orchestrator, renderer UI, IPC handlers and
+  native-bridge routes are not implemented yet. Scope is desktop-first media
+  playlists, Pixeldrain lists and direct-URL batches, with no
+  credential/cookie/token extraction and no CAPTCHA/DRM bypass. **Milestone 4 is
+  explicitly deferred.** There is no torrent functionality or torrent networking
+  in this tree.
 
 ## Milestone 3B foundation scope (in progress)
 
@@ -65,19 +71,31 @@ The foundation is deliberately narrow and additive:
 - Batch kinds: `media-playlist`, `pixeldrain-list`, `direct-urls`.
 - Batch statuses: `queued`, `running`, `complete`, `partial`, `error`,
   `cancelled`, `interrupted`. Item statuses: `queued`, `running`, `complete`,
-  `error`, `cancelled`, `interrupted`.
+  `error`, `unavailable`, `skipped`, `cancelled`, `interrupted`.
+- Playlist and Pixeldrain-list previews are renderer-safe and ephemeral:
+  opaque preview/entry IDs, bounded titles/counts, positions, independent
+  `available`/`unavailable` availability and safe error code/reason only. Raw
+  URLs, paths, selectors, tokens, headers, cookies and provider objects are
+  excluded.
+- Analysis accepts a normalized HTTP(S) source URL. Batch creation from a
+  preview requires an opaque preview ID plus 1–500 explicit, unique entry IDs;
+  there is no implicit all-entry or auto-queue path.
 - Public DTOs are exact-key, bounded and verified to exclude source URLs, disk
   paths, tokens, headers, cookies and selectors. Internal records retain only a
   normalized HTTP(S) source URL for retry; credentials are rejected and
   fragments are stripped.
 - Items reference existing download/media children through opaque `childId`
-  values. Per-item errors, individual retry/cancel, group cancel, aggregate
-  progress and interrupted recovery are represented in the contracts.
+  values. Per-item errors, independent `unavailable`/`skipped` states,
+  `skippedItems` aggregate progress, individual retry/cancel, group cancel,
+  aggregate progress and interrupted recovery are represented in the contracts.
 - SQLite migration v3 is transactional and additive: v1 download rows and v2
-  media rows are preserved, and a failed v3 migration rolls back completely.
-- Not included: providers, playlist/Pixeldrain resolution, orchestration,
-  renderer UI, preload/IPC wiring, native-bridge routes, Milestone 4/5 work,
-  torrents or VPN.
+  media rows are preserved, and a failed v3 migration rolls back completely. The
+  still-unreleased v3 item-status CHECK was extended in place for
+  `unavailable`/`skipped`; `SCHEMA_VERSION` stays 3, no v4 migration or row
+  rewrite was added.
+- Not included: providers, playlist/Pixeldrain resolution, preview
+  storage/expiry, orchestration, renderer UI, preload/IPC wiring, native-bridge
+  routes, Milestone 4/5 work, torrents or VPN.
 
 See [batch-contracts.md](batch-contracts.md) for the full contract and schema
 description.

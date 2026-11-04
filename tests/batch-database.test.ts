@@ -586,4 +586,37 @@ describe('batch status constraints', () => {
     ).toThrow()
     close(database)
   })
+
+  it('accepts unavailable and skipped item statuses and rejects unknown ones', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const statuses: BatchItemRecord['status'][] = ['unavailable', 'skipped']
+
+    database.saveBatchWithItems(
+      batchRecord(),
+      statuses.map((status, index) =>
+        batchItem({
+          id: `bitem_status_${index}`,
+          position: index,
+          status,
+          completedBytes: 0,
+          totalBytes: null
+        })
+      )
+    )
+    expect(
+      database
+        .loadBatch('batch_0123456789abcdef')
+        ?.items.map((item) => item.status)
+    ).toEqual(statuses)
+    expect(() =>
+      database.saveManyBatchItems([
+        batchItem({
+          id: 'bitem_status_0',
+          status: 'paused' as BatchItemRecord['status']
+        })
+      ])
+    ).toThrow()
+    close(database)
+  })
 })

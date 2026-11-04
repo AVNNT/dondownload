@@ -155,8 +155,8 @@ const MIGRATIONS: readonly Migration[] = [
         kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
         status TEXT NOT NULL CHECK (
           status IN (
-            'queued', 'running', 'complete',
-            'error', 'cancelled', 'interrupted'
+            'queued', 'running', 'complete', 'error',
+            'unavailable', 'skipped', 'cancelled', 'interrupted'
           )
         ),
         child_id TEXT,

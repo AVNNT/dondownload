@@ -12,6 +12,12 @@ import { ValidationError, normalizeHttpUrl } from './validation'
  * download job through an opaque `childId`, or has `childId: null` while the
  * child has not been created yet. Items fail, retry and cancel independently;
  * the batch itself can be cancelled as a group.
+ *
+ * Playlists and Pixeldrain lists are first resolved into an ephemeral
+ * `CollectionPreview`. The preview exposes only opaque preview/entry IDs,
+ * bounded display text, positions and a safe availability code. A batch can
+ * then be created from an explicit, bounded selection of preview entry IDs;
+ * there is no implicit "select all" path.
  */
 
 export const BATCH_KINDS = [
@@ -43,12 +49,22 @@ export const BATCH_ITEM_STATUSES = [
   'running',
   'complete',
   'error',
+  'unavailable',
+  'skipped',
   'cancelled',
   'interrupted'
 ] as const
 export type BatchItemStatus = (typeof BATCH_ITEM_STATUSES)[number]
 
 export const BATCH_ITEM_ACTIVE_STATUSES = ['queued', 'running'] as const
+
+/**
+ * Terminal item statuses that mean "not downloaded" without being a failure.
+ * `unavailable` is decided by the provider preview; `skipped` is a deliberate
+ * local decision (for example a selected entry that was filtered out safely).
+ * Both count towards `BatchProgress.skippedItems` and never towards failures.
+ */
+export const BATCH_ITEM_SKIPPED_STATUSES = ['unavailable', 'skipped'] as const
 
 export const MAX_BATCH_TITLE_LENGTH = 240
 export const MAX_BATCH_LABEL_LENGTH = 240
@@ -98,14 +114,50 @@ export function isActiveBatchItemStatus(value: unknown): boolean {
   )
 }
 
+export function isSkippedBatchItemStatus(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    (BATCH_ITEM_SKIPPED_STATUSES as readonly string[]).includes(value)
+  )
+}
+
+export function isCollectionPreviewKind(
+  value: unknown
+): value is CollectionPreviewKind {
+  return (
+    typeof value === 'string' &&
+    (COLLECTION_PREVIEW_KINDS as readonly string[]).includes(value)
+  )
+}
+
+export function isCollectionEntryAvailability(
+  value: unknown
+): value is CollectionEntryAvailability {
+  return (
+    typeof value === 'string' &&
+    (COLLECTION_ENTRY_AVAILABILITIES as readonly string[]).includes(value)
+  )
+}
+
+export function isCollectionEntryErrorCode(
+  value: unknown
+): value is CollectionEntryErrorCode {
+  return (
+    typeof value === 'string' &&
+    (COLLECTION_ENTRY_ERROR_CODES as readonly string[]).includes(value)
+  )
+}
+
 /** Aggregate progress derived from items, never from provider guesses. */
 export interface BatchProgress {
   totalItems: number
   completedItems: number
   failedItems: number
-  /** Sum of verified item bytes; unknown bytes are not invented. */
+  /** Items with status `unavailable` or `skipped`; never counted as failed. */
+  skippedItems: number
+  /** Sum of verified item bytes; skipped/unavailable items contribute nothing. */
   completedBytes: number
-  /** Null when any non-cancelled item still has an unknown total. */
+  /** Null when any non-skipped item still has an unknown total. */
   totalBytes: number | null
 }
 
@@ -198,12 +250,102 @@ export interface BatchTargetInput {
   batchId: string
 }
 
+/* ------------------------------------------------------------------------- *
+ * Collection selection previews
+ * ------------------------------------------------------------------------- */
+
+export const COLLECTION_PREVIEW_KINDS = [
+  'playlist',
+  'pixeldrain-list'
+] as const
+export type CollectionPreviewKind = (typeof COLLECTION_PREVIEW_KINDS)[number]
+
+export const COLLECTION_ENTRY_AVAILABILITIES = [
+  'available',
+  'unavailable'
+] as const
+export type CollectionEntryAvailability =
+  (typeof COLLECTION_ENTRY_AVAILABILITIES)[number]
+
+/**
+ * Stable, renderer-safe reasons for an unavailable preview entry. Provider
+ * error text is never forwarded; a producer must map it to one of these codes.
+ */
+export const COLLECTION_ENTRY_ERROR_CODES = [
+  'unavailable',
+  'private',
+  'removed',
+  'region-restricted',
+  'age-restricted',
+  'members-only',
+  'unsupported',
+  'too-large',
+  'unknown'
+] as const
+export type CollectionEntryErrorCode =
+  (typeof COLLECTION_ENTRY_ERROR_CODES)[number]
+
+export const MAX_COLLECTION_TITLE_LENGTH = 240
+export const MAX_COLLECTION_ENTRY_TITLE_LENGTH = 240
+export const MAX_COLLECTION_ERROR_REASON_LENGTH = 240
+export const MAX_COLLECTION_ENTRIES = 5000
+/** A batch can be created from at most this many explicitly selected entries. */
+export const MAX_COLLECTION_SELECTION = 500
+
+/** Renderer-safe preview entry. Contains no URL, path, selector or provider data. */
+export interface CollectionEntry {
+  /** Opaque preview-local entry ID; never a provider URL or selector. */
+  id: string
+  /** Stable display order inside the preview. */
+  position: number
+  title: string
+  availability: CollectionEntryAvailability
+  /** Present only when unavailable; null for an available entry. */
+  errorCode: CollectionEntryErrorCode | null
+  /** Short, safe explanation; never a raw provider error or URL. */
+  errorReason: string | null
+}
+
+/**
+ * Renderer-safe, ephemeral selection preview for a playlist or Pixeldrain list.
+ * The renderer sends back only `id` plus explicitly selected entry IDs.
+ */
+export interface CollectionPreview {
+  /** Opaque server-generated ID tied to one fresh preview. */
+  id: string
+  kind: CollectionPreviewKind
+  title: string
+  entryCount: number
+  availableCount: number
+  unavailableCount: number
+  entries: CollectionEntry[]
+}
+
+/** Strict input for analyzing a playlist or Pixeldrain list source URL. */
+export interface AnalyzeCollectionInput {
+  url: string
+}
+
+/**
+ * Strict input for creating a batch from a preview. Selection is always
+ * explicit: there is no implicit "all entries" form.
+ */
+export interface CreateCollectionBatchInput {
+  previewId: string
+  selectedEntryIds: string[]
+}
+
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
+/** Reject URL- and path-shaped text from a supposedly safe error reason. */
+const UNSAFE_REASON_TEXT = /(?:\b[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
 
-function asPlainObject(value: unknown): Record<string, unknown> {
+function asPlainObject(
+  value: unknown,
+  subject = 'batch'
+): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new ValidationError('Invalid batch payload.')
+    throw new ValidationError(`Invalid ${subject} payload.`)
   }
   return value as Record<string, unknown>
 }
@@ -211,18 +353,21 @@ function asPlainObject(value: unknown): Record<string, unknown> {
 function exactKeys(
   record: Record<string, unknown>,
   required: readonly string[],
-  optional: readonly string[] = []
+  optional: readonly string[] = [],
+  subject = 'batch'
 ): void {
   for (const key of Object.keys(record)) {
     if (!required.includes(key) && !optional.includes(key)) {
       throw new ValidationError(
-        'The batch payload contains unsupported fields.'
+        `The ${subject} payload contains unsupported fields.`
       )
     }
   }
   for (const key of required) {
     if (!Object.prototype.hasOwnProperty.call(record, key)) {
-      throw new ValidationError('The batch payload is missing required fields.')
+      throw new ValidationError(
+        `The ${subject} payload is missing required fields.`
+      )
     }
   }
 }
@@ -230,7 +375,8 @@ function exactKeys(
 function textValue(
   record: Record<string, unknown>,
   key: string,
-  maximum: number
+  maximum: number,
+  subject = 'batch'
 ): string {
   const value = record[key]
   if (
@@ -239,7 +385,9 @@ function textValue(
     value.length > maximum ||
     CONTROL_CHARACTERS.test(value)
   ) {
-    throw new ValidationError('The batch payload contains an invalid text field.')
+    throw new ValidationError(
+      `The ${subject} payload contains an invalid text field.`
+    )
   }
   return value
 }
@@ -247,18 +395,20 @@ function textValue(
 function nullableTextValue(
   record: Record<string, unknown>,
   key: string,
-  maximum: number
+  maximum: number,
+  subject = 'batch'
 ): string | null {
   const value = record[key]
   if (value === null) return null
-  return textValue(record, key, maximum)
+  return textValue(record, key, maximum, subject)
 }
 
 function integerValue(
   record: Record<string, unknown>,
   key: string,
   minimum: number,
-  maximum = Number.MAX_SAFE_INTEGER
+  maximum = Number.MAX_SAFE_INTEGER,
+  subject = 'batch'
 ): number {
   const value = record[key]
   if (
@@ -267,7 +417,9 @@ function integerValue(
     value < minimum ||
     value > maximum
   ) {
-    throw new ValidationError('The batch payload contains an invalid number.')
+    throw new ValidationError(
+      `The ${subject} payload contains an invalid number.`
+    )
   }
   return value
 }
@@ -276,10 +428,11 @@ function nullableIntegerValue(
   record: Record<string, unknown>,
   key: string,
   minimum: number,
-  maximum = Number.MAX_SAFE_INTEGER
+  maximum = Number.MAX_SAFE_INTEGER,
+  subject = 'batch'
 ): number | null {
   if (record[key] === null) return null
-  return integerValue(record, key, minimum, maximum)
+  return integerValue(record, key, minimum, maximum, subject)
 }
 
 function opaqueId(value: unknown, label: string): string {
@@ -300,6 +453,16 @@ export function parseBatchItemId(value: unknown): string {
 /** Generic opaque child reference for an existing media or download job. */
 export function parseBatchChildId(value: unknown): string {
   return opaqueId(value, 'child job')
+}
+
+/** Opaque server-generated collection preview ID. */
+export function parseCollectionPreviewId(value: unknown): string {
+  return opaqueId(value, 'collection preview')
+}
+
+/** Opaque preview-local collection entry ID. */
+export function parseCollectionEntryId(value: unknown): string {
+  return opaqueId(value, 'collection entry')
 }
 
 /** Normalize a retry source reference; credentials and fragments are removed. */
@@ -335,12 +498,38 @@ function parseItemStatus(value: unknown): BatchItemStatus {
   return value
 }
 
+function parseCollectionPreviewKind(value: unknown): CollectionPreviewKind {
+  if (!isCollectionPreviewKind(value)) {
+    throw new ValidationError('Unknown collection preview kind.')
+  }
+  return value
+}
+
+function parseCollectionEntryAvailability(
+  value: unknown
+): CollectionEntryAvailability {
+  if (!isCollectionEntryAvailability(value)) {
+    throw new ValidationError('Unknown collection entry availability.')
+  }
+  return value
+}
+
+function parseCollectionErrorCode(
+  value: unknown
+): CollectionEntryErrorCode {
+  if (!isCollectionEntryErrorCode(value)) {
+    throw new ValidationError('Unknown collection entry error code.')
+  }
+  return value
+}
+
 export function parseBatchProgress(value: unknown): BatchProgress {
   const record = asPlainObject(value)
   exactKeys(record, [
     'totalItems',
     'completedItems',
     'failedItems',
+    'skippedItems',
     'completedBytes',
     'totalBytes'
   ])
@@ -348,7 +537,8 @@ export function parseBatchProgress(value: unknown): BatchProgress {
   const totalItems = integerValue(record, 'totalItems', 0, MAX_BATCH_ITEMS)
   const completedItems = integerValue(record, 'completedItems', 0, totalItems)
   const failedItems = integerValue(record, 'failedItems', 0, totalItems)
-  if (completedItems + failedItems > totalItems) {
+  const skippedItems = integerValue(record, 'skippedItems', 0, totalItems)
+  if (completedItems + failedItems + skippedItems > totalItems) {
     throw new ValidationError('Batch progress counts exceed the item total.')
   }
 
@@ -356,6 +546,7 @@ export function parseBatchProgress(value: unknown): BatchProgress {
     totalItems,
     completedItems,
     failedItems,
+    skippedItems,
     completedBytes: integerValue(record, 'completedBytes', 0),
     totalBytes: nullableIntegerValue(record, 'totalBytes', 0)
   }
@@ -380,18 +571,28 @@ export function parseBatchItem(value: unknown): BatchItem {
     'completedAt'
   ])
 
+  const status = parseItemStatus(record.status)
+  const completedBytes = integerValue(record, 'completedBytes', 0)
+  const totalBytes = nullableIntegerValue(record, 'totalBytes', 0)
+  if (
+    isSkippedBatchItemStatus(status) &&
+    (completedBytes !== 0 || totalBytes !== null)
+  ) {
+    throw new ValidationError('A skipped batch item cannot carry byte progress.')
+  }
+
   return {
     id: parseBatchItemId(record.id),
     batchId: parseBatchId(record.batchId),
     position: integerValue(record, 'position', 0, MAX_BATCH_ITEMS - 1),
     kind: parseItemKind(record.kind),
-    status: parseItemStatus(record.status),
+    status,
     title: textValue(record, 'title', MAX_BATCH_TITLE_LENGTH),
     label: textValue(record, 'label', MAX_BATCH_LABEL_LENGTH),
     childId:
       record.childId === null ? null : parseBatchChildId(record.childId),
-    completedBytes: integerValue(record, 'completedBytes', 0),
-    totalBytes: nullableIntegerValue(record, 'totalBytes', 0),
+    completedBytes,
+    totalBytes,
     errorMessage: nullableTextValue(
       record,
       'errorMessage',
@@ -403,12 +604,189 @@ export function parseBatchItem(value: unknown): BatchItem {
   }
 }
 
+function collectionErrorReasonValue(
+  record: Record<string, unknown>,
+  key: string
+): string | null {
+  const value = nullableTextValue(
+    record,
+    key,
+    MAX_COLLECTION_ERROR_REASON_LENGTH,
+    'collection'
+  )
+  if (value !== null && UNSAFE_REASON_TEXT.test(value)) {
+    throw new ValidationError(
+      'The collection payload contains an unsafe error reason.'
+    )
+  }
+  return value
+}
+
+export function parseCollectionEntry(value: unknown): CollectionEntry {
+  const record = asPlainObject(value, 'collection')
+  exactKeys(
+    record,
+    ['id', 'position', 'title', 'availability', 'errorCode', 'errorReason'],
+    [],
+    'collection'
+  )
+
+  const availability = parseCollectionEntryAvailability(record.availability)
+  const errorCode =
+    record.errorCode === null
+      ? null
+      : parseCollectionErrorCode(record.errorCode)
+  const errorReason = collectionErrorReasonValue(record, 'errorReason')
+
+  if (availability === 'available') {
+    if (errorCode !== null || errorReason !== null) {
+      throw new ValidationError(
+        'An available collection entry cannot carry an error.'
+      )
+    }
+  } else if (errorCode === null) {
+    throw new ValidationError(
+      'An unavailable collection entry requires a safe error code.'
+    )
+  }
+
+  return {
+    id: parseCollectionEntryId(record.id),
+    position: integerValue(
+      record,
+      'position',
+      0,
+      MAX_COLLECTION_ENTRIES - 1,
+      'collection'
+    ),
+    title: textValue(
+      record,
+      'title',
+      MAX_COLLECTION_ENTRY_TITLE_LENGTH,
+      'collection'
+    ),
+    availability,
+    errorCode,
+    errorReason
+  }
+}
+
+export function parseCollectionPreview(value: unknown): CollectionPreview {
+  const record = asPlainObject(value, 'collection')
+  exactKeys(
+    record,
+    [
+      'id',
+      'kind',
+      'title',
+      'entryCount',
+      'availableCount',
+      'unavailableCount',
+      'entries'
+    ],
+    [],
+    'collection'
+  )
+
+  const id = parseCollectionPreviewId(record.id)
+  const kind = parseCollectionPreviewKind(record.kind)
+  const title = textValue(
+    record,
+    'title',
+    MAX_COLLECTION_TITLE_LENGTH,
+    'collection'
+  )
+  const rawEntries = record.entries
+  if (!Array.isArray(rawEntries) || rawEntries.length > MAX_COLLECTION_ENTRIES) {
+    throw new ValidationError(
+      'The collection payload contains an invalid entry list.'
+    )
+  }
+
+  const entryCount = integerValue(
+    record,
+    'entryCount',
+    0,
+    MAX_COLLECTION_ENTRIES,
+    'collection'
+  )
+  if (entryCount !== rawEntries.length) {
+    throw new ValidationError(
+      'Collection preview entry count does not match its entries.'
+    )
+  }
+
+  const availableCount = integerValue(
+    record,
+    'availableCount',
+    0,
+    entryCount,
+    'collection'
+  )
+  const unavailableCount = integerValue(
+    record,
+    'unavailableCount',
+    0,
+    entryCount,
+    'collection'
+  )
+  if (availableCount + unavailableCount !== entryCount) {
+    throw new ValidationError(
+      'Collection preview availability counts do not match the entry total.'
+    )
+  }
+
+  const entries = rawEntries.map(parseCollectionEntry)
+  const entryIds = new Set<string>()
+  const positions = new Set<number>()
+  let actualAvailable = 0
+  let actualUnavailable = 0
+  for (const entry of entries) {
+    if (entryIds.has(entry.id)) {
+      throw new ValidationError('Duplicate collection entry identifier.')
+    }
+    if (positions.has(entry.position)) {
+      throw new ValidationError('Duplicate collection entry position.')
+    }
+    if (entry.position >= entryCount) {
+      throw new ValidationError('Collection entry position is out of range.')
+    }
+    entryIds.add(entry.id)
+    positions.add(entry.position)
+    if (entry.availability === 'available') actualAvailable += 1
+    else actualUnavailable += 1
+  }
+  if (
+    actualAvailable !== availableCount ||
+    actualUnavailable !== unavailableCount
+  ) {
+    throw new ValidationError(
+      'Collection preview availability counts do not match its entries.'
+    )
+  }
+
+  const ordered = [...entries].sort(
+    (left, right) => left.position - right.position
+  )
+
+  return {
+    id,
+    kind,
+    title,
+    entryCount,
+    availableCount,
+    unavailableCount,
+    entries: ordered
+  }
+}
+
 /** Aggregate item state without inventing unknown totals. */
 export function summarizeBatchItems(
   items: readonly BatchItem[]
 ): BatchProgress {
   let completedItems = 0
   let failedItems = 0
+  let skippedItems = 0
   let completedBytes = 0
   let totalBytes = 0
   let totalUnknown = false
@@ -416,6 +794,12 @@ export function summarizeBatchItems(
   for (const item of items) {
     if (item.status === 'complete') completedItems += 1
     if (item.status === 'error') failedItems += 1
+    if (isSkippedBatchItemStatus(item.status)) {
+      skippedItems += 1
+      // A skipped/unavailable item never downloaded anything and must not make
+      // the whole batch's byte total unknown.
+      continue
+    }
     completedBytes += item.completedBytes
     if (item.totalBytes === null) totalUnknown = true
     else totalBytes += item.totalBytes
@@ -425,6 +809,7 @@ export function summarizeBatchItems(
     totalItems: items.length,
     completedItems,
     failedItems,
+    skippedItems,
     completedBytes,
     totalBytes: totalUnknown ? null : totalBytes
   }
@@ -435,6 +820,7 @@ function sameProgress(left: BatchProgress, right: BatchProgress): boolean {
     left.totalItems === right.totalItems &&
     left.completedItems === right.completedItems &&
     left.failedItems === right.failedItems &&
+    left.skippedItems === right.skippedItems &&
     left.completedBytes === right.completedBytes &&
     left.totalBytes === right.totalBytes
   )
@@ -594,4 +980,49 @@ export function parseBatchItemTargetInput(
     batchId: parseBatchId(record.batchId),
     itemId: parseBatchItemId(record.itemId)
   }
+}
+
+/** Parse an explicit playlist/Pixeldrain-list analysis request. */
+export function parseAnalyzeCollectionInput(
+  value: unknown
+): AnalyzeCollectionInput {
+  const record = asPlainObject(value, 'collection analysis')
+  exactKeys(record, ['url'], [], 'collection analysis')
+  return { url: normalizeHttpUrl(record.url) }
+}
+
+/**
+ * Parse an explicit selection from a collection preview. An empty list is
+ * rejected, duplicates are rejected and at most `MAX_COLLECTION_SELECTION`
+ * entries are accepted. There is intentionally no "all" field.
+ */
+export function parseCreateCollectionBatchInput(
+  value: unknown
+): CreateCollectionBatchInput {
+  const record = asPlainObject(value, 'collection selection')
+  exactKeys(
+    record,
+    ['previewId', 'selectedEntryIds'],
+    [],
+    'collection selection'
+  )
+
+  const previewId = parseCollectionPreviewId(record.previewId)
+  const rawIds = record.selectedEntryIds
+  if (
+    !Array.isArray(rawIds) ||
+    rawIds.length === 0 ||
+    rawIds.length > MAX_COLLECTION_SELECTION
+  ) {
+    throw new ValidationError(
+      `Select between 1 and ${MAX_COLLECTION_SELECTION} collection entries.`
+    )
+  }
+
+  const selectedEntryIds = rawIds.map(parseCollectionEntryId)
+  if (new Set(selectedEntryIds).size !== selectedEntryIds.length) {
+    throw new ValidationError('Duplicate collection entry identifier.')
+  }
+
+  return { previewId, selectedEntryIds }
 }
