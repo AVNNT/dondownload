@@ -1,3 +1,11 @@
+import type {
+  AnalyzeMediaInput,
+  MediaAnalysis,
+  MediaJob,
+  MediaQueueInput,
+  MediaSnapshot
+} from './media'
+
 export type DownloadStatus =
   | 'queued'
   | 'active'
@@ -77,4 +85,17 @@ export interface DonDownloadApi {
   showInFolder: (id: string) => Promise<ApiResult<null>>
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
+
+  // Media (Milestone 3A). These are additive and do not change the download
+  // API above. Public media values never contain URLs, paths or raw metadata.
+  analyzeMedia: (input: AnalyzeMediaInput) => Promise<ApiResult<MediaAnalysis>>
+  queueMedia: (input: MediaQueueInput) => Promise<ApiResult<MediaSnapshot>>
+  getMediaSnapshot: () => Promise<ApiResult<MediaSnapshot>>
+  getMediaJob: (jobId: string) => Promise<ApiResult<MediaJob>>
+  cancelMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  removeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  showMediaInFolder: (jobId: string) => Promise<ApiResult<null>>
+  onMediaSnapshotChanged: (
+    listener: (snapshot: MediaSnapshot) => void
+  ) => () => void
 }

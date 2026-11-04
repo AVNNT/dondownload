@@ -2,6 +2,12 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import type { DownloadItem, DownloadStatus } from '@shared/types'
+import {
+  MEDIA_FORMAT_KINDS,
+  isMediaJobStatus,
+  normalizeMediaSourceUrl,
+  type MediaJobRecord
+} from '@shared/media'
 import { AppError } from '../errors'
 
 /**
@@ -11,7 +17,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -68,6 +74,37 @@ const MIGRATIONS: readonly Migration[] = [
 
       CREATE INDEX downloads_created_at_idx ON downloads (created_at DESC);
       CREATE INDEX downloads_status_idx ON downloads (status);
+    `
+  },
+  {
+    // Additive only: v1 download rows are never rewritten by this migration.
+    version: 2,
+    sql: `
+      CREATE TABLE media_jobs (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_url TEXT NOT NULL,
+        analysis_id TEXT NOT NULL,
+        option_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('video', 'audio')),
+        label TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'analyzing', 'downloading', 'merging',
+            'complete', 'error', 'cancelled', 'interrupted'
+          )
+        ),
+        completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+        total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+        error_message TEXT,
+        dir TEXT NOT NULL,
+        file_path TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+
+      CREATE INDEX media_jobs_created_at_idx ON media_jobs (created_at DESC);
+      CREATE INDEX media_jobs_status_idx ON media_jobs (status);
     `
   }
 ]
@@ -183,11 +220,63 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
   }
 }
 
+function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
+  const id = text(row, 'id')
+  const sourceUrl = text(row, 'source_url')
+  const analysisId = text(row, 'analysis_id')
+  const optionId = text(row, 'option_id')
+  const rawKind = text(row, 'kind')
+  const label = text(row, 'label')
+  const rawStatus = text(row, 'status')
+  const dir = text(row, 'dir')
+
+  // Ignore rows the current build cannot understand instead of crashing or
+  // deleting them. Media files are never removed by the database layer.
+  if (
+    !id ||
+    !sourceUrl ||
+    !analysisId ||
+    !optionId ||
+    !rawKind ||
+    !label ||
+    !rawStatus ||
+    !dir
+  ) {
+    return null
+  }
+  if (!(MEDIA_FORMAT_KINDS as readonly string[]).includes(rawKind)) return null
+  if (!isMediaJobStatus(rawStatus)) return null
+
+  return {
+    id,
+    sourceUrl,
+    analysisId,
+    optionId,
+    kind: rawKind as MediaJobRecord['kind'],
+    label,
+    status: rawStatus,
+    completedBytes: Math.max(0, Math.trunc(number(row, 'completed_bytes'))),
+    totalBytes:
+      row.total_bytes === null || row.total_bytes === undefined
+        ? null
+        : Math.max(0, Math.trunc(number(row, 'total_bytes'))),
+    errorMessage: text(row, 'error_message'),
+    dir,
+    filePath: text(row, 'file_path'),
+    createdAt: Math.trunc(number(row, 'created_at')),
+    updatedAt: Math.trunc(number(row, 'updated_at')),
+    completedAt: nullableNumber(row, 'completed_at')
+  }
+}
+
 export class DownloadDatabase {
   private readonly db: DatabaseSync
   private readonly upsertStatement: StatementSync
   private readonly selectAllStatement: StatementSync
   private readonly deleteStatement: StatementSync
+  private readonly mediaUpsertStatement: StatementSync
+  private readonly mediaSelectAllStatement: StatementSync
+  private readonly mediaDeleteStatement: StatementSync
   private closed = false
 
   constructor(private readonly filePath: string) {
@@ -231,6 +320,35 @@ export class DownloadDatabase {
         SELECT * FROM downloads ORDER BY created_at DESC, updated_at DESC
       `)
       this.deleteStatement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
+
+      this.mediaUpsertStatement = this.db.prepare(`
+        INSERT INTO media_jobs (
+          id, source_url, analysis_id, option_id, kind, label, status,
+          completed_bytes, total_bytes, error_message, dir, file_path,
+          created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          source_url = excluded.source_url,
+          analysis_id = excluded.analysis_id,
+          option_id = excluded.option_id,
+          kind = excluded.kind,
+          label = excluded.label,
+          status = excluded.status,
+          completed_bytes = excluded.completed_bytes,
+          total_bytes = excluded.total_bytes,
+          error_message = excluded.error_message,
+          dir = excluded.dir,
+          file_path = excluded.file_path,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          completed_at = excluded.completed_at
+      `)
+      this.mediaSelectAllStatement = this.db.prepare(`
+        SELECT * FROM media_jobs ORDER BY created_at DESC, updated_at DESC
+      `)
+      this.mediaDeleteStatement = this.db.prepare(
+        'DELETE FROM media_jobs WHERE id = ?'
+      )
     } catch (error) {
       try {
         this.db.close()
@@ -305,6 +423,60 @@ export class DownloadDatabase {
     }
   }
 
+  loadMediaJobs(): MediaJobRecord[] {
+    this.assertOpen()
+    try {
+      const rows = this.mediaSelectAllStatement.all() as Record<string, unknown>[]
+      const stored: MediaJobRecord[] = []
+      for (const row of rows) {
+        const parsed = rowToMediaRecord(row)
+        if (parsed) stored.push(parsed)
+      }
+      return stored
+    } catch (error) {
+      throw databaseError('Could not load media job history', error)
+    }
+  }
+
+  saveMediaJob(record: MediaJobRecord): void {
+    this.assertOpen()
+    try {
+      this.runMediaUpsert(record)
+    } catch (error) {
+      throw databaseError('Could not save media job history', error)
+    }
+  }
+
+  /** Write a batch atomically so media progress never lands half-applied. */
+  saveManyMediaJobs(records: readonly MediaJobRecord[]): void {
+    if (records.length === 0) return
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const record of records) {
+        this.runMediaUpsert(record)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not save media job history', error)
+    }
+  }
+
+  deleteMediaJob(id: string): void {
+    this.assertOpen()
+    try {
+      this.mediaDeleteStatement.run(id)
+    } catch (error) {
+      throw databaseError('Could not remove media job history', error)
+    }
+  }
+
   close(): void {
     if (this.closed) return
     this.closed = true
@@ -332,6 +504,29 @@ export class DownloadDatabase {
       record.errorMessage,
       Math.max(1, Math.trunc(record.attempts)),
       Math.max(1, Math.trunc(record.maxAttempts)),
+      Math.trunc(record.createdAt),
+      Math.trunc(record.updatedAt),
+      record.completedAt === null ? null : Math.trunc(record.completedAt)
+    )
+  }
+
+  private runMediaUpsert(record: MediaJobRecord): void {
+    // Strip credentials/fragments here as a final guard even if a caller
+    // skipped the shared normalizer. The source URL never leaves this table.
+    const sourceUrl = normalizeMediaSourceUrl(record.sourceUrl)
+    this.mediaUpsertStatement.run(
+      record.id,
+      sourceUrl,
+      record.analysisId,
+      record.optionId,
+      record.kind,
+      record.label,
+      record.status,
+      Math.max(0, Math.trunc(record.completedBytes)),
+      record.totalBytes === null ? null : Math.max(0, Math.trunc(record.totalBytes)),
+      record.errorMessage,
+      record.dir,
+      record.filePath,
       Math.trunc(record.createdAt),
       Math.trunc(record.updatedAt),
       record.completedAt === null ? null : Math.trunc(record.completedAt)

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { DownloadItem, DownloadStatus } from '../src/shared/types'
+import type { MediaJobRecord, MediaJobStatus } from '../src/shared/media'
 import {
   INTERRUPTED_MESSAGE,
   decideStartupRecovery
@@ -59,6 +60,63 @@ function sample(overrides: Partial<DownloadItem> = {}): DownloadItem {
     completedAt: null,
     ...overrides
   }
+}
+
+const V1_DOWNLOADS_SCHEMA = `
+  CREATE TABLE downloads (
+    id TEXT PRIMARY KEY NOT NULL,
+    gid TEXT NOT NULL,
+    url TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    explicit_filename TEXT,
+    dir TEXT NOT NULL,
+    file_path TEXT,
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'active', 'waiting', 'paused',
+        'complete', 'error', 'interrupted'
+      )
+    ),
+    total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    error_message TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+    max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts >= 1),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+  CREATE INDEX downloads_created_at_idx ON downloads (created_at DESC);
+  CREATE INDEX downloads_status_idx ON downloads (status);
+`
+
+function mediaRecord(overrides: Partial<MediaJobRecord> = {}): MediaJobRecord {
+  const now = Date.UTC(2026, 1, 3, 4, 5, 6)
+  return {
+    id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+    sourceUrl: 'https://example.com/watch?v=abc',
+    analysisId: 'analysis_0123456789abcdef',
+    optionId: 'option_video_0123456789',
+    kind: 'video',
+    label: '1080p MP4 - H.264 + AAC',
+    status: 'queued',
+    completedBytes: 0,
+    totalBytes: 1_000,
+    errorMessage: null,
+    dir: 'C:\\Users\\Test\\Downloads\\DonDownload\\Media',
+    filePath: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    ...overrides
+  }
+}
+
+function rowsOf(database: DatabaseSync, table: string): Record<string, unknown>[] {
+  return (database.prepare(`SELECT * FROM ${table} ORDER BY id`).all() as Record<
+    string,
+    unknown
+  >[]).map((row) => ({ ...row }))
 }
 
 afterEach(async () => {
@@ -294,5 +352,211 @@ describe('schema migrations', () => {
     raw.close()
 
     expect(() => openDownloadDatabase(filePath)).toThrow(/newer version/i)
+  })
+})
+
+describe('v1 to v2 migration preservation', () => {
+  it('adds media_jobs without changing any v1 download value', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+
+    const first = sample()
+    const second = sample({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      gid: 'aaaaaaaaaaaaaaaa',
+      url: 'https://example.com/files/completed.bin',
+      filename: 'completed.bin',
+      status: 'complete',
+      totalBytes: 42,
+      completedBytes: 42,
+      errorMessage: null,
+      createdAt: Date.UTC(2001, 0, 1),
+      updatedAt: Date.UTC(2001, 0, 1),
+      completedAt: Date.UTC(2001, 0, 1)
+    })
+
+    const raw = new DatabaseSync(filePath)
+    raw.exec(V1_DOWNLOADS_SCHEMA)
+    raw.exec('PRAGMA user_version = 1')
+    const insert = raw.prepare(`
+      INSERT INTO downloads (
+        id, gid, url, filename, explicit_filename, dir, file_path, status,
+        total_bytes, completed_bytes, error_message, attempts, max_attempts,
+        created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    insert.run(
+      first.id,
+      first.gid,
+      first.url,
+      first.filename,
+      'chosen-name.zip',
+      first.dir,
+      first.filePath,
+      first.status,
+      first.totalBytes,
+      first.completedBytes,
+      first.errorMessage,
+      first.attempts,
+      first.maxAttempts,
+      first.createdAt,
+      first.updatedAt,
+      first.completedAt
+    )
+    insert.run(
+      second.id,
+      second.gid,
+      second.url,
+      second.filename,
+      null,
+      second.dir,
+      second.filePath,
+      second.status,
+      second.totalBytes,
+      second.completedBytes,
+      second.errorMessage,
+      second.attempts,
+      second.maxAttempts,
+      second.createdAt,
+      second.updatedAt,
+      second.completedAt
+    )
+    const before = rowsOf(raw, 'downloads')
+    raw.close()
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(2)
+    expect(database.loadMediaJobs()).toEqual([])
+    const loaded = database.loadAll()
+    expect(loaded).toHaveLength(2)
+    expect(loaded.find((entry) => entry.record.id === first.id)?.record.url).toBe(
+      first.url
+    )
+    expect(
+      loaded.find((entry) => entry.record.id === second.id)?.record.completedAt
+    ).toBe(second.completedAt)
+    close(database)
+
+    const verify = new DatabaseSync(filePath)
+    const after = rowsOf(verify, 'downloads')
+    const mediaTable = verify
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'media_jobs'"
+      )
+      .get()
+    verify.close()
+
+    expect(after).toEqual(before)
+    expect(mediaTable).toBeDefined()
+  })
+})
+
+describe('media job persistence', () => {
+  it('persists only the normalized internal source URL, progress, lifecycle and paths', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+
+    first.saveMediaJob(
+      mediaRecord({
+        sourceUrl: 'https://user:secret@example.com/watch?v=abc#fragment'
+      })
+    )
+
+    const stored = first.loadMediaJobs()
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toEqual(
+      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc' })
+    )
+
+    first.saveMediaJob(
+      mediaRecord({
+        sourceUrl: 'https://example.com/watch?v=abc',
+        status: 'complete',
+        completedBytes: 1_000,
+        filePath: 'C:\\Users\\Test\\Downloads\\DonDownload\\Media\\video.mp4',
+        completedAt: Date.UTC(2026, 1, 3, 4, 10, 0),
+        updatedAt: Date.UTC(2026, 1, 3, 4, 10, 0)
+      })
+    )
+    close(first)
+
+    const second = open(filePath)
+    const reopened = second.loadMediaJobs()
+    expect(reopened).toHaveLength(1)
+    expect(reopened[0]?.status).toBe('complete')
+    expect(reopened[0]?.completedBytes).toBe(1_000)
+    expect(reopened[0]?.filePath).toBe(
+      'C:\\Users\\Test\\Downloads\\DonDownload\\Media\\video.mp4'
+    )
+    expect(reopened[0]?.completedAt).toBe(Date.UTC(2026, 1, 3, 4, 10, 0))
+    close(second)
+  })
+
+  it('removes only the explicitly deleted media job and never deletes files', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const keep = mediaRecord({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    })
+    const remove = mediaRecord({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      label: 'Audio only - Opus',
+      kind: 'audio',
+      optionId: 'option_audio_0123456789'
+    })
+    database.saveMediaJob(keep)
+    database.saveMediaJob(remove)
+
+    database.deleteMediaJob(remove.id)
+    expect(database.loadMediaJobs().map((record) => record.id)).toEqual([keep.id])
+    close(database)
+  })
+
+  it('rolls back a media batch when one entry violates the schema', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+
+    expect(() =>
+      database.saveManyMediaJobs([
+        mediaRecord(),
+        mediaRecord({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'not-a-status' as MediaJobStatus
+        })
+      ])
+    ).toThrow()
+
+    expect(database.loadMediaJobs()).toHaveLength(0)
+    close(database)
+  })
+
+  it('stores no cookie, header, raw metadata or yt-dlp command columns', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    close(database)
+
+    const raw = new DatabaseSync(filePath)
+    const columns = (
+      raw.prepare("PRAGMA table_info('media_jobs')").all() as { name: string }[]
+    ).map((column) => column.name)
+    raw.close()
+
+    expect(columns).toEqual([
+      'id',
+      'source_url',
+      'analysis_id',
+      'option_id',
+      'kind',
+      'label',
+      'status',
+      'completed_bytes',
+      'total_bytes',
+      'error_message',
+      'dir',
+      'file_path',
+      'created_at',
+      'updated_at',
+      'completed_at'
+    ])
   })
 })

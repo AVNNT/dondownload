@@ -1,0 +1,572 @@
+import { ValidationError } from './validation'
+
+/**
+ * Shared, renderer-safe media contracts for Milestone 3A.
+ *
+ * Nothing in this file may contain a page/source URL, disk path, request
+ * headers, cookies, credentials, raw yt-dlp selectors or raw yt-dlp metadata.
+ * Those values belong only to the internal persistence record below, which is
+ * never sent over IPC.
+ */
+
+export const MEDIA_FORMAT_KINDS = ['video', 'audio'] as const
+export type MediaFormatKind = (typeof MEDIA_FORMAT_KINDS)[number]
+
+export const MEDIA_JOB_STATUSES = [
+  'queued',
+  'analyzing',
+  'downloading',
+  'merging',
+  'complete',
+  'error',
+  'cancelled',
+  'interrupted'
+] as const
+export type MediaJobStatus = (typeof MEDIA_JOB_STATUSES)[number]
+
+/** Statuses that represent work a restart can no longer continue. */
+export const MEDIA_ACTIVE_JOB_STATUSES = [
+  'queued',
+  'analyzing',
+  'downloading',
+  'merging'
+] as const
+
+export function isMediaJobStatus(value: unknown): value is MediaJobStatus {
+  return (
+    typeof value === 'string' &&
+    (MEDIA_JOB_STATUSES as readonly string[]).includes(value)
+  )
+}
+
+export function isActiveMediaJobStatus(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    (MEDIA_ACTIVE_JOB_STATUSES as readonly string[]).includes(value)
+  )
+}
+
+export const MEDIA_TOOL_STATUSES = [
+  'stopped',
+  'starting',
+  'ready',
+  'unavailable',
+  'error'
+] as const
+export type MediaToolStatus = (typeof MEDIA_TOOL_STATUSES)[number]
+
+export const MAX_MEDIA_URL_LENGTH = 4096
+export const MAX_MEDIA_TITLE_LENGTH = 500
+export const MAX_MEDIA_LABEL_LENGTH = 240
+export const MAX_MEDIA_ERROR_LENGTH = 2000
+export const MAX_MEDIA_OPTIONS = 200
+export const MAX_MEDIA_JOBS = 10_000
+
+export interface MediaFormatOption {
+  kind: MediaFormatKind
+  /** Opaque server-generated identifier; never a yt-dlp format selector. */
+  optionId: string
+  /** Server-generated, human-readable description for display only. */
+  label: string
+  container: string
+  /** Resolution of the primary stream; null when unknown/not applicable. */
+  width: number | null
+  height: number | null
+  fps: number | null
+  videoCodec: string | null
+  audioCodec: string | null
+  /** Whether the produced output for this option includes audio. */
+  hasAudio: boolean
+  /** True when yt-dlp/ffmpeg must combine separate streams. */
+  requiresMerge: boolean
+  /** Only a verified size is exposed; unverified estimates stay null. */
+  filesizeBytes: number | null
+}
+
+export interface MediaAnalysis {
+  /** Opaque server-generated identifier tied to one fresh analysis. */
+  analysisId: string
+  title: string
+  durationSeconds: number | null
+  options: MediaFormatOption[]
+  /** Real video+audio output; may be a merge of separate streams. */
+  bestVideoOptionId: string | null
+  /** An actual audio-only stream. */
+  bestAudioOptionId: string | null
+  /** Unix epoch milliseconds after which the analysis is rejected. */
+  expiresAt: number
+}
+
+export interface MediaJob {
+  id: string
+  analysisId: string
+  optionId: string
+  kind: MediaFormatKind
+  label: string
+  status: MediaJobStatus
+  completedBytes: number
+  totalBytes: number | null
+  speedBps: number
+  errorMessage: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
+export interface MediaToolState {
+  status: MediaToolStatus
+  version: string | null
+  message: string | null
+  hint: string | null
+}
+
+export interface MediaSnapshot {
+  tool: MediaToolState
+  jobs: MediaJob[]
+}
+
+export interface AnalyzeMediaInput {
+  /** Page URL. Normalized to http(s), without userinfo or fragment. */
+  url: string
+}
+
+export interface MediaQueueInput {
+  analysisId: string
+  optionId: string
+  /** Explicit user action only, for a deliberate second copy. */
+  force?: true
+}
+
+/**
+ * INTERNAL persistence shape. It must never cross IPC or the native bridge.
+ * `sourceUrl` is retained solely so a future worker can recover display data;
+ * cookies, headers, raw metadata and yt-dlp commands are never persisted.
+ */
+export interface MediaJobRecord {
+  id: string
+  sourceUrl: string
+  analysisId: string
+  optionId: string
+  kind: MediaFormatKind
+  label: string
+  status: MediaJobStatus
+  completedBytes: number
+  totalBytes: number | null
+  errorMessage: string | null
+  /** Output directory needed for recovery. Not exposed through MediaJob. */
+  dir: string
+  /** Final output path needed for recovery. Not exposed through MediaJob. */
+  filePath: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
+const OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
+const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
+
+function asPlainObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ValidationError('Invalid media payload.')
+  }
+  return value as Record<string, unknown>
+}
+
+function exactKeys(
+  record: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): void {
+  for (const key of Object.keys(record)) {
+    if (!required.includes(key) && !optional.includes(key)) {
+      throw new ValidationError('The media payload contains unsupported fields.')
+    }
+  }
+  for (const key of required) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      throw new ValidationError('The media payload is missing required fields.')
+    }
+  }
+}
+
+function textValue(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number
+): string {
+  const value = record[key]
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > maximum ||
+    CONTROL_CHARACTERS.test(value)
+  ) {
+    throw new ValidationError('The media payload contains an invalid text field.')
+  }
+  return value
+}
+
+function nullableTextValue(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number
+): string | null {
+  const value = record[key]
+  if (value === null) return null
+  return textValue(record, key, maximum)
+}
+
+function integerValue(
+  record: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER
+): number {
+  const value = record[key]
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new ValidationError('The media payload contains an invalid number.')
+  }
+  return value
+}
+
+function nullableIntegerValue(
+  record: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER
+): number | null {
+  if (record[key] === null) return null
+  return integerValue(record, key, minimum, maximum)
+}
+
+function finiteNumberValue(
+  record: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum: number
+): number {
+  const value = record[key]
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new ValidationError('The media payload contains an invalid number.')
+  }
+  return value
+}
+
+function nullableFiniteNumberValue(
+  record: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum: number
+): number | null {
+  if (record[key] === null) return null
+  return finiteNumberValue(record, key, minimum, maximum)
+}
+
+function booleanValue(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key]
+  if (typeof value !== 'boolean') {
+    throw new ValidationError('The media payload contains an invalid flag.')
+  }
+  return value
+}
+
+function arrayValue(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number
+): unknown[] {
+  const value = record[key]
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new ValidationError('The media payload contains an invalid list.')
+  }
+  return value
+}
+
+function opaqueId(value: unknown): string {
+  if (typeof value !== 'string' || !OPAQUE_MEDIA_ID.test(value)) {
+    throw new ValidationError('Invalid opaque media identifier.')
+  }
+  return value
+}
+
+export function parseMediaAnalysisId(value: unknown): string {
+  return opaqueId(value)
+}
+
+export function parseMediaOptionId(value: unknown): string {
+  return opaqueId(value)
+}
+
+export function parseMediaJobId(value: unknown): string {
+  if (typeof value !== 'string' || !OPAQUE_MEDIA_ID.test(value)) {
+    throw new ValidationError('Invalid media job identifier.')
+  }
+  return value
+}
+
+/**
+ * Accept ordinary web page URLs and remove credentials and fragments before
+ * the value can reach the analyzer or the persistence layer.
+ */
+export function normalizeMediaSourceUrl(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new ValidationError('Enter a media page URL.')
+  }
+
+  const raw = value.trim()
+  if (raw.length === 0) {
+    throw new ValidationError('Enter a media page URL.')
+  }
+  if (raw.length > MAX_MEDIA_URL_LENGTH) {
+    throw new ValidationError('The URL is too long (maximum 4096 characters).')
+  }
+  if (CONTROL_CHARACTERS.test(raw)) {
+    throw new ValidationError('The URL contains unsupported control characters.')
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new ValidationError('That does not look like a valid URL.')
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new ValidationError('Only http:// and https:// URLs are supported.')
+  }
+  if (!parsed.hostname) {
+    throw new ValidationError('The URL must include a host name.')
+  }
+
+  parsed.username = ''
+  parsed.password = ''
+  parsed.hash = ''
+
+  if (parsed.href.length > MAX_MEDIA_URL_LENGTH) {
+    throw new ValidationError('The URL is too long (maximum 4096 characters).')
+  }
+
+  return parsed.href
+}
+
+export function parseMediaFormatOption(value: unknown): MediaFormatOption {
+  const record = asPlainObject(value)
+  exactKeys(record, [
+    'kind',
+    'optionId',
+    'label',
+    'container',
+    'width',
+    'height',
+    'fps',
+    'videoCodec',
+    'audioCodec',
+    'hasAudio',
+    'requiresMerge',
+    'filesizeBytes'
+  ])
+
+  const kind = record.kind
+  if (kind !== 'video' && kind !== 'audio') {
+    throw new ValidationError('Unknown media format kind.')
+  }
+
+  const container = record.container
+  if (typeof container !== 'string' || !CONTAINER.test(container)) {
+    throw new ValidationError('Invalid media container.')
+  }
+
+  return {
+    kind,
+    optionId: parseMediaOptionId(record.optionId),
+    label: textValue(record, 'label', MAX_MEDIA_LABEL_LENGTH),
+    container,
+    width: nullableIntegerValue(record, 'width', 1, 65_535),
+    height: nullableIntegerValue(record, 'height', 1, 65_535),
+    fps: nullableFiniteNumberValue(record, 'fps', 0, 1_000),
+    videoCodec: nullableTextValue(record, 'videoCodec', 64),
+    audioCodec: nullableTextValue(record, 'audioCodec', 64),
+    hasAudio: booleanValue(record, 'hasAudio'),
+    requiresMerge: booleanValue(record, 'requiresMerge'),
+    filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0)
+  }
+}
+
+export function parseMediaAnalysis(value: unknown): MediaAnalysis {
+  const record = asPlainObject(value)
+  exactKeys(record, [
+    'analysisId',
+    'title',
+    'durationSeconds',
+    'options',
+    'bestVideoOptionId',
+    'bestAudioOptionId',
+    'expiresAt'
+  ])
+
+  const rawOptions = arrayValue(record, 'options', MAX_MEDIA_OPTIONS)
+  const options = rawOptions.map(parseMediaFormatOption)
+  const byId = new Map<string, MediaFormatOption>()
+  for (const option of options) {
+    if (byId.has(option.optionId)) {
+      throw new ValidationError('Duplicate media option identifier.')
+    }
+    byId.set(option.optionId, option)
+  }
+
+  const bestVideoOptionId =
+    record.bestVideoOptionId === null
+      ? null
+      : parseMediaOptionId(record.bestVideoOptionId)
+  if (bestVideoOptionId !== null) {
+    const option = byId.get(bestVideoOptionId)
+    if (!option || option.kind !== 'video') {
+      throw new ValidationError('The best video option is not a video option.')
+    }
+  }
+
+  const bestAudioOptionId =
+    record.bestAudioOptionId === null
+      ? null
+      : parseMediaOptionId(record.bestAudioOptionId)
+  if (bestAudioOptionId !== null) {
+    const option = byId.get(bestAudioOptionId)
+    if (!option || option.kind !== 'audio') {
+      throw new ValidationError('The best audio option is not an audio option.')
+    }
+  }
+
+  return {
+    analysisId: parseMediaAnalysisId(record.analysisId),
+    title: textValue(record, 'title', MAX_MEDIA_TITLE_LENGTH),
+    durationSeconds: nullableFiniteNumberValue(
+      record,
+      'durationSeconds',
+      0,
+      Number.MAX_SAFE_INTEGER
+    ),
+    options,
+    bestVideoOptionId,
+    bestAudioOptionId,
+    expiresAt: integerValue(record, 'expiresAt', 1)
+  }
+}
+
+export function parseMediaJob(value: unknown): MediaJob {
+  const record = asPlainObject(value)
+  exactKeys(record, [
+    'id',
+    'analysisId',
+    'optionId',
+    'kind',
+    'label',
+    'status',
+    'completedBytes',
+    'totalBytes',
+    'speedBps',
+    'errorMessage',
+    'createdAt',
+    'updatedAt',
+    'completedAt'
+  ])
+
+  const kind = record.kind
+  if (kind !== 'video' && kind !== 'audio') {
+    throw new ValidationError('Unknown media format kind.')
+  }
+  if (!isMediaJobStatus(record.status)) {
+    throw new ValidationError('Unknown media job status.')
+  }
+
+  return {
+    id: parseMediaJobId(record.id),
+    analysisId: parseMediaAnalysisId(record.analysisId),
+    optionId: parseMediaOptionId(record.optionId),
+    kind,
+    label: textValue(record, 'label', MAX_MEDIA_LABEL_LENGTH),
+    status: record.status,
+    completedBytes: integerValue(record, 'completedBytes', 0),
+    totalBytes: nullableIntegerValue(record, 'totalBytes', 0),
+    speedBps: finiteNumberValue(record, 'speedBps', 0, Number.MAX_SAFE_INTEGER),
+    errorMessage: nullableTextValue(
+      record,
+      'errorMessage',
+      MAX_MEDIA_ERROR_LENGTH
+    ),
+    createdAt: integerValue(record, 'createdAt', 1),
+    updatedAt: integerValue(record, 'updatedAt', 1),
+    completedAt: nullableIntegerValue(record, 'completedAt', 1)
+  }
+}
+
+export function parseMediaToolState(value: unknown): MediaToolState {
+  const record = asPlainObject(value)
+  exactKeys(record, ['status', 'version', 'message', 'hint'])
+  const status = record.status
+  if (
+    typeof status !== 'string' ||
+    !(MEDIA_TOOL_STATUSES as readonly string[]).includes(status)
+  ) {
+    throw new ValidationError('Unknown media tool status.')
+  }
+  return {
+    status: status as MediaToolStatus,
+    version: nullableTextValue(record, 'version', 100),
+    message: nullableTextValue(record, 'message', MAX_MEDIA_ERROR_LENGTH),
+    hint: nullableTextValue(record, 'hint', MAX_MEDIA_ERROR_LENGTH)
+  }
+}
+
+export function parseMediaSnapshot(value: unknown): MediaSnapshot {
+  const record = asPlainObject(value)
+  exactKeys(record, ['tool', 'jobs'])
+  const rawJobs = arrayValue(record, 'jobs', MAX_MEDIA_JOBS)
+  const jobs = rawJobs.map(parseMediaJob)
+  const ids = new Set<string>()
+  for (const job of jobs) {
+    if (ids.has(job.id)) {
+      throw new ValidationError('Duplicate media job identifier.')
+    }
+    ids.add(job.id)
+  }
+  return {
+    tool: parseMediaToolState(record.tool),
+    jobs
+  }
+}
+
+export function parseAnalyzeMediaInput(value: unknown): AnalyzeMediaInput {
+  const record = asPlainObject(value)
+  exactKeys(record, ['url'])
+  return { url: normalizeMediaSourceUrl(record.url) }
+}
+
+export function parseMediaQueueInput(value: unknown): MediaQueueInput {
+  const record = asPlainObject(value)
+  exactKeys(record, ['analysisId', 'optionId'], ['force'])
+
+  let force = false
+  if (Object.prototype.hasOwnProperty.call(record, 'force')) {
+    if (typeof record.force !== 'boolean') {
+      throw new ValidationError('The force option must be true or false.')
+    }
+    force = record.force
+  }
+
+  return {
+    analysisId: parseMediaAnalysisId(record.analysisId),
+    optionId: parseMediaOptionId(record.optionId),
+    ...(force ? { force: true as const } : {})
+  }
+}
