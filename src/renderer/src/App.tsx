@@ -8,6 +8,7 @@ import type {
   DownloadItem
 } from '@shared/types'
 import { DownloadCard } from './components/DownloadCard'
+import { MediaSection } from './components/MediaSection'
 import { QuickAdd } from './components/QuickAdd'
 import { RuntimeNotice } from './components/RuntimeNotice'
 
@@ -196,6 +197,8 @@ export default function App(): JSX.Element {
             }}
           />
         ) : null}
+
+        <MediaSection />
 
         <section className="mt-7" aria-labelledby="downloads-heading">
           <div className="mb-3 flex items-baseline justify-between">
