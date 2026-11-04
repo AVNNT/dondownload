@@ -146,7 +146,7 @@ function jsonRespond(
 
 function runHost(
   frames: Buffer[],
-  options: { args?: string[]; env?: Record<string, string> } = {}
+  options: { args?: string[]; env?: Record<string, string>; timeoutMs?: number } = {}
 ): Promise<HostRun> {
   return new Promise((resolve, reject) => {
     const child = spawn(hostExecutable, options.args ?? [], {
@@ -158,7 +158,7 @@ function runHost(
     const timeout = setTimeout(() => {
       child.kill()
       reject(new Error('Native host did not exit in time.'))
-    }, 10_000)
+    }, options.timeoutMs ?? 10_000)
 
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
@@ -555,6 +555,54 @@ describeWindows('Windows native messaging host', () => {
       url: 'https://example.com/watch?v=1'
     })
   })
+
+  it(
+    'lets analyze-media outlast the regular 20s bridge timeout',
+    async () => {
+      // Longer than the regular 20s timeout, but well below the 90s analyze
+      // budget, so the regression stays bounded.
+      const responseDelayMs = 22_000
+      const app = await startFakeApp((response) => {
+        const timer = setTimeout(() => {
+          if (response.writableEnded || response.destroyed) return
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(
+            JSON.stringify({
+              ok: true,
+              operation: 'analyze-media',
+              analysis: mediaAnalysis()
+            })
+          )
+        }, responseDelayMs)
+        response.on('close', () => clearTimeout(timer))
+      })
+      const dir = await makeTempDir()
+      const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+      const run = await runHost(
+        [
+          frame(
+            JSON.stringify({
+              type: 'analyze-media',
+              url: 'https://example.com/watch?v=slow'
+            })
+          )
+        ],
+        {
+          env: { DONDOWNLOAD_BRIDGE_STATE: statePath },
+          timeoutMs: 40_000
+        }
+      )
+
+      expect(run.code).toBe(0)
+      expect(parseFrames(run.stdout)).toEqual([
+        { ok: true, operation: 'analyze-media', analysis: mediaAnalysis() }
+      ])
+      expect(app.requests).toHaveLength(1)
+      expect(app.requests[0]).toMatchObject({ url: '/analyze-media' })
+    },
+    45_000
+  )
 
   it('forwards queue-media with opaque IDs and only an explicit force', async () => {
     const app = await startFakeApp(

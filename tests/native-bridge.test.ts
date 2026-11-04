@@ -491,6 +491,31 @@ describe('media bridge routes', () => {
     ])
   })
 
+  it('maps MEDIA_DUPLICATE_JOB to 409 instead of a generic 400', async () => {
+    if (media) {
+      media.failWith = new AppError(
+        'MEDIA_DUPLICATE_JOB',
+        'This media job is already queued or downloading.'
+      )
+    }
+    const response = await post(
+      JSON.stringify({
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID
+      }),
+      { path: '/queue-media' }
+    )
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: {
+        code: 'MEDIA_DUPLICATE_JOB',
+        message: 'This media job is already queued or downloading.'
+      }
+    })
+  })
+
   it('serves media-status and cancel-media with the exact job DTO', async () => {
     const status = await post(JSON.stringify({ jobId: JOB_ID }), {
       path: '/media-status'

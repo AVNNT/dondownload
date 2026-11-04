@@ -41,6 +41,13 @@ internal static class NativeHost
     private const string MediaStatusOperation = "media-status";
     private const string CancelMediaOperation = "cancel-media";
     private const string StateFileName = "native-bridge.json";
+    // aria2 may need up to ~12 seconds to start on the first add. The host
+    // still fails promptly when the loopback port is closed.
+    private const int BridgeTimeoutMilliseconds = 20000;
+    // Media analysis runs yt-dlp metadata extraction, which the media engine
+    // already bounds at 60 seconds. The host must allow that plus bridge
+    // overhead instead of cutting a valid analysis off at the regular timeout.
+    private const int AnalyzeMediaTimeoutMilliseconds = 90000;
 
     private static readonly Regex TokenPattern =
         new Regex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
@@ -362,7 +369,10 @@ internal static class NativeHost
         HttpWebRequest request = null;
         try
         {
-            request = CreateBridgeRequest(state, "/queue-download");
+            request = CreateBridgeRequest(
+                state,
+                "/queue-download",
+                BridgeTimeoutMilliseconds);
 
             Dictionary<string, object> body = new Dictionary<string, object>();
             body.Add("url", url);
@@ -475,7 +485,10 @@ internal static class NativeHost
         return Error((string)error["code"], (string)error["message"]);
     }
 
-    private static HttpWebRequest CreateBridgeRequest(BridgeState state, string route)
+    private static HttpWebRequest CreateBridgeRequest(
+        BridgeState state,
+        string route,
+        int timeoutMilliseconds)
     {
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(
             "http://127.0.0.1:" + state.Port.ToString(CultureInfo.InvariantCulture) + route);
@@ -486,10 +499,8 @@ internal static class NativeHost
         request.AllowAutoRedirect = false;
         request.Proxy = null;
         request.KeepAlive = false;
-        // aria2 may need up to ~12 seconds to start on the first add. The
-        // host still fails promptly when the loopback port is closed.
-        request.Timeout = 20000;
-        request.ReadWriteTimeout = 20000;
+        request.Timeout = timeoutMilliseconds;
+        request.ReadWriteTimeout = timeoutMilliseconds;
         request.ServicePoint.Expect100Continue = false;
         request.UserAgent = "DonDownload-Native/0.1.0";
         return request;
@@ -510,7 +521,12 @@ internal static class NativeHost
         HttpWebRequest request = null;
         try
         {
-            request = CreateBridgeRequest(state, route);
+            request = CreateBridgeRequest(
+                state,
+                route,
+                operation == AnalyzeMediaOperation
+                    ? AnalyzeMediaTimeoutMilliseconds
+                    : BridgeTimeoutMilliseconds);
             byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
             request.ContentLength = payload.Length;
             using (Stream stream = request.GetRequestStream())

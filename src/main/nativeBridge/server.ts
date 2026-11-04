@@ -50,7 +50,13 @@ function isMediaRoute(value: string | undefined): value is MediaBridgeRoute {
 }
 
 function mediaErrorStatus(code: string): number {
-  if (code === 'DUPLICATE_DOWNLOAD' || code.endsWith('_DUPLICATE')) return 409
+  if (
+    code === 'DUPLICATE_DOWNLOAD' ||
+    code === 'MEDIA_DUPLICATE_JOB' ||
+    code.endsWith('_DUPLICATE')
+  ) {
+    return 409
+  }
   if (
     code === 'MEDIA_UNAVAILABLE' ||
     code.endsWith('_UNAVAILABLE') ||
