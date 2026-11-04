@@ -1,10 +1,10 @@
 # Download settings contract and runtime application (Milestone 5A)
 
 Status: shared settings contract, additive SQLite schema v5 persistence, runtime
-settings service, trusted IPC/preload API, and startup/live aria2 application.
-This milestone still does **not** add renderer UI, scheduling or individual
-download controls, touch the installer, or add torrent/VPN behavior. It also
-does not change existing download, media or batch history.
+settings service, trusted IPC/preload API, startup/live aria2 application and a
+renderer form for global limits. A Windows installer baseline is integrated.
+Scheduling and individual download controls are not implemented; this does not
+change existing download, media or batch history and adds no torrent/VPN behavior.
 
 ## Scope
 
@@ -22,6 +22,9 @@ does not change existing download, media or batch history.
 - `src/main/ipc.ts`, `src/shared/ipc.ts`, `src/shared/types.ts` and
   `src/preload/index.ts` expose `getSettings` / `updateSettings` through the
   existing trusted-sender wrapper.
+- `src/renderer/src/components/SettingsSection.tsx` exposes the three global
+  aria2 limits. It intentionally does not expose allowed hours, because that
+  setting is stored but not yet enforced.
 - `tests/settings-contract.test.ts`, `tests/settings-database.test.ts`,
   `tests/settings-manager.test.ts`, `tests/settings-ipc.test.ts` and
   `tests/aria2-args.test.ts` cover the contract, defaults, bounds, CHECK

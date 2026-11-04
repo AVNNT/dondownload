@@ -440,6 +440,7 @@ Verification after integration:
 | `npm run test:fast` | **467 passed**, 31 files |
 | `npm run typecheck` | **passed** |
 | `npm run build` | **passed** |
+| `npm run test:gate` | **507 passed / 7 skipped**; build passed |
 | `npm run build:installer` | Native-host build, vendor staging and app build passed; script stopped because `electron-builder` is not installed in the main worktree |
 | electron-builder 26.18.0 invoked from the installer worktree | **passed**, NSIS x64 artifact built locally without running it |
 
