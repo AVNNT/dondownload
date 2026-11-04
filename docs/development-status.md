@@ -27,11 +27,14 @@ implementation and verification record.
   rejecting credential-bearing media URLs and adding a safe job title are at
   `f55b0fc`. Media option validation and desktop UI are integrated at
   `d0f5049` and `eae3e3f`; persistent job orchestration and IPC are integrated at
-  `eb099b8` with an API-alignment fix at `8f3b2f1`. Current integrated baseline:
-  256 tests passed / 3 skipped and typecheck passed. Engine and Helium
-  bridge/overlay remain in isolated DeepSeek worktrees; `index.ts` startup and
-  bridge wiring await those interfaces. yt-dlp and FFmpeg are not installed or
-  found; no real media integration has been verified.
+  `eb099b8` with an API-alignment fix at `8f3b2f1`. The yt-dlp/FFmpeg engine is
+  integrated at `2923489`; review fixes for FFmpeg path passing, public stream
+  filtering, DNS revalidation and preserving partial files are at `a747c67`.
+  `index.ts` startup and conservative shutdown recovery are wired at `1954022`.
+  Current integrated baseline: 285 tests passed / 3 skipped; typecheck and build
+  pass. Helium bridge/overlay remains in an isolated DeepSeek worktree. yt-dlp
+  and FFmpeg are not installed or found; no real media integration has been
+  verified.
 
 ## Root cause of the reported Milestone 2B failure
 
