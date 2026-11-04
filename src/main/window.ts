@@ -1,7 +1,18 @@
 import { join } from 'node:path'
 import { BrowserWindow, session } from 'electron'
 
-export function createMainWindow(): BrowserWindow {
+export interface CreateMainWindowOptions {
+  /**
+   * Smoke verification creates the real renderer window but must never display
+   * or focus it. Normal application startup keeps the existing visible flow.
+   */
+  show?: boolean
+}
+
+export function createMainWindow(
+  options: CreateMainWindowOptions = {}
+): BrowserWindow {
+  const show = options.show ?? true
   const window = new BrowserWindow({
     width: 980,
     height: 760,
@@ -40,7 +51,7 @@ export function createMainWindow(): BrowserWindow {
   })
 
   window.once('ready-to-show', () => {
-    window.show()
+    if (show) window.show()
   })
 
   const developmentUrl = process.env.ELECTRON_RENDERER_URL

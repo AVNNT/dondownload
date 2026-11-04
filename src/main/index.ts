@@ -21,6 +21,14 @@ import {
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
 import { createAppTray, type AppTray } from './tray'
 import { createMainWindow } from './window'
+import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
+import {
+  createSmokeResult,
+  safeDetail,
+  writeSmokeResultSync,
+  type SmokeCheckResult
+} from './smoke/report'
+import { runSmokeTest } from './smoke/run'
 
 let mainWindow: BrowserWindow | null = null
 let appTray: AppTray | null = null
@@ -36,6 +44,67 @@ let cleanupStarted = false
 /** Cleanup completed; only then may the final internal app.quit proceed. */
 let cleanupFinished = false
 
+function writeFatalSmokeConfiguration(config: SmokeTestConfigEnabled): void {
+  const detail = config.errors.join(' | ') || 'Invalid smoke-test configuration.'
+  const check: SmokeCheckResult = {
+    name: 'config.valid',
+    status: 'FAIL',
+    detail,
+    durationMs: 0
+  }
+  const result = createSmokeResult({
+    environment: {
+      appVersion: app.getVersion(),
+      electronVersion: process.versions.electron ?? 'unknown',
+      chromeVersion: process.versions.chrome ?? 'unknown',
+      nodeVersion: process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
+      packaged: app.isPackaged,
+      userDataPath: config.userDataDir ?? '<unset>',
+      resourcesPath: process.resourcesPath ?? '<unset>'
+    },
+    checks: [check],
+    logs: [`Smoke-test configuration rejected: ${detail}`]
+  })
+  if (config.resultPath !== null) {
+    try {
+      writeSmokeResultSync(config.resultPath, result)
+    } catch {
+      // The result path itself may be unusable; stderr still carries the reason.
+    }
+  }
+  console.error(`[dondownload-smoke] FAIL config.valid: ${detail}`)
+  console.error(JSON.stringify(result))
+}
+
+const smokeConfig = loadSmokeTestConfig({
+  argv: process.argv,
+  env: process.env,
+  defaultUserDataPath: path.join(app.getPath('appData'), app.getName()),
+  cwd: process.cwd()
+})
+
+let smoke: SmokeTestConfigEnabled | null = null
+if (smokeConfig.enabled) {
+  if (!smokeConfig.ok) {
+    // Never fall through to normal startup with a rejected smoke request: that
+    // could open the real profile or desktop UI.
+    writeFatalSmokeConfiguration(smokeConfig)
+    app.exit(2)
+  } else {
+    smoke = smokeConfig
+    // Apply the isolated directory before ready so every Electron path (session
+    // data, caches, SQLite and the bridge state file) stays inside it.
+    app.setPath('userData', smokeConfig.userDataDir as string)
+    app.setPath('sessionData', smokeConfig.userDataDir as string)
+    app.setPath(
+      'crashDumps',
+      path.join(smokeConfig.userDataDir as string, 'crashDumps')
+    )
+  }
+}
+
 function isMainWindowVisible(): boolean {
   return Boolean(
     mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
@@ -46,8 +115,8 @@ function refreshTray(): void {
   appTray?.refresh()
 }
 
-function openMainWindow(): BrowserWindow {
-  const window = createMainWindow()
+function openMainWindow(show = true): BrowserWindow {
+  const window = createMainWindow({ show })
 
   window.on('close', (event) => {
     const action = decideWindowClose({
@@ -86,19 +155,28 @@ function hideMainWindow(): void {
   refreshTray()
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!smokeConfig.enabled || smokeConfig.ok) {
+  // Smoke verification uses an isolated userData directory, so it must not
+  // compete with (or focus) an already-running normal desktop instance.
+  const hasSingleInstanceLock =
+    smoke !== null ? true : app.requestSingleInstanceLock()
 
-if (!hasSingleInstanceLock) {
-  app.quit()
-} else {
-  app.on('second-instance', () => {
-    // A second launch focuses the existing app, including after close-to-tray.
-    showMainWindow()
-  })
+  if (!hasSingleInstanceLock) {
+    app.quit()
+  } else {
+    if (smoke === null) {
+      app.on('second-instance', () => {
+        // A second launch focuses the existing app, including after close-to-tray.
+        showMainWindow()
+      })
+    }
 
-  app.whenReady().then(async () => {
-    app.setAppUserModelId('com.dondownload.app')
-    const downloadDir = defaultDownloadDir(app.getPath('downloads'))
+    app.whenReady().then(async () => {
+      if (smoke === null) app.setAppUserModelId('com.dondownload.app')
+      const downloadDir =
+        smoke !== null
+          ? path.join(app.getPath('userData'), 'smoke-downloads')
+          : defaultDownloadDir(app.getPath('downloads'))
 
     aria2 = new Aria2Service(() => downloadDir)
 
@@ -192,37 +270,47 @@ if (!hasSingleInstanceLock) {
     })
 
     // Probe external media tools without delaying the first window. The media
-    // job manager publishes the verified state when the probe settles.
-    void mediaJobs.refreshToolState()
+    // job manager publishes the verified state when the probe settles. Smoke
+    // verification awaits the same production probe below.
+    const initialMediaProbe =
+      smoke === null ? mediaJobs.refreshToolState() : null
+    if (initialMediaProbe !== null) void initialMediaProbe
 
     // The browser bridge is intentionally started without touching the
     // window. It keeps working while the app lives only in the tray and only
     // forwards validated URLs to the same DownloadManager/aria2 instance.
-    try {
-      nativeBridge = await startNativeBridge({
-        manager,
-        mediaBridge: mediaJobs,
-        userDataPath: app.getPath('userData'),
-        logger: (message) => console.error(message)
-      })
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Browser bridge is unavailable: ${detail}`)
+    // Smoke verification must not open a loopback port or write a state file.
+    if (smoke === null) {
+      try {
+        nativeBridge = await startNativeBridge({
+          manager,
+          mediaBridge: mediaJobs,
+          userDataPath: app.getPath('userData'),
+          logger: (message) => console.error(message)
+        })
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'unknown error'
+        console.error(`Browser bridge is unavailable: ${detail}`)
+      }
     }
 
     // Create the tray before the window so a close always has a safe target.
     // If tray creation fails, the policy falls back to close-and-quit.
-    appTray = createAppTray({
-      showWindow: showMainWindow,
-      hideWindow: hideMainWindow,
-      quit: () => {
-        quitRequested = true
-        app.quit()
-      },
-      isWindowVisible: isMainWindowVisible
-    })
+    // Smoke verification never creates a tray, so no desktop UI surface exists.
+    if (smoke === null) {
+      appTray = createAppTray({
+        showWindow: showMainWindow,
+        hideWindow: hideMainWindow,
+        quit: () => {
+          quitRequested = true
+          app.quit()
+        },
+        isWindowVisible: isMainWindowVisible
+      })
+    }
 
-    mainWindow = openMainWindow()
+    const window = openMainWindow(smoke === null)
+    mainWindow = window
 
     aria2.onStateChange = () => {
       manager?.publish()
@@ -230,7 +318,7 @@ if (!hasSingleInstanceLock) {
 
     // Start eagerly so the top bar can explain a missing/broken aria2, then
     // reconcile persisted records once we know whether aria2 is available.
-    void (async () => {
+    const startServices = async (): Promise<void> => {
       try {
         await aria2?.start()
       } catch {
@@ -241,7 +329,78 @@ if (!hasSingleInstanceLock) {
       } catch {
         // Recovery is best-effort; persisted rows are never deleted here.
       }
-    })()
+    }
+
+    if (smoke !== null) {
+      await startServices()
+      try {
+        const result = await runSmokeTest({
+          window,
+          database,
+          manager,
+          aria2,
+          mediaJobs,
+          userDataDir: app.getPath('userData'),
+          downloadDir,
+          resultPath: smoke.resultPath as string,
+          environment: {
+            appVersion: app.getVersion(),
+            electronVersion: process.versions.electron ?? 'unknown',
+            chromeVersion: process.versions.chrome ?? 'unknown',
+            nodeVersion: process.versions.node,
+            platform: process.platform,
+            arch: process.arch,
+            packaged: app.isPackaged,
+            resourcesPath: process.resourcesPath ?? '<unset>'
+          }
+        })
+
+        process.exitCode = result.status === 'PASS' ? 0 : 1
+
+        // The normal cleanup path is bounded by its own child timeouts. This
+        // last-resort timer only exits this Electron process; the harness also
+        // kills this process tree if the app cannot finish shutting down.
+        const shutdownWatchdog = setTimeout(() => app.exit(3), 30_000)
+        shutdownWatchdog.unref()
+        quitRequested = true
+        app.quit()
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'unknown error'
+        const result = createSmokeResult({
+          environment: {
+            appVersion: app.getVersion(),
+            electronVersion: process.versions.electron ?? 'unknown',
+            chromeVersion: process.versions.chrome ?? 'unknown',
+            nodeVersion: process.versions.node,
+            platform: process.platform,
+            arch: process.arch,
+            packaged: app.isPackaged,
+            userDataPath: app.getPath('userData'),
+            resourcesPath: process.resourcesPath ?? '<unset>'
+          },
+          checks: [
+            {
+              name: 'smoke.runner',
+              status: 'FAIL',
+              detail: safeDetail(detail),
+              durationMs: 0
+            }
+          ],
+          logs: ['The smoke runner failed before it could complete its checks.']
+        })
+        try {
+          writeSmokeResultSync(smoke.resultPath as string, result)
+        } catch {
+          // stderr remains available when the isolated result file cannot be written.
+        }
+        console.error(`[dondownload-smoke] FAIL smoke.runner: ${detail}`)
+        console.error(JSON.stringify(result))
+        app.exit(2)
+      }
+      return
+    }
+
+    void startServices()
 
     app.on('activate', () => {
       // macOS Dock activation and Windows taskbar relaunches restore the same
@@ -342,4 +501,5 @@ if (!hasSingleInstanceLock) {
       app.quit()
     })()
   })
+  }
 }

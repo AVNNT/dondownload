@@ -27,6 +27,8 @@
     "test:playlist:live": "vitest run tests/playlist.live.integration.test.ts",
     "test:playlist-download:live": "vitest run tests/playlist-download.live.integration.test.ts",
     "test:packaged-resources": "vitest run tests/packaged-resources.integration.test.ts",
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:packaged": "node scripts/smoke-test.mjs --app dist/win-unpacked/DonDownload.exe",
     "test:extension": "vitest run tests/extension-bridge.test.ts tests/extension-manifest.test.ts tests/extension-media-bridge.test.ts tests/extension-overlay-controller.test.ts tests/extension-overlay.test.ts tests/extension-site-policy.test.ts",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
     "test:gate": "npm test && npm run build"
