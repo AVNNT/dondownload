@@ -23,7 +23,9 @@ copies locally installed, version-checked executables into the git-ignored
 | Deno (`deno.exe`) | 2.9.8 | `vendor/deno/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
 
 The exact staged hashes, sizes, local source paths and license-file hashes are
-recorded in `build/vendor/manifest.json` by `scripts/stage-vendor.ps1`.
+recorded in `build/vendor/manifest.json` by `scripts/stage-vendor.ps1`. This
+manifest records the files staged from local verified-version paths; it does not
+authenticate the upstream origin or prove a reproducible build.
 
 ## aria2
 
@@ -71,8 +73,9 @@ recorded in `build/vendor/manifest.json` by `scripts/stage-vendor.ps1`.
   `third-party/licenses/deno-LICENSE.txt`; retain the copyright and permission
   notice when redistributing the executable.
 - Deno is staged because current yt-dlp YouTube extraction requires a
-  JavaScript runtime. The current application does not yet pass the bundled
-  Deno path to yt-dlp; see `docs/installer-packaging.md` for that known gap.
+  JavaScript runtime. The application locates the packaged Deno path and passes
+  it to yt-dlp. The MIT text is included, but release review should confirm
+  whether the standalone executable's embedded dependencies need other notices.
 - Source archive: the upstream source tarball above.
 
 ## Source-offer strategy for GPL binaries

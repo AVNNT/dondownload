@@ -1,9 +1,9 @@
 # Windows installer packaging baseline
 
-This document describes the first Windows installer packaging baseline for
-DonDownload. It is intentionally independent of the settings runtime: no
-settings contract, settings UI, schema migration or settings persistence is
-required to stage, build or inspect the installer.
+This document records the Windows installer packaging baseline and subsequent
+application updates. The initial packaging change was developed independently
+from settings runtime work; the current source and installer include the later
+settings, media-runtime and Milestone 5 changes noted in the verification log.
 
 ## Scope
 
@@ -42,9 +42,9 @@ documented in [media-tools.md](media-tools.md):
 | Deno | 2.9.8 | `resources/vendor/deno/deno.exe` |
 
 Deno is bundled because current yt-dlp YouTube extraction requires a
-JavaScript runtime. The application's existing locators already search
-`process.resourcesPath/vendor/...` for aria2, yt-dlp and FFmpeg. Deno runtime
-wiring is a separate application change and is listed as a known gap below.
+JavaScript runtime. DonDownload locates the packaged `resources/vendor/deno/`
+binary and passes its path to yt-dlp for analysis, playlist preview and media
+downloads; see the verification/gap record below.
 
 ## Prerequisites
 
@@ -285,8 +285,7 @@ testing as a manual step.
   `resources/vendor/deno/`, app-local `vendor/deno/`, or `PATH`. The resolved
   path is passed as a fixed `--js-runtimes deno:<path>` argument to yt-dlp
   analysis, playlist preview and media-download operations. Unit tests cover
-  the wiring; the baseline artifact predates this change and must be rebuilt
-  before release review.
+  the wiring. Rebuild the artifact after any source change before release.
 - ffprobe is staged but not invoked by the current application.
 - The installer is not code-signed. Public distribution requires signing.
 - No auto-update, publish provider or telemetry is configured.
