@@ -15,7 +15,8 @@ The app has an explicit smoke mode:
 - `DONDOWNLOAD_SMOKE_TEST=1` (environment) or `--smoke-test` (argument) enables
   it.
 - It is off by default. Normal `npm run dev`, `npm start` and an installed app
-  take the unchanged desktop path.
+  take the unchanged desktop path. Renderer diagnostic listeners are attached
+  only when smoke mode constructs the hidden window.
 - When enabled, an absolute `--user-data-dir=<new directory>` is mandatory.
 - The normal Electron userData directory is refused, as is a relative path, a
   filesystem root, or a result file outside the isolated directory.
@@ -44,6 +45,9 @@ are deliberately suppressed:
   profile, extension or normal userData path is touched.
 - No OS mouse, keyboard, UI Automation, browser automation or desktop input is
   used.
+- Renderer diagnostics observe only the real smoke window's `webContents`.
+  Nothing is injected into the page and no debugger or remote-debugging port is
+  enabled.
 - The downloads directory is `<isolated userData>/smoke-downloads`, never the
   user's real Downloads folder.
 - The app does not start a download, media analysis, playlist preview or any
@@ -115,7 +119,7 @@ Shape:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "dondownload-smoke-test",
   "status": "PASS",
   "startedAt": "2026-11-04T...",
@@ -141,6 +145,18 @@ Shape:
       "durationMs": 42
     }
   ],
+  "diagnostics": {
+    "entries": [
+      {
+        "category": "console",
+        "severity": "warning",
+        "fatal": false,
+        "message": "..."
+      }
+    ],
+    "suppressed": 1,
+    "dropped": 0
+  },
   "logs": ["PASS ...", "FAIL ..."]
 }
 ```
@@ -154,6 +170,7 @@ Checks cover:
 | `config.isolated-user-data` | userData, download directory and result file are inside the explicit isolated directory. |
 | `desktop-ui.suppressed` | the real window exists but is hidden and unfocused; the native bridge state file was not written. |
 | `renderer.loaded` | the production `file:` renderer reached `readyState=complete` and React rendered content into `#root`. |
+| `renderer.diagnostics` | no fatal renderer console exception, preload failure, renderer-process loss, failed document load or failed local `file:` resource was observed. Warnings and bounded diagnostics are reported without failing. |
 | `sqlite.ready` | the real `node:sqlite` database opened inside isolated userData, migrations reached the current schema, and download/settings reads succeeded. |
 | `aria2.ready` | the real `aria2c` child located from packaged/app-local/PATH resources started and answered RPC with a version. |
 | `download-manager.ready` | the real download manager loaded existing state and sees aria2 as ready. |
@@ -162,10 +179,43 @@ Checks cover:
 | `media-tool.ffmpeg` | bundled/app-local/PATH FFmpeg ran `-version` and exited 0. |
 | `media-tool.deno` | bundled/app-local/PATH Deno ran `--version` and exited 0. |
 
+### Renderer diagnostics scope
+
+The `renderer.diagnostics` check observes the actual hidden window and records:
+
+- `console-message` at warning or error level; informational/debug messages are
+  ignored.
+- `did-fail-load` for document, frame and subframe loads.
+- Resource-level `webRequest.onErrorOccurred` entries filtered to the smoke
+  window (removed after the run).
+- `render-process-gone` and `preload-error`.
+
+Each entry records `category`, `severity` (`warning` or `error`), a sanitized
+message and whether it is fatal. Messages have control characters removed,
+whitespace collapsed and are truncated to 400 characters. At most 50 entries
+are retained; later entries increment `dropped`. Diagnostics are capped so a
+noisy renderer cannot grow the result file without limit.
+
+Fatal entries are error-level renderer console messages, document/main-frame
+load failures, failed local `file:` resources, preload errors and renderer
+process loss. `ERR_ABORTED` is treated as a non-fatal warning. Remote resource
+failures are recorded as errors but are not fatal because they do not prove the
+local production bundle is broken. Chromium's exact warning that a meta CSP
+`frame-ancestors` directive is ignored is suppressed only at warning level; if
+the same text is reported at error level it remains fatal.
+
+The check runs after the other checks so renderer failures raised while startup
+settles are included. It cannot observe messages emitted before the listeners
+are attached (immediately after the window is created) or after the run
+finishes.
+
 ## What this proves
 
 - The production Electron main/preload/renderer bundles start and the renderer
   reaches a rendered state.
+- The renderer produced no fatal uncaught console errors, failed local
+  document/resource loads, preload errors or renderer-process loss during the
+  smoke run.
 - The production SQLite schema can be created/migrated in a fresh isolated
   profile and read through the real persistence layer.
 - The packaged resource layout can locate and start the real aria2 binary.
@@ -189,6 +239,9 @@ Checks cover:
 - It does not verify visual layout beyond "React rendered something into
   `#root`", accessibility, focus behavior on a real desktop, GPU
   acceleration, DPI scaling or permission prompts.
+- Renderer diagnostics cover only what the hidden window reports during this
+  bounded run. They do not prove that every interaction, later navigation,
+  dialog or long-running session is error-free.
 - It does not prove the bundled tool versions match the pinned versions. The
   staging script remains the version-pin gate; smoke reports the versions it
   observed.
@@ -219,6 +272,9 @@ Checks cover:
 
 `tests/smoke-config.test.ts` covers the opt-in gate, mandatory isolated
 userData, refusal of the normal profile, result-path containment and
-machine-readable PASS/FAIL aggregation. The real Electron check is the
+machine-readable PASS/FAIL aggregation. `tests/smoke-diagnostics.test.ts`
+covers diagnostic classification, warning/error separation, the narrow
+meta-CSP exception, fatal local resource/document failures, sanitization and
+bounds, and the report field. The real Electron check is the
 `scripts/smoke-test.mjs` run above; it is intentionally not part of the hermetic
 Vitest tiers because it launches Electron and real child processes.

@@ -23,6 +23,10 @@ import { createAppTray, type AppTray } from './tray'
 import { createMainWindow } from './window'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
 import {
+  attachSmokeDiagnostics,
+  SmokeDiagnosticsCollector
+} from './smoke/diagnostics'
+import {
   createSmokeResult,
   safeDetail,
   writeSmokeResultSync,
@@ -312,6 +316,16 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
     const window = openMainWindow(smoke === null)
     mainWindow = window
 
+    // Diagnostics exist only in smoke mode. They observe the real hidden
+    // window before startup work continues, so early renderer failures are
+    // retained. Normal desktop startup attaches nothing.
+    const smokeDiagnostics =
+      smoke === null ? null : new SmokeDiagnosticsCollector()
+    const disposeSmokeDiagnostics =
+      smokeDiagnostics === null
+        ? null
+        : attachSmokeDiagnostics(window.webContents, smokeDiagnostics)
+
     aria2.onStateChange = () => {
       manager?.publish()
     }
@@ -334,12 +348,16 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
     if (smoke !== null) {
       await startServices()
       try {
+        if (smokeDiagnostics === null) {
+          throw new Error('Smoke renderer diagnostics were not initialized.')
+        }
         const result = await runSmokeTest({
           window,
           database,
           manager,
           aria2,
           mediaJobs,
+          diagnostics: smokeDiagnostics,
           userDataDir: app.getPath('userData'),
           downloadDir,
           resultPath: smoke.resultPath as string,
@@ -355,6 +373,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
           }
         })
 
+        disposeSmokeDiagnostics?.()
         process.exitCode = result.status === 'PASS' ? 0 : 1
 
         // The normal cleanup path is bounded by its own child timeouts. This
@@ -366,6 +385,8 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
         app.quit()
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'unknown error'
+        const diagnostics = smokeDiagnostics?.snapshot()
+        disposeSmokeDiagnostics?.()
         const result = createSmokeResult({
           environment: {
             appVersion: app.getVersion(),
@@ -386,6 +407,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
               durationMs: 0
             }
           ],
+          diagnostics,
           logs: ['The smoke runner failed before it could complete its checks.']
         })
         try {

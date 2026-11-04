@@ -167,7 +167,7 @@ describe('smoke-test machine-readable report', () => {
     })
 
     expect(result).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'dondownload-smoke-test',
       status: 'PASS',
       durationMs: 1_250,
