@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
+import type { SmokeDiagnosticsSnapshot } from './diagnostics'
 
 export type SmokeCheckStatus = 'PASS' | 'FAIL'
 
@@ -24,7 +25,7 @@ export interface SmokeEnvironmentInfo {
 }
 
 export interface SmokeTestResult {
-  schemaVersion: 1
+  schemaVersion: 2
   kind: 'dondownload-smoke-test'
   status: SmokeCheckStatus
   startedAt: string
@@ -33,6 +34,7 @@ export interface SmokeTestResult {
   pid: number
   environment: SmokeEnvironmentInfo
   checks: SmokeCheckResult[]
+  diagnostics: SmokeDiagnosticsSnapshot
   logs: string[]
 }
 
@@ -62,6 +64,7 @@ export function createSmokeResult(input: {
   startedAt?: string
   environment: SmokeEnvironmentInfo
   checks: SmokeCheckResult[]
+  diagnostics?: SmokeDiagnosticsSnapshot
   logs: string[]
   now?: () => number
 }): SmokeTestResult {
@@ -70,7 +73,7 @@ export function createSmokeResult(input: {
   const startedAt = input.startedAt ?? new Date(finishedMs).toISOString()
   const startedMs = Date.parse(startedAt)
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'dondownload-smoke-test',
     status: summarizeChecks(input.checks),
     startedAt,
@@ -81,6 +84,11 @@ export function createSmokeResult(input: {
     pid: process.pid,
     environment: input.environment,
     checks: input.checks,
+    diagnostics: input.diagnostics ?? {
+      entries: [],
+      suppressed: 0,
+      dropped: 0
+    },
     logs: input.logs
   }
 }

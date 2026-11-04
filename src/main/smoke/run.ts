@@ -9,6 +9,12 @@ import { locateMediaTool, type MediaToolName } from '../media/locator'
 import { defaultMediaSpawn, runCapturedProcess } from '../media/process'
 import type { MediaJobsManager } from '../mediaJobs/manager'
 import {
+  firstFatalDiagnostic,
+  summarizeDiagnostics,
+  type SmokeDiagnosticsCollector,
+  type SmokeDiagnosticsSnapshot
+} from './diagnostics'
+import {
   createSmokeResult,
   safeDetail,
   writeSmokeResult,
@@ -131,6 +137,7 @@ export interface RunSmokeTestOptions {
   manager: DownloadManager
   aria2: Aria2Service
   mediaJobs: MediaJobsManager
+  diagnostics: SmokeDiagnosticsCollector
   userDataDir: string
   downloadDir: string
   resultPath: string
@@ -280,6 +287,33 @@ export async function runSmokeTest(
     })
   }
 
+  // Run last so exceptions and failed resource loads raised while the rest of
+  // startup settles are included. Warnings are reported but only fatal
+  // diagnostics (renderer errors, local resource/document failures, preload
+  // failures or a lost renderer process) fail this check.
+  let diagnostics: SmokeDiagnosticsSnapshot = {
+    entries: [],
+    suppressed: 0,
+    dropped: 0
+  }
+  await check('renderer.diagnostics', () => {
+    diagnostics = options.diagnostics.snapshot()
+    for (const entry of diagnostics.entries) {
+      log(
+        `${entry.severity.toUpperCase()} renderer.${entry.category}: ${entry.message}`
+      )
+    }
+    const summary = summarizeDiagnostics(diagnostics)
+    const detail = `errors=${summary.errors}; warnings=${summary.warnings}; suppressed=${summary.suppressed}; dropped=${summary.dropped}`
+    const fatal = firstFatalDiagnostic(diagnostics)
+    if (fatal !== null) {
+      throw new Error(
+        `${detail}; first=${fatal.category}: ${fatal.message}`
+      )
+    }
+    return detail
+  })
+
   const result = createSmokeResult({
     startedAt,
     environment: {
@@ -287,6 +321,7 @@ export async function runSmokeTest(
       userDataPath
     },
     checks,
+    diagnostics,
     logs
   })
 
