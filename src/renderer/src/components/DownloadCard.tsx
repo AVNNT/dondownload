@@ -7,6 +7,7 @@ interface DownloadCardProps {
   busy: boolean
   onPause: () => void
   onResume: () => void
+  onStartNow: () => void
   onRetry: () => void
   onRemove: () => void
   onShowInFolder: () => void
@@ -50,11 +51,27 @@ function hostnameOf(url: string): string {
   }
 }
 
+function statusLabel(item: DownloadItem): string {
+  if (item.blockReason === 'scheduled') return 'Scheduled'
+  if (item.blockReason === 'allowed-hours') return 'Allowed hours'
+  return STATUS_LABEL[item.status]
+}
+
+function formatLocalTime(epochMs: number | null | undefined): string | null {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) return null
+  try {
+    return new Date(epochMs).toLocaleString()
+  } catch {
+    return null
+  }
+}
+
 export function DownloadCard({
   item,
   busy,
   onPause,
   onResume,
+  onStartNow,
   onRetry,
   onRemove,
   onShowInFolder
@@ -65,10 +82,14 @@ export function DownloadCard({
     item.status === 'waiting' ||
     item.status === 'queued'
   const canResume = item.status === 'paused'
+  const canStartNow =
+    item.status === 'waiting' &&
+    (item.blockReason === 'scheduled' || item.blockReason === 'allowed-hours')
   const canRetry =
     item.status === 'interrupted' ||
     (item.status === 'error' && item.attempts < item.maxAttempts)
   const isComplete = item.status === 'complete'
+  const scheduledLabel = formatLocalTime(item.scheduledAt)
 
   return (
     <article className="rounded-2xl border border-white/10 bg-[#070707] p-4 transition-colors hover:border-white/20">
@@ -87,7 +108,7 @@ export function DownloadCard({
         <span
           className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[item.status]}`}
         >
-          {STATUS_LABEL[item.status]}
+          {statusLabel(item)}
         </span>
       </div>
 
@@ -135,6 +156,20 @@ export function DownloadCard({
         </div>
       </div>
 
+      {scheduledLabel ||
+      typeof item.speedLimitBps === 'number' ||
+      typeof item.connections === 'number' ? (
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-600">
+          {scheduledLabel ? <span>Scheduled {scheduledLabel}</span> : null}
+          {typeof item.speedLimitBps === 'number' ? (
+            <span>Limit {formatSpeed(item.speedLimitBps)}</span>
+          ) : null}
+          {typeof item.connections === 'number' ? (
+            <span>{item.connections} connections</span>
+          ) : null}
+        </p>
+      ) : null}
+
       {item.errorMessage ? (
         <p
           role="alert"
@@ -145,6 +180,14 @@ export function DownloadCard({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {canStartNow ? (
+          <CardAction
+            disabled={busy}
+            onClick={onStartNow}
+            label="Start now"
+            accent
+          />
+        ) : null}
         {canPause ? (
           <CardAction disabled={busy} onClick={onPause} label="Pause" />
         ) : null}

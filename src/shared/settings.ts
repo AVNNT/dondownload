@@ -1,4 +1,4 @@
-import { ValidationError } from './validation'
+import { ValidationError } from './errors'
 
 /**
  * Shared, renderer-safe download-control settings for Milestone 5A.
@@ -61,13 +61,27 @@ export interface DownloadSettings {
 
 /**
  * Optional per-download control values. `null` means unscheduled for
- * `scheduledAt` and unlimited for `speedLimitBps`.
+ * `scheduledAt`, unlimited for `speedLimitBps` and the global per-host value
+ * for `connections`.
  */
 export interface DownloadControls {
   /** Epoch milliseconds in the system local clock, or null when unscheduled. */
   scheduledAt: number | null
   /** Bytes per second, or null when unlimited. */
   speedLimitBps: number | null
+  /**
+   * Connections for this download (`split` and
+   * `max-connection-per-server`), or null to use the global setting.
+   */
+  connections: number | null
+}
+
+export function defaultDownloadControls(): DownloadControls {
+  return {
+    scheduledAt: null,
+    speedLimitBps: null,
+    connections: null
+  }
 }
 
 export function defaultDownloadSettings(): DownloadSettings {
@@ -245,13 +259,35 @@ export function parsePerDownloadSpeedLimitBps(value: unknown): number | null {
   return value
 }
 
+/**
+ * Parse an optional per-download connection count. Null defers to the global
+ * `perHostConnections` setting; zero is not a valid connection count.
+ */
+export function parsePerDownloadConnections(value: unknown): number | null {
+  if (value === null) return null
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < MIN_PER_HOST_CONNECTIONS ||
+    value > MAX_PER_HOST_CONNECTIONS
+  ) {
+    throw new ValidationError('Invalid download connection count.')
+  }
+  return value
+}
+
 /** Parse the optional per-download controls with exact keys. */
 export function parseDownloadControls(value: unknown): DownloadControls {
   const record = asPlainObject(value, 'download controls')
-  exactKeys(record, ['scheduledAt', 'speedLimitBps'], 'download controls')
+  exactKeys(
+    record,
+    ['scheduledAt', 'speedLimitBps', 'connections'],
+    'download controls'
+  )
 
   return {
     scheduledAt: parseScheduledAt(record.scheduledAt),
-    speedLimitBps: parsePerDownloadSpeedLimitBps(record.speedLimitBps)
+    speedLimitBps: parsePerDownloadSpeedLimitBps(record.speedLimitBps),
+    connections: parsePerDownloadConnections(record.connections)
   }
 }

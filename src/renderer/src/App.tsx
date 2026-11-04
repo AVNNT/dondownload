@@ -240,6 +240,11 @@ export default function App(): JSX.Element {
                       window.donDownload.resumeDownload(item.id)
                     )
                   }}
+                  onStartNow={() => {
+                    void runItemAction(item.id, () =>
+                      window.donDownload.startDownloadNow(item.id)
+                    )
+                  }}
                   onRetry={() => {
                     void runItemAction(item.id, () =>
                       window.donDownload.retryDownload(item.id)

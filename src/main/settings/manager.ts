@@ -25,6 +25,11 @@ export interface SettingsManagerOptions {
   /** Null keeps defaults in memory and rejects updates (storage unavailable). */
   store: SettingsStore | null
   aria2: SettingsAria2Gateway | null
+  /**
+   * Notifies the download policy owner after a validated update is committed.
+   * It never restarts aria2 or touches active transfers.
+   */
+  onChanged?: (settings: DownloadSettings) => void
 }
 
 /**
@@ -70,12 +75,14 @@ function cloneSettings(settings: DownloadSettings): DownloadSettings {
 export class SettingsManager {
   private readonly store: SettingsStore | null
   private readonly aria2: SettingsAria2Gateway | null
+  private readonly onChanged: ((settings: DownloadSettings) => void) | null
   private current: DownloadSettings
   private startupApply: Promise<void> | null = null
 
   constructor(options: SettingsManagerOptions) {
     this.store = options.store
     this.aria2 = options.aria2
+    this.onChanged = options.onChanged ?? null
     this.current = defaultDownloadSettings()
 
     if (!this.store) return
@@ -166,6 +173,12 @@ export class SettingsManager {
     }
 
     this.current = next
+    try {
+      this.onChanged?.(this.getSettings())
+    } catch {
+      // A policy listener must never turn a saved settings update into an
+      // error response. The next policy tick still reads the new snapshot.
+    }
     return cloneSettings(this.current)
   }
 

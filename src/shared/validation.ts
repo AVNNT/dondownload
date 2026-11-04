@@ -1,4 +1,11 @@
 import type { AddDownloadInput } from './types'
+import { ValidationError } from './errors'
+import {
+  defaultDownloadControls,
+  parseDownloadControls
+} from './settings'
+
+export { ValidationError } from './errors'
 
 const MAX_URL_LENGTH = 4096
 const MAX_FILENAME_LENGTH = 180
@@ -6,15 +13,6 @@ const WINDOWS_RESERVED_NAME =
   /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\..*$|$)/i
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-export class ValidationError extends Error {
-  readonly code = 'INVALID_INPUT'
-
-  constructor(message: string) {
-    super(message)
-    this.name = 'ValidationError'
-  }
-}
 
 /**
  * Accept only ordinary web URLs. Credentials embedded in a URL are rejected so
@@ -149,10 +147,20 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     force = record.force
   }
 
+  let controls = defaultDownloadControls()
+  if (record.controls !== undefined && record.controls !== null) {
+    // parseDownloadControls is the single exact-key contract for per-download
+    // controls; unknown/missing fields are rejected rather than ignored.
+    controls = parseDownloadControls(record.controls)
+  }
+
   return {
     url,
     ...(filename === undefined ? {} : { filename }),
-    ...(force ? { force: true } : {})
+    ...(force ? { force: true } : {}),
+    ...(record.controls === undefined || record.controls === null
+      ? {}
+      : { controls })
   }
 }
 

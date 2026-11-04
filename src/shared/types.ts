@@ -13,7 +13,7 @@ import type {
   MediaQueueInput,
   MediaSnapshot
 } from './media'
-import type { DownloadSettings } from './settings'
+import type { DownloadControls, DownloadSettings } from './settings'
 
 export type DownloadStatus =
   | 'queued'
@@ -30,6 +30,28 @@ export type Aria2RuntimeStatus =
   | 'ready'
   | 'unavailable'
   | 'error'
+
+/**
+ * Why a waiting download has not been handed to aria2 yet. A manual pause is
+ * represented by `status: 'paused'` instead, so the UI can always tell a
+ * user-paused job apart from one the schedule or allowed-hours policy is
+ * holding back.
+ */
+export type DownloadBlockReason = 'scheduled' | 'allowed-hours'
+
+export const DOWNLOAD_BLOCK_REASONS: readonly DownloadBlockReason[] = [
+  'scheduled',
+  'allowed-hours'
+]
+
+export function isDownloadBlockReason(
+  value: unknown
+): value is DownloadBlockReason {
+  return (
+    typeof value === 'string' &&
+    (DOWNLOAD_BLOCK_REASONS as readonly string[]).includes(value)
+  )
+}
 
 export interface AppErrorInfo {
   code: string
@@ -63,6 +85,16 @@ export interface DownloadItem {
   createdAt: number
   updatedAt: number
   completedAt: number | null
+  /**
+   * Optional per-download controls. They are always present in manager
+   * snapshots but optional in the type so older fixtures and narrow ports stay
+   * valid.
+   */
+  scheduledAt?: number | null
+  speedLimitBps?: number | null
+  connections?: number | null
+  /** Null when the job is not waiting on schedule/allowed-hours policy. */
+  blockReason?: DownloadBlockReason | null
 }
 
 export interface AddDownloadInput {
@@ -73,6 +105,11 @@ export interface AddDownloadInput {
    * Never set this automatically; it only comes from a Download again action.
    */
   force?: boolean
+  /**
+   * Optional schedule/speed/connection controls. Omitted controls mean
+   * unscheduled, unlimited and aria2's global connection setting.
+   */
+  controls?: DownloadControls
 }
 
 export interface AppSnapshot {
@@ -140,6 +177,8 @@ export interface DonDownloadApi {
   addDownload: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   resumeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
+  /** Explicit user override for a scheduled or allowed-hours-blocked job. */
+  startDownloadNow: (id: string) => Promise<ApiResult<AppSnapshot>>
   retryDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   removeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   showInFolder: (id: string) => Promise<ApiResult<null>>

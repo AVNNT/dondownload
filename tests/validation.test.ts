@@ -101,6 +101,36 @@ describe('parseAddDownloadInput', () => {
     ).toEqual({ url: 'https://example.com/a' })
   })
 
+  it('accepts only exact-key per-download controls', () => {
+    const controls = {
+      scheduledAt: Date.UTC(2026, 10, 4, 12, 30),
+      speedLimitBps: 1024 * 1024,
+      connections: 4
+    }
+    expect(
+      parseAddDownloadInput({ url: 'https://example.com/a', controls })
+    ).toEqual({ url: 'https://example.com/a', controls })
+
+    expect(() =>
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        controls: { ...controls, url: 'https://leak.example' }
+      })
+    ).toThrow(/unsupported fields/)
+    expect(() =>
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        controls: { scheduledAt: null, speedLimitBps: null }
+      })
+    ).toThrow(/missing/)
+    expect(() =>
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        controls: { ...controls, connections: 0 }
+      })
+    ).toThrow(/Invalid/)
+  })
+
   it('rejects invalid payload shapes', () => {
     expect(() => parseAddDownloadInput(null)).toThrow(ValidationError)
     expect(() => parseAddDownloadInput([])).toThrow(ValidationError)

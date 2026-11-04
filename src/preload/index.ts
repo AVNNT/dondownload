@@ -34,6 +34,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.pauseDownload, id) as Promise<ApiResult<AppSnapshot>>,
   resumeDownload: (id: string) =>
     ipcRenderer.invoke(IPC.resumeDownload, id) as Promise<ApiResult<AppSnapshot>>,
+  startDownloadNow: (id: string) =>
+    ipcRenderer.invoke(IPC.startDownloadNow, id) as Promise<
+      ApiResult<AppSnapshot>
+    >,
   retryDownload: (id: string) =>
     ipcRenderer.invoke(IPC.retryDownload, id) as Promise<ApiResult<AppSnapshot>>,
   removeDownload: (id: string) =>

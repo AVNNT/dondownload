@@ -686,10 +686,12 @@ describe('v2 to v5 batch migration', () => {
     const downloadsAfter = rowsOf(verify, 'downloads')
     expect(downloadsAfter).toHaveLength(downloadsBefore.length)
     for (const [index, row] of downloadsAfter.entries()) {
-      // The v5 migration adds two null control columns; prior values are equal.
+      // The v5/v6 migrations add null control columns; prior values are equal.
       expect(row).toMatchObject(downloadsBefore[index] ?? {})
       expect(row.scheduled_at).toBeNull()
       expect(row.speed_limit_bps).toBeNull()
+      expect(row.connections).toBeNull()
+      expect(row.block_reason).toBeNull()
     }
     expect(rowsOf(verify, 'media_jobs')).toEqual(mediaBefore)
     const tables = (
@@ -805,6 +807,8 @@ describe('v3 to v5 batch_items migration', () => {
     for (const row of rowsOf(verify, 'downloads')) {
       expect(row.scheduled_at).toBeNull()
       expect(row.speed_limit_bps).toBeNull()
+      expect(row.connections).toBeNull()
+      expect(row.block_reason).toBeNull()
     }
     const itemSql = schemaSql(verify, 'batch_items')
     expect(itemSql).toContain("'unavailable'")

@@ -525,8 +525,8 @@ describe('download settings persistence', () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
 
-    expect(database.schemaVersion).toBe(5)
-    expect(SCHEMA_VERSION).toBe(5)
+    expect(database.schemaVersion).toBe(6)
+    expect(SCHEMA_VERSION).toBe(6)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -711,16 +711,20 @@ describe('per-download control persistence', () => {
     first.save({ record, explicitFilename: 'chosen-name.zip' })
     first.saveDownloadControls(record.id, {
       scheduledAt: Date.UTC(2026, 10, 5, 1, 2, 3),
-      speedLimitBps: 4 * 1024 * 1024
+      speedLimitBps: 4 * 1024 * 1024,
+      connections: 6
     })
     first.saveDownloadControls(record.id, {
       scheduledAt: null,
-      speedLimitBps: null
+      speedLimitBps: null,
+      connections: null
     })
     first.saveDownloadControls(record.id, {
       scheduledAt: 0,
-      speedLimitBps: MAX_SPEED_LIMIT_BPS
+      speedLimitBps: MAX_SPEED_LIMIT_BPS,
+      connections: 16
     })
+    first.saveDownloadBlockReason(record.id, 'allowed-hours')
     close(first)
 
     const second = open(filePath)
@@ -728,7 +732,9 @@ describe('per-download control persistence', () => {
     expect(stored).toMatchObject({
       explicitFilename: 'chosen-name.zip',
       scheduledAt: 0,
-      speedLimitBps: MAX_SPEED_LIMIT_BPS
+      speedLimitBps: MAX_SPEED_LIMIT_BPS,
+      connections: 16,
+      blockReason: 'allowed-hours'
     })
     expect(stored?.record).toEqual({
       ...record,
@@ -746,22 +752,32 @@ describe('per-download control persistence', () => {
     database.save({ record, explicitFilename: null })
 
     for (const controls of [
-      { scheduledAt: -1, speedLimitBps: null },
-      { scheduledAt: 1.5, speedLimitBps: null },
-      { scheduledAt: null, speedLimitBps: 0 },
-      { scheduledAt: null, speedLimitBps: -1 },
-      { scheduledAt: null, speedLimitBps: MAX_SPEED_LIMIT_BPS + 1 }
+      { scheduledAt: -1, speedLimitBps: null, connections: null },
+      { scheduledAt: 1.5, speedLimitBps: null, connections: null },
+      { scheduledAt: null, speedLimitBps: 0, connections: null },
+      { scheduledAt: null, speedLimitBps: -1, connections: null },
+      {
+        scheduledAt: null,
+        speedLimitBps: MAX_SPEED_LIMIT_BPS + 1,
+        connections: null
+      },
+      { scheduledAt: null, speedLimitBps: null, connections: 0 },
+      { scheduledAt: null, speedLimitBps: null, connections: 17 },
+      { scheduledAt: null, speedLimitBps: null, connections: 1.5 }
     ]) {
       expect(() => database.saveDownloadControls(record.id, controls)).toThrow()
     }
     expect(database.loadAll()[0]).toMatchObject({
       scheduledAt: null,
-      speedLimitBps: null
+      speedLimitBps: null,
+      connections: null,
+      blockReason: null
     })
     expect(() =>
       database.saveDownloadControls('00000000-0000-4000-8000-000000000000', {
         scheduledAt: null,
-        speedLimitBps: null
+        speedLimitBps: null,
+        connections: null
       })
     ).toThrow(/not found/)
     close(database)
@@ -778,25 +794,32 @@ describe('per-download control persistence', () => {
     expect(columnNames(raw, 'downloads')).toEqual([
       ...DOWNLOAD_COLUMNS,
       'scheduled_at',
-      'speed_limit_bps'
+      'speed_limit_bps',
+      'connections',
+      'block_reason'
     ])
     const invalidUpdates = [
       'UPDATE downloads SET scheduled_at = -1',
       'UPDATE downloads SET scheduled_at = 9007199254740991',
       'UPDATE downloads SET speed_limit_bps = 0',
       'UPDATE downloads SET speed_limit_bps = -1',
-      `UPDATE downloads SET speed_limit_bps = ${MAX_SPEED_LIMIT_BPS + 1}`
+      `UPDATE downloads SET speed_limit_bps = ${MAX_SPEED_LIMIT_BPS + 1}`,
+      'UPDATE downloads SET connections = 0',
+      'UPDATE downloads SET connections = 17',
+      "UPDATE downloads SET block_reason = 'paused'"
     ]
     for (const sql of invalidUpdates) {
       expect(() => raw.exec(sql)).toThrow()
     }
 
     raw.exec(
-      `UPDATE downloads SET scheduled_at = 0, speed_limit_bps = ${MAX_SPEED_LIMIT_BPS}`
+      `UPDATE downloads SET scheduled_at = 0, speed_limit_bps = ${MAX_SPEED_LIMIT_BPS}, connections = 1, block_reason = 'scheduled'`
     )
     expect(rowsOf(raw, 'downloads')[0]).toMatchObject({
       scheduled_at: 0,
-      speed_limit_bps: MAX_SPEED_LIMIT_BPS
+      speed_limit_bps: MAX_SPEED_LIMIT_BPS,
+      connections: 1,
+      block_reason: 'scheduled'
     })
     raw.close()
   })
@@ -827,6 +850,8 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     for (const entry of downloads) {
       expect(entry.scheduledAt).toBeNull()
       expect(entry.speedLimitBps).toBeNull()
+      expect(entry.connections).toBeNull()
+      expect(entry.blockReason).toBeNull()
     }
     expect(
       downloads.find((entry) => entry.record.id === 'f47ac10b-58cc-4372-a567-0e02b2c3d479')
@@ -877,7 +902,7 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(5)
+    expect(userVersion(verify)).toBe(6)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
     expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
@@ -906,6 +931,85 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
   })
 })
 
+describe('v5 to v6 migration', () => {
+  it('adds connection and policy columns without changing v5 controls or settings', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    createLegacyDatabase(filePath, 4)
+
+    const raw = new DatabaseSync(filePath)
+    raw.exec(`
+      ALTER TABLE downloads ADD COLUMN scheduled_at INTEGER
+        CHECK (
+          scheduled_at IS NULL OR
+          (scheduled_at >= 0 AND scheduled_at <= 8640000000000000)
+        );
+      ALTER TABLE downloads ADD COLUMN speed_limit_bps INTEGER
+        CHECK (
+          speed_limit_bps IS NULL OR
+          (speed_limit_bps >= 1 AND speed_limit_bps <= 1073741824)
+        );
+      CREATE TABLE download_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        max_concurrent_downloads INTEGER NOT NULL DEFAULT 3
+          CHECK (max_concurrent_downloads BETWEEN 1 AND 16),
+        per_host_connections INTEGER NOT NULL DEFAULT 4
+          CHECK (per_host_connections BETWEEN 1 AND 16),
+        global_speed_limit_bps INTEGER NOT NULL DEFAULT 0
+          CHECK (global_speed_limit_bps BETWEEN 0 AND 1073741824),
+        allowed_hours_enabled INTEGER NOT NULL DEFAULT 0
+          CHECK (allowed_hours_enabled IN (0, 1)),
+        allowed_hours_start TEXT NOT NULL DEFAULT '00:00',
+        allowed_hours_end TEXT NOT NULL DEFAULT '00:00',
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO download_settings VALUES (
+        1, 7, 9, 2048, 1, '21:15', '05:45', 123
+      );
+      UPDATE downloads
+      SET scheduled_at = 1762315200000, speed_limit_bps = 8388608
+      WHERE id = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+      PRAGMA user_version = 5;
+    `)
+    const before = rowsOf(raw, 'downloads')
+    raw.close()
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(6)
+    expect(database.loadSettings()).toEqual({
+      maxConcurrentDownloads: 7,
+      perHostConnections: 9,
+      globalSpeedLimitBps: 2048,
+      allowedHours: { enabled: true, start: '21:15', end: '05:45' }
+    })
+    const stored = database.loadAll()
+    const original = stored.find(
+      (entry) => entry.record.id === 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+    )
+    expect(original).toMatchObject({
+      scheduledAt: 1762315200000,
+      speedLimitBps: 8388608,
+      connections: null,
+      blockReason: null
+    })
+    close(database)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(6)
+    expect(columnNames(verify, 'downloads')).toEqual([
+      ...DOWNLOAD_COLUMNS,
+      'scheduled_at',
+      'speed_limit_bps',
+      'connections',
+      'block_reason'
+    ])
+    expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
+      project(before, DOWNLOAD_COLUMNS)
+    )
+    verify.close()
+  })
+})
+
 describe('v5 migration rollback', () => {
   it('rolls back added columns and settings when the migration fails', async () => {
     const filePath = await makeDatabasePath()
@@ -927,6 +1031,8 @@ describe('v5 migration rollback', () => {
     expect(columnNames(verify, 'downloads')).toEqual(DOWNLOAD_COLUMNS)
     expect(columnNames(verify, 'downloads')).not.toContain('scheduled_at')
     expect(columnNames(verify, 'downloads')).not.toContain('speed_limit_bps')
+    expect(columnNames(verify, 'downloads')).not.toContain('connections')
+    expect(columnNames(verify, 'downloads')).not.toContain('block_reason')
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(fixture.downloads, DOWNLOAD_COLUMNS)
     )

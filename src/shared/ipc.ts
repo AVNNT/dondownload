@@ -5,6 +5,7 @@ export const IPC = {
   addDownload: 'download:add',
   pauseDownload: 'download:pause',
   resumeDownload: 'download:resume',
+  startDownloadNow: 'download:start-now',
   retryDownload: 'download:retry',
   removeDownload: 'download:remove',
   showInFolder: 'download:show-in-folder',

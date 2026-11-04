@@ -169,6 +169,7 @@ async function createHarness(
     mediaDir?: string
     now?: () => number
     progressPersistIntervalMs?: number
+    startAllowed?: (now: number) => boolean
   } = {}
 ): Promise<Harness> {
   const engine = options.engine ?? new FakeEngine()
@@ -181,7 +182,8 @@ async function createHarness(
     database,
     onUpdate: (snapshot) => updates.push(snapshot),
     now: options.now,
-    progressPersistIntervalMs: options.progressPersistIntervalMs
+    progressPersistIntervalMs: options.progressPersistIntervalMs,
+    startAllowed: options.startAllowed
   })
   managers.push(manager)
   return { engine, database, manager, updates, mediaDir }
@@ -466,6 +468,25 @@ describe('MediaJobsManager analysis and opaque selection', () => {
 })
 
 describe('MediaJobsManager queue lifecycle', () => {
+  it('holds a job while the start gate is closed and starts it on a policy pump', async () => {
+    let allowed = false
+    const harness = await createHarness({ startAllowed: () => allowed })
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    expect(harness.manager.getMediaJob(job.id).status).toBe('queued')
+    expect(harness.engine.downloads).toHaveLength(0)
+    expect(harness.manager.hasPendingPolicyWork()).toBe(true)
+
+    allowed = true
+    harness.manager.pumpPolicy()
+    await flushMicrotasks()
+
+    expect(harness.engine.downloads).toHaveLength(1)
+    expect(harness.manager.getMediaJob(job.id).status).toBe('downloading')
+    expect(harness.manager.hasPendingPolicyWork()).toBe(false)
+  })
+
   it('moves queued -> downloading -> merging -> complete and persists internal paths only', async () => {
     const harness = await createHarness()
     const job = await queueVideo(harness)

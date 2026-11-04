@@ -1,7 +1,12 @@
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
-import type { DownloadItem, DownloadStatus } from '@shared/types'
+import {
+  isDownloadBlockReason,
+  type DownloadBlockReason,
+  type DownloadItem,
+  type DownloadStatus
+} from '@shared/types'
 import {
   MEDIA_FORMAT_KINDS,
   isMediaJobStatus,
@@ -32,7 +37,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -47,9 +52,12 @@ const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
 export interface StoredDownload {
   record: DownloadItem
   explicitFilename: string | null
-  /** Optional per-download controls; null means unscheduled/unlimited. */
+  /** Optional per-download controls; null means unscheduled/unlimited/global. */
   scheduledAt: number | null
   speedLimitBps: number | null
+  connections: number | null
+  /** Persistent policy hold so restart recovery never resumes a user pause. */
+  blockReason: DownloadBlockReason | null
 }
 
 export interface StoredBatch {
@@ -283,6 +291,22 @@ const MIGRATIONS: readonly Migration[] = [
         allowed_hours_start, allowed_hours_end, updated_at
       ) VALUES (1, 3, 4, 0, 0, '00:00', '00:00', 0);
     `
+  },
+  {
+    // Additive only: every existing download row keeps its scheduled/speed
+    // values and receives null connections (global per-host setting) plus a
+    // null policy hold. No table is rebuilt and no row is rewritten.
+    version: 6,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN connections INTEGER
+        CHECK (connections IS NULL OR (connections >= 1 AND connections <= 16));
+
+      ALTER TABLE downloads ADD COLUMN block_reason TEXT
+        CHECK (
+          block_reason IS NULL OR
+          block_reason IN ('scheduled', 'allowed-hours')
+        );
+    `
   }
 ]
 
@@ -365,8 +389,10 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
   const rawStatus = text(row, 'status')
 
   // Skip rows that cannot be understood rather than crashing the app or
-  // pretending they are valid. The foreign key-less table is app-owned.
-  if (!id || !gid || !url || !filename || !dir || !rawStatus) return null
+  // pretending they are valid. The foreign key-less table is app-owned. An
+  // empty gid is valid: a scheduled/allowed-hours-blocked job is persisted
+  // before aria2 has assigned it one.
+  if (!id || !url || !filename || !dir || !rawStatus) return null
   if (!DOWNLOAD_STATUSES.has(rawStatus)) return null
 
   const attempts = Math.max(1, Math.trunc(number(row, 'attempts', 1)))
@@ -375,7 +401,7 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
   return {
     record: {
       id,
-      gid,
+      gid: gid ?? '',
       url,
       filename,
       dir,
@@ -395,7 +421,11 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
     },
     explicitFilename: text(row, 'explicit_filename'),
     scheduledAt: nullableNumber(row, 'scheduled_at'),
-    speedLimitBps: nullableNumber(row, 'speed_limit_bps')
+    speedLimitBps: nullableNumber(row, 'speed_limit_bps'),
+    connections: nullableNumber(row, 'connections'),
+    blockReason: isDownloadBlockReason(row.block_reason)
+      ? row.block_reason
+      : null
   }
 }
 
@@ -533,6 +563,7 @@ export class DownloadDatabase {
   private readonly selectAllStatement: StatementSync
   private readonly deleteStatement: StatementSync
   private readonly downloadControlsStatement: StatementSync
+  private readonly downloadBlockReasonStatement: StatementSync
   private readonly settingsSelectStatement: StatementSync
   private readonly settingsUpsertStatement: StatementSync
   private readonly mediaUpsertStatement: StatementSync
@@ -591,7 +622,12 @@ export class DownloadDatabase {
       this.deleteStatement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
       this.downloadControlsStatement = this.db.prepare(`
         UPDATE downloads
-        SET scheduled_at = ?, speed_limit_bps = ?
+        SET scheduled_at = ?, speed_limit_bps = ?, connections = ?
+        WHERE id = ?
+      `)
+      this.downloadBlockReasonStatement = this.db.prepare(`
+        UPDATE downloads
+        SET block_reason = ?
         WHERE id = ?
       `)
       this.settingsSelectStatement = this.db.prepare(
@@ -781,6 +817,7 @@ export class DownloadDatabase {
       const result = this.downloadControlsStatement.run(
         parsed.scheduledAt,
         parsed.speedLimitBps,
+        parsed.connections,
         id
       )
       if (Number(result.changes) === 0) {
@@ -793,6 +830,36 @@ export class DownloadDatabase {
       throw error instanceof AppError
         ? error
         : databaseError('Could not update download controls', error)
+    }
+  }
+
+  /**
+   * Persist the policy hold for a waiting download. This is separate from the
+   * user-paused status so a restart can tell the two states apart.
+   */
+  saveDownloadBlockReason(
+    id: string,
+    reason: DownloadBlockReason | null
+  ): void {
+    this.assertOpen()
+    try {
+      if (reason !== null && !isDownloadBlockReason(reason)) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update download policy state: invalid reason.'
+        )
+      }
+      const result = this.downloadBlockReasonStatement.run(reason, id)
+      if (Number(result.changes) === 0) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update download policy state: download was not found.'
+        )
+      }
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not update download policy state', error)
     }
   }
 

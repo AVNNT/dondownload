@@ -236,4 +236,27 @@ describe('SettingsManager', () => {
       }
     ])
   })
+
+  it('notifies the policy listener only after a successful update', async () => {
+    const store = createStore()
+    const onChanged = vi.fn()
+    const client = createClient()
+    const manager = new SettingsManager({
+      store,
+      aria2: createAria2(client) as SettingsAria2Gateway,
+      onChanged
+    })
+    const next = settings({
+      allowedHours: { enabled: true, start: '22:00', end: '06:00' }
+    })
+
+    await manager.update(next)
+    expect(onChanged).toHaveBeenCalledWith(next)
+
+    onChanged.mockClear()
+    await expect(
+      manager.update({ ...next, allowedHours: { enabled: true, start: '24:00', end: '06:00' } })
+    ).rejects.toThrow()
+    expect(onChanged).not.toHaveBeenCalled()
+  })
 })
