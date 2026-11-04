@@ -5,9 +5,10 @@ As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
 verified. Milestone 3A is **PASS** at `e7e28ee`, verified end to end in a headed
 Helium run against that HEAD. Milestone 3B now has the committed contracts/schema
-foundation plus a persistent backend orchestration slice with desktop IPC and
-preload wiring. There is still **no renderer UI** and no native-bridge batch
-route. Milestone 4 is explicitly deferred.
+foundation, a persistent backend orchestration slice with desktop IPC and
+preload wiring, and a desktop-first renderer batch UI. There is still no
+native-bridge batch route, and no live-provider verification was run for the UI.
+Milestone 4 is explicitly deferred.
 
 ## Current milestone
 
@@ -48,12 +49,12 @@ route. Milestone 4 is explicitly deferred.
   typecheck, production build and native-host build pass. yt-dlp 2026.10.26,
   Gyan FFmpeg/ffprobe 9.0.2 and Deno 2.9.8 were used for the real runs; exact
   paths and licensing notes are in [media-tools.md](media-tools.md).
-- **Milestone 3B: backend slice implemented; UI and native routes still absent.**
-  The committed foundation remains shared batch/collection contracts
-  (`src/shared/batches.ts`), additive SQLite schema v4 (`batches` and
-  `batch_items`) and hermetic contract/migration tests. This slice adds
-  `src/main/batches/manager.ts`, secure batch IPC/preload methods, and main-process
-  wiring:
+- **Milestone 3B: backend slice and desktop renderer UI implemented; native
+  routes still absent.** The committed foundation remains shared
+  batch/collection contracts (`src/shared/batches.ts`), additive SQLite schema v4
+  (`batches` and `batch_items`) and hermetic contract/migration tests. This slice
+  adds `src/main/batches/manager.ts`, secure batch IPC/preload methods, and
+  main-process wiring:
   - Smart multi-URL submit returns a typed result with an optional created
     direct-item batch, separately pending collection previews, and independent
     invalid/unsupported/failed entries. Nothing from a preview is auto-queued.
@@ -82,12 +83,18 @@ route. Milestone 4 is explicitly deferred.
     and snapshot-update observation, all through the existing trusted-sender
     wrapper. Public results are parsed `Batch`/`CollectionPreview` DTOs and never
     include a source URL, path, token or header.
-  Providers, renderer components, native-bridge batch routes and live provider
-  verification are still not implemented. Scope remains desktop-first media
-  playlists, Pixeldrain lists and direct-URL batches, with no
-  credential/cookie/token extraction and no CAPTCHA/DRM bypass. **Milestone 4 is
-  explicitly deferred.** There is no torrent functionality or torrent networking
-  in this tree.
+  - The desktop renderer adds `src/renderer/src/components/BatchSection.tsx` and
+    mounts it in `App.tsx` below the existing single-URL `QuickAdd` form.
+    `QuickAdd` is unchanged. The batch surface has a newline-separated multi-URL
+    input with an explicit submit, independent submit outcomes, explicit
+    collection selection, expandable parent cards and per-item actions. It reads
+    `getBatchSnapshot`, subscribes to `onBatchSnapshotChanged`, and unsubscribes
+    on cleanup with no polling timer.
+  Native-bridge batch routes and live provider verification are still not
+  implemented. Scope remains desktop-first media playlists, Pixeldrain lists and
+  direct-URL batches, with no credential/cookie/token extraction and no
+  CAPTCHA/DRM bypass. **Milestone 4 is explicitly deferred.** There is no torrent
+  functionality or torrent networking in this tree.
 
 ## Milestone 3B foundation scope (contracts and schema)
 
@@ -127,7 +134,8 @@ description.
 ## Milestone 3B backend orchestration slice
 
 Status: implemented in the working tree, hermetic tests and typecheck/build
-passing. No renderer UI or native-bridge batch route is part of this slice.
+passing. The desktop renderer batch UI is documented in the next section. No
+native-bridge batch route is part of this slice.
 
 Implementation:
 
@@ -179,7 +187,7 @@ Verification for this working tree:
 
 Known gaps for this slice:
 
-- No renderer batch/selection UI and no native-bridge batch routes.
+- No native-bridge batch routes.
 - No live provider or media-download verification was run for this backend slice;
   tests use hermetic fake managers/adapters and never fetch a provider or file
   body.
@@ -194,7 +202,72 @@ Known gaps for this slice:
 - Retry creates a new child mapping and never deletes the previous child record
   or partial file.
 - No batch-level retry, pause/resume or item-row removal action is exposed.
-- No Milestone 4/5, torrent, VPN or renderer work is included.
+- No Milestone 4/5, torrent or VPN work is included.
+
+See [batch-contracts.md](batch-contracts.md) for the full contract and schema
+description.
+
+## Milestone 3B desktop renderer batch UI
+
+Status: implemented in the working tree, with hermetic fast tests, typecheck and
+production build passing. No live provider, media-download or real-profile check
+was run for this UI.
+
+Implementation:
+
+- `src/renderer/src/components/BatchSection.tsx` is the new desktop-first batch
+  surface. `src/renderer/src/App.tsx` mounts it below the unchanged single-URL
+  `QuickAdd` form, inside the existing centered OLED-black layout with the
+  compact top navigation and no sidebar.
+- The section loads `getBatchSnapshot`, subscribes to
+  `onBatchSnapshotChanged`, and unsubscribes in the effect cleanup. There is no
+  polling timer; snapshot updates arrive through the existing desktop event path.
+- The multi-URL form accepts newline-separated HTTP(S) URLs and requires an
+  explicit **Submit batch** action. Per-entry results render independently as
+  `Queued`, `Preview ready`, `Needs browser`, `Invalid` or `Failed`, using only
+  the safe backend codes/messages. No raw URL is echoed by the result DTO.
+- Collection previews are rendered as local, ephemeral selection cards with
+  native checkboxes, individual and multiple selection, an explicit
+  **Select all available** action (bounded to 500 available entries), a clear
+  selection action, and **Queue selected**. Nothing is preselected and nothing
+  from a preview is queued until that explicit action. Unavailable entries are
+  disabled, show their safe reason/code and do not block available siblings.
+- Parent batch cards are expandable and show status, aggregate item counts,
+  aggregate byte progress when known, per-item status/error and per-item
+  retry/cancel actions. Active groups expose **Cancel group**. Every group card
+  exposes **Remove group card**, with copy stating that removal clears only batch
+  history and keeps child downloads, media jobs and files on disk.
+- Gofile browser-required entries expose **Open in browser** only through
+  `openBatchSource` with the opaque batch/item IDs. The renderer never builds,
+  reads or opens a raw source URL and uses no browser or OS automation.
+- Loading, snapshot-error and empty states are present. Controls are native
+  buttons/checkboxes with labels, `aria-expanded`, progressbar values and visible
+  focus treatment; layout wraps on narrow widths and motion is limited to
+  existing short transitions.
+- No new framework, dependency, browser test, main/shared/preload change,
+  provider/media/DB change, torrent/VPN path or Milestone 5 work is included.
+
+Verification for this working tree:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:fast` | **423 passed**, 26 files |
+| `npm run typecheck` | **passed** |
+| `npm run build` | **passed** (typecheck plus main/preload/renderer build) |
+
+Known gaps for the UI slice:
+
+- No live Pixeldrain, playlist, Gofile or real-aria2 run was made. The UI was not
+  exercised in a real profile or with OS mouse/keyboard input.
+- No renderer component test was added; the fast suite covers the existing
+  contracts, manager and mocked IPC behavior, not DOM interactions.
+- Smart submit still only probes obvious playlist URLs. An ambiguous playlist
+  URL can be submitted again through an explicit collection-analysis flow only
+  if a future UI exposes that action; this slice does not add a separate
+  analyze-only control.
+- The UI relies on the backend's safe display labels for the Gofile
+  browser-required action (`Browser required`), because public batch items do
+  not carry a provider code.
 
 See [batch-contracts.md](batch-contracts.md) for the full contract and schema
 description.
@@ -692,8 +765,10 @@ Milestone 3A PASS above.
 - **Cross-origin iframes and restricted pages.** Top-frame only; browser-internal
   and Web Store pages are ineligible.
 - **Playlists/collections and 3B features.** The 3B backend orchestration slice
-  is covered by hermetic tests, but playlist, Pixeldrain-list and Gofile behavior
-  has not been exercised against live providers and there is no renderer UI yet.
+  and desktop batch UI are covered by hermetic tests plus typecheck/build, but
+  playlist, Pixeldrain-list and Gofile behavior has not been exercised against
+  live providers. The renderer UI has not been exercised in a real profile or
+  with OS mouse/keyboard input.
 
 ## Model handoff status
 
@@ -711,17 +786,21 @@ checked cancellation and persisted failure handling, and ran the full suite with
 real aria2. The post-`5b6d3d4` headed Helium retest at `e7e28ee` then completed
 the selected/best workflow end to end, including exact-option matching, 144p and
 1080p outputs, hidden-window progress persistence and a safe unsupported-page
-error. Milestone 3A is PASS. The Milestone 3B backend slice now adds persistent
-batch orchestration, trusted desktop IPC/preload and hermetic coverage; renderer
-UI, native-bridge batch routes and live-provider verification remain future work.
+error. Milestone 3A is PASS. The Milestone 3B backend slice adds persistent
+batch orchestration, trusted desktop IPC/preload and hermetic coverage. The
+desktop renderer batch UI now adds explicit multi-URL submission, collection
+selection, expandable batch cards, independent item actions and safe Gofile
+browser opens; native-bridge batch routes and live-provider verification remain
+future work.
 
 ## Safe next action
 
-1. Continue Milestone 3B with the renderer batch/selection UI and native-bridge
-   batch routes if requested; the backend manager/IPC slice and its hermetic
-   tests are already present. Milestone 4 is explicitly deferred.
-2. Verify the 3B backend behavior against real Pixeldrain/playlist sources only in
-   an explicit live run; do not treat the hermetic tests as live verification.
+1. Continue Milestone 3B with native-bridge batch routes if requested; the
+   backend manager/IPC slice, desktop renderer batch UI and hermetic tests are
+   already present. Milestone 4 is explicitly deferred.
+2. Verify the 3B backend and renderer behavior against real
+   Pixeldrain/playlist/Gofile sources only in an explicit live run; do not treat
+   the hermetic tests, typecheck or build as live verification.
 3. Keep the remaining unverified non-blockers visible rather than treating them
    as regressions or silently closing them.
 4. Preserve the documented caveats: disposable-profile unpacked extension,

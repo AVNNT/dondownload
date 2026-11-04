@@ -1,10 +1,11 @@
 # Batch and collection contracts (Milestone 3B)
 
-Status: shared contracts, SQLite v4 persistence and a main-process batch
-orchestration slice are implemented. This document describes the contracts and
-schema. The orchestrator, desktop IPC/preload wiring and hermetic tests are
-covered in [development-status.md](development-status.md). Renderer UI and
-native-bridge batch routes are deliberately **not** part of this layer.
+Status: shared contracts, SQLite v4 persistence, a main-process batch
+orchestration slice and a desktop renderer batch UI are implemented. This
+document describes the contracts and schema. The orchestrator, desktop
+IPC/preload wiring, renderer UI and hermetic tests are covered in
+[development-status.md](development-status.md). Native-bridge batch routes are
+deliberately **not** part of this layer.
 
 ## Scope and safety boundaries
 
@@ -30,6 +31,9 @@ The implementation lives in:
 - `src/main/batches/manager.ts` — persistent batch orchestration.
 - `src/shared/ipc.ts`, `src/main/ipc.ts`, `src/preload/index.ts` — trusted desktop
   IPC/preload surface.
+- `src/renderer/src/components/BatchSection.tsx` and
+  `src/renderer/src/App.tsx` — desktop batch submission, collection-selection and
+  parent/child status UI. It consumes only the renderer-safe DTOs above.
 - `tests/batch-contract.test.ts`, `tests/batch-database.test.ts`,
   `tests/batches-manager.test.ts`, `tests/batches-ipc.test.ts`.
 
@@ -200,9 +204,33 @@ cancel sets the parent to `cancelled` and cancels/pauses active children. Removi
 a batch deletes only its parent row (and item rows by cascade), never a child
 download/media record or a file.
 
+## Desktop renderer surface
+
+`BatchSection` is a renderer-only consumer of the desktop preload API. It never
+constructs, reads or opens a source URL.
+
+- It loads `getBatchSnapshot`, subscribes to `onBatchSnapshotChanged`, and
+  unsubscribes on cleanup. It does not poll.
+- Multi-URL submission sends newline-separated URLs through `submitSmartBatch`
+  and renders each independent `batch-item`, `collection-preview`,
+  `unsupported`, `invalid` or `failed` outcome with only the returned safe
+  code/message.
+- Preview cards start with no selection. The user can check individual available
+  entries, check multiple entries, or use the explicit **Select all available**
+  action (bounded to `MAX_COLLECTION_SELECTION`). **Queue selected** is the only
+  path that calls `createCollectionBatch`; unavailable entries are disabled and
+  never auto-selected.
+- Parent batch cards are expandable and show aggregate counts, byte progress when
+  known, per-item status/errors and individual retry/cancel controls. Active
+  groups expose **Cancel group**. **Remove group card** removes only the parent
+  history row; its copy states that child downloads, media jobs and files are
+  kept.
+- Gofile browser-required outcomes expose **Open in browser** only by calling
+  `openBatchSource` with the opaque `batchId`/`itemId`. The action uses no raw
+  URL, browser automation or OS automation.
+
 ## Explicitly deferred
 
-- Renderer batch/selection components.
 - Native-bridge batch routes.
 - Live-provider verification for playlist, Pixeldrain and Gofile behavior.
 - Milestone 4 and 5, torrents, VPN and desktop automation.

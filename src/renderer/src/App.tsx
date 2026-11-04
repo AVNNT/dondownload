@@ -7,6 +7,7 @@ import type {
   Aria2State,
   DownloadItem
 } from '@shared/types'
+import { BatchSection } from './components/BatchSection'
 import { DownloadCard } from './components/DownloadCard'
 import { MediaSection } from './components/MediaSection'
 import { QuickAdd } from './components/QuickAdd'
@@ -197,6 +198,8 @@ export default function App(): JSX.Element {
             }}
           />
         ) : null}
+
+        <BatchSection />
 
         <MediaSection />
 
