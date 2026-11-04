@@ -18,6 +18,23 @@ by tests. The Windows installer baseline is integrated locally, and packaged
 Deno is wired into yt-dlp calls. Isolated installer execution, signing, legal
 clearance, and other release checks remain open.
 
+## Current runtime summary (2026-11-04)
+
+The packaged production Electron UI has now completed a real, CDP-driven local
+download flow through the renderer, production preload/IPC, DownloadManager,
+aria2 and SQLite. A throttled loopback fixture downloaded 16 MiB; progress,
+pause, resume, completion, exact output size/hash, a live aria2 speed-limit
+change and relaunch persistence all passed. The isolated test window was
+headless/offscreen to avoid desktop interference; this verifies the actual
+renderer, not a mocked React preview, but does **not** verify interaction with a
+visible native window. No OS input, real Downloads path, Helium profile,
+installer or external download host was used. Screenshots and a bounded renderer
+trace are recorded in the dedicated verification section below.
+
+The earlier live selected-playlist media download remains a successful,
+separate Milestone 3B result (see its section below); it is not superseded by
+this local HTTP flow. Pixeldrain list and Gofile-folder coverage remain open.
+
 ## Current milestone
 
 - **Milestone 1 foundation:** complete.
@@ -1272,11 +1289,12 @@ Milestone 3A PASS above.
   and Web Store pages are ineligible.
 - **Playlists/collections and 3B features.** The 3B backend orchestration slice
   and desktop batch UI are covered by hermetic tests plus local real-aria2 batch
-  integration. A real yt-dlp playlist preview and opaque-entry resolver run is
-  now recorded above, but it performed no media download. Live Pixeldrain lists,
-  Gofile folders and a playlist download remain unverified, and the renderer UI
-  has not been exercised in a real profile or with OS mouse/keyboard input. See
-  the dedicated 3B coverage section above for exact evidence and gaps.
+  integration. Both a real yt-dlp playlist preview/opaque-entry resolver and a
+  selected CC-BY playlist media download are verified above. Live Pixeldrain
+  lists and Gofile folders remain unverified. The desktop renderer has now been
+  exercised in actual packaged Electron with isolated local HTTP and IPC, but
+  not in a visible native window or a real Helium profile. See the dedicated
+  3B and runtime-verification sections for exact evidence and gaps.
 
 ## Model handoff status
 
@@ -1303,21 +1321,18 @@ future work.
 
 ## Safe next action
 
-1. Continue Milestone 3B with native-bridge batch routes if requested; the
-   backend manager/IPC slice, desktop renderer batch UI and hermetic tests are
-   already present. Milestone 4 is explicitly deferred.
-2. The 3B live playlist preview and opaque-entry resolver are now verified
-   without downloading media (see the dedicated coverage section). A playlist
-   media download, live Pixeldrain list, Gofile folder and renderer UI
-   real-profile run remain unverified; do not treat the hermetic tests,
-   typecheck, build or preview-only run as broader live verification.
+1. Continue runtime-first coverage: external HTTP hosts, batches, scheduling,
+   media and Helium/native messaging each need their own real-runtime evidence.
+   The local loopback UI flow does not establish those behaviours.
+2. If visible-window appearance/native chrome needs checking, use a
+   user-supervised session only when it will not disrupt the user's desktop; the
+   current automation intentionally stays hidden and offscreen.
 3. Keep the remaining unverified non-blockers visible rather than treating them
    as regressions or silently closing them.
-4. Preserve the documented caveats: disposable-profile unpacked extension,
-   automated CDP/UIA/Win32 input rather than human hardware, no visible YouTube
-   permission bubble in that run, synthetic video on `example.com`, best-video
-   completion observed while the app was hidden, and no FFmpeg child during
-   cancellation.
+4. Preserve the earlier Helium automation caveats (disposable profile, CDP/UIA/
+   Win32 input, synthetic unsupported-page video, hidden-window completion and
+   no FFmpeg child during cancellation). They are historical and are not claims
+   about the new HTTP UI run.
 5. Do not push or create a release without separate approval.
 
 ## CSP diagnostic fix and packaged smoke checkpoint (2026-11-04)
@@ -1348,3 +1363,64 @@ This smoke does not test a real transfer, visible-window interaction, installer,
 or Helium/native-messaging integration. The earlier mock-renderer CSP warning
 recorded above predates this fix and is now resolved in the actual Electron
 diagnostics run. No push or release was made.
+
+## Packaged Electron UI and local HTTP transfer verification (2026-11-04)
+
+Status: **PASS for the exercised local HTTP flow.** The newly added
+`scripts/electron-ui-verification.mjs` launched the rebuilt unpacked production
+app (`dist/win-unpacked/DonDownload.exe`) in a fresh isolated smoke `userData`
+directory. It enabled Chromium CDP on loopback and used DOM input/click events
+against the real rendered page. The app window was hidden and offscreen; no
+physical input or desktop-window automation was used. This is the production
+renderer, production preload and trusted IPC connected to the actual managers,
+SQLite and aria2—not the mocked React preview. It is not proof of visible native
+window appearance or titlebar behavior.
+
+Observed end-to-end:
+
+1. Captured the real Quick Add form, entered a custom filename and a controlled
+   loopback HTTP URL, then submitted through the form.
+2. The actual download card reported active progress (512 KiB of 16 MiB at the
+   captured point). The card's **Pause** action transitioned to `paused`; the
+   **Resume** action restarted transfer and progress increased.
+3. Changed the Settings UI global speed limit to **262,144 bytes/s** during the
+   active transfer. The UI reported “Settings saved and applied”; an authenticated
+   `aria2.getGlobalOption` query to this app's isolated aria2 process returned
+   `max-overall-download-limit=262144`.
+4. The card reached **Complete**. Output was exactly 16,777,216 bytes and matched
+   the deterministic fixture SHA-256:
+   `287507f403176f1f5b22b9a4d9cb49f7d7f88ac19e406b5ae87ce109564846bd`.
+5. Relaunched the app against the same isolated userData. The UI/IPC snapshot
+   retained the completed download, persisted Settings retained 262,144, and
+   aria2 restored the same limit on startup.
+
+T3's direct browser preview was disconnected. Instead, the actual Electron
+screenshots were placed in a T3-rendered evidence gallery in the conversation.
+They are full-page CDP captures from this real packaged run; their accessible
+local files are under
+`artifacts/test-runs/electron-ui-2026-11-04T22-35-20-186Z/screenshots/`:
+`01-quick-add.png`, `02-in-progress.png`, `03-paused.png`,
+`05-settings-saved.png`, `06-completed.png` and `07-relaunched-persisted.png`.
+The retained machine-readable result is `result.json` in that run directory;
+`renderer-trace.json` is a 9.5 MB CDP renderer trace. The actual downloaded test
+file is in the run's isolated `user-data/smoke-downloads` directory, not the
+user's Downloads folder. These ignored artifacts are local and not committed.
+
+Verification commands for this run: `npm run build` (typecheck and production
+bundles passed), `npx electron-builder --win --x64 --dir` (unpacked package
+rebuilt), `node --check scripts/electron-ui-verification.mjs`, and
+`node scripts/electron-ui-verification.mjs` (end-to-end run passed).
+`npm run smoke:packaged` also passed its 11/11 startup/resource/diagnostic
+checks on the rebuilt app (2.750 s; zero renderer diagnostics). The fast and full
+unit suites were deliberately not rerun; no general unit tests were added. No
+control failed in the actual flow, so no product fix or delegation was needed.
+The harness's first screenshot draft omitted the card's below-the-fold area; it
+was corrected to use full-page CDP captures and the final screenshots show the
+actual active/paused/completed states.
+
+This makes the **basic HTTP download path materially better verified**, but is
+not enough to claim the whole product ready as a daily driver. Visible native
+window behavior, external HTTP servers, real-user Downloads placement, broad
+restart/pause schedules, Helium/native messaging and the other media/batch
+scenarios remain separate coverage gaps. No installer was rebuilt or executed,
+and no push/release was made.

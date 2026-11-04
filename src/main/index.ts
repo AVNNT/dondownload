@@ -119,8 +119,8 @@ function refreshTray(): void {
   appTray?.refresh()
 }
 
-function openMainWindow(show = true): BrowserWindow {
-  const window = createMainWindow({ show })
+function openMainWindow(show = true, offscreen = false): BrowserWindow {
+  const window = createMainWindow({ show, offscreen })
 
   window.on('close', (event) => {
     const action = decideWindowClose({
@@ -313,7 +313,9 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       })
     }
 
-    const window = openMainWindow(smoke === null)
+    const interactiveSmoke =
+      smoke !== null && process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1'
+    const window = openMainWindow(smoke === null, interactiveSmoke)
     mainWindow = window
 
     // Diagnostics exist only in smoke mode. They observe the real hidden
@@ -347,6 +349,17 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
 
     if (smoke !== null) {
       await startServices()
+      // An opt-in, isolated interactive smoke session keeps the actual
+      // production renderer/preload/IPC alive for CDP-driven verification.
+      // It still uses the smoke-only userData/download paths and never creates
+      // the tray or browser bridge. The window remains hidden/offscreen to
+      // avoid desktop interference; CDP drives its actual production renderer.
+      if (process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1') {
+        console.error(
+          `[dondownload-smoke] INTERACTIVE_READY userData=${app.getPath('userData')} downloadDir=${downloadDir}`
+        )
+        return
+      }
       try {
         if (smokeDiagnostics === null) {
           throw new Error('Smoke renderer diagnostics were not initialized.')

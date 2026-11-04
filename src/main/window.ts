@@ -7,12 +7,15 @@ export interface CreateMainWindowOptions {
    * or focus it. Normal application startup keeps the existing visible flow.
    */
   show?: boolean
+  /** Render a real BrowserWindow offscreen for isolated CDP verification. */
+  offscreen?: boolean
 }
 
 export function createMainWindow(
   options: CreateMainWindowOptions = {}
 ): BrowserWindow {
   const show = options.show ?? true
+  const offscreen = options.offscreen ?? false
   const window = new BrowserWindow({
     width: 980,
     height: 760,
@@ -23,6 +26,7 @@ export function createMainWindow(
     title: 'DonDownload',
     autoHideMenuBar: true,
     webPreferences: {
+      offscreen,
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
       contextIsolation: true,
