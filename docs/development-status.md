@@ -1319,3 +1319,32 @@ future work.
    completion observed while the app was hidden, and no FFmpeg child during
    cancellation.
 5. Do not push or create a release without separate approval.
+
+## CSP diagnostic fix and packaged smoke checkpoint (2026-11-04)
+
+The hidden packaged Electron smoke exposed Chromium's diagnostic that
+`frame-ancestors` is ignored in a meta-delivered CSP. Commit `f7baa75` removes
+only that ineffective directive from the production and development meta
+policies; the effective directives are unchanged. `tests/meta-csp.test.ts`
+guards both generated policies and their directive lists.
+
+Verification on the integrated source:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:fast` | **526 passed**, 37 files (1.33 s) |
+| `npm run build` | **passed**; generated production meta CSP has no `frame-ancestors` |
+| `npx electron-builder --win --x64 --dir` | **passed**; rebuilt unpacked app |
+| `npm run smoke:packaged` | **PASS**, 11/11 checks; 1.853 s; renderer diagnostics: 0 errors, 0 warnings, 0 suppressed, 0 dropped |
+| `npm run test:gate` | **566 passed / 11 skipped**, 39 passed + 6 skipped files; build passed (26.93 s test suite) |
+
+The smoke ran the actual packaged Electron 45.2.2 app with a hidden,
+unfocused window and unique temporary user data/download paths. SQLite schema
+6, aria2 1.37.0, DownloadManager, yt-dlp, FFmpeg and Deno initialized or probed
+successfully. The temporary user data was removed after success. The captured
+console transcript is retained outside Git at
+`artifacts/test-runs/electron-smoke-20261104-2301-csp-fix/smoke-console.log`.
+This smoke does not test a real transfer, visible-window interaction, installer,
+or Helium/native-messaging integration. The earlier mock-renderer CSP warning
+recorded above predates this fix and is now resolved in the actual Electron
+diagnostics run. No push or release was made.
