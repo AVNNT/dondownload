@@ -26,7 +26,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -155,6 +155,42 @@ const MIGRATIONS: readonly Migration[] = [
         kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
         status TEXT NOT NULL CHECK (
           status IN (
+            'queued', 'running', 'complete',
+            'error', 'cancelled', 'interrupted'
+          )
+        ),
+        child_id TEXT,
+        title TEXT NOT NULL,
+        label TEXT NOT NULL,
+        completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+        total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+        error_message TEXT,
+        source_url TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        UNIQUE (batch_id, position)
+      );
+
+      CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
+      CREATE INDEX batch_items_status_idx ON batch_items (status);
+    `
+  },
+  {
+    // v3 is a committed checkpoint, so its batch_items CHECK cannot be widened
+    // in place for databases that already ran it. Rebuild the table with the
+    // SQLite safe copy-table pattern inside the migration transaction. All
+    // rows, the cascade FK, the UNIQUE constraint and both indexes are kept;
+    // only the status CHECK is widened to allow unavailable/skipped items.
+    version: 4,
+    sql: `
+      CREATE TABLE batch_items_v4 (
+        id TEXT PRIMARY KEY NOT NULL,
+        batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL CHECK (position >= 0),
+        kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+        status TEXT NOT NULL CHECK (
+          status IN (
             'queued', 'running', 'complete', 'error',
             'unavailable', 'skipped', 'cancelled', 'interrupted'
           )
@@ -171,6 +207,20 @@ const MIGRATIONS: readonly Migration[] = [
         completed_at INTEGER,
         UNIQUE (batch_id, position)
       );
+
+      INSERT INTO batch_items_v4 (
+        id, batch_id, position, kind, status, child_id, title, label,
+        completed_bytes, total_bytes, error_message, source_url,
+        created_at, updated_at, completed_at
+      )
+      SELECT
+        id, batch_id, position, kind, status, child_id, title, label,
+        completed_bytes, total_bytes, error_message, source_url,
+        created_at, updated_at, completed_at
+      FROM batch_items;
+
+      DROP TABLE batch_items;
+      ALTER TABLE batch_items_v4 RENAME TO batch_items;
 
       CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
       CREATE INDEX batch_items_status_idx ON batch_items (status);

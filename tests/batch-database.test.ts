@@ -96,6 +96,58 @@ const V2_MEDIA_SCHEMA = `
   CREATE INDEX media_jobs_status_idx ON media_jobs (status);
 `
 
+/** The exact v3 checkpoint schema from commit 1571f69. */
+const V3_BATCH_SCHEMA = `
+  CREATE TABLE batches (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (
+      kind IN ('media-playlist', 'pixeldrain-list', 'direct-urls')
+    ),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'running', 'complete', 'partial',
+        'error', 'cancelled', 'interrupted'
+      )
+    ),
+    source_url TEXT,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  );
+
+  CREATE INDEX batches_created_at_idx ON batches (created_at DESC);
+  CREATE INDEX batches_status_idx ON batches (status);
+
+  CREATE TABLE batch_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+    status TEXT NOT NULL CHECK (
+      status IN (
+        'queued', 'running', 'complete',
+        'error', 'cancelled', 'interrupted'
+      )
+    ),
+    child_id TEXT,
+    title TEXT NOT NULL,
+    label TEXT NOT NULL,
+    completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+    total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+    error_message TEXT,
+    source_url TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    UNIQUE (batch_id, position)
+  );
+
+  CREATE INDEX batch_items_batch_id_idx ON batch_items (batch_id, position);
+  CREATE INDEX batch_items_status_idx ON batch_items (status);
+`
+
 function batchRecord(overrides: Partial<BatchRecord> = {}): BatchRecord {
   return {
     id: 'batch_0123456789abcdef',
@@ -189,6 +241,75 @@ function rowsOf(
   ).map((row) => ({ ...row }))
 }
 
+function schemaSql(database: DatabaseSync, table: string): string {
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { sql: string } | undefined
+  return row?.sql ?? ''
+}
+
+function indexNames(database: DatabaseSync, table: string): string[] {
+  return (
+    database
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? ORDER BY name"
+      )
+      .all(table) as { name: string }[]
+  ).map((index) => index.name)
+}
+
+function insertBatch(database: DatabaseSync, record: BatchRecord): void {
+  database
+    .prepare(
+      `INSERT INTO batches (
+        id, kind, title, status, source_url, error_message,
+        created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      record.id,
+      record.kind,
+      record.title,
+      record.status,
+      record.sourceUrl,
+      record.errorMessage,
+      record.createdAt,
+      record.updatedAt,
+      record.completedAt
+    )
+}
+
+function insertBatchItem(
+  database: DatabaseSync,
+  item: BatchItemRecord
+): void {
+  database
+    .prepare(
+      `INSERT INTO batch_items (
+        id, batch_id, position, kind, status, child_id, title, label,
+        completed_bytes, total_bytes, error_message, source_url,
+        created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      item.id,
+      item.batchId,
+      item.position,
+      item.kind,
+      item.status,
+      item.childId,
+      item.title,
+      item.label,
+      item.completedBytes,
+      item.totalBytes,
+      item.errorMessage,
+      item.sourceUrl,
+      item.createdAt,
+      item.updatedAt,
+      item.completedAt
+    )
+}
+
 function createV2Database(filePath: string): void {
   const raw = new DatabaseSync(filePath)
   raw.exec(V1_SCHEMA)
@@ -252,6 +373,47 @@ function createV2Database(filePath: string): void {
     )
 
   raw.close()
+}
+
+interface V3Fixture {
+  batch: BatchRecord
+  items: BatchItemRecord[]
+}
+
+/** Build a genuine v3 database with rows that the old status CHECK allows. */
+function createV3Database(filePath: string): V3Fixture {
+  createV2Database(filePath)
+
+  const batch = batchRecord({ status: 'running' })
+  const items: BatchItemRecord[] = [
+    batchItem({
+      status: 'complete',
+      childId: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+      completedBytes: 1_000,
+      completedAt: NOW
+    }),
+    batchItem({
+      id: 'bitem_fedcba9876543210',
+      position: 1,
+      kind: 'download',
+      status: 'error',
+      title: 'Second item',
+      label: 'archive.zip',
+      completedBytes: 50,
+      totalBytes: 200,
+      errorMessage: 'The remote file was not found.',
+      sourceUrl: 'https://example.com/archive.zip'
+    })
+  ]
+
+  const raw = new DatabaseSync(filePath)
+  raw.exec(V3_BATCH_SCHEMA)
+  raw.exec('PRAGMA user_version = 3')
+  insertBatch(raw, batch)
+  for (const item of items) insertBatchItem(raw, item)
+  raw.close()
+
+  return { batch, items }
 }
 
 afterEach(async () => {
@@ -487,7 +649,7 @@ describe('batch persistence', () => {
   })
 })
 
-describe('v2 to v3 batch migration', () => {
+describe('v2 to v4 batch migration', () => {
   it('adds batch tables without changing any v2 download or media value', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -503,6 +665,21 @@ describe('v2 to v3 batch migration', () => {
     expect(database.loadBatches()).toEqual([])
     expect(database.loadAll()).toHaveLength(1)
     expect(database.loadMediaJobs()).toHaveLength(1)
+    database.saveBatchWithItems(batchRecord(), [
+      batchItem({ status: 'unavailable', completedBytes: 0, totalBytes: null }),
+      batchItem({
+        id: 'bitem_skipped',
+        position: 1,
+        status: 'skipped',
+        completedBytes: 0,
+        totalBytes: null
+      })
+    ])
+    expect(
+      database
+        .loadBatch('batch_0123456789abcdef')
+        ?.items.map((item) => item.status)
+    ).toEqual(['unavailable', 'skipped'])
     close(database)
 
     const verify = new DatabaseSync(filePath)
@@ -549,6 +726,175 @@ describe('v2 to v3 batch migration', () => {
     verify.close()
 
     expect(batchItems).toBeUndefined()
+  })
+})
+
+describe('v3 to v4 batch_items migration', () => {
+  it('rebuilds a genuine prior-v3 table and preserves every row, index and cascade', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const fixture = createV3Database(filePath)
+
+    const beforeRaw = new DatabaseSync(filePath)
+    const beforeDownloads = rowsOf(beforeRaw, 'downloads')
+    const beforeMedia = rowsOf(beforeRaw, 'media_jobs')
+    const beforeBatches = rowsOf(beforeRaw, 'batches')
+    const beforeItems = rowsOf(beforeRaw, 'batch_items')
+    const oldItemSql = schemaSql(beforeRaw, 'batch_items')
+    beforeRaw.close()
+
+    expect(oldItemSql).not.toContain("'unavailable'")
+    expect(oldItemSql).not.toContain("'skipped'")
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(4)
+    expect(database.loadAll()).toHaveLength(1)
+    expect(database.loadMediaJobs()).toHaveLength(1)
+    const migrated = database.loadBatch(fixture.batch.id)
+    expect(migrated?.record).toEqual(fixture.batch)
+    expect(migrated?.items).toEqual(fixture.items)
+
+    database.saveManyBatchItems([
+      batchItem({
+        id: 'bitem_unavailable',
+        position: 2,
+        status: 'unavailable',
+        completedBytes: 0,
+        totalBytes: null
+      }),
+      batchItem({
+        id: 'bitem_skipped',
+        position: 3,
+        status: 'skipped',
+        completedBytes: 0,
+        totalBytes: null
+      })
+    ])
+    expect(
+      database.loadBatch(fixture.batch.id)?.items.map((item) => item.status)
+    ).toEqual(['complete', 'error', 'unavailable', 'skipped'])
+    close(database)
+
+    const verify = new DatabaseSync(filePath)
+    expect(
+      (verify.prepare('PRAGMA user_version').get() as { user_version: number })
+        .user_version
+    ).toBe(4)
+    const beforeTables: [string, Record<string, unknown>[]][] = [
+      ['downloads', beforeDownloads],
+      ['media_jobs', beforeMedia],
+      ['batches', beforeBatches],
+      ['batch_items', beforeItems]
+    ]
+    for (const [table, rows] of beforeTables) {
+      const after = new Map<string, Record<string, unknown>>()
+      for (const row of rowsOf(verify, table)) after.set(String(row.id), row)
+      for (const row of rows) expect(after.get(String(row.id))).toEqual(row)
+    }
+    const itemSql = schemaSql(verify, 'batch_items')
+    expect(itemSql).toContain("'unavailable'")
+    expect(itemSql).toContain("'skipped'")
+    expect(indexNames(verify, 'batch_items')).toEqual(
+      expect.arrayContaining([
+        'batch_items_batch_id_idx',
+        'batch_items_status_idx'
+      ])
+    )
+    const foreignKeys = verify
+      .prepare("PRAGMA foreign_key_list('batch_items')")
+      .all() as { table: string; on_delete: string }[]
+    expect(foreignKeys).toHaveLength(1)
+    expect(foreignKeys[0]).toMatchObject({
+      table: 'batches',
+      on_delete: 'CASCADE'
+    })
+    verify.close()
+
+    const afterDelete = open(filePath)
+    afterDelete.deleteBatch(fixture.batch.id)
+    expect(afterDelete.loadBatches()).toHaveLength(0)
+    expect(afterDelete.loadAll()).toHaveLength(1)
+    expect(afterDelete.loadMediaJobs()).toHaveLength(1)
+    close(afterDelete)
+  })
+
+  it('rolls back a failed v4 rebuild and preserves the v3 rows and schema', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const fixture = createV3Database(filePath)
+    const firstItemId = fixture.items[0]?.id
+    if (!firstItemId) throw new Error('v3 fixture is missing its first item')
+
+    const beforeRaw = new DatabaseSync(filePath)
+    const beforeDownloads = rowsOf(beforeRaw, 'downloads')
+    const beforeMedia = rowsOf(beforeRaw, 'media_jobs')
+    const beforeBatches = rowsOf(beforeRaw, 'batches')
+    const beforeItems = rowsOf(beforeRaw, 'batch_items')
+    const oldItemSql = schemaSql(beforeRaw, 'batch_items')
+    const oldIndexes = indexNames(beforeRaw, 'batch_items')
+    // A dependent row makes the v4 DROP TABLE fail after the copy step, so
+    // this exercises rollback after the destructive part of the rebuild.
+    beforeRaw.exec(`
+      CREATE TABLE batch_items_ref (
+        id INTEGER PRIMARY KEY,
+        item_id TEXT REFERENCES batch_items(id)
+      );
+    `)
+    beforeRaw
+      .prepare('INSERT INTO batch_items_ref (id, item_id) VALUES (?, ?)')
+      .run(1, firstItemId)
+    beforeRaw.close()
+
+    expect(() => openDownloadDatabase(filePath)).toThrow(/migrate/i)
+
+    const verify = new DatabaseSync(filePath)
+    expect(
+      (verify.prepare('PRAGMA user_version').get() as { user_version: number })
+        .user_version
+    ).toBe(3)
+    const beforeTables: [string, Record<string, unknown>[]][] = [
+      ['downloads', beforeDownloads],
+      ['media_jobs', beforeMedia],
+      ['batches', beforeBatches],
+      ['batch_items', beforeItems]
+    ]
+    for (const [table, rows] of beforeTables) {
+      expect(rowsOf(verify, table)).toEqual(rows)
+    }
+    expect(schemaSql(verify, 'batch_items')).toBe(oldItemSql)
+    expect(indexNames(verify, 'batch_items')).toEqual(oldIndexes)
+    expect(
+      verify
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'batch_items_v4'"
+        )
+        .get()
+    ).toBeUndefined()
+    expect(() =>
+      insertBatchItem(
+        verify,
+        batchItem({
+          id: 'bitem_rollback_unavailable',
+          position: 2,
+          status: 'unavailable',
+          completedBytes: 0,
+          totalBytes: null
+        })
+      )
+    ).toThrow()
+    expect(() =>
+      insertBatchItem(
+        verify,
+        batchItem({
+          id: 'bitem_rollback_skipped',
+          position: 3,
+          status: 'skipped',
+          completedBytes: 0,
+          totalBytes: null
+        })
+      )
+    ).toThrow()
+    verify.close()
   })
 })
 

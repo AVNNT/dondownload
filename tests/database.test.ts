@@ -356,7 +356,7 @@ describe('schema migrations', () => {
   })
 })
 
-describe('v1 to v3 migration preservation', () => {
+describe('v1 to v4 migration preservation', () => {
   it('adds media and batch tables without changing any v1 download value', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
