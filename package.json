@@ -1,0 +1,35 @@
+{
+  "name": "dondownload",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A fast, focused, Windows-first download manager built on Electron, React and aria2.",
+  "license": "MIT",
+  "author": "DonDownload contributors",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "build:native-host": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-host.ps1",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/node": "^24.19.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "electron": "^45.2.2",
+    "electron-vite": "^6.0.0",
+    "tailwindcss": "^4.3.4",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DonDownload Capture</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="brand">DonDownload</span>
+        <span class="pill">manual capture</span>
+      </header>
+
+      <p class="lead">Send this page's HTTP(S) address to the desktop app.</p>
+
+      <div class="url-row">
+        <code id="page-url">Reading the active tab…</code>
+      </div>
+
+      <button id="send" type="button" disabled>Download with DonDownload</button>
+      <button id="download-again" type="button" class="secondary" hidden>
+        Download again
+      </button>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <footer>
+        Nothing is captured automatically. DonDownload accepts this while its
+        window is hidden in the tray.
+      </footer>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

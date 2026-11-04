@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "DonDownload Capture",
+  "version": "0.1.0",
+  "description": "Send an explicit HTTP(S) page or right-clicked link to the DonDownload desktop app.",
+  "minimum_chrome_version": "102",
+  "permissions": ["activeTab", "contextMenus", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Send this page to DonDownload",
+    "default_popup": "popup.html"
+  }
+}

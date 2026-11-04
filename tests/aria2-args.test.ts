@@ -1,0 +1,31 @@
+import { describe, expect, it } from 'vitest'
+import { buildAria2Args } from '../src/main/aria2/args'
+
+describe('buildAria2Args', () => {
+  it('binds RPC to loopback with a discrete port and secret', () => {
+    const args = buildAria2Args({
+      port: 45678,
+      secret: 'test-secret',
+      downloadDir: 'C:\\Users\\Test\\Downloads\\DonDownload'
+    })
+
+    expect(args).toContain('--enable-rpc=true')
+    expect(args).toContain('--rpc-listen-all=false')
+    expect(args).toContain('--rpc-listen-port=45678')
+    expect(args).toContain('--rpc-secret=test-secret')
+    expect(args).toContain('--rpc-allow-origin-all=false')
+    expect(args).toContain('--dir=C:\\Users\\Test\\Downloads\\DonDownload')
+    expect(args).toContain('--no-conf=true')
+  })
+
+  it('keeps bounded retry and safe file handling options', () => {
+    const args = buildAria2Args({ port: 1, secret: 's', downloadDir: 'D:\\x' })
+
+    expect(args).toContain('--max-tries=3')
+    expect(args).toContain('--retry-wait=2')
+    expect(args).toContain('--allow-overwrite=false')
+    expect(args).toContain('--auto-file-renaming=true')
+    expect(args).toContain('--check-certificate=true')
+    expect(args).toContain('--file-allocation=none')
+  })
+})

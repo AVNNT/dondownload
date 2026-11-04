@@ -1,0 +1,144 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  background: #050505;
+  color: #f4f4f5;
+}
+
+main {
+  padding: 18px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.pill {
+  border: 1px solid #2c2c31;
+  border-radius: 999px;
+  color: #a1a1aa;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  text-transform: uppercase;
+}
+
+.lead {
+  color: #b9b9c0;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.url-row {
+  background: #0c0c0e;
+  border: 1px solid #242429;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  max-height: 96px;
+  overflow: auto;
+  padding: 10px;
+}
+
+#page-url {
+  color: #d9d9de;
+  display: block;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+button {
+  background: #f4f4f5;
+  border: 0;
+  border-radius: 8px;
+  color: #09090b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 10px 12px;
+  transition: background 120ms ease, opacity 120ms ease;
+  width: 100%;
+}
+
+button:hover:not(:disabled) {
+  background: #d4d4d8;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid #3f3f46;
+  color: #e4e4e7;
+  margin-top: 8px;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #18181b;
+}
+
+button[hidden] {
+  display: none;
+}
+
+.status {
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 12px 0 0;
+  min-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.status.success {
+  background: #08210f;
+  border: 1px solid #1f7a3a;
+  color: #9ae6b4;
+  padding: 9px 10px;
+}
+
+.status.error {
+  background: #240b0b;
+  border: 1px solid #7f1d1d;
+  color: #fca5a5;
+  padding: 9px 10px;
+}
+
+.status:empty {
+  display: none;
+}
+
+footer {
+  border-top: 1px solid #1b1b1f;
+  color: #77777f;
+  font-size: 10.5px;
+  line-height: 1.5;
+  margin-top: 14px;
+  padding-top: 10px;
+}

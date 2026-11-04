@@ -1,0 +1,22 @@
+node_modules/
+out/
+dist/
+coverage/
+
+# Local aria2 binaries are intentionally not redistributed with this repo.
+vendor/aria2/
+
+# Built locally from native/NativeHost.cs with the Windows .NET compiler.
+native/*.exe
+
+# Local configuration and logs
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
