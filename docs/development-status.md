@@ -11,12 +11,12 @@ opt-in live playlist check that previewed and downloaded exactly one explicitly
 selected CC-BY entry. Pixeldrain public-list verification is blocked because no
 reliable, licensed fixture was found. There is still no native-bridge batch
 route, and the live provider check does not verify the renderer UI.
-Milestone 4 is explicitly deferred. Milestone 5A has its shared download-settings
-contract, additive SQLite schema v5, runtime settings service, trusted
-IPC/preload API, startup/live aria2 application and a renderer form for global
-limits. The Windows installer baseline is integrated locally, and packaged
-Deno is wired into yt-dlp calls. Scheduling, allowed-hours enforcement,
-individual download controls and final installer/release checks remain open.
+Milestone 4 is explicitly deferred. Milestone 5 download controls and scheduling
+are integrated locally: global settings, per-download limits, scheduled starts,
+allowed-hours enforcement, recovery behavior, and renderer controls are covered
+by tests. The Windows installer baseline is integrated locally, and packaged
+Deno is wired into yt-dlp calls. Isolated installer execution, signing, legal
+clearance, and other release checks remain open.
 
 ## Current milestone
 
@@ -606,6 +606,37 @@ or reproducible builds. GPL corresponding-source archives/written offer and
 legal review remain release blockers; see
 [licensing-release-audit.md](licensing-release-audit.md). No production release
 or signing claim is made.
+
+## Milestone 5 scheduling and per-download controls
+
+Integrated locally at `fd64503`. Global allowed hours use local wall-clock time
+and the existing `DownloadManager` poll loop. New downloads can carry a start
+time, speed limit and connection count; direct batch children use the same gate.
+User-paused jobs remain paused, while explicit Start Now/Resume/Retry actions
+override policy for the current process. SQLite schema v6 adds connection and
+policy-hold state additively; policy-held, not-yet-submitted downloads are
+recoverable after restart, while genuinely in-flight downloads remain
+interrupted. The renderer exposes allowed-hours settings, Quick Add controls,
+and download-card status/actions. See [milestone-5-controls.md](milestone-5-controls.md)
+for behavior and implementation details.
+
+Verification after integration: `npm run test:fast` passed **504 tests**;
+`npm run typecheck` passed; and `npm run test:gate` passed **544 tests / 8
+skipped** with the production build passing. No GUI or real download was used
+for scheduler verification. The allowed-hours transition is checked on the
+existing one-second polling cadence (so it is not a hard real-time boundary),
+schedules have no automatic end/pause, and Start Now overrides are not persisted.
+Media jobs have no per-job schedule/speed/connection controls; queued media may
+wait for the policy window only in the current process and is not automatically
+restarted after relaunch.
+
+The installer rebuild was attempted after the final source build. Native-host
+compilation, vendor staging/version checks and the application build passed;
+staging recorded hashes in `build/vendor/manifest.json` for aria2 1.37.0,
+yt-dlp 2026.10.26, FFmpeg/ffprobe 9.0.2 and Deno 2.9.8. Packaging stopped
+because `electron-builder` is not installed/available in this worktree. The
+existing `dist/DonDownload-0.1.0-x64-setup.exe` is therefore stale and must not
+be treated as a build from this integrated source. No installer was executed.
 
 ## Root cause of the reported Milestone 2B failure
 
