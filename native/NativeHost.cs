@@ -13,28 +13,57 @@ using System.Web.Script.Serialization;
 // Edge) on stdin/stdout:
 //   4-byte little-endian length, then UTF-8 JSON. One request per frame.
 //
-// The only supported request is:
+// Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
+//   { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
+//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true }
+//   { "type": "media-status", "jobId": "..." }
+//   { "type": "cancel-media", "jobId": "..." }
 //
-// The host validates that schema and URL, discovers the per-user desktop
-// bridge endpoint, and POSTs only the URL to loopback with a bearer token.
-// It never accepts commands, paths, file names, or filesystem input. All
-// diagnostics go to stderr and never include URLs.
+// The host validates each exact schema, discovers the per-user desktop bridge
+// endpoint, and POSTs only the validated fields to loopback with a bearer
+// token. It never accepts commands, paths, file names, raw format selectors or
+// filesystem input. All diagnostics go to stderr and never include URLs.
 internal static class NativeHost
 {
     private const int MaxFrameBytes = 1024 * 1024;
     private const int MaxStateBytes = 8 * 1024;
-    private const int MaxResponseBytes = 64 * 1024;
+    // A media analysis can carry many verified options, so the response cap is
+    // larger than the tiny queue-download acknowledgement. The frame cap above
+    // still bounds the browser-facing message.
+    private const int MaxResponseBytes = 512 * 1024;
     private const int MaxUrlLength = 4096;
     private const string AppMarker = "DonDownload";
     private const int StateVersion = 1;
-    private const string Operation = "queue-download";
+    private const string QueueDownloadOperation = "queue-download";
+    private const string AnalyzeMediaOperation = "analyze-media";
+    private const string QueueMediaOperation = "queue-media";
+    private const string MediaStatusOperation = "media-status";
+    private const string CancelMediaOperation = "cancel-media";
     private const string StateFileName = "native-bridge.json";
 
     private static readonly Regex TokenPattern =
         new Regex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
     private static readonly Regex ExtensionOriginPattern =
         new Regex("^chrome-extension://[a-p]{32}/?$", RegexOptions.CultureInvariant);
+    private static readonly Regex OpaqueMediaIdPattern =
+        new Regex("^[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant);
+    private static readonly Regex ContainerPattern =
+        new Regex("^[a-z0-9][a-z0-9._+-]{0,31}$", RegexOptions.CultureInvariant);
+    private static readonly Regex ErrorCodePattern =
+        new Regex("^[A-Z][A-Z0-9_]{1,63}$", RegexOptions.CultureInvariant);
+
+    private static readonly string[] MediaJobStatuses = new string[]
+    {
+        "queued",
+        "analyzing",
+        "downloading",
+        "merging",
+        "complete",
+        "error",
+        "cancelled",
+        "interrupted"
+    };
 
     private static readonly JavaScriptSerializer Serializer =
         new JavaScriptSerializer { MaxJsonLength = MaxFrameBytes * 2 };
@@ -140,24 +169,49 @@ internal static class NativeHost
         }
 
         Dictionary<string, object> message = parsed as Dictionary<string, object>;
-        bool hasForce = message != null && message.ContainsKey("force");
-        int expectedCount = hasForce ? 3 : 2;
-        if (message == null || message.Count != expectedCount ||
-            !message.ContainsKey("type") || !message.ContainsKey("url"))
+        if (message == null || !message.ContainsKey("type"))
+        {
+            return Error("INVALID_MESSAGE", "The native message is missing its operation.");
+        }
+
+        string type = message["type"] as string;
+        if (type == null)
+        {
+            return Error("INVALID_MESSAGE", "The native message operation is invalid.");
+        }
+
+        if (type == QueueDownloadOperation)
+        {
+            return HandleQueueDownloadMessage(message);
+        }
+        if (type == AnalyzeMediaOperation)
+        {
+            return HandleAnalyzeMediaMessage(message);
+        }
+        if (type == QueueMediaOperation)
+        {
+            return HandleQueueMediaMessage(message);
+        }
+        if (type == MediaStatusOperation || type == CancelMediaOperation)
+        {
+            return HandleMediaJobMessage(message, type);
+        }
+
+        return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
+    }
+
+    private static Dictionary<string, object> HandleQueueDownloadMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[] { "force" }))
         {
             return Error(
                 "INVALID_MESSAGE",
                 "Only queue-download messages containing type, url and an optional force flag are accepted.");
         }
 
-        string type = message["type"] as string;
-        if (type == null || type != Operation)
-        {
-            return Error("UNSUPPORTED_OPERATION", "Only the queue-download operation is supported.");
-        }
-
         bool force = false;
-        if (hasForce)
+        if (message.ContainsKey("force"))
         {
             object forceValue = message["force"];
             if (!(forceValue is bool))
@@ -177,6 +231,125 @@ internal static class NativeHost
         return QueueDownload(normalizedUrl, force);
     }
 
+    private static Dictionary<string, object> HandleAnalyzeMediaMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only analyze-media messages containing exactly type and url are accepted.");
+        }
+
+        string normalizedUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["url"] as string, out normalizedUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("url", normalizedUrl);
+        return ForwardMedia(AnalyzeMediaOperation, "/analyze-media", body);
+    }
+
+    private static Dictionary<string, object> HandleQueueMediaMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "analysisId", "optionId" },
+            new string[] { "force" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only queue-media messages containing type, analysisId, optionId and an optional force flag are accepted.");
+        }
+
+        if (!IsOpaqueMediaId(message["analysisId"]))
+        {
+            return Error("INVALID_MESSAGE", "The media analysis identifier is invalid.");
+        }
+        if (!IsOpaqueMediaId(message["optionId"]))
+        {
+            return Error("INVALID_MESSAGE", "The media option identifier is invalid.");
+        }
+
+        bool force = false;
+        if (message.ContainsKey("force"))
+        {
+            object forceValue = message["force"];
+            if (!(forceValue is bool))
+            {
+                return Error("INVALID_MESSAGE", "The force option must be true or false.");
+            }
+            force = (bool)forceValue;
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("analysisId", (string)message["analysisId"]);
+        body.Add("optionId", (string)message["optionId"]);
+        if (force)
+        {
+            body.Add("force", true);
+        }
+        return ForwardMedia(QueueMediaOperation, "/queue-media", body);
+    }
+
+    private static Dictionary<string, object> HandleMediaJobMessage(
+        Dictionary<string, object> message,
+        string operation)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "jobId" }, new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only media-status and cancel-media messages containing exactly type and jobId are accepted.");
+        }
+        if (!IsOpaqueMediaId(message["jobId"]))
+        {
+            return Error("INVALID_MESSAGE", "The media job identifier is invalid.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("jobId", (string)message["jobId"]);
+
+        string route = operation == MediaStatusOperation ? "/media-status" : "/cancel-media";
+        return ForwardMedia(operation, route, body);
+    }
+
+    private static bool HasExactKeys(
+        Dictionary<string, object> message,
+        string[] required,
+        string[] optional)
+    {
+        if (message.Count > required.Length + optional.Length)
+        {
+            return false;
+        }
+        for (int index = 0; index < required.Length; index++)
+        {
+            if (!message.ContainsKey(required[index]))
+            {
+                return false;
+            }
+        }
+        foreach (string key in message.Keys)
+        {
+            if (Array.IndexOf(required, key) < 0 && Array.IndexOf(optional, key) < 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsOpaqueMediaId(object value)
+    {
+        string text = value as string;
+        return text != null && OpaqueMediaIdPattern.IsMatch(text);
+    }
+
     private static Dictionary<string, object> QueueDownload(string url, bool force)
     {
         BridgeState state;
@@ -189,21 +362,7 @@ internal static class NativeHost
         HttpWebRequest request = null;
         try
         {
-            request = (HttpWebRequest)WebRequest.Create(
-                "http://127.0.0.1:" + state.Port.ToString(CultureInfo.InvariantCulture) + "/queue-download");
-            request.Method = "POST";
-            request.ContentType = "application/json; charset=utf-8";
-            request.Accept = "application/json";
-            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + state.Token;
-            request.AllowAutoRedirect = false;
-            request.Proxy = null;
-            request.KeepAlive = false;
-            // aria2 may need up to ~12 seconds to start on the first add. The
-            // host still fails promptly when the loopback port is closed.
-            request.Timeout = 20000;
-            request.ReadWriteTimeout = 20000;
-            request.ServicePoint.Expect100Continue = false;
-            request.UserAgent = "DonDownload-Native/0.1.0";
+            request = CreateBridgeRequest(state, "/queue-download");
 
             Dictionary<string, object> body = new Dictionary<string, object>();
             body.Add("url", url);
@@ -314,6 +473,555 @@ internal static class NativeHost
         }
 
         return Error((string)error["code"], (string)error["message"]);
+    }
+
+    private static HttpWebRequest CreateBridgeRequest(BridgeState state, string route)
+    {
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(
+            "http://127.0.0.1:" + state.Port.ToString(CultureInfo.InvariantCulture) + route);
+        request.Method = "POST";
+        request.ContentType = "application/json; charset=utf-8";
+        request.Accept = "application/json";
+        request.Headers[HttpRequestHeader.Authorization] = "Bearer " + state.Token;
+        request.AllowAutoRedirect = false;
+        request.Proxy = null;
+        request.KeepAlive = false;
+        // aria2 may need up to ~12 seconds to start on the first add. The
+        // host still fails promptly when the loopback port is closed.
+        request.Timeout = 20000;
+        request.ReadWriteTimeout = 20000;
+        request.ServicePoint.Expect100Continue = false;
+        request.UserAgent = "DonDownload-Native/0.1.0";
+        return request;
+    }
+
+    private static Dictionary<string, object> ForwardMedia(
+        string operation,
+        string route,
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(state, route);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseMediaAppResponse(responseText, operation);
+        }
+    }
+
+    private static Dictionary<string, object> ParseMediaAppResponse(
+        string responseText,
+        string operation)
+    {
+        object parsed;
+        try
+        {
+            parsed = Serializer.DeserializeObject(responseText);
+        }
+        catch (Exception)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid response.");
+        }
+
+        Dictionary<string, object> response = parsed as Dictionary<string, object>;
+        if (response == null || !response.ContainsKey("ok"))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        object okValue = response["ok"];
+        if (okValue is bool && (bool)okValue)
+        {
+            string payloadKey = operation == AnalyzeMediaOperation ? "analysis" : "job";
+            if (!HasExactKeys(
+                response,
+                new string[] { "ok", "operation", payloadKey },
+                new string[0]))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+            }
+            if ((response["operation"] as string) != operation)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned a mismatched response.");
+            }
+
+            bool valid = operation == AnalyzeMediaOperation
+                ? ValidateMediaAnalysis(response[payloadKey])
+                : ValidateMediaJob(response[payloadKey]);
+            if (!valid)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid media response.");
+            }
+            return response;
+        }
+
+        if (!(okValue is bool))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        if (!HasExactKeys(response, new string[] { "ok", "error" }, new string[0]))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        Dictionary<string, object> error = response["error"] as Dictionary<string, object>;
+        if (error == null ||
+            !HasExactKeys(error, new string[] { "code", "message" }, new string[0]))
+        {
+            return Error("APP_REJECTED", "DonDownload rejected the request.");
+        }
+
+        string code = error["code"] as string;
+        string message = error["message"] as string;
+        if (code == null || !ErrorCodePattern.IsMatch(code) || !IsSafeErrorMessage(message))
+        {
+            return Error("APP_REJECTED", "DonDownload rejected the request.");
+        }
+
+        return Error(code, message);
+    }
+
+    private static bool IsSafeErrorMessage(string message)
+    {
+        if (message == null || message.Trim().Length == 0 || message.Length > 2000)
+        {
+            return false;
+        }
+        for (int index = 0; index < message.Length; index++)
+        {
+            char character = message[index];
+            if (character < 0x20 || character == 0x7f)
+            {
+                return false;
+            }
+        }
+        if (Regex.IsMatch(message, "://", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+        if (Regex.IsMatch(message, "[A-Za-z]:\\\\", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    private static bool ValidateMediaAnalysis(object value)
+    {
+        Dictionary<string, object> record = value as Dictionary<string, object>;
+        if (record == null ||
+            !HasExactKeys(
+                record,
+                new string[]
+                {
+                    "analysisId",
+                    "title",
+                    "durationSeconds",
+                    "options",
+                    "bestVideoOptionId",
+                    "bestAudioOptionId",
+                    "expiresAt"
+                },
+                new string[0]))
+        {
+            return false;
+        }
+
+        if (!IsOpaqueMediaId(record["analysisId"]) ||
+            !IsSafeText(record["title"], 500))
+        {
+            return false;
+        }
+
+        if (record["durationSeconds"] != null)
+        {
+            double duration;
+            if (!TryGetDouble(record["durationSeconds"], out duration) || duration < 0)
+            {
+                return false;
+            }
+        }
+
+        object[] options = record["options"] as object[];
+        if (options == null || options.Length > 200)
+        {
+            return false;
+        }
+
+        Dictionary<string, string> kinds = new Dictionary<string, string>();
+        for (int index = 0; index < options.Length; index++)
+        {
+            string optionId;
+            string kind;
+            if (!ValidateMediaOption(options[index], out optionId, out kind))
+            {
+                return false;
+            }
+            if (kinds.ContainsKey(optionId))
+            {
+                return false;
+            }
+            kinds.Add(optionId, kind);
+        }
+
+        if (record["bestVideoOptionId"] != null &&
+            !ReferencesMediaKind(record["bestVideoOptionId"], kinds, "video"))
+        {
+            return false;
+        }
+        if (record["bestAudioOptionId"] != null &&
+            !ReferencesMediaKind(record["bestAudioOptionId"], kinds, "audio"))
+        {
+            return false;
+        }
+
+        long expiresAt;
+        return TryGetLong(record["expiresAt"], out expiresAt) && expiresAt >= 1;
+    }
+
+    private static bool ValidateMediaOption(
+        object value,
+        out string optionId,
+        out string kind)
+    {
+        optionId = null;
+        kind = null;
+
+        Dictionary<string, object> record = value as Dictionary<string, object>;
+        if (record == null ||
+            !HasExactKeys(
+                record,
+                new string[]
+                {
+                    "kind",
+                    "optionId",
+                    "label",
+                    "container",
+                    "width",
+                    "height",
+                    "fps",
+                    "videoCodec",
+                    "audioCodec",
+                    "hasAudio",
+                    "requiresMerge",
+                    "filesizeBytes"
+                },
+                new string[0]))
+        {
+            return false;
+        }
+
+        string kindValue = record["kind"] as string;
+        if (kindValue != "video" && kindValue != "audio")
+        {
+            return false;
+        }
+        if (!IsOpaqueMediaId(record["optionId"]) ||
+            !IsSafeText(record["label"], 240))
+        {
+            return false;
+        }
+
+        string container = record["container"] as string;
+        if (container == null || !ContainerPattern.IsMatch(container))
+        {
+            return false;
+        }
+
+        if (!ValidateNullableInteger(record["width"], 1, 65535) ||
+            !ValidateNullableInteger(record["height"], 1, 65535) ||
+            !ValidateNullableInteger(record["filesizeBytes"], 0, long.MaxValue))
+        {
+            return false;
+        }
+
+        if (record["fps"] != null)
+        {
+            double fps;
+            if (!TryGetDouble(record["fps"], out fps) || fps < 0 || fps > 1000)
+            {
+                return false;
+            }
+        }
+
+        if (!ValidateNullableText(record["videoCodec"], 64) ||
+            !ValidateNullableText(record["audioCodec"], 64))
+        {
+            return false;
+        }
+
+        if (!(record["hasAudio"] is bool) || !(record["requiresMerge"] is bool))
+        {
+            return false;
+        }
+
+        optionId = (string)record["optionId"];
+        kind = kindValue;
+        return true;
+    }
+
+    private static bool ValidateMediaJob(object value)
+    {
+        Dictionary<string, object> record = value as Dictionary<string, object>;
+        if (record == null ||
+            !HasExactKeys(
+                record,
+                new string[]
+                {
+                    "id",
+                    "analysisId",
+                    "optionId",
+                    "kind",
+                    "title",
+                    "label",
+                    "status",
+                    "completedBytes",
+                    "totalBytes",
+                    "speedBps",
+                    "errorMessage",
+                    "createdAt",
+                    "updatedAt",
+                    "completedAt"
+                },
+                new string[0]))
+        {
+            return false;
+        }
+
+        if (!IsOpaqueMediaId(record["id"]) ||
+            !IsOpaqueMediaId(record["analysisId"]) ||
+            !IsOpaqueMediaId(record["optionId"]))
+        {
+            return false;
+        }
+
+        string kind = record["kind"] as string;
+        if (kind != "video" && kind != "audio")
+        {
+            return false;
+        }
+        if (!IsSafeText(record["title"], 500) ||
+            !IsSafeText(record["label"], 240))
+        {
+            return false;
+        }
+
+        string status = record["status"] as string;
+        if (status == null || Array.IndexOf(MediaJobStatuses, status) < 0)
+        {
+            return false;
+        }
+
+        long completedBytes;
+        if (!TryGetLong(record["completedBytes"], out completedBytes) || completedBytes < 0)
+        {
+            return false;
+        }
+        if (!ValidateNullableInteger(record["totalBytes"], 0, long.MaxValue))
+        {
+            return false;
+        }
+
+        double speedBps;
+        if (!TryGetDouble(record["speedBps"], out speedBps) || speedBps < 0)
+        {
+            return false;
+        }
+
+        if (!ValidateNullableText(record["errorMessage"], 2000))
+        {
+            return false;
+        }
+
+        long createdAt;
+        long updatedAt;
+        if (!TryGetLong(record["createdAt"], out createdAt) || createdAt < 1 ||
+            !TryGetLong(record["updatedAt"], out updatedAt) || updatedAt < 1)
+        {
+            return false;
+        }
+        if (!ValidateNullableInteger(record["completedAt"], 1, long.MaxValue))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool ReferencesMediaKind(
+        object value,
+        Dictionary<string, string> kinds,
+        string expectedKind)
+    {
+        string id = value as string;
+        if (id == null || !OpaqueMediaIdPattern.IsMatch(id))
+        {
+            return false;
+        }
+        string actualKind;
+        return kinds.TryGetValue(id, out actualKind) && actualKind == expectedKind;
+    }
+
+    private static bool ValidateNullableInteger(object value, long minimum, long maximum)
+    {
+        if (value == null)
+        {
+            return true;
+        }
+        long number;
+        return TryGetLong(value, out number) && number >= minimum && number <= maximum;
+    }
+
+    private static bool ValidateNullableText(object value, int maximum)
+    {
+        return value == null || IsSafeText(value, maximum);
+    }
+
+    private static bool IsSafeText(object value, int maximum)
+    {
+        string text = value as string;
+        if (text == null || text.Trim().Length == 0 || text.Length > maximum)
+        {
+            return false;
+        }
+        for (int index = 0; index < text.Length; index++)
+        {
+            char character = text[index];
+            if (character < 0x20 || character == 0x7f)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool TryGetLong(object value, out long result)
+    {
+        result = 0;
+        if (value is int)
+        {
+            result = (int)value;
+            return true;
+        }
+        if (value is long)
+        {
+            result = (long)value;
+            return true;
+        }
+        if (value is decimal)
+        {
+            decimal number = (decimal)value;
+            if (number == decimal.Truncate(number) &&
+                number >= long.MinValue && number <= long.MaxValue)
+            {
+                result = (long)number;
+                return true;
+            }
+            return false;
+        }
+        if (value is double)
+        {
+            double number = (double)value;
+            if (!double.IsNaN(number) && !double.IsInfinity(number) &&
+                number == Math.Truncate(number) &&
+                number >= long.MinValue && number <= long.MaxValue)
+            {
+                result = (long)number;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool TryGetDouble(object value, out double result)
+    {
+        result = 0;
+        if (value is int)
+        {
+            result = (int)value;
+            return true;
+        }
+        if (value is long)
+        {
+            result = (long)value;
+            return true;
+        }
+        if (value is decimal)
+        {
+            result = (double)(decimal)value;
+            return true;
+        }
+        if (value is double)
+        {
+            result = (double)value;
+            return true;
+        }
+        return false;
     }
 
     private static bool TryLoadBridgeState(out BridgeState state, out string message)

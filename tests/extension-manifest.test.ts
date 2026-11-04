@@ -69,6 +69,8 @@ describe('browser extension manifest', () => {
       'manifest.json',
       'background.js',
       'bridge.js',
+      'media-bridge.js',
+      'media-contract.js',
       'popup.html',
       'popup.js',
       'popup.css',

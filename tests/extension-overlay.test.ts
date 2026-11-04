@@ -37,6 +37,34 @@ interface CoreApi {
   nextActiveVideo: (video: unknown) => unknown
   isTypingTarget: (target: unknown) => boolean
   isOverlayShortcut: (event: unknown) => boolean
+  initialMediaState: () => {
+    title: string
+    detail: string
+    actionLabel: string
+    analyzingLabel: string
+    optionsHint: string
+    disableLabel: string
+    shortcutLabel: string
+  }
+  mediaView: (analysis: unknown) => {
+    analysisId: string
+    title: string
+    durationSeconds: number | null
+    options: Array<{
+      kind: 'video' | 'audio'
+      optionId: string
+      label: string
+      container: string
+      width: number | null
+      height: number | null
+    }>
+    videoOptions: Array<{ optionId: string; label: string; kind: 'video' }>
+    audioOptions: Array<{ optionId: string; label: string; kind: 'audio' }>
+    bestVideoOptionId: string | null
+    bestAudioOptionId: string | null
+  } | null
+  describeMediaOption: (option: unknown) => string
+  formatDuration: (seconds: unknown) => string
   unavailableState: () => {
     title: string
     detail: string
@@ -184,30 +212,92 @@ describe('video detection and placement policy', () => {
     expect(core.isTypingTarget({ tagName: 'VIDEO' })).toBe(false)
   })
 
-  it('states truthfully that media download and format choices are unavailable', () => {
-    const copy = core.unavailableState()
-    expect(copy.title).toMatch(/not available/i)
-    expect(copy.detail).toMatch(/does not detect formats/i)
-    expect(copy.detail).toMatch(/does not read media source URLs/i)
-    expect(copy.detail).toMatch(/DRM/i)
-    expect(copy.actionLabel).toMatch(/unavailable/i)
+  it('starts with truthful media copy and never fabricates an option', () => {
+    const copy = core.initialMediaState()
+    expect(copy.title).toMatch(/video options/i)
+    expect(copy.detail).toMatch(/page address/i)
+    expect(copy.detail).toMatch(/never read/i)
+    expect(copy.actionLabel).toMatch(/analyze/i)
 
     const serialized = JSON.stringify(copy)
-    for (const fabricated of [
-      '1080p',
-      '720p',
-      '480p',
-      '4K',
-      'MP4',
-      'WebM',
-      'HLS',
-      'DASH',
-      'best quality',
-      'audio only'
-    ]) {
+    for (const fabricated of ['1080p', '720p', '4K', 'MP4', 'HLS', 'DASH', 'audio only']) {
       expect(serialized).not.toContain(fabricated)
     }
-    expect(serialized).not.toMatch(/"quality"\s*:/)
+
+    expect(core.mediaView(null)).toBeNull()
+    const invalidOption = core.mediaView({
+      analysisId: 'analysis_1',
+      title: 'x',
+      options: [{ kind: 'video' }]
+    })
+    expect(invalidOption?.options).toEqual([])
+    expect(invalidOption?.bestVideoOptionId).toBeNull()
+  })
+
+  it('builds a safe view only from verified analysis fields', () => {
+    const view = core.mediaView({
+      analysisId: 'analysis_1',
+      title: 'Verified title',
+      durationSeconds: 91.5,
+      options: [
+        {
+          kind: 'video',
+          optionId: 'option_video_1',
+          label: '1080p MP4 - H.264 + AAC',
+          container: 'mp4',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          videoCodec: 'avc1',
+          audioCodec: 'mp4a',
+          hasAudio: true,
+          requiresMerge: true,
+          filesizeBytes: 10_000
+        },
+        {
+          kind: 'audio',
+          optionId: 'option_audio_1',
+          label: 'Audio only - Opus',
+          container: 'opus',
+          width: null,
+          height: null,
+          fps: null,
+          videoCodec: null,
+          audioCodec: 'opus',
+          hasAudio: true,
+          requiresMerge: false,
+          filesizeBytes: null
+        }
+      ],
+      bestVideoOptionId: 'option_video_1',
+      bestAudioOptionId: 'option_audio_1',
+      expiresAt: 1
+    })
+
+    expect(view?.title).toBe('Verified title')
+    expect(view?.videoOptions).toHaveLength(1)
+    expect(view?.audioOptions).toHaveLength(1)
+    expect(view?.bestVideoOptionId).toBe('option_video_1')
+    expect(view?.bestAudioOptionId).toBe('option_audio_1')
+    expect(core.describeMediaOption(view?.videoOptions[0])).toContain('1080p')
+    expect(core.formatDuration(91.5)).toBe('1:32')
+
+    const unsafe = core.mediaView({
+      analysisId: 'analysis_1',
+      title: 'Verified title',
+      options: [
+        {
+          kind: 'video',
+          optionId: 'https://page.example/raw-selector',
+          label: 'x',
+          container: 'mp4'
+        }
+      ],
+      bestVideoOptionId: 'https://page.example/raw-selector',
+      bestAudioOptionId: null
+    })
+    expect(unsafe?.options).toEqual([])
+    expect(unsafe?.bestVideoOptionId).toBeNull()
   })
 })
 
@@ -229,6 +319,9 @@ class FakeNode {
   listeners: Record<string, Listener[]> = {}
   hidden = false
   disabled = false
+  checked = false
+  value = ''
+  name = ''
   textContent = ''
   className = ''
   id = ''
@@ -389,7 +482,17 @@ interface Harness {
   host: FakeNode
   trigger: FakeNode
   panel: FakeNode
+  analyzeButton: FakeNode
+  mediaResults: FakeNode
+  mediaTitle: FakeNode
+  mediaMeta: FakeNode
+  bestVideoButton: FakeNode
+  bestAudioButton: FakeNode
+  qualityFieldset: FakeNode
+  qualityList: FakeNode
+  queueSelectedButton: FakeNode
   disableButton: FakeNode
+  status: FakeNode
   video: FakeNode
   sentMessages: any[]
   mutationObserver: FakeMutationObserver
@@ -399,10 +502,17 @@ interface Harness {
   dispatchWindow: (type: string, event: any) => void
   dispatchRuntimeMessage: (message: any) => void
   runTimers: () => void
+  flushMediaResponses: () => void
   findByClass: (className: string) => FakeNode | null
 }
 
-function createHarness(): Harness {
+interface HarnessOptions {
+  analyzeResponse?: any
+  queueResponse?: any
+  deferMediaResponses?: boolean
+}
+
+function createHarness(options: HarnessOptions = {}): Harness {
   const document: any = {
     documentElement: new FakeNode('html'),
     body: new FakeNode('body'),
@@ -470,12 +580,40 @@ function createHarness(): Harness {
 
   const sentMessages: any[] = []
   const runtimeListeners: Listener[] = []
+  const pendingMediaResponses: Array<() => void> = []
   const chrome = {
     runtime: {
       lastError: undefined,
       sendMessage(message: any, callback?: (response: any) => void) {
         sentMessages.push(message)
-        if (callback) callback({ ok: true })
+        if (!callback) return
+        if (message.type === 'dondownload:media-analyze') {
+          const response =
+            options.analyzeResponse ?? {
+              ok: false,
+              error: { code: 'NATIVE_HOST_FAILED', message: 'Native helper unavailable.' }
+            }
+          if (options.deferMediaResponses) {
+            pendingMediaResponses.push(() => callback(response))
+          } else {
+            callback(response)
+          }
+          return
+        }
+        if (message.type === 'dondownload:media-queue') {
+          const response =
+            options.queueResponse ?? {
+              ok: false,
+              error: { code: 'NATIVE_HOST_FAILED', message: 'Native helper unavailable.' }
+            }
+          if (options.deferMediaResponses) {
+            pendingMediaResponses.push(() => callback(response))
+          } else {
+            callback(response)
+          }
+          return
+        }
+        callback({ ok: true })
       },
       onMessage: {
         addListener(listener: Listener) {
@@ -545,8 +683,32 @@ function createHarness(): Harness {
     findByClassIn(host, className)
   const trigger = findByClass('trigger')
   const panel = findByClass('panel')
+  const analyzeButton = findByClass('action')
+  const mediaResults = findByClass('media-results')
+  const mediaTitle = findByClass('media-title')
+  const mediaMeta = findByClass('media-meta')
+  const bestVideoButton = findByClass('action best-video')
+  const bestAudioButton = findByClass('action secondary best-audio')
+  const qualityFieldset = findByClass('qualities')
+  const qualityList = findByClass('quality-list')
+  const queueSelectedButton = findByClass('action secondary queue-selected')
   const disableButton = findByClass('disable')
-  if (!trigger || !panel || !disableButton) {
+  const status = findByClass('status')
+  if (
+    !trigger ||
+    !panel ||
+    !analyzeButton ||
+    !mediaResults ||
+    !mediaTitle ||
+    !mediaMeta ||
+    !bestVideoButton ||
+    !bestAudioButton ||
+    !qualityFieldset ||
+    !qualityList ||
+    !queueSelectedButton ||
+    !disableButton ||
+    !status
+  ) {
     throw new Error('overlay controls were not created')
   }
   panel.rect = { left: 0, top: 0, width: 292, height: 258 }
@@ -566,7 +728,17 @@ function createHarness(): Harness {
     host,
     trigger,
     panel,
+    analyzeButton,
+    mediaResults,
+    mediaTitle,
+    mediaMeta,
+    bestVideoButton,
+    bestAudioButton,
+    qualityFieldset,
+    qualityList,
+    queueSelectedButton,
     disableButton,
+    status,
     video,
     sentMessages,
     mutationObserver,
@@ -586,6 +758,10 @@ function createHarness(): Harness {
     runTimers() {
       const pending = timers.splice(0, timers.length)
       for (const timer of pending) timer()
+    },
+    flushMediaResponses() {
+      const pending = pendingMediaResponses.splice(0, pendingMediaResponses.length)
+      for (const respond of pending) respond()
     },
     findByClass
   }
@@ -615,6 +791,93 @@ function pointerOver(video: FakeNode): any {
   return event
 }
 
+const ANALYSIS_ID = 'analysis_0123456789abcdef'
+const BEST_VIDEO_ID = 'option_video_best'
+const OTHER_VIDEO_ID = 'option_video_other'
+const BEST_AUDIO_ID = 'option_audio_best'
+
+function fakeAnalysis(): any {
+  return {
+    analysisId: ANALYSIS_ID,
+    title: 'Verified example media',
+    durationSeconds: 91.5,
+    options: [
+      {
+        kind: 'video',
+        optionId: BEST_VIDEO_ID,
+        label: '1080p MP4 - H.264 + AAC',
+        container: 'mp4',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        videoCodec: 'avc1',
+        audioCodec: 'mp4a',
+        hasAudio: true,
+        requiresMerge: true,
+        filesizeBytes: 10_000
+      },
+      {
+        kind: 'video',
+        optionId: OTHER_VIDEO_ID,
+        label: '720p MP4 - H.264 + AAC',
+        container: 'mp4',
+        width: 1280,
+        height: 720,
+        fps: 30,
+        videoCodec: 'avc1',
+        audioCodec: 'mp4a',
+        hasAudio: true,
+        requiresMerge: true,
+        filesizeBytes: 8_000
+      },
+      {
+        kind: 'audio',
+        optionId: BEST_AUDIO_ID,
+        label: 'Audio only - Opus',
+        container: 'opus',
+        width: null,
+        height: null,
+        fps: null,
+        videoCodec: null,
+        audioCodec: 'opus',
+        hasAudio: true,
+        requiresMerge: false,
+        filesizeBytes: null
+      }
+    ],
+    bestVideoOptionId: BEST_VIDEO_ID,
+    bestAudioOptionId: BEST_AUDIO_ID,
+    expiresAt: 1_800_000_000_000
+  }
+}
+
+function fakeJob(optionId: string, label: string): any {
+  return {
+    id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+    analysisId: ANALYSIS_ID,
+    optionId,
+    kind: 'video',
+    title: 'Verified example media',
+    label,
+    status: 'queued',
+    completedBytes: 0,
+    totalBytes: null,
+    speedBps: 0,
+    errorMessage: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    completedAt: null
+  }
+}
+
+function openPanel(target: Harness): void {
+  pointerOver(target.video)
+  target.trigger.dispatch(
+    'click',
+    pointerEvent(target.trigger, [target.trigger, target.host])
+  )
+}
+
 describe('overlay interaction in a minimal DOM', () => {
   it('shows a small button on video hover, opens an expandable truthful panel and never plays the video', () => {
     harness = createHarness()
@@ -640,12 +903,19 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(click.propagationStopped).toBe(true)
     expect(click.defaultPrevented).toBe(true)
 
-    const panelText = JSON.stringify(
-      collectText(harness.panel)
-    )
-    expect(panelText).toMatch(/not available/i)
-    expect(panelText).toMatch(/does not detect formats/i)
-    expect(panelText).not.toMatch(/1080p|720p|4K|MP4|HLS|DASH/)
+    const panelText = JSON.stringify(collectText(harness.panel))
+    expect(panelText).toMatch(/video options for this page/i)
+    expect(panelText).toMatch(/analyze this page/i)
+    expect(panelText).toMatch(/page address/i)
+    expect(panelText).not.toMatch(/1080p|720p|4K|HLS|DASH/)
+
+    // Opening the panel is not an analysis. Only the explicit Analyze button
+    // may ask the background worker for media information.
+    expect(
+      harness.sentMessages.filter((message) =>
+        String(message.type).startsWith('dondownload:media-')
+      )
+    ).toEqual([])
 
     const escape = pointerEvent(harness.panel, [harness.panel, harness.host], {
       key: 'Escape'
@@ -760,6 +1030,203 @@ function collectText(node: FakeNode): string[] {
   return values
 }
 
+function collectByClass(node: FakeNode, className: string): FakeNode[] {
+  const values: FakeNode[] = []
+  if (node.className === className) values.push(node)
+  for (const child of node.children) values.push(...collectByClass(child, className))
+  return values
+}
+
+describe('overlay media flow', () => {
+  it('analyzes only on the explicit button and renders verified response options', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      deferMediaResponses: true
+    })
+    openPanel(harness)
+
+    expect(
+      harness.sentMessages.filter((message) =>
+        String(message.type).startsWith('dondownload:media-')
+      )
+    ).toEqual([])
+
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-analyze'
+    })
+    expect(harness.analyzeButton.disabled).toBe(true)
+    expect(harness.status.textContent).toMatch(/Analyzing this page/)
+    expect(harness.mediaResults.hidden).toBe(true)
+
+    harness.flushMediaResponses()
+
+    expect(harness.analyzeButton.disabled).toBe(false)
+    expect(harness.mediaResults.hidden).toBe(false)
+    expect(harness.mediaTitle.textContent).toBe('Verified example media')
+    expect(harness.bestVideoButton.hidden).toBe(false)
+    expect(harness.bestAudioButton.hidden).toBe(false)
+
+    const rendered = JSON.stringify(collectText(harness.mediaResults))
+    expect(rendered).toContain('1080p MP4 - H.264 + AAC')
+    expect(rendered).toContain('720p MP4 - H.264 + AAC')
+    expect(rendered).toContain('Audio only - Opus')
+    expect(rendered).toContain('1080p · MP4')
+    expect(harness.status.textContent).toMatch(/Analysis ready/)
+  })
+
+  it('queues the best video + audio option in one click', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: true,
+        job: fakeJob(BEST_VIDEO_ID, '1080p MP4 - H.264 + AAC')
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    harness.bestVideoButton.dispatch(
+      'click',
+      pointerEvent(harness.bestVideoButton, [harness.bestVideoButton, harness.panel])
+    )
+
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-queue',
+      analysisId: ANALYSIS_ID,
+      optionId: BEST_VIDEO_ID
+    })
+    expect(harness.status.textContent).toBe('Queued: 1080p MP4 - H.264 + AAC')
+    expect(harness.status.className).toBe('status success')
+  })
+
+  it('queues an explicit audio-only option', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: true,
+        job: fakeJob(BEST_AUDIO_ID, 'Audio only - Opus')
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    harness.bestAudioButton.dispatch(
+      'click',
+      pointerEvent(harness.bestAudioButton, [harness.bestAudioButton, harness.panel])
+    )
+
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-queue',
+      analysisId: ANALYSIS_ID,
+      optionId: BEST_AUDIO_ID
+    })
+    expect(harness.status.textContent).toBe('Queued: Audio only - Opus')
+  })
+
+  it('queues a selectable quality chosen from the response only', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: true,
+        job: fakeJob(OTHER_VIDEO_ID, '720p MP4 - H.264 + AAC')
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    const inputs = collectByClass(harness.qualityList, 'quality-input')
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.checked).toBe(true)
+
+    const second = inputs[1]
+    if (!second) throw new Error('expected a second quality option')
+    second.checked = true
+    second.dispatch('change', {})
+
+    harness.queueSelectedButton.dispatch(
+      'click',
+      pointerEvent(harness.queueSelectedButton, [
+        harness.queueSelectedButton,
+        harness.panel
+      ])
+    )
+
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-queue',
+      analysisId: ANALYSIS_ID,
+      optionId: OTHER_VIDEO_ID
+    })
+    expect(harness.status.textContent).toBe('Queued: 720p MP4 - H.264 + AAC')
+  })
+
+  it('shows safe analysis and queue failures without inventing options', () => {
+    harness = createHarness({
+      analyzeResponse: {
+        ok: false,
+        error: { code: 'NATIVE_HOST_FAILED', message: 'Start DonDownload and try again.' }
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    expect(harness.mediaResults.hidden).toBe(true)
+    expect(harness.status.textContent).toMatch(/Start DonDownload/)
+    expect(harness.status.className).toBe('status error')
+
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: { title: 'x', options: 'not-a-list' } }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+    expect(harness.mediaResults.hidden).toBe(true)
+    expect(harness.status.textContent).toMatch(/not valid/i)
+  })
+
+  it('shows a safe queue failure and keeps the verified options usable', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: false,
+        error: { code: 'DUPLICATE_DOWNLOAD', message: 'Already queued.' }
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+    harness.bestVideoButton.dispatch(
+      'click',
+      pointerEvent(harness.bestVideoButton, [harness.bestVideoButton, harness.panel])
+    )
+
+    expect(harness.status.textContent).toBe('Already queued.')
+    expect(harness.status.className).toBe('status error')
+    expect(harness.bestVideoButton.disabled).toBe(false)
+    expect(harness.mediaResults.hidden).toBe(false)
+  })
+})
+
 describe('overlay source guardrails', () => {
   it('uses Shadow DOM, observers, reduced motion and propagation guards', () => {
     expect(uiSource).toContain('attachShadow')
@@ -772,7 +1239,23 @@ describe('overlay source guardrails', () => {
   })
 
   it('never reads media sources, sniffs network traffic or controls playback', () => {
-    for (const source of [uiSource, coreSource]) {
+    const bridgeSource = readFileSync(path.join(extensionDir, 'bridge.js'), 'utf8')
+    const mediaBridgeSource = readFileSync(
+      path.join(extensionDir, 'media-bridge.js'),
+      'utf8'
+    )
+    const mediaContractSource = readFileSync(
+      path.join(extensionDir, 'media-contract.js'),
+      'utf8'
+    )
+
+    for (const source of [
+      uiSource,
+      coreSource,
+      bridgeSource,
+      mediaBridgeSource,
+      mediaContractSource
+    ]) {
       expect(source).not.toMatch(/\.play\s*\(/)
       expect(source).not.toMatch(/\.pause\s*\(/)
       expect(source).not.toMatch(/\.currentSrc\b/)
@@ -782,6 +1265,8 @@ describe('overlay source guardrails', () => {
       expect(source).not.toMatch(/chrome\.downloads/)
       expect(source).not.toMatch(/webRequest/)
       expect(source).not.toMatch(/\bfetch\s*\(/)
+      expect(source).not.toMatch(/document\.cookie/)
+      expect(source).not.toMatch(/\.innerHTML\b/)
     }
   })
 })

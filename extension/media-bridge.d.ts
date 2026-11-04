@@ -1,0 +1,29 @@
+import type {
+  AnalyzeMediaResult,
+  BridgeFailure,
+  QueueMediaResult
+} from './bridge'
+
+export const MEDIA_MESSAGE_TYPES: Readonly<{
+  ANALYZE: string
+  QUEUE: string
+}>
+
+export type MediaAuthorization =
+  | { ok: true; origin: string; tabId: number; url: string }
+  | BridgeFailure
+
+export function authorizeMediaSender(
+  chromeApi: unknown,
+  sender: unknown
+): Promise<MediaAuthorization>
+export function analyzeMediaForSender(
+  chromeApi: unknown,
+  message: unknown,
+  sender: unknown
+): Promise<AnalyzeMediaResult>
+export function queueMediaForSender(
+  chromeApi: unknown,
+  message: unknown,
+  sender: unknown
+): Promise<QueueMediaResult>

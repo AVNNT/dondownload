@@ -60,6 +60,90 @@ function parseFrames(buffer: Buffer): unknown[] {
   return responses
 }
 
+const MEDIA_ANALYSIS_ID = 'analysis_0123456789abcdef'
+const VIDEO_OPTION_ID = 'option_video_0123456789'
+const AUDIO_OPTION_ID = 'option_audio_0123456789'
+const JOB_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+function videoOption(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'video',
+    optionId: VIDEO_OPTION_ID,
+    label: '1080p MP4 - H.264 + AAC',
+    container: 'mp4',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    videoCodec: 'avc1',
+    audioCodec: 'mp4a',
+    hasAudio: true,
+    requiresMerge: true,
+    filesizeBytes: 10_000,
+    ...overrides
+  }
+}
+
+function audioOption(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'audio',
+    optionId: AUDIO_OPTION_ID,
+    label: 'Audio only - Opus',
+    container: 'opus',
+    width: null,
+    height: null,
+    fps: null,
+    videoCodec: null,
+    audioCodec: 'opus',
+    hasAudio: true,
+    requiresMerge: false,
+    filesizeBytes: null,
+    ...overrides
+  }
+}
+
+function mediaAnalysis(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    analysisId: MEDIA_ANALYSIS_ID,
+    title: 'Example media',
+    durationSeconds: 91.5,
+    options: [videoOption(), audioOption()],
+    bestVideoOptionId: VIDEO_OPTION_ID,
+    bestAudioOptionId: AUDIO_OPTION_ID,
+    expiresAt: 1_800_000_000_000,
+    ...overrides
+  }
+}
+
+function mediaJob(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: JOB_ID,
+    analysisId: MEDIA_ANALYSIS_ID,
+    optionId: VIDEO_OPTION_ID,
+    kind: 'video',
+    title: 'Example media',
+    label: '1080p MP4 - H.264 + AAC',
+    status: 'downloading',
+    completedBytes: 512,
+    totalBytes: 1024,
+    speedBps: 64,
+    errorMessage: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_100,
+    completedAt: null,
+    ...overrides
+  }
+}
+
+function jsonRespond(
+  body: unknown,
+  status = 200
+): (response: ServerResponse) => void {
+  return (response) => {
+    response.writeHead(status, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(body))
+  }
+}
+
 function runHost(
   frames: Buffer[],
   options: { args?: string[]; env?: Record<string, string> } = {}
@@ -435,5 +519,243 @@ describeWindows('Windows native messaging host', () => {
     const run = await runHost([], { args: ['https://attacker.example/'] })
     expect(run.code).toBe(3)
     expect(run.stdout).toHaveLength(0)
+  })
+
+  it('forwards analyze-media with the exact route, auth and body', async () => {
+    const app = await startFakeApp(
+      jsonRespond({ ok: true, operation: 'analyze-media', analysis: mediaAnalysis() })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(
+          JSON.stringify({
+            type: 'analyze-media',
+            url: 'https://example.com/watch?v=1#fragment'
+          })
+        )
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      { ok: true, operation: 'analyze-media', analysis: mediaAnalysis() }
+    ])
+    expect(app.requests).toHaveLength(1)
+    expect(app.requests[0]).toMatchObject({
+      method: 'POST',
+      url: '/analyze-media',
+      authorization: `Bearer ${app.token}`,
+      contentType: 'application/json; charset=utf-8'
+    })
+    expect(app.requests[0]?.body).toEqual({
+      url: 'https://example.com/watch?v=1'
+    })
+  })
+
+  it('forwards queue-media with opaque IDs and only an explicit force', async () => {
+    const app = await startFakeApp(
+      jsonRespond({ ok: true, operation: 'queue-media', job: mediaJob() })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(
+          JSON.stringify({
+            type: 'queue-media',
+            analysisId: MEDIA_ANALYSIS_ID,
+            optionId: VIDEO_OPTION_ID
+          })
+        ),
+        frame(
+          JSON.stringify({
+            type: 'queue-media',
+            analysisId: MEDIA_ANALYSIS_ID,
+            optionId: AUDIO_OPTION_ID,
+            force: true
+          })
+        )
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      { ok: true, operation: 'queue-media', job: mediaJob() },
+      { ok: true, operation: 'queue-media', job: mediaJob() }
+    ])
+    expect(app.requests.map((request) => request.url)).toEqual([
+      '/queue-media',
+      '/queue-media'
+    ])
+    expect(app.requests.map((request) => request.body)).toEqual([
+      { analysisId: MEDIA_ANALYSIS_ID, optionId: VIDEO_OPTION_ID },
+      {
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: AUDIO_OPTION_ID,
+        force: true
+      }
+    ])
+  })
+
+  it('forwards media-status and cancel-media with the exact job ID', async () => {
+    const statusApp = await startFakeApp(
+      jsonRespond({ ok: true, operation: 'media-status', job: mediaJob() })
+    )
+    const statusDir = await makeTempDir()
+    const statusState = await writeState(statusDir, {
+      port: statusApp.port,
+      token: statusApp.token
+    })
+
+    const statusRun = await runHost(
+      [frame(JSON.stringify({ type: 'media-status', jobId: JOB_ID }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statusState } }
+    )
+    expect(statusRun.code).toBe(0)
+    expect(parseFrames(statusRun.stdout)).toEqual([
+      { ok: true, operation: 'media-status', job: mediaJob() }
+    ])
+    expect(statusApp.requests[0]).toMatchObject({ url: '/media-status' })
+    expect(statusApp.requests[0]?.body).toEqual({ jobId: JOB_ID })
+
+    const cancelApp = await startFakeApp(
+      jsonRespond({
+        ok: true,
+        operation: 'cancel-media',
+        job: mediaJob({ status: 'cancelled' })
+      })
+    )
+    const cancelDir = await makeTempDir()
+    const cancelState = await writeState(cancelDir, {
+      port: cancelApp.port,
+      token: cancelApp.token
+    })
+
+    const cancelRun = await runHost(
+      [frame(JSON.stringify({ type: 'cancel-media', jobId: JOB_ID }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: cancelState } }
+    )
+    expect(cancelRun.code).toBe(0)
+    expect(parseFrames(cancelRun.stdout)).toEqual([
+      {
+        ok: true,
+        operation: 'cancel-media',
+        job: mediaJob({ status: 'cancelled' })
+      }
+    ])
+    expect(cancelApp.requests[0]).toMatchObject({ url: '/cancel-media' })
+    expect(cancelApp.requests[0]?.body).toEqual({ jobId: JOB_ID })
+  })
+
+  it.each([
+    [
+      'analyze-media with an extra field',
+      JSON.stringify({
+        type: 'analyze-media',
+        url: 'https://example.com/a',
+        cookie: 'SID=1'
+      })
+    ],
+    [
+      'queue-media with a raw selector',
+      JSON.stringify({
+        type: 'queue-media',
+        analysisId: 'bestvideo+bestaudio',
+        optionId: VIDEO_OPTION_ID
+      })
+    ],
+    [
+      'queue-media with a non-boolean force',
+      JSON.stringify({
+        type: 'queue-media',
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        force: 'yes'
+      })
+    ],
+    [
+      'media-status with a path-like job ID',
+      JSON.stringify({ type: 'media-status', jobId: '../job' })
+    ],
+    [
+      'cancel-media with an extra field',
+      JSON.stringify({ type: 'cancel-media', jobId: JOB_ID, force: true })
+    ]
+  ])('rejects %s before contacting the app', async (_label, payload) => {
+    const app = await startFakeApp(
+      jsonRespond({ ok: true, operation: 'analyze-media', analysis: mediaAnalysis() })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost([frame(payload)], {
+      env: { DONDOWNLOAD_BRIDGE_STATE: statePath }
+    })
+
+    expect(run.code).toBe(0)
+    const responses = parseFrames(run.stdout) as Array<{ ok: boolean }>
+    expect(responses).toHaveLength(1)
+    expect(responses[0]?.ok).toBe(false)
+    expect(app.requests).toHaveLength(0)
+  })
+
+  it('rejects a malformed media response instead of passing it through', async () => {
+    const app = await startFakeApp(
+      jsonRespond({
+        ok: true,
+        operation: 'analyze-media',
+        analysis: { ...mediaAnalysis(), extra: true }
+      })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'analyze-media', url: 'https://example.com/a' }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    const responses = parseFrames(run.stdout) as Array<{
+      ok: boolean
+      error: { code: string }
+    }>
+    expect(responses[0]?.ok).toBe(false)
+    expect(responses[0]?.error.code).toBe('APP_RESPONSE_INVALID')
+  })
+
+  it('passes a safe media app rejection through without claiming success', async () => {
+    const app = await startFakeApp(
+      jsonRespond(
+        {
+          ok: false,
+          error: {
+            code: 'MEDIA_ANALYSIS_EXPIRED',
+            message: 'Analyze the page again.'
+          }
+        },
+        409
+      )
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'analyze-media', url: 'https://example.com/a' }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    const responses = parseFrames(run.stdout) as Array<{
+      ok: boolean
+      error: { code: string; message: string }
+    }>
+    expect(responses[0]?.ok).toBe(false)
+    expect(responses[0]?.error.code).toBe('MEDIA_ANALYSIS_EXPIRED')
+    expect(responses[0]?.error.message).toBe('Analyze the page again.')
   })
 })

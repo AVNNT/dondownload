@@ -8,6 +8,7 @@ import {
   parseNativeQueueMessage,
   parseQueueDownloadRequest
 } from '../src/shared/nativeBridge'
+import type { MediaBridgeTarget } from '../src/shared/mediaBridge'
 import { ValidationError } from '../src/shared/validation'
 import { AppError } from '../src/main/errors'
 import {
@@ -15,6 +16,125 @@ import {
   type BridgeDownloadManager,
   type NativeBridge
 } from '../src/main/nativeBridge/server'
+
+const MEDIA_ANALYSIS_ID = 'analysis_0123456789abcdef'
+const VIDEO_OPTION_ID = 'option_video_0123456789'
+const AUDIO_OPTION_ID = 'option_audio_0123456789'
+const JOB_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+function videoOption(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'video',
+    optionId: VIDEO_OPTION_ID,
+    label: '1080p MP4 - H.264 + AAC',
+    container: 'mp4',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    videoCodec: 'avc1',
+    audioCodec: 'mp4a',
+    hasAudio: true,
+    requiresMerge: true,
+    filesizeBytes: 10_000,
+    ...overrides
+  }
+}
+
+function audioOption(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'audio',
+    optionId: AUDIO_OPTION_ID,
+    label: 'Audio only - Opus',
+    container: 'opus',
+    width: null,
+    height: null,
+    fps: null,
+    videoCodec: null,
+    audioCodec: 'opus',
+    hasAudio: true,
+    requiresMerge: false,
+    filesizeBytes: null,
+    ...overrides
+  }
+}
+
+function mediaAnalysis(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    analysisId: MEDIA_ANALYSIS_ID,
+    title: 'Example media',
+    durationSeconds: 91.5,
+    options: [videoOption(), audioOption()],
+    bestVideoOptionId: VIDEO_OPTION_ID,
+    bestAudioOptionId: AUDIO_OPTION_ID,
+    expiresAt: 1_800_000_000_000,
+    ...overrides
+  }
+}
+
+function mediaJob(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: JOB_ID,
+    analysisId: MEDIA_ANALYSIS_ID,
+    optionId: VIDEO_OPTION_ID,
+    kind: 'video',
+    title: 'Example media',
+    label: '1080p MP4 - H.264 + AAC',
+    status: 'downloading',
+    completedBytes: 512,
+    totalBytes: 1024,
+    speedBps: 64,
+    errorMessage: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_100,
+    completedAt: null,
+    ...overrides
+  }
+}
+
+interface FakeMediaTarget extends MediaBridgeTarget {
+  calls: {
+    analyze: unknown[]
+    queue: unknown[]
+    status: unknown[]
+    cancel: unknown[]
+  }
+  failWith: Error | null
+  invalidAnalysis: boolean
+  invalidJob: boolean
+}
+
+function createMediaTarget(): FakeMediaTarget {
+  return {
+    calls: { analyze: [], queue: [], status: [], cancel: [] },
+    failWith: null,
+    invalidAnalysis: false,
+    invalidJob: false,
+    async analyzeMedia(input) {
+      this.calls.analyze.push(input)
+      if (this.failWith) throw this.failWith
+      return (this.invalidAnalysis
+        ? { ...mediaAnalysis(), extra: true }
+        : mediaAnalysis()) as never
+    },
+    async queueMedia(input) {
+      this.calls.queue.push(input)
+      if (this.failWith) throw this.failWith
+      return (this.invalidJob ? { ...mediaJob(), extra: true } : mediaJob()) as never
+    },
+    async getMediaStatus(jobId) {
+      this.calls.status.push(jobId)
+      if (this.failWith) throw this.failWith
+      return (this.invalidJob ? { ...mediaJob(), extra: true } : mediaJob()) as never
+    },
+    async cancelMedia(jobId) {
+      this.calls.cancel.push(jobId)
+      if (this.failWith) throw this.failWith
+      return (this.invalidJob
+        ? { ...mediaJob(), extra: true }
+        : mediaJob({ status: 'cancelled' })) as never
+    }
+  }
+}
 
 interface FakeManager extends BridgeDownloadManager {
   calls: unknown[]
@@ -49,15 +169,18 @@ function createManager(): FakeManager {
 let tempDir = ''
 let bridge: NativeBridge | null = null
 let manager: FakeManager
+let media: FakeMediaTarget | null = null
 let token = ''
 
-async function start(): Promise<void> {
+async function start(options: { media?: boolean } = {}): Promise<void> {
   tempDir = await mkdtemp(path.join(os.tmpdir(), 'dondownload-bridge-'))
   manager = createManager()
+  media = options.media ? createMediaTarget() : null
   bridge = await startNativeBridge({
     manager,
     userDataPath: tempDir,
-    logger: () => undefined
+    logger: () => undefined,
+    ...(media ? { mediaBridge: media } : {})
   })
   const state = parseNativeBridgeEndpoint(
     JSON.parse(await readFile(bridge.statePath, 'utf8'))
@@ -80,6 +203,7 @@ async function post(
     authorization?: string | null
     contentType?: string | null
     origin?: string
+    secFetchSite?: string
     path?: string
     method?: string
   } = {}
@@ -97,6 +221,7 @@ async function post(
       : options.contentType
   if (contentType !== null) headers['Content-Type'] = contentType
   if (options.origin) headers.Origin = options.origin
+  if (options.secFetchSite) headers['Sec-Fetch-Site'] = options.secFetchSite
 
   return fetch(`http://127.0.0.1:${bridge.port}${options.path ?? '/queue-download'}`, {
     method: options.method ?? 'POST',
@@ -300,6 +425,236 @@ describe('native bridge request handling', () => {
     })
     expect(unknown.status).toBe(404)
     expect(manager.calls).toHaveLength(0)
+  })
+})
+
+describe('media bridge routes', () => {
+  beforeEach(async () => {
+    await start({ media: true })
+  })
+
+  it('serves analyze-media with the exact response DTO and normalized URL', async () => {
+    const response = await post(
+      JSON.stringify({ url: '  https://example.com/watch?v=1#fragment  ' }),
+      { path: '/analyze-media' }
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      ok: true,
+      operation: 'analyze-media',
+      analysis: mediaAnalysis()
+    })
+    expect(media?.calls.analyze).toEqual([
+      { url: 'https://example.com/watch?v=1' }
+    ])
+    expect(manager.calls).toHaveLength(0)
+  })
+
+  it('serves queue-media with opaque IDs and the optional force opt-in', async () => {
+    const plain = await post(
+      JSON.stringify({
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID
+      }),
+      { path: '/queue-media' }
+    )
+    expect(plain.status).toBe(200)
+    expect(await plain.json()).toEqual({
+      ok: true,
+      operation: 'queue-media',
+      job: mediaJob()
+    })
+
+    const forced = await post(
+      JSON.stringify({
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: AUDIO_OPTION_ID,
+        force: true
+      }),
+      { path: '/queue-media' }
+    )
+    expect(forced.status).toBe(200)
+    expect(await forced.json()).toEqual({
+      ok: true,
+      operation: 'queue-media',
+      job: mediaJob()
+    })
+
+    expect(media?.calls.queue).toEqual([
+      { analysisId: MEDIA_ANALYSIS_ID, optionId: VIDEO_OPTION_ID },
+      {
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: AUDIO_OPTION_ID,
+        force: true
+      }
+    ])
+  })
+
+  it('serves media-status and cancel-media with the exact job DTO', async () => {
+    const status = await post(JSON.stringify({ jobId: JOB_ID }), {
+      path: '/media-status'
+    })
+    expect(status.status).toBe(200)
+    expect(await status.json()).toEqual({
+      ok: true,
+      operation: 'media-status',
+      job: mediaJob()
+    })
+
+    const cancelled = await post(JSON.stringify({ jobId: JOB_ID }), {
+      path: '/cancel-media'
+    })
+    expect(cancelled.status).toBe(200)
+    expect(await cancelled.json()).toEqual({
+      ok: true,
+      operation: 'cancel-media',
+      job: mediaJob({ status: 'cancelled' })
+    })
+
+    expect(media?.calls.status).toEqual([JOB_ID])
+    expect(media?.calls.cancel).toEqual([JOB_ID])
+  })
+
+  it.each([
+    '/analyze-media',
+    '/queue-media',
+    '/media-status',
+    '/cancel-media'
+  ])('requires the bearer token on %s', async (route) => {
+    const response = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: route,
+      authorization: null
+    })
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: 'UNAUTHORIZED' }
+    })
+    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+  })
+
+  it.each([
+    ['Origin', { origin: 'https://attacker.example' }],
+    ['Sec-Fetch-Site', { secFetchSite: 'cross-site' }]
+  ])('rejects browser %s headers on every media route', async (_label, options) => {
+    for (const route of [
+      '/analyze-media',
+      '/queue-media',
+      '/media-status',
+      '/cancel-media'
+    ]) {
+      const response = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+        path: route,
+        ...options
+      })
+      expect(response.status).toBe(403)
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        error: { code: 'ORIGIN_REJECTED' }
+      })
+    }
+    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+  })
+
+  it.each([
+    ['/analyze-media', { url: 'https://example.com/a', extra: true }],
+    ['/analyze-media', { url: 7 }],
+    ['/queue-media', { analysisId: 'bestvideo+bestaudio', optionId: VIDEO_OPTION_ID }],
+    ['/queue-media', { analysisId: MEDIA_ANALYSIS_ID, optionId: VIDEO_OPTION_ID, dir: 'C:\\' }],
+    ['/media-status', { jobId: '../not-a-job' }],
+    ['/cancel-media', { jobId: JOB_ID, force: true }]
+  ])('rejects invalid %s bodies without calling the target', async (route, body) => {
+    const response = await post(JSON.stringify(body), { path: route })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false })
+    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+  })
+
+  it('applies the existing content-type and body limits to media routes', async () => {
+    const wrongType = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: '/analyze-media',
+      contentType: 'text/plain'
+    })
+    expect(wrongType.status).toBe(415)
+
+    const oversized = await post(
+      JSON.stringify({ url: `https://example.com/${'a'.repeat(MAX_BRIDGE_BODY_BYTES)}` }),
+      { path: '/analyze-media' }
+    )
+    expect(oversized.status).toBe(413)
+    expect(media?.calls.analyze).toHaveLength(0)
+  })
+
+  it('rejects an invalid target response without leaking it', async () => {
+    if (media) media.invalidAnalysis = true
+    const response = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: '/analyze-media'
+    })
+    expect(response.status).toBe(500)
+    const result = (await response.json()) as {
+      ok: boolean
+      error: { code: string; message: string }
+      analysis?: unknown
+    }
+    expect(result.ok).toBe(false)
+    expect(result.error.code).toBe('MEDIA_RESPONSE_INVALID')
+    expect(result.analysis).toBeUndefined()
+    expect(result.error.message).not.toMatch(/https?:\/\//)
+  })
+
+  it('sanitizes target errors that contain a URL', async () => {
+    if (media) {
+      media.failWith = new AppError(
+        'MEDIA_ANALYSIS_FAILED',
+        'Failed for https://example.com/private'
+      )
+    }
+    const response = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: '/analyze-media'
+    })
+    expect(response.status).toBe(503)
+    const result = (await response.json()) as {
+      ok: boolean
+      error: { code: string; message: string }
+    }
+    expect(result.ok).toBe(false)
+    expect(result.error.code).toBe('MEDIA_ANALYSIS_FAILED')
+    expect(result.error.message).not.toMatch(/https?:\/\//)
+  })
+
+  it('keeps queue-download unchanged when a media target is wired', async () => {
+    const response = await post(
+      JSON.stringify({ url: 'https://example.com/files/app.zip#section' })
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, accepted: true })
+    expect(manager.calls).toEqual([{ url: 'https://example.com/files/app.zip' }])
+    expect(media?.calls.analyze).toHaveLength(0)
+  })
+})
+
+describe('media bridge without a target', () => {
+  beforeEach(start)
+
+  it('authenticates first, then reports a safe unavailable error', async () => {
+    const unauthorized = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: '/analyze-media',
+      authorization: null
+    })
+    expect(unauthorized.status).toBe(401)
+
+    const unavailable = await post(JSON.stringify({ url: 'https://example.com/a' }), {
+      path: '/analyze-media'
+    })
+    expect(unavailable.status).toBe(503)
+    expect(await unavailable.json()).toEqual({
+      ok: false,
+      error: {
+        code: 'MEDIA_UNAVAILABLE',
+        message: 'Media operations are not available.'
+      }
+    })
   })
 })
 

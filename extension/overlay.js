@@ -1,7 +1,8 @@
 // Optional, per-site video overlay. Injected only after the user grants the
-// exact origin from the extension popup. This is a UI affordance only: it does
-// not extract, sniff, decode or download media, and it never reads video
-// source URLs or playback state.
+// exact origin from the extension popup. The content script never reads video
+// source URLs, cookies or playback state. It asks the background worker to
+// analyze the trusted tab URL on an explicit click and renders only verified
+// analysis options returned by the native bridge.
 
 ;(function () {
   'use strict'
@@ -12,7 +13,12 @@
   var existingRuntime = globalThis.__dondownloadOverlayRuntime
   if (existingRuntime && existingRuntime.active) return
 
-  var copy = core.unavailableState()
+  var copy = core.initialMediaState
+    ? core.initialMediaState()
+    : core.unavailableState()
+
+  var MEDIA_ANALYZE = 'dondownload:media-analyze'
+  var MEDIA_QUEUE = 'dondownload:media-queue'
 
   var state = {
     active: true,
@@ -22,6 +28,15 @@
     shadow: null,
     trigger: null,
     panel: null,
+    analyzeButton: null,
+    mediaResults: null,
+    mediaTitle: null,
+    mediaMeta: null,
+    bestVideoButton: null,
+    bestAudioButton: null,
+    qualityFieldset: null,
+    qualityList: null,
+    queueSelectedButton: null,
     disableButton: null,
     status: null,
     activeVideo: null,
@@ -31,7 +46,14 @@
     mutationObserver: null,
     resizeObserver: null,
     runtimeListener: null,
-    cleanup: []
+    cleanup: [],
+    media: {
+      token: 0,
+      queueToken: 0,
+      status: 'idle',
+      analysis: null,
+      selectedOptionId: null
+    }
   }
 
   globalThis.__dondownloadOverlayRuntime = state
@@ -103,17 +125,52 @@
     '}',
     '.panel-notice { color: #fff; font-size: 12.5px; font-weight: 650; line-height: 1.45; margin: 0 0 8px; }',
     '.panel-detail { color: #a1a1aa; font-size: 11.5px; line-height: 1.55; margin: 0 0 12px; }',
-    '.unavailable {',
-    '  background: #0b0b0c;',
-    '  border: 1px solid #2c2c2c;',
+    '.action {',
+    '  background: #f4f4f5;',
+    '  border: 1px solid #f4f4f5;',
     '  border-radius: 7px;',
-    '  color: #71717a;',
-    '  cursor: not-allowed;',
+    '  color: #09090b;',
+    '  cursor: pointer;',
     '  font: inherit;',
     '  font-size: 12px;',
+    '  font-weight: 650;',
     '  padding: 8px 10px;',
     '  width: 100%;',
     '}',
+    '.action:hover:not(:disabled) { background: #fff; }',
+    '.action:disabled { cursor: not-allowed; opacity: 0.55; }',
+    '.action.secondary {',
+    '  background: transparent;',
+    '  border-color: #3f3f46;',
+    '  color: #e4e4e7;',
+    '  font-weight: 500;',
+    '  margin-top: 6px;',
+    '}',
+    '.action.secondary:hover:not(:disabled) { background: #18181b; }',
+    '.media-results { margin-top: 10px; }',
+    '.media-title { color: #fff; font-size: 12.5px; font-weight: 650; line-height: 1.4; margin: 0 0 3px; overflow-wrap: anywhere; }',
+    '.media-meta { color: #a1a1aa; font-size: 11px; line-height: 1.45; margin: 0 0 8px; }',
+    '.media-actions { display: grid; gap: 6px; }',
+    '.qualities { border: 0; margin: 10px 0 0; padding: 0; }',
+    '.qualities legend { color: #d4d4d8; font-size: 11.5px; font-weight: 650; padding: 0; }',
+    '.quality-list { display: grid; gap: 4px; margin: 6px 0; }',
+    '.quality-option {',
+    '  align-items: flex-start;',
+    '  background: #0b0b0c;',
+    '  border: 1px solid #2c2c2c;',
+    '  border-radius: 6px;',
+    '  color: #e4e4e7;',
+    '  cursor: pointer;',
+    '  display: flex;',
+    '  font-size: 11.5px;',
+    '  gap: 7px;',
+    '  line-height: 1.4;',
+    '  padding: 6px 7px;',
+    '}',
+    '.quality-option:hover { border-color: #52525b; }',
+    '.quality-option input { accent-color: #f4f4f5; margin: 2px 0 0; }',
+    '.quality-copy { display: block; min-width: 0; overflow-wrap: anywhere; }',
+    '.quality-detail { color: #8b8b93; display: block; font-size: 10.5px; margin-top: 1px; }',
     '.options { border-top: 1px solid #1f1f23; margin-top: 12px; padding-top: 10px; }',
     '.options summary { color: #d4d4d8; cursor: pointer; font-size: 11.5px; font-weight: 650; }',
     '.options-hint { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 8px 0; }',
@@ -132,6 +189,8 @@
     '.disable:disabled { cursor: not-allowed; opacity: 0.5; }',
     '.shortcut { color: #71717a; font-size: 10.5px; margin: 10px 0 0; }',
     '.status { color: #fca5a5; font-size: 11px; line-height: 1.45; margin: 8px 0 0; }',
+    '.status.info { color: #a1a1aa; }',
+    '.status.success { color: #86efac; }',
     '.status:empty { display: none; }',
     '@media (prefers-reduced-motion: reduce) {',
     '  .trigger { transition: none !important; }',
@@ -236,12 +295,53 @@
 
     var head = createElement('div', 'panel-head')
     head.appendChild(createElement('strong', 'panel-title', 'DonDownload'))
-    head.appendChild(createElement('span', 'panel-badge', 'UI only'))
+    head.appendChild(createElement('span', 'panel-badge', 'Media'))
 
-    var action = createElement('button', 'unavailable', copy.actionLabel)
-    action.type = 'button'
-    action.disabled = true
-    action.setAttribute('aria-disabled', 'true')
+    var analyzeButton = createElement('button', 'action', copy.actionLabel)
+    analyzeButton.type = 'button'
+
+    var mediaResults = createElement('div', 'media-results')
+    mediaResults.hidden = true
+
+    var mediaTitle = createElement('p', 'media-title', '')
+    var mediaMeta = createElement('p', 'media-meta', '')
+
+    var mediaActions = createElement('div', 'media-actions')
+    var bestVideoButton = createElement(
+      'button',
+      'action best-video',
+      'Download best video + audio'
+    )
+    bestVideoButton.type = 'button'
+    bestVideoButton.hidden = true
+
+    var bestAudioButton = createElement(
+      'button',
+      'action secondary best-audio',
+      'Download audio only'
+    )
+    bestAudioButton.type = 'button'
+    bestAudioButton.hidden = true
+    mediaActions.appendChild(bestVideoButton)
+    mediaActions.appendChild(bestAudioButton)
+
+    var qualityFieldset = createElement('fieldset', 'qualities')
+    qualityFieldset.hidden = true
+    qualityFieldset.appendChild(createElement('legend', '', 'Choose a video quality'))
+    var qualityList = createElement('div', 'quality-list')
+    qualityFieldset.appendChild(qualityList)
+    var queueSelectedButton = createElement(
+      'button',
+      'action secondary queue-selected',
+      'Download selected quality'
+    )
+    queueSelectedButton.type = 'button'
+    qualityFieldset.appendChild(queueSelectedButton)
+
+    mediaResults.appendChild(mediaTitle)
+    mediaResults.appendChild(mediaMeta)
+    mediaResults.appendChild(mediaActions)
+    mediaResults.appendChild(qualityFieldset)
 
     var options = document.createElement('details')
     options.className = 'options'
@@ -259,7 +359,8 @@
     panel.appendChild(head)
     panel.appendChild(createElement('p', 'panel-notice', copy.title))
     panel.appendChild(createElement('p', 'panel-detail', copy.detail))
-    panel.appendChild(action)
+    panel.appendChild(analyzeButton)
+    panel.appendChild(mediaResults)
     panel.appendChild(options)
     panel.appendChild(status)
     panel.appendChild(
@@ -276,6 +377,15 @@
     state.shadow = shadow
     state.trigger = trigger
     state.panel = panel
+    state.analyzeButton = analyzeButton
+    state.mediaResults = mediaResults
+    state.mediaTitle = mediaTitle
+    state.mediaMeta = mediaMeta
+    state.bestVideoButton = bestVideoButton
+    state.bestAudioButton = bestAudioButton
+    state.qualityFieldset = qualityFieldset
+    state.qualityList = qualityList
+    state.queueSelectedButton = queueSelectedButton
     state.disableButton = disableButton
     state.status = status
 
@@ -297,6 +407,24 @@
       event.stopPropagation()
       closePanel(true)
     })
+    on(analyzeButton, 'click', function (event) {
+      stopPlayerEvent(event)
+      analyzePage()
+    })
+    on(bestVideoButton, 'click', function (event) {
+      stopPlayerEvent(event)
+      if (!state.media.analysis) return
+      queueOption(state.media.analysis.bestVideoOptionId)
+    })
+    on(bestAudioButton, 'click', function (event) {
+      stopPlayerEvent(event)
+      if (!state.media.analysis) return
+      queueOption(state.media.analysis.bestAudioOptionId)
+    })
+    on(queueSelectedButton, 'click', function (event) {
+      stopPlayerEvent(event)
+      queueOption(state.media.selectedOptionId)
+    })
     on(disableButton, 'click', function (event) {
       stopPlayerEvent(event)
       disableSite()
@@ -314,6 +442,273 @@
     if (!event) return
     if (typeof event.stopPropagation === 'function') event.stopPropagation()
     if (typeof event.preventDefault === 'function') event.preventDefault()
+  }
+
+  function setMediaStatus(text, kind) {
+    if (!state.status) return
+    state.status.textContent = text || ''
+    state.status.className = kind ? 'status ' + kind : 'status'
+  }
+
+  function responseErrorMessage(response, fallback) {
+    if (
+      response &&
+      response.error &&
+      typeof response.error.message === 'string' &&
+      response.error.message.trim().length > 0
+    ) {
+      return response.error.message
+    }
+    return fallback
+  }
+
+  function sendRuntimeMessage(message, callback) {
+    if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+      callback(null, { message: 'The DonDownload background worker is unavailable.' })
+      return
+    }
+    try {
+      chrome.runtime.sendMessage(message, function (response) {
+        var runtimeError = chrome.runtime && chrome.runtime.lastError
+        callback(response, runtimeError)
+      })
+    } catch (error) {
+      callback(null, error)
+    }
+  }
+
+  function clearQualityList() {
+    if (!state.qualityList) return
+    while (state.qualityList.children.length > 0) {
+      state.qualityList.removeChild(state.qualityList.children[0])
+    }
+  }
+
+  function resetMediaResults() {
+    state.media.analysis = null
+    state.media.selectedOptionId = null
+    if (state.mediaResults) state.mediaResults.hidden = true
+    if (state.mediaTitle) state.mediaTitle.textContent = ''
+    if (state.mediaMeta) state.mediaMeta.textContent = ''
+    if (state.bestVideoButton) {
+      state.bestVideoButton.hidden = true
+      state.bestVideoButton.disabled = false
+    }
+    if (state.bestAudioButton) {
+      state.bestAudioButton.hidden = true
+      state.bestAudioButton.disabled = false
+    }
+    if (state.qualityFieldset) state.qualityFieldset.hidden = true
+    if (state.queueSelectedButton) state.queueSelectedButton.disabled = true
+    clearQualityList()
+  }
+
+  function setMediaBusy(busy) {
+    if (state.analyzeButton) state.analyzeButton.disabled = busy
+    if (state.bestVideoButton) state.bestVideoButton.disabled = busy
+    if (state.bestAudioButton) state.bestAudioButton.disabled = busy
+    if (state.queueSelectedButton) {
+      state.queueSelectedButton.disabled = busy || !state.media.selectedOptionId
+    }
+    if (state.qualityList) {
+      for (var index = 0; index < state.qualityList.children.length; index += 1) {
+        state.qualityList.children[index].disabled = busy
+      }
+    }
+  }
+
+  function renderQualityOptions(view) {
+    clearQualityList()
+    if (!state.qualityFieldset || !state.qualityList) return
+
+    if (view.videoOptions.length === 0) {
+      state.qualityFieldset.hidden = true
+      return
+    }
+    state.qualityFieldset.hidden = false
+
+    var initialId =
+      view.bestVideoOptionId !== null
+        ? view.bestVideoOptionId
+        : view.videoOptions[0].optionId
+    state.media.selectedOptionId = initialId
+
+    for (var index = 0; index < view.videoOptions.length; index += 1) {
+      var option = view.videoOptions[index]
+      var label = createElement('label', 'quality-option')
+      var input = createElement('input', 'quality-input')
+      input.type = 'radio'
+      input.name = 'dondownload-quality'
+      input.value = String(index)
+      input.checked = option.optionId === initialId
+      label.appendChild(input)
+
+      var copyNode = createElement('span', 'quality-copy')
+      copyNode.appendChild(createElement('span', '', option.label))
+      var detail = core.describeMediaOption(option)
+      if (detail) copyNode.appendChild(createElement('span', 'quality-detail', detail))
+      label.appendChild(copyNode)
+      state.qualityList.appendChild(label)
+
+      bindQualityOption(input, option)
+    }
+
+    if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
+  }
+
+  function bindQualityOption(input, option) {
+    on(input, 'change', function () {
+      if (!input.checked) return
+      state.media.selectedOptionId = option.optionId
+      if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
+    })
+  }
+
+  function renderAnalysis(view) {
+    state.media.analysis = view
+    if (!state.mediaResults) return
+    state.mediaResults.hidden = false
+    if (state.mediaTitle) state.mediaTitle.textContent = view.title
+
+    var meta = []
+    var duration = core.formatDuration(view.durationSeconds)
+    if (duration) meta.push('Duration ' + duration)
+    meta.push(
+      String(view.videoOptions.length) +
+        (view.videoOptions.length === 1 ? ' video option' : ' video options')
+    )
+    if (view.audioOptions.length > 0) {
+      meta.push(
+        String(view.audioOptions.length) +
+          (view.audioOptions.length === 1 ? ' audio option' : ' audio options')
+      )
+    }
+    if (state.mediaMeta) state.mediaMeta.textContent = meta.join(' · ')
+
+    if (state.bestVideoButton) state.bestVideoButton.hidden = view.bestVideoOptionId === null
+    if (state.bestAudioButton) {
+      state.bestAudioButton.hidden = view.bestAudioOptionId === null
+      var bestAudioOption = optionById(view, view.bestAudioOptionId)
+      state.bestAudioButton.textContent = bestAudioOption
+        ? 'Download audio-only: ' + bestAudioOption.label
+        : 'Download audio only'
+    }
+    renderQualityOptions(view)
+    setMediaBusy(false)
+    setMediaStatus('Analysis ready. Choose a verified option to queue.', 'info')
+  }
+
+  function analyzePage() {
+    if (state.disabled || !state.analyzeButton) return
+    if (state.media.status === 'analyzing' || state.media.status === 'queueing') return
+
+    var token = ++state.media.token
+    state.media.status = 'analyzing'
+    resetMediaResults()
+    state.analyzeButton.textContent = copy.analyzingLabel
+    state.analyzeButton.disabled = true
+    setMediaStatus('Analyzing this page…', 'info')
+
+    sendRuntimeMessage({ type: MEDIA_ANALYZE }, function (response, runtimeError) {
+      if (token !== state.media.token || state.disabled) return
+      state.analyzeButton.textContent = copy.actionLabel
+      state.analyzeButton.disabled = false
+
+      if (runtimeError) {
+        state.media.status = 'error'
+        setMediaStatus(
+          'The page could not be analyzed. Start DonDownload and try again.',
+          'error'
+        )
+        return
+      }
+      if (!response || response.ok !== true || !response.analysis) {
+        state.media.status = 'error'
+        setMediaStatus(
+          responseErrorMessage(
+            response,
+            'The page could not be analyzed. Try again in a moment.'
+          ),
+          'error'
+        )
+        return
+      }
+
+      var view = core.mediaView(response.analysis)
+      if (!view) {
+        state.media.status = 'error'
+        setMediaStatus('The analysis response was not valid. Try again.', 'error')
+        return
+      }
+
+      state.media.status = 'analyzed'
+      renderAnalysis(view)
+    })
+  }
+
+  function optionById(view, optionId) {
+    if (!view || typeof optionId !== 'string') return null
+    for (var index = 0; index < view.options.length; index += 1) {
+      if (view.options[index].optionId === optionId) return view.options[index]
+    }
+    return null
+  }
+
+  function queueOption(optionId) {
+    if (state.disabled || state.media.status === 'analyzing') return
+    if (state.media.status === 'queueing') return
+    if (!state.media.analysis) return
+
+    var analysis = state.media.analysis
+    var option = optionById(analysis, optionId)
+    if (!option) {
+      setMediaStatus('The selected option is not available. Analyze the page again.', 'error')
+      return
+    }
+
+    var token = ++state.media.queueToken
+    state.media.status = 'queueing'
+    setMediaBusy(true)
+    setMediaStatus('Queueing ' + option.label + '…', 'info')
+
+    sendRuntimeMessage(
+      {
+        type: MEDIA_QUEUE,
+        analysisId: analysis.analysisId,
+        optionId: option.optionId
+      },
+      function (response, runtimeError) {
+        if (token !== state.media.queueToken || state.disabled) return
+        setMediaBusy(false)
+
+        if (runtimeError) {
+          state.media.status = 'error'
+          setMediaStatus(
+            'The download could not be queued. Start DonDownload and try again.',
+            'error'
+          )
+          return
+        }
+        if (!response || response.ok !== true || !response.job) {
+          state.media.status = 'error'
+          setMediaStatus(
+            responseErrorMessage(
+              response,
+              'The download could not be queued. Analyze the page again.'
+            ),
+            'error'
+          )
+          return
+        }
+
+        state.media.status = 'queued'
+        var jobLabel =
+          typeof response.job.label === 'string' && response.job.label.length > 0
+            ? response.job.label
+            : option.label
+        setMediaStatus('Queued: ' + jobLabel, 'success')
+      }
+    )
   }
 
   function cancelHide() {
@@ -556,11 +951,22 @@
     state.cleanup = []
     state.activeVideo = null
     state.panelOpen = false
+    state.media.token += 1
+    state.media.queueToken += 1
     if (state.host && state.host.parentNode) state.host.parentNode.removeChild(state.host)
     state.host = null
     state.shadow = null
     state.trigger = null
     state.panel = null
+    state.analyzeButton = null
+    state.mediaResults = null
+    state.mediaTitle = null
+    state.mediaMeta = null
+    state.bestVideoButton = null
+    state.bestAudioButton = null
+    state.qualityFieldset = null
+    state.qualityList = null
+    state.queueSelectedButton = null
     state.disableButton = null
     state.status = null
     if (globalThis.__dondownloadOverlayRuntime === state) {
