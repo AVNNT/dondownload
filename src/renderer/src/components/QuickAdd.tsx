@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type JSX } from 'react'
+import type { DownloadControls } from '@shared/settings'
 import type { AddDownloadInput, ApiResult, AppSnapshot } from '@shared/types'
 import { normalizeHttpUrl, sanitizeFilename } from '@shared/validation'
 
@@ -7,9 +8,61 @@ interface QuickAddProps {
   onAdd: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
 }
 
+const MAX_SPEED_MIB = 1024
+
+function parseControls(
+  startAt: string,
+  speedMib: string,
+  connections: string
+): DownloadControls | null {
+  const hasSchedule = startAt.trim().length > 0
+  const hasSpeed = speedMib.trim().length > 0
+  const hasConnections = connections.trim().length > 0
+  if (!hasSchedule && !hasSpeed && !hasConnections) return null
+
+  let scheduledAt: number | null = null
+  if (hasSchedule) {
+    scheduledAt = new Date(startAt).getTime()
+    if (!Number.isFinite(scheduledAt)) {
+      throw new Error('Enter a valid local start date and time.')
+    }
+  }
+
+  let speedLimitBps: number | null = null
+  if (hasSpeed) {
+    const value = Number(speedMib)
+    if (
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > MAX_SPEED_MIB
+    ) {
+      throw new Error(`Speed limit must be between 0.01 and ${MAX_SPEED_MIB} MiB/s.`)
+    }
+    speedLimitBps = Math.max(1, Math.round(value * 1024 * 1024))
+  }
+
+  let connectionCount: number | null = null
+  if (hasConnections) {
+    const value = Number(connections)
+    if (!Number.isInteger(value) || value < 1 || value > 16) {
+      throw new Error('Connections must be a whole number from 1 to 16.')
+    }
+    connectionCount = value
+  }
+
+  return {
+    scheduledAt,
+    speedLimitBps,
+    connections: connectionCount
+  }
+}
+
 export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
   const [url, setUrl] = useState('')
   const [filename, setFilename] = useState('')
+  const [startAt, setStartAt] = useState('')
+  const [speedMib, setSpeedMib] = useState('')
+  const [connections, setConnections] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
   const [duplicateInput, setDuplicateInput] = useState<AddDownloadInput | null>(
     null
@@ -28,10 +81,14 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
     try {
       const normalizedUrl = normalizeHttpUrl(url)
       const trimmedName = filename.trim()
-      input =
-        trimmedName.length > 0
-          ? { url: normalizedUrl, filename: sanitizeFilename(trimmedName) }
-          : { url: normalizedUrl }
+      const controls = parseControls(startAt, speedMib, connections)
+      input = {
+        url: normalizedUrl,
+        ...(trimmedName.length > 0
+          ? { filename: sanitizeFilename(trimmedName) }
+          : {}),
+        ...(controls ? { controls } : {})
+      }
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : 'Check the URL.')
       return
@@ -41,6 +98,9 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
     if (result.ok) {
       setUrl('')
       setFilename('')
+      setStartAt('')
+      setSpeedMib('')
+      setConnections('')
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
       // Keep the entered URL/name and make the intentional repeat explicit.
       setDuplicateInput(input)
@@ -55,6 +115,9 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
     if (result.ok) {
       setUrl('')
       setFilename('')
+      setStartAt('')
+      setSpeedMib('')
+      setConnections('')
       setDuplicateInput(null)
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
       setDuplicateInput(duplicateInput)
@@ -112,6 +175,67 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
           {disabled ? 'Adding…' : 'Add download'}
         </button>
       </div>
+      <details className="mt-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+        <summary className="cursor-pointer text-[11px] font-medium text-zinc-400">
+          Schedule &amp; limits (optional)
+        </summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <label className="text-[11px] text-zinc-500">
+            Start at (local time)
+            <input
+              aria-label="Scheduled start (local time)"
+              type="datetime-local"
+              value={startAt}
+              onChange={(event) => {
+                setStartAt(event.target.value)
+                resetDuplicate()
+              }}
+              disabled={disabled}
+              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+            />
+          </label>
+          <label className="text-[11px] text-zinc-500">
+            Speed limit (MiB/s, blank = unlimited)
+            <input
+              aria-label="Download speed limit in MiB per second"
+              type="number"
+              min={0.01}
+              max={MAX_SPEED_MIB}
+              step={0.01}
+              placeholder="Unlimited"
+              value={speedMib}
+              onChange={(event) => {
+                setSpeedMib(event.target.value)
+                resetDuplicate()
+              }}
+              disabled={disabled}
+              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+            />
+          </label>
+          <label className="text-[11px] text-zinc-500">
+            Connections (1–16, blank = global)
+            <input
+              aria-label="Download connections"
+              type="number"
+              min={1}
+              max={16}
+              step={1}
+              placeholder="Global"
+              value={connections}
+              onChange={(event) => {
+                setConnections(event.target.value)
+                resetDuplicate()
+              }}
+              disabled={disabled}
+              className="mt-1 block w-full rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+            />
+          </label>
+        </div>
+        <p className="mt-2 text-[10px] leading-4 text-zinc-600">
+          The start time uses this computer&apos;s local clock. Allowed hours
+          are enforced separately in Download settings.
+        </p>
+      </details>
       {duplicateInput ? (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/25 bg-amber-400/5 px-3 py-2">
           <p className="text-[11px] leading-5 text-amber-200">

@@ -457,6 +457,8 @@ describe('v1 to v5 migration preservation', () => {
     for (const row of after) {
       expect(row.scheduled_at).toBeNull()
       expect(row.speed_limit_bps).toBeNull()
+      expect(row.connections).toBeNull()
+      expect(row.block_reason).toBeNull()
     }
     const mediaTable = verify
       .prepare(

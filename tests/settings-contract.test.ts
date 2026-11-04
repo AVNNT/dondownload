@@ -13,6 +13,7 @@ import {
   parseClockTime,
   parseDownloadControls,
   parseDownloadSettings,
+  parsePerDownloadConnections,
   parsePerDownloadSpeedLimitBps,
   parseScheduledAt,
   type DownloadSettings
@@ -190,17 +191,25 @@ describe('download settings contract', () => {
 })
 
 describe('per-download controls contract', () => {
-  it('accepts null for unscheduled and unlimited', () => {
-    expect(parseDownloadControls({ scheduledAt: null, speedLimitBps: null })).toEqual({
+  it('accepts null for unscheduled, unlimited and global connections', () => {
+    expect(
+      parseDownloadControls({
+        scheduledAt: null,
+        speedLimitBps: null,
+        connections: null
+      })
+    ).toEqual({
       scheduledAt: null,
-      speedLimitBps: null
+      speedLimitBps: null,
+      connections: null
     })
   })
 
-  it('round-trips bounded epoch milliseconds and speed limits', () => {
+  it('round-trips bounded epoch milliseconds, speed limits and connections', () => {
     const controls = {
       scheduledAt: Date.UTC(2026, 10, 4, 12, 30),
-      speedLimitBps: 8 * 1024 * 1024
+      speedLimitBps: 8 * 1024 * 1024,
+      connections: 6
     }
     expect(parseDownloadControls(controls)).toEqual(controls)
     expect(parseScheduledAt(0)).toBe(0)
@@ -209,6 +218,9 @@ describe('per-download controls contract', () => {
     expect(parsePerDownloadSpeedLimitBps(MAX_SPEED_LIMIT_BPS)).toBe(
       MAX_SPEED_LIMIT_BPS
     )
+    expect(parsePerDownloadConnections(null)).toBeNull()
+    expect(parsePerDownloadConnections(1)).toBe(1)
+    expect(parsePerDownloadConnections(16)).toBe(16)
   })
 
   it('rejects unsafe, negative or out-of-range control values', () => {
@@ -225,15 +237,33 @@ describe('per-download controls contract', () => {
     }
     expect(() => parsePerDownloadSpeedLimitBps(undefined)).toThrow(/Invalid/)
     expect(() => parsePerDownloadSpeedLimitBps('1024')).toThrow(/Invalid/)
+
+    for (const connections of [0, -1, 1.5, 17, Number.NaN]) {
+      expect(() => parsePerDownloadConnections(connections)).toThrow(/Invalid/)
+    }
+    expect(() => parsePerDownloadConnections(undefined)).toThrow(/Invalid/)
+    expect(() => parsePerDownloadConnections('4')).toThrow(/Invalid/)
   })
 
   it('uses exact keys and rejects URL or path additions', () => {
     expect(() =>
-      parseDownloadControls({ scheduledAt: null, speedLimitBps: null, url: 'x' })
+      parseDownloadControls({
+        scheduledAt: null,
+        speedLimitBps: null,
+        connections: null,
+        url: 'x'
+      })
     ).toThrow(/unsupported fields/)
     expect(() =>
-      parseDownloadControls({ scheduledAt: null, speedLimitBps: null, path: 'x' })
+      parseDownloadControls({
+        scheduledAt: null,
+        speedLimitBps: null,
+        connections: null,
+        path: 'x'
+      })
     ).toThrow(/unsupported fields/)
-    expect(() => parseDownloadControls({ scheduledAt: null })).toThrow(/missing/)
+    expect(() =>
+      parseDownloadControls({ scheduledAt: null, speedLimitBps: null })
+    ).toThrow(/missing/)
   })
 })

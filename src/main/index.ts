@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { IPC } from '@shared/ipc'
+import { isAllowedAt } from '@shared/schedule'
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
@@ -119,7 +120,15 @@ if (!hasSingleInstanceLock) {
     // service applies the persisted limits after aria2 answers but before it
     // reports ready, and live updates use aria2.changeGlobalOption without
     // restarting aria2 or touching active downloads.
-    const settings = new SettingsManager({ store: database, aria2 })
+    const settings = new SettingsManager({
+      store: database,
+      aria2,
+      // Allowed-hours edits take effect on the existing policy timer; active
+      // aria2 transfers are never paused by a settings change.
+      onChanged: () => {
+        void manager?.refreshPolicy()
+      }
+    })
     aria2.onBeforeReady = (client) => settings.applyStartup(client)
 
     manager = new DownloadManager(
@@ -130,7 +139,8 @@ if (!hasSingleInstanceLock) {
           mainWindow.webContents.send(IPC.snapshotChanged, snapshot)
         }
       },
-      database
+      database,
+      { settings: () => settings.getSettings() }
     )
 
     const mediaDir = path.join(downloadDir, 'Media')
@@ -139,11 +149,20 @@ if (!hasSingleInstanceLock) {
       engine: mediaEngine,
       mediaDir,
       database,
+      startAllowed: (now) => isAllowedAt(settings.getSettings(), now),
       onUpdate: (snapshot) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
         }
       }
+    })
+
+    // The download manager's existing poll timer also wakes media jobs that
+    // were queued while the allowed-hours gate was closed. There is no second
+    // scheduler.
+    manager.setMediaPolicyPort({
+      hasPendingPolicyWork: () => mediaJobs?.hasPendingPolicyWork() ?? false,
+      pumpPolicy: (now) => mediaJobs?.pumpPolicy(now)
     })
 
     // Milestone 3B: the batch manager reuses the existing download and media

@@ -3,13 +3,20 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
 import {
-  type AddDownloadInput,
   type AppSnapshot,
   type Aria2State,
+  type DownloadBlockReason,
   type DownloadItem,
   type DownloadStatus
 } from '@shared/types'
 import { MAX_DOWNLOAD_ATTEMPTS, canRetry } from '@shared/policy'
+import {
+  defaultDownloadControls,
+  defaultDownloadSettings,
+  type DownloadControls,
+  type DownloadSettings
+} from '@shared/settings'
+import { evaluateStart, isAllowedAt } from '@shared/schedule'
 import {
   guessFilenameFromUrl,
   normalizeHttpUrl,
@@ -70,9 +77,37 @@ function isGidNotFound(error: unknown): boolean {
   )
 }
 
+/**
+ * Narrow port used by the media-job manager so queued media starts are driven
+ * by this manager's existing policy timer instead of a second scheduler.
+ */
+export interface DownloadPolicyMediaPort {
+  hasPendingPolicyWork(): boolean
+  pumpPolicy(now: number): void | Promise<void>
+}
+
+export interface DownloadManagerOptions {
+  /** Injectable clock for deterministic tests. */
+  now?: () => number
+  /** Runtime settings (allowed hours are read fresh on every policy pass). */
+  settings?: () => DownloadSettings
+}
+
 export class DownloadManager {
   private readonly records = new Map<string, DownloadItem>()
   private readonly explicitFilenames = new Map<string, string>()
+  private readonly controls = new Map<string, DownloadControls>()
+  private readonly blockReasons = new Map<string, DownloadBlockReason | null>()
+  /**
+   * An explicit Start Now/Resume/Retry is a one-process user override. It is
+   * deliberately not persisted: after a restart the normal schedule and
+   * allowed-hours policy apply again (and active work becomes interrupted).
+   */
+  private readonly startNowIds = new Set<string>()
+  private readonly submittingIds = new Set<string>()
+  private readonly now: () => number
+  private settingsProvider: () => DownloadSettings
+  private mediaPolicy: DownloadPolicyMediaPort | null = null
   private readonly dirtyIds = new Set<string>()
   /**
    * Synchronous reservations close the check-then-add race: the duplicate test
@@ -92,18 +127,39 @@ export class DownloadManager {
     private readonly aria2: Aria2Service,
     private readonly downloadDir: string,
     private readonly onUpdate: (snapshot: AppSnapshot) => void,
-    database: DownloadDatabase | null = null
+    database: DownloadDatabase | null = null,
+    options: DownloadManagerOptions = {}
   ) {
     this.database = database
+    this.now = options.now ?? Date.now
+    this.settingsProvider =
+      options.settings ?? (() => defaultDownloadSettings())
     this.loadPersistedDownloads()
+  }
+
+  /** Wired after the media manager exists; keeps a single policy timer. */
+  setMediaPolicyPort(port: DownloadPolicyMediaPort | null): void {
+    this.mediaPolicy = port
+    this.ensurePolling()
   }
 
   getSnapshot(): AppSnapshot {
     const aria2: Aria2State = this.aria2.getState()
-    const downloads = [...this.records.values()].sort(
-      (left, right) => right.createdAt - left.createdAt
-    )
+    const downloads = [...this.records.values()]
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .map((record) => this.toPublicItem(record))
     return { aria2, downloads }
+  }
+
+  private toPublicItem(record: DownloadItem): DownloadItem {
+    const controls = this.controls.get(record.id) ?? defaultDownloadControls()
+    return {
+      ...record,
+      scheduledAt: controls.scheduledAt,
+      speedLimitBps: controls.speedLimitBps,
+      connections: controls.connections,
+      blockReason: this.blockReasons.get(record.id) ?? null
+    }
   }
 
   publish(force = false): void {
@@ -135,8 +191,9 @@ export class DownloadManager {
       for (const record of candidates) {
         if (!this.records.has(record.id)) continue
 
+        const blockReason = this.blockReasons.get(record.id) ?? null
         let tracked: Aria2StatusSnapshot | null = null
-        if (client) {
+        if (client && record.gid !== '') {
           try {
             tracked = parseAria2Status(
               await client.call<unknown>('aria2.tellStatus', [record.gid])
@@ -146,6 +203,40 @@ export class DownloadManager {
             // transient RPC failure is handled conservatively below.
             tracked = null
           }
+        }
+
+        // A persisted policy hold is not an interrupted transfer and is not a
+        // user pause. Keep it waiting across a restart; the existing policy
+        // pass below starts it when the schedule/allowed-hours permit.
+        if (record.status === 'waiting' && blockReason !== null) {
+          if (tracked && tracked.status === 'paused') {
+            // The same aria2 process still holds the policy-paused GID. Keep
+            // the hold (and the GID) so a user pause cannot be inferred and so
+            // the next window can unpause it.
+            this.updateRecord(record, {
+              status: 'waiting',
+              speedBps: 0,
+              etaSeconds: null
+            })
+            this.setBlockReason(record, blockReason)
+            this.persistNow(record)
+          } else if (tracked) {
+            this.applyStatus(record, tracked)
+          } else {
+            this.updateRecord(record, {
+              gid: '',
+              speedBps: 0,
+              etaSeconds: null
+            })
+            const decision = evaluateStart(
+              this.settingsProvider(),
+              this.controls.get(record.id)?.scheduledAt ?? null,
+              this.now()
+            )
+            this.setBlockReason(record, decision.reason)
+            this.persistNow(record)
+          }
+          continue
         }
 
         const outcome = decideStartupRecovery(record.status, tracked !== null)
@@ -158,6 +249,7 @@ export class DownloadManager {
             etaSeconds: null,
             errorMessage: INTERRUPTED_MESSAGE
           })
+          this.setBlockReason(record, null)
           this.persistNow(record)
         }
         // keep-paused deliberately leaves the stored paused record alone, even
@@ -166,6 +258,7 @@ export class DownloadManager {
         // keep-terminal likewise preserves completed/failed/interrupted state.
       }
 
+      await this.pumpPolicy(client)
       this.lastPublished = null
       this.publish(true)
     } finally {
@@ -197,12 +290,24 @@ export class DownloadManager {
     // still in flight.
     this.reservePendingUrl(input.url)
     try {
-      const client = await this.aria2.getClient()
-      await this.ensureDownloadDirectory()
+      const controls = input.controls ?? defaultDownloadControls()
+      const now = this.now()
+      const decision = evaluateStart(
+        this.settingsProvider(),
+        controls.scheduledAt,
+        now
+      )
 
-      const now = Date.now()
       const id = randomUUID()
-      const gid = await this.addUri(client, input, input.filename)
+      let gid = ''
+      if (decision.allowed) {
+        // Only a job that may start now is handed to aria2. Blocked jobs stay
+        // in DonDownload as `waiting` and are submitted by the same policy
+        // timer later, so aria2 cannot start them outside the window.
+        const client = await this.aria2.getClient()
+        await this.ensureDownloadDirectory()
+        gid = await this.addUri(client, input.url, input.filename, controls)
+      }
 
       const record: DownloadItem = {
         id,
@@ -211,7 +316,7 @@ export class DownloadManager {
         filename: input.filename ?? guessFilenameFromUrl(input.url),
         dir: this.downloadDir,
         filePath: null,
-        status: 'queued',
+        status: decision.allowed ? 'queued' : 'waiting',
         totalBytes: 0,
         completedBytes: 0,
         speedBps: 0,
@@ -225,11 +330,15 @@ export class DownloadManager {
       }
 
       this.records.set(id, record)
+      this.controls.set(id, controls)
+      this.blockReasons.set(id, decision.reason)
       if (input.filename) {
         this.explicitFilenames.set(id, input.filename)
       }
 
       this.persistNow(record)
+      this.persistDownloadControls(record)
+      this.persistBlockReason(record)
       this.lastPublished = null
       this.publish(true)
       this.ensurePolling()
@@ -248,14 +357,23 @@ export class DownloadManager {
       return this.getSnapshot()
     }
 
-    const client = await this.aria2.getClient()
-    try {
-      await client.call('aria2.pause', [record.gid])
-    } catch (error) {
-      throw this.wrapRpcError(error, 'The download could not be paused.')
+    if (record.gid !== '') {
+      // A policy-paused waiting job is already paused in aria2. Taking a user
+      // pause must not call aria2.pause again; only the local status changes so
+      // the next allowed window cannot auto-unpause it.
+      if (this.blockReasons.get(record.id) !== 'allowed-hours') {
+        const client = await this.aria2.getClient()
+        try {
+          await client.call('aria2.pause', [record.gid])
+        } catch (error) {
+          throw this.wrapRpcError(error, 'The download could not be paused.')
+        }
+      }
     }
 
+    this.startNowIds.delete(record.id)
     this.updateRecord(record, { status: 'paused', speedBps: 0, etaSeconds: null })
+    this.setBlockReason(record, null)
     this.persistNow(record)
     this.publish()
     this.stopPollingIfIdle()
@@ -268,27 +386,87 @@ export class DownloadManager {
       throw new AppError('DOWNLOAD_COMPLETE', 'This download has already completed.')
     }
 
+    // Resume is an explicit user action, so it starts now even when the
+    // original schedule or allowed-hours window would hold a fresh job back.
+    this.startNowIds.add(record.id)
     const client = await this.aria2.getClient()
-    try {
-      await client.call('aria2.unpause', [record.gid])
-      this.updateRecord(record, {
-        status: 'waiting',
-        errorMessage: null,
-        completedAt: null
-      })
-    } catch (error) {
-      if (!isGidNotFound(error)) {
-        throw this.wrapRpcError(error, 'The download could not be resumed.')
+
+    if (record.gid === '') {
+      await this.ensureDownloadDirectory()
+      await this.submitWaiting(client, record, true)
+    } else {
+      try {
+        await client.call('aria2.unpause', [record.gid])
+        this.updateRecord(record, {
+          status: 'waiting',
+          errorMessage: null,
+          completedAt: null
+        })
+        this.setBlockReason(record, null)
+      } catch (error) {
+        if (!isGidNotFound(error)) {
+          throw this.wrapRpcError(error, 'The download could not be resumed.')
+        }
+        // aria2 cannot reattach a paused GID across a process restart. The user
+        // explicitly chose Resume, so re-add with continuation enabled. aria2's
+        // global --continue/--allow-overwrite=false/--auto-file-renaming settings
+        // keep any partial file and never overwrite an existing one.
+        await this.resumeFromHistory(client, record)
       }
-      // aria2 cannot reattach a paused GID across a process restart. The user
-      // explicitly chose Resume, so re-add with continuation enabled. aria2's
-      // global --continue/--allow-overwrite=false/--auto-file-renaming settings
-      // keep any partial file and never overwrite an existing one.
-      await this.resumeFromHistory(client, record)
     }
 
     this.persistNow(record)
+    this.persistBlockReason(record)
     this.publish()
+    this.ensurePolling()
+    return this.getSnapshot()
+  }
+
+  /**
+   * Explicit override for a scheduled or allowed-hours-blocked waiting job.
+   * It hands the job to aria2 immediately and keeps it exempt from the policy
+   * pause for this process. A user pause still wins afterwards.
+   */
+  async startNow(rawId: unknown): Promise<AppSnapshot> {
+    const record = this.getRecord(rawId)
+    if (record.status === 'complete') {
+      throw new AppError('DOWNLOAD_COMPLETE', 'This download has already completed.')
+    }
+    if (record.status !== 'waiting' && record.status !== 'paused') {
+      throw new AppError(
+        'DOWNLOAD_NOT_WAITING',
+        'Only a waiting or paused download can be started now.'
+      )
+    }
+
+    this.startNowIds.add(record.id)
+    const client = await this.aria2.getClient()
+
+    if (record.gid === '') {
+      await this.ensureDownloadDirectory()
+      await this.submitWaiting(client, record, true)
+    } else {
+      try {
+        await client.call('aria2.unpause', [record.gid])
+        this.updateRecord(record, {
+          status: 'waiting',
+          speedBps: 0,
+          etaSeconds: null,
+          errorMessage: null,
+          completedAt: null
+        })
+        this.setBlockReason(record, null)
+      } catch (error) {
+        if (!isGidNotFound(error)) {
+          throw this.wrapRpcError(error, 'The download could not be started.')
+        }
+        await this.resumeFromHistory(client, record)
+      }
+    }
+
+    this.persistNow(record)
+    this.persistBlockReason(record)
+    this.publish(true)
     this.ensurePolling()
     return this.getSnapshot()
   }
@@ -313,14 +491,15 @@ export class DownloadManager {
     const client = await this.aria2.getClient()
     await this.removeFromAria2(client, record.gid)
 
+    // Retry is explicit and must not be immediately re-blocked by schedule or
+    // allowed hours. It keeps the stored controls for the next restart.
+    this.startNowIds.add(record.id)
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
-      {
-        url: record.url,
-        ...(explicitFilename ? { filename: explicitFilename } : {})
-      },
-      explicitFilename
+      record.url,
+      explicitFilename,
+      this.controls.get(record.id) ?? defaultDownloadControls()
     )
 
     this.updateRecord(record, {
@@ -334,7 +513,9 @@ export class DownloadManager {
       attempts: interruptedRecovery ? record.attempts : record.attempts + 1,
       completedAt: null
     })
+    this.setBlockReason(record, null)
     this.persistNow(record)
+    this.persistBlockReason(record)
     this.publish(true)
     this.ensurePolling()
     return this.getSnapshot()
@@ -350,6 +531,9 @@ export class DownloadManager {
 
     this.records.delete(record.id)
     this.explicitFilenames.delete(record.id)
+    this.controls.delete(record.id)
+    this.blockReasons.delete(record.id)
+    this.startNowIds.delete(record.id)
     this.dirtyIds.delete(record.id)
     this.removePersisted(record.id)
     this.stopPollingIfIdle()
@@ -408,6 +592,255 @@ export class DownloadManager {
     }
   }
 
+  /**
+   * Run one policy pass without waiting for the interval. Settings changes use
+   * this so a newly closed/opened allowed-hours window takes effect promptly.
+   */
+  async refreshPolicy(): Promise<void> {
+    this.lastPublished = null
+    this.ensurePolling()
+    await this.poll()
+    this.publish(true)
+  }
+
+  private setBlockReason(
+    record: DownloadItem,
+    reason: DownloadBlockReason | null,
+    persist = true
+  ): void {
+    const current = this.blockReasons.get(record.id) ?? null
+    if (current === reason) return
+    this.blockReasons.set(record.id, reason)
+    if (persist) this.persistBlockReason(record)
+  }
+
+  private persistBlockReason(record: DownloadItem): void {
+    if (!this.database) return
+    try {
+      this.database.saveDownloadBlockReason(
+        record.id,
+        this.blockReasons.get(record.id) ?? null
+      )
+    } catch (error) {
+      this.logPersistenceError('policy state could not be saved', error)
+    }
+  }
+
+  private persistDownloadControls(record: DownloadItem): void {
+    if (!this.database) return
+    try {
+      this.database.saveDownloadControls(
+        record.id,
+        this.controls.get(record.id) ?? defaultDownloadControls()
+      )
+    } catch (error) {
+      this.logPersistenceError('controls could not be saved', error)
+    }
+  }
+
+  private controlsOf(record: DownloadItem): DownloadControls {
+    return this.controls.get(record.id) ?? defaultDownloadControls()
+  }
+
+  /** Hand one waiting record to aria2, keeping its per-download options. */
+  private async submitWaiting(
+    client: Aria2Client,
+    record: DownloadItem,
+    propagateError = false
+  ): Promise<void> {
+    if (this.submittingIds.has(record.id)) return
+    this.submittingIds.add(record.id)
+    try {
+      await this.ensureDownloadDirectory()
+      const gid = await this.addUri(
+        client,
+        record.url,
+        this.explicitFilenames.get(record.id),
+        this.controlsOf(record)
+      )
+      this.updateRecord(record, {
+        gid,
+        status: 'queued',
+        speedBps: 0,
+        etaSeconds: null,
+        errorMessage: null,
+        filePath: null,
+        completedAt: null
+      })
+      this.setBlockReason(record, null)
+      this.persistNow(record)
+      this.persistDownloadControls(record)
+    } catch (error) {
+      if (propagateError) throw error
+      this.updateRecord(record, {
+        status: 'error',
+        speedBps: 0,
+        etaSeconds: null,
+        errorMessage:
+          error instanceof AppError
+            ? error.message
+            : 'The scheduled download could not be started.'
+      })
+      this.setBlockReason(record, null)
+      this.persistNow(record)
+    } finally {
+      this.submittingIds.delete(record.id)
+    }
+  }
+
+  /**
+   * Apply schedule and allowed-hours policy using the existing poll timer. It
+   * is the only scheduler: blocked jobs are never handed to aria2, submitted
+   * waiting jobs are paused when the allowed window closes, and active jobs are
+   * deliberately left alone so they can finish.
+   */
+  private async pumpPolicy(
+    client: Aria2Client | null = this.aria2.getReadyClient()
+  ): Promise<void> {
+    const now = this.now()
+    const settings = this.settingsProvider()
+    const allowedNow = isAllowedAt(settings, now)
+
+    if (client) {
+      if (!allowedNow) {
+        for (const record of this.records.values()) {
+          if (!this.records.has(record.id)) continue
+          if (record.gid === '') continue
+          if (this.startNowIds.has(record.id)) continue
+          if (record.status !== 'queued' && record.status !== 'waiting') {
+            continue
+          }
+          if (this.blockReasons.get(record.id) === 'allowed-hours') continue
+
+          // Check the live aria2 status first: an already active transfer must
+          // continue when the window closes.
+          let active = false
+          try {
+            const tracked = parseAria2Status(
+              await client.call<unknown>('aria2.tellStatus', [record.gid])
+            )
+            if (
+              tracked.status === 'active' ||
+              tracked.status === 'complete' ||
+              tracked.status === 'error'
+            ) {
+              this.applyStatus(record, tracked)
+              active = true
+            }
+          } catch (error) {
+            if (isGidNotFound(error)) {
+              this.updateRecord(record, {
+                gid: '',
+                status: 'waiting',
+                speedBps: 0,
+                etaSeconds: null
+              })
+              this.setBlockReason(record, 'allowed-hours')
+              this.persistNow(record)
+            }
+            continue
+          }
+          if (active) continue
+
+          try {
+            await client.call('aria2.pause', [record.gid])
+            this.updateRecord(record, {
+              status: 'waiting',
+              speedBps: 0,
+              etaSeconds: null
+            })
+            this.setBlockReason(record, 'allowed-hours')
+            this.persistNow(record)
+          } catch {
+            // A missing GID is handled on the next policy pass; the record
+            // stays waiting and is never silently dropped.
+          }
+        }
+      } else {
+        // The window opened again. Only policy-paused waiting rows are
+        // unpaused; a user pause uses status `paused` and is never touched.
+        for (const record of this.records.values()) {
+          if (!this.records.has(record.id)) continue
+          if (record.status !== 'waiting') continue
+          if (record.gid === '') continue
+          if (this.startNowIds.has(record.id)) continue
+          if (this.blockReasons.get(record.id) !== 'allowed-hours') continue
+
+          try {
+            await client.call('aria2.unpause', [record.gid])
+            this.setBlockReason(record, null)
+            this.persistNow(record)
+          } catch (error) {
+            if (isGidNotFound(error)) {
+              this.updateRecord(record, {
+                gid: '',
+                speedBps: 0,
+                etaSeconds: null
+              })
+              this.setBlockReason(record, null)
+              this.persistNow(record)
+            }
+            // Other failures stay waiting and are retried by the next pass.
+          }
+        }
+      }
+    }
+
+    // Submit waiting records that were never handed to aria2. Start Now
+    // bypasses both the schedule and allowed hours for this process only.
+    for (const record of this.records.values()) {
+      if (!this.records.has(record.id)) continue
+      if (record.status !== 'waiting' || record.gid !== '') continue
+      if (this.submittingIds.has(record.id)) continue
+
+      const override = this.startNowIds.has(record.id)
+      const decision = override
+        ? { allowed: true, reason: null }
+        : evaluateStart(settings, this.controlsOf(record).scheduledAt, now)
+      if (!decision.allowed) {
+        if (this.blockReasons.get(record.id) !== decision.reason) {
+          this.setBlockReason(record, decision.reason)
+          this.persistNow(record)
+        }
+        continue
+      }
+
+      let readyClient = client
+      if (!readyClient) {
+        try {
+          readyClient = await this.aria2.getClient()
+        } catch {
+          continue
+        }
+        client = readyClient
+      }
+      await this.submitWaiting(readyClient, record)
+    }
+
+    if (this.mediaPolicy) {
+      try {
+        await this.mediaPolicy.pumpPolicy(now)
+      } catch {
+        // Media policy failures must not break download scheduling.
+      }
+    }
+  }
+
+  private hasDueStartCandidate(): boolean {
+    const now = this.now()
+    const settings = this.settingsProvider()
+    for (const record of this.records.values()) {
+      if (record.status !== 'waiting' || record.gid !== '') continue
+      if (this.startNowIds.has(record.id)) return true
+      if (
+        evaluateStart(settings, this.controlsOf(record).scheduledAt, now).allowed
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
   private loadPersistedDownloads(): void {
     if (!this.database) return
     try {
@@ -416,6 +849,12 @@ export class DownloadManager {
         if (stored.explicitFilename) {
           this.explicitFilenames.set(stored.record.id, stored.explicitFilename)
         }
+        this.controls.set(stored.record.id, {
+          scheduledAt: stored.scheduledAt,
+          speedLimitBps: stored.speedLimitBps,
+          connections: stored.connections
+        })
+        this.blockReasons.set(stored.record.id, stored.blockReason)
       }
     } catch (error) {
       this.logPersistenceError('could not be loaded', error)
@@ -492,11 +931,9 @@ export class DownloadManager {
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
-      {
-        url: record.url,
-        ...(explicitFilename ? { filename: explicitFilename } : {})
-      },
-      explicitFilename
+      record.url,
+      explicitFilename,
+      this.controls.get(record.id) ?? defaultDownloadControls()
     )
 
     this.updateRecord(record, {
@@ -507,12 +944,14 @@ export class DownloadManager {
       errorMessage: null,
       completedAt: null
     })
+    this.setBlockReason(record, null)
   }
 
   private async addUri(
     client: Aria2Client,
-    input: AddDownloadInput,
-    explicitFilename: string | undefined
+    rawUrl: string,
+    explicitFilename: string | undefined,
+    controls: DownloadControls
   ): Promise<string> {
     const options: Record<string, string> = {
       dir: this.downloadDir,
@@ -530,9 +969,22 @@ export class DownloadManager {
       options.out = sanitizeFilename(explicitFilename)
     }
 
+    // Per-download aria2 options. When `connections` is null aria2 inherits the
+    // global --max-connection-per-server value, so a later global settings edit
+    // is not frozen into every existing transfer. An explicit per-download
+    // connection count sets both `split` and `max-connection-per-server`.
+    if (controls.connections !== null) {
+      const value = String(controls.connections)
+      options.split = value
+      options['max-connection-per-server'] = value
+    }
+    if (controls.speedLimitBps !== null) {
+      options['max-download-limit'] = String(controls.speedLimitBps)
+    }
+
     // Re-validate even for records loaded from SQLite; the database is not a
     // trusted source for URL schemes if it was modified outside the app.
-    const url = normalizeHttpUrl(input.url)
+    const url = normalizeHttpUrl(rawUrl)
 
     try {
       // aria2.addUri returns the new GID directly, not an object.
@@ -582,12 +1034,24 @@ export class DownloadManager {
     record: DownloadItem,
     patch: Partial<DownloadItem>
   ): void {
-    Object.assign(record, patch, { updatedAt: Date.now() })
+    Object.assign(record, patch, { updatedAt: this.now() })
   }
 
   private applyStatus(record: DownloadItem, rawStatus: unknown): void {
     const status = parseAria2Status(rawStatus)
     const nextStatus = mapAria2Status(status.status)
+
+    // A policy pause is represented as `waiting`, not as a user pause. If
+    // aria2 briefly reports the paused GID, keep the policy state until the
+    // policy pass explicitly unpauses it.
+    if (
+      status.status === 'paused' &&
+      record.status === 'waiting' &&
+      this.blockReasons.get(record.id) === 'allowed-hours'
+    ) {
+      return
+    }
+
     const statusChanged = record.status !== nextStatus
 
     const reportedTotal = Math.max(
@@ -622,13 +1086,21 @@ export class DownloadManager {
     if (record.etaSeconds !== etaSeconds) patch.etaSeconds = etaSeconds
     if (record.errorMessage !== errorMessage) patch.errorMessage = errorMessage
     if (nextStatus === 'complete' && record.completedAt === null) {
-      patch.completedAt = Date.now()
+      patch.completedAt = this.now()
     } else if (nextStatus !== 'complete' && record.completedAt !== null) {
       patch.completedAt = null
     }
 
     if (Object.keys(patch).length > 0) {
       this.updateRecord(record, patch)
+      // Any status observed here is not policy-blocked: policy-blocked waiting
+      // rows are skipped by the caller or guarded above.
+      if (this.blockReasons.get(record.id) !== null) {
+        this.setBlockReason(record, null)
+      }
+      if (nextStatus === 'complete' || nextStatus === 'error') {
+        this.startNowIds.delete(record.id)
+      }
       if (statusChanged || nextStatus === 'complete' || nextStatus === 'error') {
         this.persistNow(record)
       } else {
@@ -717,7 +1189,7 @@ export class DownloadManager {
     if (
       this.pollTimer !== null ||
       this.reconciling ||
-      !this.hasPendingDownloads()
+      !this.hasPendingWork()
     ) {
       return
     }
@@ -727,7 +1199,7 @@ export class DownloadManager {
   }
 
   private stopPollingIfIdle(): void {
-    if (this.pollTimer !== null && !this.hasPendingDownloads()) {
+    if (this.pollTimer !== null && !this.hasPendingWork()) {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
@@ -746,6 +1218,13 @@ export class DownloadManager {
     return false
   }
 
+  private hasPendingWork(): boolean {
+    return (
+      this.hasPendingDownloads() ||
+      (this.mediaPolicy?.hasPendingPolicyWork() ?? false)
+    )
+  }
+
   private async poll(): Promise<void> {
     if (this.polling || this.reconciling) return
     this.polling = true
@@ -757,42 +1236,62 @@ export class DownloadManager {
           record.status === 'active' ||
           record.status === 'waiting'
       )
+      const mediaPending = this.mediaPolicy?.hasPendingPolicyWork() ?? false
 
-      if (pending.length === 0) {
+      if (pending.length === 0 && !mediaPending) {
         this.stopPollingIfIdle()
         return
       }
 
-      // Polling must never restart aria2 implicitly. The user gets an explicit
-      // "Retry aria2" action, and pending cards remain visible while offline.
-      const client = this.aria2.getReadyClient()
-      if (!client) {
-        this.publish()
-        return
+      // Pending transfers never restart aria2 implicitly: the user gets an
+      // explicit "Retry aria2" action. A scheduled job that has actually come
+      // due is different: the user already asked for it to start, so the
+      // policy pass may start aria2 to honour that schedule.
+      let client = this.aria2.getReadyClient()
+      if (!client && this.hasDueStartCandidate()) {
+        try {
+          client = await this.aria2.getClient()
+        } catch {
+          this.publish()
+          return
+        }
       }
 
-      for (const record of pending) {
-        if (!this.records.has(record.id)) continue
-        try {
-          const status = await client.call<unknown>('aria2.tellStatus', [record.gid])
+      if (client) {
+        for (const record of pending) {
           if (!this.records.has(record.id)) continue
-          this.applyStatus(record, status)
-        } catch (error) {
-          if (
-            error instanceof AppError &&
-            error.code === 'ARIA2_RPC_ERROR' &&
-            /not found/i.test(error.message)
-          ) {
-            this.updateRecord(record, {
-              status: 'error',
-              speedBps: 0,
-              etaSeconds: null,
-              errorMessage: 'aria2 is no longer tracking this download.'
-            })
-            this.persistNow(record)
+          // Not yet submitted; the policy pass below owns it.
+          if (record.gid === '') continue
+          // Policy-paused rows stay waiting until the next window.
+          if (this.blockReasons.get(record.id) === 'allowed-hours') continue
+          try {
+            const status = await client.call<unknown>('aria2.tellStatus', [
+              record.gid
+            ])
+            if (!this.records.has(record.id)) continue
+            this.applyStatus(record, status)
+          } catch (error) {
+            if (
+              error instanceof AppError &&
+              error.code === 'ARIA2_RPC_ERROR' &&
+              /not found/i.test(error.message)
+            ) {
+              this.updateRecord(record, {
+                status: 'error',
+                speedBps: 0,
+                etaSeconds: null,
+                errorMessage: 'aria2 is no longer tracking this download.'
+              })
+              this.setBlockReason(record, null)
+              this.persistNow(record)
+            }
           }
         }
       }
+
+      // Run the single policy timer after observing current statuses so an
+      // active transfer is known to be active before the window closes.
+      await this.pumpPolicy(client)
 
       this.publish()
       this.stopPollingIfIdle()

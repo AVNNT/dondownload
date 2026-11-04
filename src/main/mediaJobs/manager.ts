@@ -88,6 +88,11 @@ export interface MediaJobsManagerOptions {
   now?: () => number
   /** Bounded progress persistence interval; critical transitions write at once. */
   progressPersistIntervalMs?: number
+  /**
+   * Global start gate (currently the allowed-hours window). The default always
+   * allows starts so narrow tests and non-policy callers keep working.
+   */
+  startAllowed?: (now: number) => boolean
 }
 
 export const MEDIA_INTERRUPTED_MESSAGE =
@@ -117,6 +122,12 @@ interface ManagedMediaJob {
    * URL and visible format invariants, never from random analysis/option IDs.
    */
   optionFingerprint: string
+  /**
+   * True only for a job queued by this process while the start gate was closed.
+   * Persisted queued rows loaded at startup are intentionally not started
+   * automatically.
+   */
+  awaitingPolicy: boolean
 }
 
 interface CachedMediaAnalysis {
@@ -211,6 +222,7 @@ export class MediaJobsManager {
   private readonly database: MediaJobsPersistence | null
   private readonly now: () => number
   private readonly progressPersistIntervalMs: number
+  private readonly startAllowed: (now: number) => boolean
 
   private readonly jobs = new Map<string, ManagedMediaJob>()
   private readonly analyses = new Map<string, CachedMediaAnalysis>()
@@ -234,6 +246,7 @@ export class MediaJobsManager {
     this.now = options.now ?? Date.now
     this.progressPersistIntervalMs =
       options.progressPersistIntervalMs ?? PROGRESS_PERSIST_INTERVAL_MS
+    this.startAllowed = options.startAllowed ?? (() => true)
 
     this.loadPersistedJobs()
   }
@@ -359,15 +372,23 @@ export class MediaJobsManager {
       completedAt: null
     }
 
-    const job: ManagedMediaJob = { record, speedBps: 0, optionFingerprint }
+    const allowedNow = this.startAllowed(createdAt)
+    const job: ManagedMediaJob = {
+      record,
+      speedBps: 0,
+      optionFingerprint,
+      awaitingPolicy: !allowedNow
+    }
     this.jobs.set(record.id, job)
     this.persistNow(job)
     this.publish(true)
 
     const queued = this.toMediaJob(job)
-    queueMicrotask(() => {
-      void this.runJob(record.id)
-    })
+    if (allowedNow) {
+      queueMicrotask(() => {
+        void this.runJob(record.id)
+      })
+    }
     return queued
   }
 
@@ -463,6 +484,30 @@ export class MediaJobsManager {
     return Object.freeze({ ...this.tool })
   }
 
+  /**
+   * True while a media job created in this process is waiting for the global
+   * start gate. The download manager's existing poll timer uses this to wake
+   * the media manager; no separate media scheduler is created.
+   */
+  hasPendingPolicyWork(): boolean {
+    for (const job of this.jobs.values()) {
+      if (job.record.status === 'queued' && job.awaitingPolicy) return true
+    }
+    return false
+  }
+
+  /** Start jobs that were queued while the allowed-hours gate was closed. */
+  pumpPolicy(now = this.now()): void {
+    if (this.closed || !this.startAllowed(now)) return
+    for (const job of this.jobs.values()) {
+      if (job.record.status !== 'queued' || !job.awaitingPolicy) continue
+      job.awaitingPolicy = false
+      queueMicrotask(() => {
+        void this.runJob(job.record.id)
+      })
+    }
+  }
+
   /** Flush bounded progress writes. Call before closing the database. */
   flushPersistence(): void {
     if (this.flushTimer !== null) {
@@ -527,6 +572,12 @@ export class MediaJobsManager {
   private async runJob(id: string): Promise<void> {
     const job = this.jobs.get(id)
     if (!job || job.record.status !== 'queued' || this.closed) return
+
+    if (!this.startAllowed(this.now())) {
+      job.awaitingPolicy = true
+      return
+    }
+    job.awaitingPolicy = false
 
     job.record.status = 'downloading'
     job.record.updatedAt = this.now()
@@ -745,7 +796,9 @@ export class MediaJobsManager {
       this.jobs.set(record.id, {
         record,
         speedBps: 0,
-        optionFingerprint: ''
+        optionFingerprint: '',
+        // Persisted queued jobs are not silently restarted after a relaunch.
+        awaitingPolicy: false
       })
     }
 

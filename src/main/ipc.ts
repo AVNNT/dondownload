@@ -93,6 +93,9 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.resumeDownload, (_event, id) =>
     context.manager.resume(id)
   )
+  invoke<AppSnapshot>(IPC.startDownloadNow, (_event, id) =>
+    context.manager.startNow(id)
+  )
   invoke<AppSnapshot>(IPC.retryDownload, (_event, id) =>
     context.manager.retry(id)
   )
