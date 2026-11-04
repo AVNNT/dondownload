@@ -69,7 +69,7 @@ const JOB_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
 const SOURCE_URL = 'https://example.com/watch?v=1'
 
 function sampleInfo(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  const info: Record<string, unknown> = {
     title: 'Example video',
     duration: 120,
     formats: [
@@ -116,6 +116,20 @@ function sampleInfo(overrides: Record<string, unknown> = {}): Record<string, unk
     ],
     ...overrides
   }
+
+  if (Array.isArray(info.formats)) {
+    info.formats = (info.formats as unknown[]).map((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return value
+      }
+      return {
+        protocol: 'https',
+        url: 'https://cdn.example.com/media',
+        ...(value as Record<string, unknown>)
+      }
+    })
+  }
+  return info
 }
 
 function publicLookup(): MediaLookup {
@@ -345,10 +359,15 @@ describe('media engine URL and target validation', () => {
       'http://127.1/video',
       'http://10.0.0.8/video',
       'http://192.168.1.20/video',
+      'http://192.0.0.1/video',
+      'http://192.88.99.1/video',
       'http://169.254.169.254/latest/meta-data',
       'http://[::1]/video',
       'http://[fe80::1]/video',
-      'http://[fc00::1]/video'
+      'http://[fc00::1]/video',
+      'http://[2001:db8::1]/video',
+      'http://[2001:2::1]/video',
+      'http://[2001:11::1]/video'
     ]) {
       await expect(harness.engine.analyze(url)).rejects.toMatchObject({
         code: 'MEDIA_TARGET_NOT_PUBLIC'
@@ -383,6 +402,35 @@ describe('media engine URL and target validation', () => {
 
     const analysis = await harness.engine.analyze('https://public.example/video')
     expect(analysis.options.length).toBeGreaterThan(0)
+  })
+
+  it('revalidates DNS immediately before downloading an earlier analysis', async () => {
+    let sourceLookups = 0
+    const lookup = vi.fn(async (hostname: string): Promise<MediaLookupAddress[]> => {
+      if (hostname === 'example.com') {
+        sourceLookups += 1
+        return sourceLookups === 1
+          ? [{ address: '93.184.216.34', family: 4 }]
+          : [{ address: '10.0.0.5', family: 4 }]
+      }
+      return [{ address: '93.184.216.35', family: 4 }]
+    }) as unknown as MediaLookup
+    const harness = await makeHarness({ lookup })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+
+    await expect(
+      harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_TARGET_NOT_PUBLIC' })
+
+    expect(sourceLookups).toBe(2)
+    expect(harness.calls.some((call) => call.args.includes('--format'))).toBe(false)
   })
 
   it('reports an unresolved hostname honestly', async () => {
@@ -464,6 +512,52 @@ describe('media engine format mapping', () => {
     expect(videos).toHaveLength(1)
     expect(videos[0]).toMatchObject({ height: 720, requiresMerge: false })
     expect(analysis.bestVideoOptionId).toBe(videos[0]?.optionId)
+  })
+
+  it('filters non-HTTP protocols and private stream URLs from format options', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        formats: [
+          {
+            format_id: '18',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a',
+            width: 640,
+            height: 360,
+            protocol: 'https',
+            url: 'https://cdn.example.com/public.mp4'
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2',
+            abr: 128,
+            protocol: 'https',
+            url: 'http://127.0.0.1/private.m4a'
+          },
+          {
+            format_id: 'rtmp-1',
+            ext: 'flv',
+            vcodec: 'h264',
+            acodec: 'aac',
+            width: 640,
+            height: 360,
+            protocol: 'rtmp',
+            url: 'rtmp://cdn.example.com/private.flv'
+          }
+        ]
+      })
+    })
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    expect(analysis.options).toHaveLength(1)
+    expect(analysis.options[0]).toMatchObject({
+      kind: 'video',
+      label: expect.stringContaining('360p')
+    })
+    expect(analysis.bestAudioOptionId).toBeNull()
   })
 
   it('does not offer merged options when the FFmpeg probe fails', async () => {
@@ -794,6 +888,7 @@ describe('media engine subprocess arguments and progress', () => {
     expect(download.args).toContain('--progress')
     expect(argValue(download.args, '--format')).toBe('137+140')
     expect(argValue(download.args, '--merge-output-format')).toBe('mp4')
+    expect(argValue(download.args, '--ffmpeg-location')).toBe(harness.ffmpegFile)
     expect(argValue(download.args, '--output')).toContain(
       harness.downloadDir
     )
@@ -830,6 +925,8 @@ describe('media engine subprocess arguments and progress', () => {
       outputTemplate,
       '--merge-output-format',
       'mp4',
+      '--ffmpeg-location',
+      harness.ffmpegFile,
       '--',
       SOURCE_URL
     ])
@@ -939,6 +1036,7 @@ describe('media engine subprocess arguments and progress', () => {
     expect(path.basename(template)).not.toContain(':')
     expect(path.basename(template)).not.toContain('?')
     expect(path.basename(template)).not.toContain('"')
+    expect(path.basename(template)).toContain(JOB_ID.replace(/-/g, ''))
     expect(template).toContain('100%%')
     expect(template).toContain('.%(ext)s')
 
@@ -947,7 +1045,7 @@ describe('media engine subprocess arguments and progress', () => {
 })
 
 describe('media engine cancellation and failure cleanup', () => {
-  it('cancels a running download, kills the tree and removes partial files', async () => {
+  it('cancels a running download, kills the tree and preserves partial files', async () => {
     const harness = await makeHarness({
       download: () => undefined,
       cancellationGraceMs: 50
@@ -976,7 +1074,7 @@ describe('media engine cancellation and failure cleanup', () => {
     await expect(promise).rejects.toMatchObject({
       code: 'MEDIA_DOWNLOAD_CANCELLED'
     })
-    await expect(fs.stat(partialPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe('partial bytes')
   })
 
   it('honours cancellation requested before the child process starts', async () => {
@@ -1032,7 +1130,7 @@ describe('media engine cancellation and failure cleanup', () => {
     expect(() => harness.engine.cancel(JOB_ID)).not.toThrow()
   })
 
-  it('removes only its own partial artifacts on failure and redacts errors', async () => {
+  it('preserves partial artifacts on failure and redacts errors', async () => {
     const harness = await makeHarness({
       download: (call, { base }) => {
         void (async () => {
@@ -1063,7 +1161,10 @@ describe('media engine cancellation and failure cleanup', () => {
     expect((error as Error).message).not.toContain('https://')
 
     const remaining = await fs.readdir(harness.downloadDir)
-    expect(remaining).toEqual(['keep-me.txt'])
+    const base = path.basename(outputBase(downloadCall(harness.calls)))
+    expect(remaining.sort()).toEqual(
+      ['keep-me.txt', `${base}.part`, `${base}.f137.mp4`].sort()
+    )
   })
 
   it('fails and cleans up when yt-dlp exits successfully without an output file', async () => {

@@ -41,6 +41,8 @@ export interface DownloadArgumentInput {
   outputTemplate: string
   /** Set only for a verified separate-stream merge. */
   mergeOutputFormat: string | null
+  /** Verified FFmpeg executable when a separate-stream merge is selected. */
+  ffmpegLocation: string | null
 }
 
 /**
@@ -72,6 +74,9 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
 
   if (input.mergeOutputFormat !== null) {
     args.push('--merge-output-format', input.mergeOutputFormat)
+    if (input.ffmpegLocation !== null) {
+      args.push('--ffmpeg-location', input.ffmpegLocation)
+    }
   }
 
   args.push('--', input.sourceUrl)
