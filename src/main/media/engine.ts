@@ -20,6 +20,18 @@ import { isIP } from 'node:net'
 import path from 'node:path'
 import { AppError } from '../errors'
 import {
+  MAX_COLLECTION_ENTRIES,
+  MAX_COLLECTION_ENTRY_TITLE_LENGTH,
+  MAX_COLLECTION_TITLE_LENGTH,
+  parseCollectionPreview,
+  parseCreateCollectionBatchInput
+} from '@shared/batches'
+import type {
+  CollectionEntry,
+  CollectionEntryErrorCode,
+  CollectionPreview
+} from '@shared/batches'
+import {
   normalizeMediaSourceUrl,
   parseMediaAnalysis,
   parseMediaAnalysisId,
@@ -31,6 +43,7 @@ import { ValidationError, sanitizeFilename } from '@shared/validation'
 import {
   buildAnalyzeArgs,
   buildDownloadArgs,
+  buildPlaylistArgs,
   isMergingLine,
   parseProgressLine
 } from './args'
@@ -56,14 +69,22 @@ import type {
 } from './process'
 
 const DEFAULT_ANALYSIS_TTL_MS = 10 * 60_000
+const DEFAULT_COLLECTION_TTL_MS = 10 * 60_000
 const DEFAULT_ANALYSIS_TIMEOUT_MS = 60_000
 const DEFAULT_CANCEL_GRACE_MS = 5_000
 const DOWNLOAD_SETTLE_MARGIN_MS = 250
 const TOOL_PROBE_TIMEOUT_MS = 5_000
 const MAX_ANALYSIS_OUTPUT_BYTES = 32 * 1024 * 1024
 const MAX_ANALYSES = 32
+const MAX_COLLECTIONS = 8
 const MAX_BASE_LENGTH = 100
+const MAX_RAW_COLLECTION_TITLE_LENGTH = 4096
+const FALLBACK_COLLECTION_TITLE = 'Playlist'
+const FALLBACK_ENTRY_TITLE = 'Untitled entry'
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
+/** Reject URL- and path-shaped display text before it reaches a public DTO. */
+const UNSAFE_DISPLAY_TEXT =
+  /(?:\b[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
 const SAFE_SELECTOR =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:\+[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/
 
@@ -94,9 +115,36 @@ export interface MediaDownloadResult {
   totalBytes: number | null
 }
 
+/**
+ * INTERNAL selection target. It is returned only to main-process orchestration
+ * code and must never cross IPC or the native bridge. `url` is a normalized
+ * public page URL, not a yt-dlp selector or raw metadata value.
+ */
+export interface MediaCollectionTarget {
+  entryId: string
+  url: string
+  title: string
+  durationSeconds: number | null
+  position: number
+}
+
 export interface MediaEngine {
   getToolState(): Promise<MediaToolState>
   analyze(url: string): Promise<MediaAnalysis>
+  /**
+   * Resolve an explicit playlist page into an ephemeral, renderer-safe
+   * preview. Uses a flat metadata listing only; nothing is downloaded.
+   */
+  analyzeCollection(url: string): Promise<CollectionPreview>
+  /**
+   * INTERNAL: resolve explicitly selected preview entries to normalized page
+   * URLs after revalidating their public target. Queueing is intentionally not
+   * part of this step.
+   */
+  resolveCollectionEntries(
+    previewId: string,
+    entryIds: readonly string[]
+  ): Promise<MediaCollectionTarget[]>
   download(
     request: MediaDownloadRequest,
     onProgress: (update: MediaDownloadProgress) => void
@@ -133,6 +181,7 @@ export interface MediaEngineOptions {
   lookup?: MediaLookup
   now?: () => number
   analysisTtlMs?: number
+  collectionTtlMs?: number
   analysisTimeoutMs?: number
   cancellationGraceMs?: number
   createId?: (prefix: string) => string
@@ -144,6 +193,29 @@ interface StoredAnalysis {
   title: string
   expiresAt: number
   options: Map<string, InternalMediaOption>
+}
+
+interface StoredCollection {
+  id: string
+  /** Normalized playlist page URL. Never returned from the public API. */
+  url: string
+  expiresAt: number
+  entryIds: string[]
+}
+
+interface StoredCollectionEntry {
+  previewId: string
+  position: number
+  /** Normalized entry page URL; null when the entry is unavailable. */
+  url: string | null
+  title: string
+  durationSeconds: number | null
+}
+
+interface PlaylistEntryDraft {
+  dto: CollectionEntry
+  url: string | null
+  durationSeconds: number | null
 }
 
 interface Toolchain {
@@ -280,6 +352,224 @@ function escapeOutputTemplate(value: string): string {
   return value.replace(/%/g, '%%')
 }
 
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null
+  }
+  return value as Record<string, unknown>
+}
+
+/**
+ * Produce bounded display text that cannot smuggle a URL or filesystem path
+ * through a renderer-safe title field.
+ */
+function cleanDisplayText(
+  value: unknown,
+  maximum: number,
+  fallback: string
+): string {
+  if (typeof value !== 'string') return fallback
+  const cleaned = value
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (cleaned.length === 0) return fallback
+  if (UNSAFE_DISPLAY_TEXT.test(cleaned)) return fallback
+  const bounded = cleaned.slice(0, maximum).trim()
+  return bounded.length === 0 ? fallback : bounded
+}
+
+/** Durations stay private; only finite, non-negative values are retained. */
+function safeCollectionDuration(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null
+  }
+  return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER)
+}
+
+interface EntryProblem {
+  code: CollectionEntryErrorCode
+  reason: string
+}
+
+function entryProblem(field: Record<string, unknown>): EntryProblem | null {
+  if (field.has_drm === true || field.drm === true) {
+    return { code: 'unsupported', reason: 'DRM-protected media is not supported.' }
+  }
+
+  const liveStatus =
+    typeof field.live_status === 'string'
+      ? field.live_status.toLowerCase()
+      : ''
+  if (
+    field.is_live === true ||
+    liveStatus === 'is_live' ||
+    liveStatus === 'is_upcoming' ||
+    liveStatus === 'post_live'
+  ) {
+    return { code: 'unsupported', reason: 'Live streams are not supported.' }
+  }
+
+  const availability =
+    typeof field.availability === 'string'
+      ? field.availability.toLowerCase()
+      : ''
+  if (availability === 'private' || availability === 'needs_auth') {
+    return { code: 'private', reason: 'This entry requires a sign-in.' }
+  }
+  if (availability === 'subscriber_only' || availability === 'premium') {
+    return {
+      code: 'members-only',
+      reason: 'This entry requires a paid membership.'
+    }
+  }
+  if (
+    availability === 'region_restricted' ||
+    field.region_restricted === true
+  ) {
+    return {
+      code: 'region-restricted',
+      reason: 'This entry is not available in your region.'
+    }
+  }
+  if (field.age_restricted === true) {
+    return {
+      code: 'age-restricted',
+      reason: 'This entry requires age verification.'
+    }
+  }
+
+  // Flat listings often represent unavailable YouTube entries as a title
+  // placeholder instead of a provider error. Map only known placeholders; raw
+  // error text is never forwarded.
+  const title = typeof field.title === 'string' ? field.title : ''
+  if (/\[private video\]/i.test(title)) {
+    return { code: 'private', reason: 'This entry is private.' }
+  }
+  if (/\[(?:deleted|removed) video\]/i.test(title)) {
+    return { code: 'removed', reason: 'This entry was removed.' }
+  }
+  if (/\[unavailable video\]/i.test(title)) {
+    return { code: 'unavailable', reason: 'This entry is unavailable.' }
+  }
+  if (/\[(?:members[- ]only|premium)\]/i.test(title)) {
+    return {
+      code: 'members-only',
+      reason: 'This entry requires a paid membership.'
+    }
+  }
+  if (/\[age[- ]restricted\]/i.test(title)) {
+    return {
+      code: 'age-restricted',
+      reason: 'This entry requires age verification.'
+    }
+  }
+
+  return null
+}
+
+function entryPageUrl(field: Record<string, unknown>): string | null {
+  for (const candidate of [field.url, field.webpage_url, field.original_url]) {
+    if (typeof candidate !== 'string') continue
+    try {
+      return normalizeMediaSourceUrl(candidate)
+    } catch {
+      // Try the next candidate; a malformed flat URL is not a hard failure for
+      // the whole playlist.
+    }
+  }
+  return null
+}
+
+function buildPlaylistEntryDraft(
+  raw: unknown,
+  position: number,
+  id: string
+): PlaylistEntryDraft {
+  const field = asPlainRecord(raw)
+  if (field === null) {
+    return {
+      dto: {
+        id,
+        position,
+        title: FALLBACK_ENTRY_TITLE,
+        availability: 'unavailable',
+        errorCode: 'unknown',
+        errorReason: 'This entry could not be read.'
+      },
+      url: null,
+      durationSeconds: null
+    }
+  }
+
+  const rawTitle = typeof field.title === 'string' ? field.title : ''
+  const title = cleanDisplayText(
+    rawTitle,
+    MAX_COLLECTION_ENTRY_TITLE_LENGTH,
+    FALLBACK_ENTRY_TITLE
+  )
+  const problem = entryProblem(field)
+  if (problem !== null) {
+    return {
+      dto: {
+        id,
+        position,
+        title,
+        availability: 'unavailable',
+        errorCode: problem.code,
+        errorReason: problem.reason
+      },
+      url: null,
+      durationSeconds: safeCollectionDuration(field.duration)
+    }
+  }
+
+  if (rawTitle.length > MAX_RAW_COLLECTION_TITLE_LENGTH) {
+    return {
+      dto: {
+        id,
+        position,
+        title,
+        availability: 'unavailable',
+        errorCode: 'too-large',
+        errorReason: 'This entry has too much metadata.'
+      },
+      url: null,
+      durationSeconds: null
+    }
+  }
+
+  const url = entryPageUrl(field)
+  if (url === null) {
+    return {
+      dto: {
+        id,
+        position,
+        title,
+        availability: 'unavailable',
+        errorCode: 'unavailable',
+        errorReason: 'This entry has no playable page.'
+      },
+      url: null,
+      durationSeconds: safeCollectionDuration(field.duration)
+    }
+  }
+
+  return {
+    dto: {
+      id,
+      position,
+      title,
+      availability: 'available',
+      errorCode: null,
+      errorReason: null
+    },
+    url,
+    durationSeconds: safeCollectionDuration(field.duration)
+  }
+}
+
 function buildOutputBase(title: string, jobId: string): string {
   let stem: string
   try {
@@ -394,6 +684,10 @@ export function createMediaEngine(
     options.analysisTtlMs !== undefined && options.analysisTtlMs > 0
       ? options.analysisTtlMs
       : DEFAULT_ANALYSIS_TTL_MS
+  const collectionTtlMs =
+    options.collectionTtlMs !== undefined && options.collectionTtlMs > 0
+      ? options.collectionTtlMs
+      : DEFAULT_COLLECTION_TTL_MS
   const analysisTimeoutMs =
     options.analysisTimeoutMs !== undefined && options.analysisTimeoutMs > 0
       ? options.analysisTimeoutMs
@@ -405,6 +699,11 @@ export function createMediaEngine(
       : DEFAULT_CANCEL_GRACE_MS
 
   const analyses = new Map<string, StoredAnalysis>()
+  // Ephemeral preview state. Page and entry URLs are retained only in memory,
+  // keyed by opaque IDs, and are never persisted or returned from the public
+  // preview API.
+  const collections = new Map<string, StoredCollection>()
+  const collectionEntries = new Map<string, StoredCollectionEntry>()
   const activeDownloads = new Map<string, ActiveDownload>()
   const pendingDownloads = new Map<string, PendingDownload>()
   // Every in-flight download run promise. `cancel(jobId)` only signals the
@@ -456,7 +755,9 @@ export function createMediaEngine(
     }
   }
 
-  function newOpaqueId(prefix: 'analysis' | 'option'): string {
+  function newOpaqueId(
+    prefix: 'analysis' | 'option' | 'preview' | 'entry'
+  ): string {
     const id = createId(prefix)
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
       throw new AppError(
@@ -480,6 +781,41 @@ export function createMediaEngine(
       analyses.delete(oldest.value)
     }
     analyses.set(analysis.id, analysis)
+  }
+
+  function deleteCollection(id: string): void {
+    const collection = collections.get(id)
+    if (!collection) return
+    collections.delete(id)
+    for (const entryId of collection.entryIds) {
+      collectionEntries.delete(entryId)
+    }
+  }
+
+  function removeExpiredCollections(current: number): void {
+    for (const [id, collection] of collections) {
+      if (collection.expiresAt <= current) deleteCollection(id)
+    }
+  }
+
+  function newPreviewId(): string {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const id = newOpaqueId('preview')
+      if (!collections.has(id)) return id
+    }
+    throw new AppError(
+      'MEDIA_ENGINE_ERROR',
+      'The media engine could not generate a collection identifier.'
+    )
+  }
+
+  function storeCollection(collection: StoredCollection): void {
+    while (collections.size >= MAX_COLLECTIONS) {
+      const oldest = collections.keys().next()
+      if (oldest.done) break
+      deleteCollection(oldest.value)
+    }
+    collections.set(collection.id, collection)
   }
 
   async function probeTool(
@@ -834,6 +1170,253 @@ export function createMediaEngine(
     })
 
     return dto
+  }
+
+  async function analyzeCollection(url: string): Promise<CollectionPreview> {
+    if (closing) {
+      throw new AppError(
+        'MEDIA_COLLECTION_CANCELLED',
+        'The playlist analysis was cancelled.'
+      )
+    }
+    const normalized = normalizeMediaSourceUrl(url)
+    await assertPublicTarget(normalized)
+
+    const toolchain = await resolveToolchain()
+    if (toolchain.ytdlpPath === null) {
+      throw toolUnavailableError(toolchain.state)
+    }
+
+    let result: CapturedProcessResult
+    try {
+      result = await runTrackedCapturedProcess(
+        toolchain.ytdlpPath,
+        buildPlaylistArgs(normalized),
+        {
+          timeoutMs: analysisTimeoutMs,
+          maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
+        }
+      )
+    } catch (error) {
+      if (error instanceof ProcessAbortedError) {
+        throw new AppError(
+          'MEDIA_COLLECTION_CANCELLED',
+          'The playlist analysis was cancelled.'
+        )
+      }
+      if (error instanceof ProcessTimeoutError) {
+        throw new AppError(
+          'MEDIA_COLLECTION_TIMEOUT',
+          'The playlist took too long to analyze. Try again.'
+        )
+      }
+      if (error instanceof ProcessOutputError) {
+        throw new AppError(
+          'MEDIA_COLLECTION_TOO_LARGE',
+          'The playlist is too large to preview safely.'
+        )
+      }
+      if (error instanceof ProcessStartError) {
+        throw new AppError(
+          'MEDIA_TOOL_UNAVAILABLE',
+          'yt-dlp could not be started.',
+          YTDLP_HINT
+        )
+      }
+      throw new AppError(
+        'MEDIA_COLLECTION_FAILED',
+        'yt-dlp could not read this playlist.'
+      )
+    }
+
+    if (result.code !== 0) {
+      throw new AppError(
+        'MEDIA_COLLECTION_FAILED',
+        'yt-dlp could not read this playlist. It may be private, unavailable, or require a sign-in.',
+        'Only public playlists are supported. DonDownload does not use cookies, browser credentials, DRM or CAPTCHA bypass.'
+      )
+    }
+
+    let rawInfo: unknown
+    try {
+      rawInfo = JSON.parse(result.stdout)
+    } catch {
+      throw new AppError(
+        'MEDIA_COLLECTION_FAILED',
+        'yt-dlp returned an unreadable playlist response.'
+      )
+    }
+
+    const info = asPlainRecord(rawInfo)
+    if (info === null) {
+      throw new AppError(
+        'MEDIA_COLLECTION_FAILED',
+        'yt-dlp returned an unreadable playlist response.'
+      )
+    }
+
+    const rawEntries = info.entries
+    if (!Array.isArray(rawEntries) || info._type === 'video') {
+      throw new AppError(
+        'MEDIA_COLLECTION_NOT_PLAYLIST',
+        'This page is not a playlist.',
+        'Open a playlist page or analyze the video on its own.'
+      )
+    }
+    if (
+      info._type !== undefined &&
+      info._type !== 'playlist' &&
+      info._type !== 'multi_video'
+    ) {
+      throw new AppError(
+        'MEDIA_COLLECTION_NOT_PLAYLIST',
+        'This page is not a playlist.',
+        'Open a playlist page or analyze the video on its own.'
+      )
+    }
+    if (rawEntries.length === 0) {
+      throw new AppError(
+        'MEDIA_COLLECTION_EMPTY',
+        'This playlist does not contain any entries.'
+      )
+    }
+    if (rawEntries.length > MAX_COLLECTION_ENTRIES) {
+      throw new AppError(
+        'MEDIA_COLLECTION_TOO_LARGE',
+        `This playlist has more than ${MAX_COLLECTION_ENTRIES} entries and cannot be previewed.`
+      )
+    }
+
+    const usedEntryIds = new Set<string>()
+    const newEntryId = (): string => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const id = newOpaqueId('entry')
+        if (!usedEntryIds.has(id) && !collectionEntries.has(id)) {
+          usedEntryIds.add(id)
+          return id
+        }
+      }
+      throw new AppError(
+        'MEDIA_ENGINE_ERROR',
+        'The media engine could not generate a collection entry identifier.'
+      )
+    }
+
+    const drafts = rawEntries.map((raw, position) =>
+      buildPlaylistEntryDraft(raw, position, newEntryId())
+    )
+
+    const current = Math.floor(now())
+    removeExpiredCollections(current)
+
+    const previewId = newPreviewId()
+    const expiresAt = current + collectionTtlMs
+    const availableCount = drafts.filter(
+      (draft) => draft.dto.availability === 'available'
+    ).length
+    const dto = parseCollectionPreview({
+      id: previewId,
+      kind: 'playlist',
+      title: cleanDisplayText(
+        info.title ?? info.playlist_title,
+        MAX_COLLECTION_TITLE_LENGTH,
+        FALLBACK_COLLECTION_TITLE
+      ),
+      entryCount: drafts.length,
+      availableCount,
+      unavailableCount: drafts.length - availableCount,
+      entries: drafts.map((draft) => draft.dto)
+    })
+
+    storeCollection({
+      id: previewId,
+      url: normalized,
+      expiresAt,
+      entryIds: drafts.map((draft) => draft.dto.id)
+    })
+    for (const draft of drafts) {
+      collectionEntries.set(draft.dto.id, {
+        previewId,
+        position: draft.dto.position,
+        url: draft.url,
+        title: draft.dto.title,
+        durationSeconds: draft.durationSeconds
+      })
+    }
+
+    return dto
+  }
+
+  async function resolveCollectionEntries(
+    previewId: string,
+    entryIds: readonly string[]
+  ): Promise<MediaCollectionTarget[]> {
+    if (closing) {
+      throw new AppError(
+        'MEDIA_COLLECTION_CANCELLED',
+        'The playlist selection was cancelled.'
+      )
+    }
+
+    const selection = parseCreateCollectionBatchInput({
+      previewId,
+      selectedEntryIds: entryIds
+    })
+
+    const current = Math.floor(now())
+    const collection = collections.get(selection.previewId)
+    if (!collection) {
+      removeExpiredCollections(current)
+      throw new AppError(
+        'MEDIA_COLLECTION_NOT_FOUND',
+        'Preview this playlist again before selecting entries.'
+      )
+    }
+    if (collection.expiresAt <= current) {
+      deleteCollection(selection.previewId)
+      removeExpiredCollections(current)
+      throw new AppError(
+        'MEDIA_COLLECTION_EXPIRED',
+        'This playlist preview has expired. Preview the playlist again.'
+      )
+    }
+    removeExpiredCollections(current)
+
+    const targets: MediaCollectionTarget[] = []
+    const checkedHosts = new Map<string, Promise<void>>()
+    for (const entryId of selection.selectedEntryIds) {
+      const entry = collectionEntries.get(entryId)
+      if (!entry || entry.previewId !== selection.previewId) {
+        throw new AppError(
+          'MEDIA_COLLECTION_ENTRY_INVALID',
+          'The selected entry does not belong to this preview.'
+        )
+      }
+      if (entry.url === null) {
+        throw new AppError(
+          'MEDIA_COLLECTION_ENTRY_UNAVAILABLE',
+          'The selected entry is not available for download.'
+        )
+      }
+
+      const host = new URL(entry.url).hostname.toLowerCase()
+      let check = checkedHosts.get(host)
+      if (!check) {
+        check = assertPublicTarget(entry.url)
+        checkedHosts.set(host, check)
+      }
+      await check
+
+      targets.push({
+        entryId,
+        url: entry.url,
+        title: entry.title,
+        durationSeconds: entry.durationSeconds,
+        position: entry.position
+      })
+    }
+
+    return targets
   }
 
   async function download(
@@ -1297,5 +1880,13 @@ export function createMediaEngine(
     ])
   }
 
-  return { getToolState, analyze, download, cancel, cancelAll }
+  return {
+    getToolState,
+    analyze,
+    analyzeCollection,
+    resolveCollectionEntries,
+    download,
+    cancel,
+    cancelAll
+  }
 }

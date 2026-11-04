@@ -13,6 +13,7 @@ import type {
 } from '../src/main/media/engine'
 import type { MediaSpawn, MediaSpawnOptions } from '../src/main/media/process'
 import { PROGRESS_TEMPLATE, parseProgressLine } from '../src/main/media/args'
+import { MAX_COLLECTION_ENTRIES, parseCollectionPreview } from '../src/shared/batches'
 import { parseMediaAnalysis } from '../src/shared/media'
 
 class FakeChild extends EventEmitter {
@@ -54,11 +55,16 @@ interface HarnessOptions {
   analyzeJson?: unknown
   analyzeCode?: number
   analyzeStdout?: string
+  playlistJson?: unknown
+  playlistCode?: number
+  playlistStdout?: string
   lookup?: MediaLookup
   now?: () => number
   analysisTtlMs?: number
+  collectionTtlMs?: number
   cancellationGraceMs?: number
   analyze?: (call: SpawnCall) => void
+  playlist?: (call: SpawnCall) => void
   download?: (
     call: SpawnCall,
     context: { base: string; outputDir: string }
@@ -132,6 +138,30 @@ function sampleInfo(overrides: Record<string, unknown> = {}): Record<string, unk
     })
   }
   return info
+}
+
+function samplePlaylistEntry(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    _type: 'url',
+    url: 'https://www.youtube.com/watch?v=entry-one',
+    title: 'Playlist entry',
+    duration: 120,
+    ...overrides
+  }
+}
+
+function samplePlaylist(
+  entries: unknown[],
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    _type: 'playlist',
+    title: 'Example playlist',
+    entries,
+    ...overrides
+  }
 }
 
 function publicLookup(): MediaLookup {
@@ -251,6 +281,26 @@ async function makeHarness(options: HarnessOptions = {}) {
       return child
     }
 
+    if (args.includes('--flat-playlist')) {
+      if (options.playlist) {
+        queueMicrotask(() => options.playlist?.(call))
+        return child
+      }
+      queueMicrotask(() => {
+        if (options.playlistCode !== undefined && options.playlistCode !== 0) {
+          child.stderr.write('[example] ERROR: playlist is private\n')
+          child.close(options.playlistCode)
+          return
+        }
+        const stdout =
+          options.playlistStdout ??
+          JSON.stringify(options.playlistJson ?? samplePlaylist([samplePlaylistEntry()]))
+        child.stdout.write(stdout)
+        child.close(0)
+      })
+      return child
+    }
+
     if (args.includes('--dump-single-json')) {
       if (options.analyze) {
         queueMicrotask(() => options.analyze?.(call))
@@ -300,6 +350,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     lookup: options.lookup ?? publicLookup(),
     now: options.now,
     analysisTtlMs: options.analysisTtlMs,
+    collectionTtlMs: options.collectionTtlMs,
     cancellationGraceMs: options.cancellationGraceMs
   })
 
@@ -700,6 +751,349 @@ describe('media engine format mapping', () => {
     await expect(malformed.engine.analyze(SOURCE_URL)).rejects.toMatchObject({
       code: 'MEDIA_ANALYSIS_FAILED'
     })
+  })
+})
+
+describe('media engine playlist collection analysis', () => {
+  it('uses a fixed flat metadata listing without cookies, config or download flags', async () => {
+    const harness = await makeHarness()
+    const preview = await harness.engine.analyzeCollection(SOURCE_URL)
+
+    expect(preview.kind).toBe('playlist')
+    const playlistCall = harness.calls.find((call) =>
+      call.args.includes('--flat-playlist')
+    )
+    expect(playlistCall).toBeDefined()
+    expect(playlistCall?.command).toBe(harness.ytdlpFile)
+    expect(playlistCall?.options.shell).toBe(false)
+    expect(playlistCall?.options.windowsHide).toBe(true)
+    expect(playlistCall?.args).toEqual([
+      '--ignore-config',
+      '--no-plugin-dirs',
+      '--flat-playlist',
+      '--dump-single-json',
+      '--skip-download',
+      '--no-warnings',
+      '--no-cache-dir',
+      '--',
+      SOURCE_URL
+    ])
+
+    for (const forbidden of [
+      '--no-playlist',
+      '--format',
+      '--output',
+      '--no-simulate',
+      '--progress',
+      '--cookies',
+      '--cookies-from-browser',
+      '--username',
+      '--password',
+      '--netrc',
+      '--config-locations',
+      '--downloader',
+      'aria2c',
+      '--exec'
+    ]) {
+      expect(playlistCall?.args).not.toContain(forbidden)
+    }
+  })
+
+  it('returns only opaque IDs and bounded safe display data', async () => {
+    const entries = [
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_0',
+        url: 'https://www.youtube.com/watch?v=entry-one',
+        title: 'First public entry',
+        duration: 120
+      }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_1',
+        url: 'https://www.youtube.com/watch?v=entry-two',
+        title: '[Private video]'
+      }),
+      samplePlaylistEntry({ id: 'RAW_INTERNAL_ID_2', title: '[Deleted video]' }),
+      samplePlaylistEntry({ id: 'RAW_INTERNAL_ID_3', is_live: true }),
+      samplePlaylistEntry({ id: 'RAW_INTERNAL_ID_4', has_drm: true }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_5',
+        availability: 'needs_auth'
+      }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_6',
+        availability: 'subscriber_only'
+      }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_7',
+        availability: 'region_restricted'
+      }),
+      samplePlaylistEntry({ id: 'RAW_INTERNAL_ID_8', age_restricted: true }),
+      null,
+      samplePlaylistEntry({ id: 'RAW_INTERNAL_ID_10', url: undefined }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_11',
+        title: `https://private.example/secret/${'x'.repeat(5_000)}`
+      }),
+      samplePlaylistEntry({
+        id: 'RAW_INTERNAL_ID_12',
+        url: 'https://www.youtube.com/watch?v=entry-thirteen',
+        title: 'https://leak.example/should-not-appear',
+        duration: -5
+      })
+    ]
+    const harness = await makeHarness({ playlistJson: samplePlaylist(entries) })
+    const preview = await harness.engine.analyzeCollection(SOURCE_URL)
+
+    expect(() => parseCollectionPreview(preview)).not.toThrow()
+    expect(preview).toMatchObject({
+      kind: 'playlist',
+      title: 'Example playlist',
+      entryCount: entries.length,
+      availableCount: 2,
+      unavailableCount: entries.length - 2
+    })
+    expect(preview.entries.map((entry) => entry.position)).toEqual(
+      entries.map((_entry, position) => position)
+    )
+    expect(preview.entries[0]).toMatchObject({
+      title: 'First public entry',
+      availability: 'available',
+      errorCode: null,
+      errorReason: null
+    })
+
+    const codes = preview.entries
+      .slice(1, 12)
+      .map((entry) => entry.errorCode)
+    expect(codes).toEqual([
+      'private',
+      'removed',
+      'unsupported',
+      'unsupported',
+      'private',
+      'members-only',
+      'region-restricted',
+      'age-restricted',
+      'unknown',
+      'unavailable',
+      'too-large'
+    ])
+    for (const entry of preview.entries) {
+      expect(entry.id).toMatch(/^entry_[A-Za-z0-9_-]+$/)
+      expect(entry.title.length).toBeGreaterThan(0)
+      expect(entry.title.length).toBeLessThanOrEqual(240)
+    }
+    expect(preview.entries.at(-1)).toMatchObject({
+      title: 'Untitled entry',
+      availability: 'available',
+      errorCode: null
+    })
+
+    const serialized = JSON.stringify(preview)
+    for (const secret of [
+      'http',
+      'youtube.com',
+      'watch?v=',
+      'private.example',
+      'leak.example',
+      'RAW_INTERNAL_ID'
+    ]) {
+      expect(serialized).not.toContain(secret)
+    }
+  })
+
+  it('rejects single videos, malformed output, empty and oversized playlists safely', async () => {
+    const single = await makeHarness({ playlistJson: sampleInfo() })
+    await expect(
+      single.engine.analyzeCollection(SOURCE_URL)
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_NOT_PLAYLIST' })
+
+    const malformed = await makeHarness({ playlistStdout: 'not json' })
+    await expect(
+      malformed.engine.analyzeCollection(SOURCE_URL)
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_FAILED' })
+
+    const failed = await makeHarness({ playlistCode: 1 })
+    await expect(
+      failed.engine.analyzeCollection(SOURCE_URL)
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_FAILED' })
+
+    const empty = await makeHarness({ playlistJson: samplePlaylist([]) })
+    await expect(
+      empty.engine.analyzeCollection(SOURCE_URL)
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_EMPTY' })
+
+    const oversized = await makeHarness({
+      playlistJson: samplePlaylist(
+        Array.from({ length: MAX_COLLECTION_ENTRIES + 1 }, (_value, index) =>
+          samplePlaylistEntry({
+            url: `https://www.youtube.com/watch?v=entry-${index}`,
+            title: `Entry ${index}`
+          })
+        )
+      )
+    })
+    await expect(
+      oversized.engine.analyzeCollection(SOURCE_URL)
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_TOO_LARGE' })
+    expect(oversized.calls.some((call) => call.args.includes('--flat-playlist'))).toBe(
+      true
+    )
+  })
+
+  it('resolves only explicitly selected available entries and keeps URLs internal', async () => {
+    const harness = await makeHarness({
+      playlistJson: samplePlaylist([
+        samplePlaylistEntry({
+          url: 'https://www.youtube.com/watch?v=entry-one',
+          title: 'First public entry',
+          duration: 120
+        }),
+        samplePlaylistEntry({
+          url: 'https://www.youtube.com/watch?v=entry-two',
+          title: 'Second public entry',
+          duration: 90
+        }),
+        samplePlaylistEntry({ title: '[Private video]' })
+      ])
+    })
+    const preview = await harness.engine.analyzeCollection(SOURCE_URL)
+    const first = preview.entries[0]
+    const second = preview.entries[1]
+    const unavailable = preview.entries[2]
+    if (!first || !second || !unavailable) throw new Error('missing entries')
+
+    const targets = await harness.engine.resolveCollectionEntries(preview.id, [
+      first.id,
+      second.id
+    ])
+    expect(targets).toEqual([
+      {
+        entryId: first.id,
+        url: 'https://www.youtube.com/watch?v=entry-one',
+        title: 'First public entry',
+        durationSeconds: 120,
+        position: 0
+      },
+      {
+        entryId: second.id,
+        url: 'https://www.youtube.com/watch?v=entry-two',
+        title: 'Second public entry',
+        durationSeconds: 90,
+        position: 1
+      }
+    ])
+    expect(Object.keys(targets[0] ?? {}).sort()).toEqual([
+      'durationSeconds',
+      'entryId',
+      'position',
+      'title',
+      'url'
+    ])
+
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, [unavailable.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_ENTRY_UNAVAILABLE' })
+
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, ['entry_unknown'])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_ENTRY_INVALID' })
+
+    await expect(
+      harness.engine.resolveCollectionEntries('preview_unknown', [first.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_NOT_FOUND' })
+
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, [])
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    const other = await harness.engine.analyzeCollection(SOURCE_URL)
+    await expect(
+      harness.engine.resolveCollectionEntries(other.id, [first.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_ENTRY_INVALID' })
+  })
+
+  it('revalidates public targets when a stored selection is resolved', async () => {
+    let blockEntryHost = false
+    const lookup = vi.fn(
+      async (hostname: string): Promise<MediaLookupAddress[]> => [
+        {
+          address:
+            blockEntryHost && hostname === 'www.youtube.com'
+              ? '127.0.0.1'
+              : '93.184.216.34',
+          family: 4
+        }
+      ]
+    ) as unknown as MediaLookup
+    const harness = await makeHarness({ lookup })
+    const preview = await harness.engine.analyzeCollection(SOURCE_URL)
+    const entry = preview.entries[0]
+    if (!entry) throw new Error('missing entry')
+
+    blockEntryHost = true
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, [entry.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_TARGET_NOT_PUBLIC' })
+  })
+
+  it('expires previews and drops their private entry URLs', async () => {
+    let clock = 1_000_000
+    const harness = await makeHarness({
+      now: () => clock,
+      collectionTtlMs: 500,
+      playlistJson: samplePlaylist([samplePlaylistEntry()])
+    })
+    const preview = await harness.engine.analyzeCollection(SOURCE_URL)
+    const entry = preview.entries[0]
+    if (!entry) throw new Error('missing entry')
+
+    clock += 501
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, [entry.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_EXPIRED' })
+    await expect(
+      harness.engine.resolveCollectionEntries(preview.id, [entry.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_NOT_FOUND' })
+  })
+
+  it('evicts the oldest preview when the bounded preview cache is full', async () => {
+    const harness = await makeHarness({
+      playlistJson: samplePlaylist([samplePlaylistEntry()])
+    })
+    const previews = []
+    for (let index = 0; index < 9; index += 1) {
+      previews.push(await harness.engine.analyzeCollection(SOURCE_URL))
+    }
+    const oldest = previews[0]
+    const newest = previews[8]
+    const oldestEntry = oldest?.entries[0]
+    const newestEntry = newest?.entries[0]
+    if (!oldest || !newest || !oldestEntry || !newestEntry) {
+      throw new Error('missing previews')
+    }
+
+    await expect(
+      harness.engine.resolveCollectionEntries(oldest.id, [oldestEntry.id])
+    ).rejects.toMatchObject({ code: 'MEDIA_COLLECTION_NOT_FOUND' })
+    await expect(
+      harness.engine.resolveCollectionEntries(newest.id, [newestEntry.id])
+    ).resolves.toHaveLength(1)
+  })
+
+  it('cancelAll aborts an in-flight playlist listing', async () => {
+    const harness = await makeHarness({ playlist: () => undefined })
+    const promise = harness.engine.analyzeCollection(SOURCE_URL)
+    const rejection = promise.then(
+      () => null,
+      (error: unknown) => error as { code?: string }
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--flat-playlist'))
+    )
+
+    await harness.engine.cancelAll()
+    expect(await rejection).toMatchObject({ code: 'MEDIA_COLLECTION_CANCELLED' })
   })
 })
 

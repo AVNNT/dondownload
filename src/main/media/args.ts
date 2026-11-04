@@ -33,6 +33,30 @@ export function buildAnalyzeArgs(url: string): string[] {
   ]
 }
 
+/**
+ * Playlist preview uses the same read-only, JSON-only subprocess as analysis,
+ * but asks for a flat entry listing instead of expanding every entry. Flat
+ * listing returns bounded per-entry metadata without resolving or downloading
+ * individual media, so a preview cannot trigger a hidden download.
+ *
+ * `--` terminates option parsing before the page URL. As with analysis, no
+ * cookie source, browser profile, config file, auth option or user flag is
+ * accepted.
+ */
+export function buildPlaylistArgs(url: string): string[] {
+  return [
+    '--ignore-config',
+    '--no-plugin-dirs',
+    '--flat-playlist',
+    '--dump-single-json',
+    '--skip-download',
+    '--no-warnings',
+    '--no-cache-dir',
+    '--',
+    url
+  ]
+}
+
 export interface DownloadArgumentInput {
   sourceUrl: string
   /** Built exclusively from format IDs returned by the analysis. */
