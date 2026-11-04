@@ -4,12 +4,13 @@ As of 2026-11-04. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
 verified. Milestone 3A is **PASS** at `e7e28ee`, verified end to end in a headed
-Helium run against that HEAD. Milestone 3B now has the committed contracts/schema
-foundation, a persistent backend orchestration slice with desktop IPC and
-preload wiring, a desktop-first renderer batch UI, opt-in local batch
-integration coverage, and an opt-in live playlist preview/selection check.
-Neither new check downloads public media. There is still no
-native-bridge batch route, and no live-provider verification was run for the UI.
+Helium run against that HEAD. Milestone 3B has the committed contracts/schema
+foundation, persistent backend orchestration with desktop IPC/preload, a
+desktop-first renderer batch UI, local aria2 batch lifecycle coverage, and an
+opt-in live playlist check that previewed and downloaded exactly one explicitly
+selected CC-BY entry. Pixeldrain public-list verification is blocked because no
+reliable, licensed fixture was found. There is still no native-bridge batch
+route, and the live provider check does not verify the renderer UI.
 Milestone 4 is explicitly deferred. Milestone 5A has its shared download-settings
 contract, additive SQLite schema v5, runtime settings service, trusted
 IPC/preload API, startup/live aria2 application and a renderer form for global
@@ -569,6 +570,42 @@ only tests, scripts and documentation changed.
 See [batch-contracts.md](batch-contracts.md) for the full contract and schema
 description. See [testing-workflow.md](testing-workflow.md) for the updated
 tier commands.
+
+## Milestone 3B selected playlist media download (actually run)
+
+The opt-in `tests/playlist-download.live.integration.test.ts` now covers one
+explicitly selected entry from the official Blender Open Movies playlist. It
+uses a read-only metadata preflight with a 25 MiB transfer ceiling, queues only
+the selected muxed 360p option through `MediaEngine`/`MediaJobsManager`, checks
+completion and actual size, computes SHA-256, fully decodes audio/video with
+FFmpeg, and removes its unique temporary output. The one live run passed. Since
+YouTube does not publish a pinned checksum for this rendition, the digest was
+computed and format-checked but is not claimed as an upstream-verified hash.
+
+The live Pixeldrain list fixture check remains **BLOCKED**: the API-documentation
+example returned 404; an unrelated 315 MB public ZIP without verifiable license
+was not used; creating a list requires an API key. No list preview or
+selected-file download was attempted. The existing Pixeldrain live file test is
+not list evidence. Gofile remains unsupported, with the explicit browser fallback
+and no authentication/token scraping.
+
+## Installer environment and release audit checkpoint
+
+The installer payload's aria2 1.37.0, yt-dlp 2026.10.26, Deno 2.9.8,
+FFmpeg/ffprobe 9.0.2 version commands passed. Packaged aria2 also passed the
+local aria2 and batch integration tests (3 + 2 tests) using loopback fixtures.
+Windows Sandbox was not available, checking its optional feature required
+elevation, and no VM runner was found; the installer was **not** executed. The
+Helium registration helper was inspected in print-only mode; no registry or
+browser profile was changed, so installed Native Messaging and Helium
+communication remain unverified.
+
+The installer is **unsigned**. Version/hash-manifest checks and packaged license
+file hashes passed, but local WinGet paths do not establish upstream authenticity
+or reproducible builds. GPL corresponding-source archives/written offer and
+legal review remain release blockers; see
+[licensing-release-audit.md](licensing-release-audit.md). No production release
+or signing claim is made.
 
 ## Root cause of the reported Milestone 2B failure
 
