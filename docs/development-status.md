@@ -746,6 +746,63 @@ Confirmed root cause:
 This also explains the reload failure: with no registration, there was no
 persistent exact-origin content script.
 
+## Latest visible/runtime verification — 2026-11-04
+
+The prior extracted-payload-only statement above was superseded by an opt-in
+hidden Electron smoke implementation (`18ca325`) and two independent runs of
+the current unpacked production app. Both runs exited normally with **10/10
+checks passed** (2.624 s and 1.818 s). They verified actual Electron 45.2.2,
+production preload/renderer mount, hidden/unfocused window, isolated SQLite
+schema 6, DownloadManager and packaged aria2 1.37.0 readiness, plus yt-dlp
+2026.10.26, FFmpeg 9.0.2 and Deno 2.9.8 probes. A second fresh isolated profile
+also started and shut down cleanly. This was not an installer run, visible
+desktop launch, or real transfer.
+
+**Status classification:**
+
+- **WORKING (runtime verified):** packaged/unpacked Electron hidden startup and
+  bounded normal shutdown; SQLite initialization; aria2 and DownloadManager
+  startup; bundled tool discovery/version probes. Real aria2 HTTP fixture tests
+  pass for completion, pause/resume, scheduled start, allowed-hours queue and
+  Start Now, active completion past closing, and restart/Range recovery.
+- **IMPLEMENTED (not fully runtime-verified here):** the normal visible desktop
+  window and IPC-backed UI; yt-dlp analysis/quality choice and FFmpeg media job
+  execution; playlist/Pixeldrain collection workflows; batch persistence and
+  native-host/Helium flows. A real Helium session was not performed in this run.
+- **BROKEN:** no new product defect confirmed. A first temporary preview server
+  attempt failed due to harness command quoting/root mapping and was corrected;
+  this was test infrastructure only.
+- **UNSUPPORTED / deferred:** Gofile folders, torrents and VPN. Pixeldrain list
+  live behavior remains fixture-limited.
+
+## T3-visible renderer and test evidence
+
+The T3 direct browser connection was unavailable, but its server-side preview
+was available. The built production React renderer was served in an isolated
+preview with an explicitly injected mock `window.donDownload` API. Quick Add,
+simulated progress-card rendering, a settings save, a mock media error, and
+mock media quality selection (1080p/720p/audio-only, including changing the
+selected option) were exercised through preview interactions. This is visual
+renderer evidence only: the preview did not run Electron IPC, aria2, yt-dlp,
+FFmpeg, playlists, batches, extension code or Helium integration. Chromium
+reported one `frame-ancestors`-in-meta-CSP warning; no renderer exception was
+reported.
+
+Artifacts are in the ignored local directory
+`artifacts/test-runs/electron-smoke-20261104-224215/`: two machine-readable
+Electron results and console logs, `aria2-integration.log`, a summary, the
+temporary renderer harness, and screenshots. Open `run-summary.md` first. The
+visual screenshots are `screenshots/renderer-media-quality-720p.png` and
+`screenshots/renderer-media-error.png`; `renderer-quality-interaction.mp4` is a
+short mock quality-selection recording.
+
+Current tier results: `npm run test:fast` **513/513** (1.29 s);
+`npm run test:gate` **553 passed / 11 skipped**, typecheck/build passed (27.06 s);
+focused real-aria2 fixtures **5/5** (46.82 s); packaged Electron smoke **10/10**
+twice. No active browser profile, normal userData, registry, real Downloads,
+physical desktop input or installer was used. No screenshots of the hidden
+Electron smoke exist because the smoke window intentionally remains hidden.
+
 A separate question was whether an exact origin with a non-default port is
 valid for `chrome.scripting.registerContentScripts`. It is: on the same Helium
 build, `http://127.0.0.1:34526/*` was stored as a persistent registration,

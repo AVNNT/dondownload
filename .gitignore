@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 coverage/
+artifacts/test-runs/
 
 # Local third-party binaries are intentionally not redistributed with this repo.
 vendor/
