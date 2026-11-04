@@ -25,9 +25,10 @@ implementation and verification record.
 - **Milestone 3A:** in progress; not verified or complete. Additive media
   contracts and SQLite v2 persistence are integrated at `e76055f`; review fixes
   rejecting credential-bearing media URLs and adding a safe job title are at
-  `f55b0fc`. The current baseline has 231 tests passed / 3 skipped and
-  typecheck passed. Four isolated DeepSeek workers are implementing the engine,
-  desktop UI, Helium bridge/overlay, and media-job orchestration. yt-dlp and
+  `f55b0fc`. Media option validation and desktop UI are integrated at
+  `d0f5049` and `eae3e3f`. The current baseline has 231 tests passed / 3 skipped;
+  typecheck and build pass. Engine, Helium bridge/overlay, and media-job
+  orchestration remain in progress in isolated DeepSeek worktrees. yt-dlp and
   FFmpeg are not installed/found; no real media integration has been verified.
 
 ## Root cause of the reported Milestone 2B failure
