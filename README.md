@@ -5,9 +5,10 @@ This repository contains the **Milestone 1 foundation** (a working Electron
 desktop app with a React renderer, a real aria2 engine, durable SQLite download
 history, conservative restart reconciliation, and a Windows tray) plus
 **Milestone 2A**: an optional Helium/Chrome/Edge Manifest V3 extension for
-**manual** HTTP(S) capture through a strict native messaging bridge. The local
-setup is verified with Helium 0.20.3.1 (Chromium 156.0.8078.79); Chrome and Edge
-remain supported for future installs.
+**manual** HTTP(S) capture through a strict native messaging bridge, and
+**Milestone 2B**: an opt-in, per-site **UI-only** video overlay that never
+extracts or downloads media. The local setup is verified with Helium 0.20.3.1
+(Chromium 156.0.8078.79); Chrome and Edge remain supported for future installs.
 
 The UI is deliberately small: an OLED-black, centered (~800 px) layout with a
 compact top bar, a Quick Add form, and download cards with live status,
@@ -86,14 +87,18 @@ The `extension/` folder is a Chromium-compatible Manifest V3 extension (verified
 locally with Helium 0.20.3.1 / Chromium 156.0.8078.79) that sends an explicitly
 chosen HTTP(S) URL to the running desktop app. It is **manual capture only**:
 
-- Permissions are just `activeTab`, `contextMenus` and `nativeMessaging`. There
-  are no `downloads`, `webRequest`, `notifications`, host permissions, content
-  scripts or `tabs`-history permissions.
+- Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The
+  optional 2B overlay adds `scripting`, `storage` (session-only pending state)
+  plus declared `optional_host_permissions`, but there are still no required
+  host permissions and no always-on content scripts. There are no `downloads`,
+  `webRequest`, `notifications`, `cookies`, history or `tabs` permissions.
 - The popup has an explicit **Download with DonDownload** action for the active
   page.
 - Right-clicking a link shows **Download with DonDownload**.
 - It never observes, changes or cancels browser downloads, never intercepts
   requests, and never captures automatically.
+- The 2B video overlay is off by default for every site. See
+  [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b-ui-only).
 - The toolbar badge shows `OK` only after the desktop app has accepted the URL;
   `!` means the action failed. The popup shows the specific error. No
   notifications permission is needed.
@@ -329,6 +334,176 @@ loaded:
 6. Open a `chrome://`, `edge://` or `file://` page; expect an unsupported-URL
    error before any native message is sent.
 
+## Browser extension: opt-in video overlay (Milestone 2B, UI only)
+
+Milestone 2B adds a small **DD** button to the top-right corner of a video when
+you hover it. Clicking the button expands a panel. The panel is deliberately
+honest: **downloading video, format detection, quality choices and media-URL
+inspection are not available in this milestone.** There are no fabricated
+format or quality options and no fake success state.
+
+The overlay is **off by default** and applies only to sites you explicitly
+enable. If a site is not opted in, no overlay script or UI exists there.
+
+Local verification status is recorded in
+[`docs/development-status.md`](docs/development-status.md). The headed Helium
+check passes for the enable/Allow/hover/click/keyboard/disable flow. The review
+round 2 external-revoke teardown has also been repeated in a fresh disposable
+headed Helium profile and passed: revoking from the browser UI removed the
+overlay from the already-open page without a reload, removed the persistent
+registration and exact-origin grant, and a reload did not re-inject
+([evidence](docs/verification-helium-external-revoke-2026-11-04.md)). That run
+used OS-level synthetic input rather than hardware input, and activated the
+permission prompt's **Allow** button with UI Automation. The milestone remains
+complete and has been locally checkpointed after review. No push or release was
+made.
+
+### Permission and privacy design
+
+- **No always-on all-sites content script.** The manifest has no
+  `content_scripts` entry and no `<all_urls>` access.
+- The manifest declares `optional_host_permissions` for `http://*/*` and
+  `https://*/*`. This is only a declaration required by Chromium before it will
+  let the extension *ask*; it grants nothing by itself.
+- The popup asks for **one exact origin** (for example
+  `https://example.com/*`) from a user click on **Enable on this site**. Chrome
+  or the Chromium fork may show its normal per-site permission prompt. If the
+  request is denied, no overlay is injected and nothing on the page changes.
+- `scripting` is used only to register a content-script registration whose
+  `matches` array contains that exact origin and to inject the two overlay files
+  into the current tab after the grant. It is not used for broad script
+  execution or page-data collection.
+- `storage` is used only for `chrome.storage.session`: one pending exact
+  origin/tab while the browser shows the permission prompt, and a short-lived
+  map of tab ids already running the overlay so an external revoke can notify
+  them. The pending entry is cleared when the grant is applied, denied or
+  revoked; the tab map is pruned on tab close and on disable/revoke. Both
+  disappear when the browser exits. No page content, full page URLs or download
+  data are stored; only the exact granted origins and tab ids described here.
+- The registration runs in the **isolated world**, top frame only, with
+  `allFrames: false` and `persistAcrossSessions: true`. The popup grants no
+  persistent broad host access.
+- **Success is verified, not assumed.** After registering, the worker injects
+  the overlay and runs a page-side probe that requires the overlay host, its
+  shadow-root button, and a healthy overlay runtime. The popup shows **On** and
+  its success copy only when both the per-site registration and that in-page
+  probe succeed.
+- **The permission prompt closes the action popup.** Chromium/Helium 0.20.3.1
+  (Chromium 156) closes the popup as soon as the Allow/Deny prompt is shown, so
+  the popup's request callback cannot be relied on to run the follow-up work.
+  Before requesting, the popup records the exact origin and tab in
+  `chrome.storage.session`; a top-level `chrome.permissions.onAdded` listener in
+  the service worker finishes the registration and injection when the grant
+  arrives. Opening the popup again also re-checks and re-applies an existing
+  grant for the current tab, so a popup that was closed by the prompt cannot
+  leave the site looking enabled with nothing on the page.
+- **Turn off on this site** (in the popup or the overlay panel) unregisters that
+  exact-origin content script, calls `chrome.permissions.remove` for the same
+  origin pattern, and verifies that both the stored registration and the grant
+  are actually gone. Only then does the popup show its success copy. If either
+  removal fails or cannot be verified, the worker returns
+  `OVERLAY_DISABLE_INCOMPLETE` with the individual `registrationRemoved` and
+  `permissionRemoved` values, and the popup reports the failure instead of
+  claiming site access was removed.
+- **External revoke** (removing the origin from browser extension settings)
+  unregisters the exact-origin registration and sends an origin-scoped teardown
+  message to tabs already running the overlay. There is no `tabs` permission and
+  no broad host grant, so the worker cannot query same-origin tabs after the
+  grant is gone; it uses the session-only tab map populated by enable/sync and
+  the content script's own ready announcement. This is best effort: a tab that
+  was never tracked loses the overlay on its next reload, because the
+  registration is already gone.
+- There is **no** `downloads`, `webRequest`, `webRequestBlocking`, `cookies`,
+  history, `tabs` or notifications permission. The overlay does not sniff
+  network traffic, read `src`/`currentSrc`/`srcObject`, decode media, call
+  `play()`/`pause()`, or touch DRM, authentication or CAPTCHAs.
+- The overlay only observes the page DOM (video element geometry, hover and
+  focus events). It does not read video source URLs, durations, formats or
+  playback state.
+
+**Tradeoff:** Chromium's optional-permission model cannot declare "any exact
+origin the user might choose later" without declaring broad optional patterns
+in the manifest. The implementation therefore declares the two HTTP(S) optional
+pattern families but requests only a canonical exact origin. The user still sees
+and approves the narrow per-site prompt, and a site with no grant receives no
+content script. If a future Chromium version cannot request an exact-origin
+subset from these declared patterns, the extension reports the failure rather
+than silently widening access.
+
+**Non-default ports:** an exact origin such as
+`http://127.0.0.1:34526` is a valid match pattern for both the optional host
+grant and `chrome.scripting.registerContentScripts` in Helium 0.20.3.1 /
+Chromium 156. The implementation keeps the port in the permission request and
+in the persistent registration (`http://127.0.0.1:34526/*`), and reload injection
+was verified against that pattern. No port-stripped or broader fallback is used.
+
+### What the overlay does
+
+- Shows a 30 × 30 px OLED-black button at the video's top-right corner on
+  hover, leaving native player controls (usually at the bottom) available.
+- Uses an open **Shadow DOM** with isolated CSS, so page styles and overlay
+  styles do not leak into each other.
+- Handles dynamically inserted and removed videos through DOM event delegation
+  and a `MutationObserver`; repositions on scroll, window resize, video resize
+  and fullscreen transitions.
+- Clicks and pointer-downs inside the overlay stop propagation and prevent the
+  default action, so normal bubble-phase player handlers do not see them and
+  using the overlay does not toggle play/pause or trigger player shortcuts. A
+  page that installs its own capture-phase document listener before the overlay
+  could still observe the event, as with any in-page UI.
+- **Keyboard:** `Alt+Shift+D` shows the button for the largest visible video and
+  focuses it. `Escape` closes the panel and returns focus to the button. The
+  shortcut is ignored while typing in an input, textarea, select or editable
+  region.
+- Respects `prefers-reduced-motion: reduce` by removing transitions.
+- The expanded panel contains only truthful state: a disabled **Download video
+  (unavailable)** control, a statement that formats/qualities/DRM are not
+  handled, a hint to use the existing manual page capture, and **Turn off
+  overlay on this site**.
+- Existing manual popup/right-click HTTP(S) capture and the exact-origin Native
+  Messaging bridge are unchanged.
+
+### Manual Helium check for Milestone 2B
+
+Keep the existing unpacked extension folder and its derived ID; do not remove
+the extension. These steps assume the local Helium setup described above.
+
+1. Open `chrome://extensions` in Helium and reload the unpacked DonDownload
+   extension so the new manifest is read. Confirm the extension still shows the
+   expected ID and no new required site access.
+2. Open a normal `http://` or `https://` page that contains a video. The overlay
+   is off until you opt in.
+3. Open the DonDownload popup. Under **Video overlay**, confirm the state is
+   **Off**, then click **Enable on this site** and accept the browser's prompt
+   for that exact site. The browser closes the action popup while its permission
+   prompt is open; accepting the prompt still enables the current tab through
+   the extension worker. Reopen the popup and confirm **On** only when the
+   overlay is actually ready on the current tab. If it says **Not ready**,
+   reload the page and reopen the popup.
+4. Hover the video. A small **DD** button should appear at its top-right. The
+   video must not start or pause because of the hover or button click.
+5. Click **DD**. The panel must say video downloading, format detection and
+   quality choices are unavailable, must not offer formats/qualities, and must
+   not report a fake success. Close it with `Escape` or by clicking outside.
+6. With the video visible, press `Alt+Shift+D`; the button should appear and
+   receive focus without starting playback.
+7. Click **Turn off overlay on this site** in the panel, or use the popup's
+   **Turn off on this site** action. The button should disappear, and
+   `chrome://extensions` site access for that origin should no longer show a
+   grant. Reload the page and confirm the overlay does not return. If either
+   removal fails, the popup must show an error, not the success message.
+8. To check the external-revoke path, enable the site again, keep the page open,
+   then remove that origin's site access from `chrome://extensions`. The overlay
+   on the open page should disappear without a reload when that tab was tracked;
+   a reload must not bring it back. A tab that was never tracked may keep the UI
+   until its next reload, which is the documented best-effort limit.
+9. Repeat the existing Milestone 2A popup and right-click capture checks; the
+   manual capture path must behave exactly as before.
+
+Restricted pages such as `chrome://`, `edge://`, the Chrome Web Store, and
+`file://` are not eligible. Videos inside cross-origin iframes are not covered
+by the top-frame registration.
+
 ## Testing
 
 The default suite is hermetic and needs no network or aria2 binary:
@@ -344,6 +519,26 @@ oversized bodies and duplicate responses that never claim acceptance. The real
 native-host tests run when `native\dondownload-native-host.exe` has been built;
 the registration tests (including Helium's explicit Chrome-compatible key
 mapping and unregister planning) run on Windows.
+
+The 2B overlay tests run hermetically without a browser. They cover the exact
+per-site permission policy (including preserving a non-default localhost port),
+the absence of required host/all-sites access, video geometry/detection and
+observer pruning, trigger and panel placement, Shadow DOM/observer/reduced-motion
+wiring, click propagation guards, the keyboard path and typing guard,
+disable/revoke messaging, and the truthful "format/quality unavailable" panel
+copy. Mocked Chrome API tests cover the enable lifecycle: no grant means no
+registration or injection; a failed page-side verification never becomes
+success; a registration that does not persist fails visibly; the pending
+request plus `permissions.onAdded` path completes when the popup was closed by
+the prompt; reopening the popup re-syncs an existing grant; disable removes the
+registration, grant and page UI; external revoke notifies only tracked
+same-origin tabs and rejects cross-origin ready announcements; a late-ready
+document whose grant was already revoked is torn down; a failed unregister or
+permission removal returns explicit partial-failure fields instead of success,
+while a concurrent `onRemoved` that already finished still verifies as
+successful; and status copy shows **On** only for a verified registration plus
+injection. A source guard also fails if the overlay starts reading media
+sources, using `downloads`/`webRequest`, or calling `play()`/`pause()`.
 
 An optional end-to-end test drives a real aria2 process against a local
 throttled HTTP server that implements Range requests. It checks full HTTP
@@ -383,7 +578,7 @@ Run `npm run dev` with aria2 installed, start a download, and confirm:
 React renderer (sandboxed, no Node)
         │ narrow validated IPC through preload
         │
-Browser extension (MV3, manual capture only)
+Browser extension (MV3, manual capture + opt-in UI-only overlay)
         │ chrome.runtime.sendNativeMessage
         ▼
 Native messaging host (C# .exe, 1 MiB framed JSON)
@@ -408,8 +603,11 @@ Key properties:
   window, then validates URL, file name and download IDs in the main process.
 - Only `http:` and `https:` URLs are accepted. Embedded URL credentials and
   control characters are rejected.
-- The browser extension is manual-only: it has no `downloads` or `webRequest`
-  permission and sends only an explicitly chosen URL over native messaging.
+- The browser extension's capture path is manual-only: it has no `downloads` or
+  `webRequest` permission and sends only an explicitly chosen URL over native
+  messaging.
+- The 2B overlay is opt-in per exact origin, UI-only, and never extracts media.
+  It has no required host permissions and no always-on content script.
 - The native messaging host validates framing, size, schema and URL before
   forwarding a URL to the desktop bridge; diagnostics never include URLs.
 - The desktop bridge is loopback-only, authenticated with a per-launch random
@@ -544,10 +742,11 @@ with no way to restore it.
 
 ## Implemented in Milestone 2A
 
-- Helium/Chrome/Edge-compatible Manifest V3 extension with only `activeTab`,
-  `contextMenus` and `nativeMessaging` permissions: an explicit popup action and
-  a link context menu. No downloads/webRequest interception, no notifications
-  permission.
+- Helium/Chrome/Edge-compatible Manifest V3 extension whose manual capture path
+  uses `activeTab`, `contextMenus` and `nativeMessaging`: an explicit popup
+  action and a link context menu. No downloads/webRequest interception, no
+  notifications permission. (Milestone 2B adds `scripting` and optional host
+  declarations for the opt-in overlay only.)
 - Toolbar badge and popup feedback that report success only after the desktop
   app accepts the URL, with actionable errors for unsupported URLs, missing
   native host, unauthorized extension origin, connection failure and app
@@ -573,6 +772,34 @@ with no way to restore it.
   responses, duplicate responses that never claim acceptance, and manager-level
   duplicate/force/concurrency behavior.
 
+## Implemented in Milestone 2B (UI only)
+
+- A hover video overlay with an OLED-black 30 × 30 px button, expandable panel,
+  `Alt+Shift+D` keyboard access, `Escape` close, reduced-motion handling and
+  Shadow DOM-isolated CSS.
+- Per-site opt-in from the popup: exact-origin optional host permission,
+  exact-origin isolated-world content-script registration, immediate injection
+  into the active tab, and explicit disable/revoke that unregisters the script
+  and removes the site grant.
+- The permission-prompt lifecycle is handled explicitly: Chromium closes the
+  action popup when the prompt appears, so the exact origin/tab is recorded in
+  `chrome.storage.session` and a `permissions.onAdded` listener in the service
+  worker completes registration and injection. Reopening the popup re-syncs an
+  existing grant. The popup shows **On**/success only after a page-side probe
+  confirms the overlay host and runtime; a bare grant shows **Not ready**.
+- Exact origins with non-default ports are preserved in both the grant and the
+  persistent registration (verified with `http://127.0.0.1:34526`).
+- Dynamic video support through delegated pointer events and a
+  `MutationObserver`, with repositioning on scroll, resize and fullscreen.
+- Interaction guards so overlay clicks never reach the page player and never
+  call `play()`/`pause()`.
+- Truthful unavailable UI: the panel states that media downloading, format
+  detection, quality choices and source-URL inspection are not implemented and
+  offers no fake formats, qualities or success.
+- Focused hermetic tests for permission policy, detection/observer behavior,
+  placement, interaction guards, keyboard access, disable/revoke flow and the
+  unavailable-state copy.
+
 ## Deferred (not implemented)
 
 These are intentionally **not** claimed by these milestones:
@@ -581,7 +808,10 @@ These are intentionally **not** claimed by these milestones:
   interrupted instead of pretending they are still running).
 - Notifications, auto-start/launch-at-login, or background services.
 - Automatic browser interception, browser download takeover/cancellation,
-  clipboard monitoring, drag-and-drop capture, or media overlays.
+  clipboard monitoring, or drag-and-drop capture.
+- **Any media extraction or overlay download action.** No network sniffing, no
+  media source URL inspection, no format/quality detection, no DRM/auth/CAPTCHA
+  bypass, and no HLS/DASH download. Milestone 2B is UI-only.
 - Media/stream downloads (HLS/DASH), file hosts, login/cookie handling.
 - BitTorrent, magnet links, Metalink, scheduling, bandwidth limits.
 - Windows installer/signing, auto-update, and bundled aria2.
@@ -608,7 +838,8 @@ src/preload/index.ts      contextBridge API
 src/renderer/             React UI
 src/shared/               Types, IPC channels, validation, format, policy,
                           native bridge protocol constants
-extension/                Helium/Chrome/Edge MV3 popup, context menu and native client
+extension/                Helium/Chrome/Edge MV3 popup, context menu, native client
+                          and opt-in UI-only video overlay
 native/NativeHost.cs      C# native messaging host source
 scripts/                  Native host build and current-user registration
 tests/                    Vitest unit tests, bridge/host tests and optional
@@ -638,8 +869,25 @@ git-ignored; compile it with `npm run build:native-host`.
   current app session alive only until **Quit DonDownload** is chosen or the
   user signs out/restarts. If the tray cannot be created, closing the window
   quits as it did before so the app cannot become unreachable.
-- The browser extension is manual-only. It does not detect downloads, intercept
-  requests, change browser download settings, or offer video/media overlays.
+- The browser extension's capture path is manual-only. It does not detect
+  downloads, intercept requests, or change browser download settings.
+- The 2B video overlay is **UI-only** and off by default per site. It cannot
+  download, extract, decode or choose formats/qualities for video, does not read
+  media source URLs, and does not bypass DRM, authentication or CAPTCHAs. Its
+  panel says so and has no fake success.
+- The overlay is registered for the top frame of the exact granted origin only.
+  Videos inside cross-origin iframes are not covered, and restricted pages such
+  as `chrome://`, `edge://`, the Chrome Web Store and `file://` are ineligible.
+- Chromium closes the action popup as soon as its permission prompt is shown.
+  Accepting the prompt still enables the tab through the extension worker, but
+  the popup itself cannot show the result while it is closed; reopening it
+  re-checks and shows **On** only when the overlay is verified, otherwise
+  **Not ready** with a reload hint.
+- The manifest must declare broad optional HTTP(S) pattern families before the
+  extension can request a single exact origin; declaring them grants nothing.
+  The user still approves the per-site prompt, and disabling removes that site's
+  grant and registration. If an exact-origin request is unsupported by a future
+  browser build, enabling fails visibly instead of widening access.
 - The native host must be registered separately for each browser profile/ID.
   Moving the unpacked extension folder changes its derived ID, so re-register
   after moving it.

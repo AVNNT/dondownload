@@ -1,4 +1,20 @@
 import { sendQueueDownload } from './bridge.js'
+import {
+  OVERLAY_MESSAGE_TYPES,
+  OVERLAY_SCRIPT_PREFIX,
+  originFromUrl,
+  originToMatchPattern,
+  overlayOriginFromRegistration
+} from './site-policy.js'
+import {
+  disableOverlayForOrigin,
+  enableOverlayForTab,
+  forgetOverlayTab,
+  handleOverlayReady,
+  handlePermissionsAdded,
+  handlePermissionsRemoved,
+  syncOverlayForTab
+} from './overlay-controller.js'
 
 const MENU_ID = 'dondownload-link'
 const BADGE_CLEAR_MS = 4_000
@@ -71,10 +87,136 @@ async function handleLink(linkUrl) {
   showBadge('!', '#a61b1b', result.error.message)
 }
 
-chrome.runtime.onInstalled.addListener(installContextMenu)
-chrome.runtime.onStartup.addListener(installContextMenu)
+function overlayFailure(code, message) {
+  return { ok: false, error: { code, message } }
+}
+
+async function handleContentDisable(message, sender) {
+  if (!sender || !sender.tab || sender.frameId !== 0) {
+    return overlayFailure('INVALID_SENDER', 'The request did not come from an opted-in page.')
+  }
+  if (
+    originFromUrl(sender.tab.url) !== message.origin ||
+    originToMatchPattern(message.origin) === null
+  ) {
+    return overlayFailure('ORIGIN_MISMATCH', 'The overlay site did not match.')
+  }
+  return disableOverlayForOrigin(chrome, message.origin, sender.tab.id)
+}
+
+async function reconcileOverlayRegistrations() {
+  try {
+    const registrations = await chrome.scripting.getRegisteredContentScripts()
+    for (const registration of registrations) {
+      if (
+        !registration ||
+        typeof registration.id !== 'string' ||
+        !registration.id.startsWith(OVERLAY_SCRIPT_PREFIX)
+      ) {
+        continue
+      }
+
+      const origin = overlayOriginFromRegistration(registration)
+      const pattern = origin === null ? null : originToMatchPattern(origin)
+      let granted = false
+      if (pattern !== null) {
+        try {
+          granted = await chrome.permissions.contains({ origins: [pattern] })
+        } catch {
+          granted = false
+        }
+      }
+      if (!granted) {
+        await chrome.scripting.unregisterContentScripts({ ids: [registration.id] })
+      }
+    }
+  } catch {
+    // Reconciliation is best effort and never blocks the manual capture path.
+  }
+}
+
+function installLifecycleListeners() {
+  installContextMenu()
+  void reconcileOverlayRegistrations()
+}
+
+chrome.runtime.onInstalled.addListener(installLifecycleListeners)
+chrome.runtime.onStartup.addListener(installLifecycleListeners)
+
+// The optional host permission may be granted after the action popup has been
+// closed by the browser's permission prompt. These top-level listeners let the
+// service worker finish the exact-origin registration and injection anyway.
+chrome.permissions.onAdded.addListener((permissions) => {
+  void handlePermissionsAdded(chrome, permissions).catch(() => undefined)
+})
+
+chrome.permissions.onRemoved.addListener((permissions) => {
+  void handlePermissionsRemoved(chrome, permissions).catch(() => undefined)
+})
+
+// Prune session-only tab records. `tabs.onRemoved` needs no `tabs` permission.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void forgetOverlayTab(chrome, tabId).catch(() => undefined)
+})
 
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId !== MENU_ID) return
   void handleLink(info.linkUrl)
+})
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== 'object') return false
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.ENABLE) {
+    void enableOverlayForTab(chrome, message.origin, message.tabId)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('OVERLAY_FAILED', 'The overlay request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.SYNC) {
+    void syncOverlayForTab(chrome, message.origin, message.tabId)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('OVERLAY_FAILED', 'The overlay state could not be checked.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.READY) {
+    // No response is needed. Tracking is best effort, so a closed channel is
+    // never reported back to the page.
+    void handleOverlayReady(chrome, message, sender).catch(() => undefined)
+    return false
+  }
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.DISABLE) {
+    void disableOverlayForOrigin(chrome, message.origin, message.tabId)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('OVERLAY_FAILED', 'The overlay request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.DISABLE_SITE) {
+    void handleContentDisable(message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('OVERLAY_FAILED', 'The overlay request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  return false
 })

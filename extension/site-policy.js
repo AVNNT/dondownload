@@ -1,0 +1,155 @@
+// Pure per-site permission and content-script registration policy for the
+// optional video overlay. This module has no Chrome API calls so it can be
+// tested directly and reused by the popup, background worker and tests.
+//
+// The overlay is never declared as an always-on content script. The manifest
+// only *declares* optional HTTP(S) host patterns; the popup requests the exact
+// origin of the active tab from a user click.
+
+export const OVERLAY_SCRIPT_PREFIX = 'dondownload-overlay-'
+export const OVERLAY_CORE_FILE = 'overlay-core.js'
+export const OVERLAY_UI_FILE = 'overlay.js'
+
+export const OVERLAY_MESSAGE_TYPES = Object.freeze({
+  ENABLE: 'dondownload:overlay-enable',
+  SYNC: 'dondownload:overlay-sync',
+  DISABLE: 'dondownload:overlay-disable',
+  DISABLE_SITE: 'dondownload:overlay-disable-site',
+  DISABLED: 'dondownload:overlay-disabled',
+  READY: 'dondownload:overlay-ready'
+})
+
+const SUPPORTED_PROTOCOLS = new Set(['http:', 'https:'])
+
+/**
+ * Parse a page URL that may receive the overlay. Embedded credentials are
+ * rejected, matching the manual capture URL policy.
+ */
+export function parseSupportedPageUrl(value) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim()
+  if (raw.length === 0 || raw.length > 4096) return null
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null
+
+  let url
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+
+  if (!SUPPORTED_PROTOCOLS.has(url.protocol)) return null
+  if (!url.hostname || url.origin === 'null') return null
+  if (url.username || url.password) return null
+
+  return { url: url.href, origin: url.origin }
+}
+
+/** Return the canonical origin for an HTTP(S) URL, or null. */
+export function originFromUrl(value) {
+  const parsed = parseSupportedPageUrl(value)
+  return parsed ? parsed.origin : null
+}
+
+/**
+ * Convert an exact origin into the narrowest Chrome match pattern for that
+ * origin. Wildcards, paths, queries and fragments are rejected; callers must
+ * pass a canonical `URL.origin` value.
+ */
+export function originToMatchPattern(origin) {
+  if (typeof origin !== 'string' || origin.length === 0 || origin.length > 2048) {
+    return null
+  }
+  if (/[\s*?\u0000-\u001f\u007f]/.test(origin)) return null
+
+  let url
+  try {
+    url = new URL(origin)
+  } catch {
+    return null
+  }
+
+  if (!SUPPORTED_PROTOCOLS.has(url.protocol)) return null
+  if (!url.hostname || url.origin === 'null') return null
+  if (url.username || url.password) return null
+  if (url.origin !== origin) return null
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') return null
+
+  return `${origin}/*`
+}
+
+/** Recover the exact origin from one of this extension's match patterns. */
+export function matchPatternToOrigin(pattern) {
+  if (typeof pattern !== 'string' || pattern.length === 0) return null
+  if (!pattern.endsWith('/*')) return null
+  const base = pattern.slice(0, -2)
+  if (/[\s*?\u0000-\u001f\u007f]/.test(base)) return null
+  const origin = originFromUrl(base)
+  if (origin === null || origin !== base) return null
+  return originToMatchPattern(origin) === pattern ? origin : null
+}
+
+/**
+ * Deterministic content-script registration id for an origin. A stable id lets
+ * the extension update or remove exactly one registration per opted-in site.
+ */
+export function overlayScriptId(origin) {
+  if (originToMatchPattern(origin) === null) return null
+
+  // FNV-1a 32-bit, encoded as unsigned hex.
+  let hash = 0x811c9dc5
+  for (let index = 0; index < origin.length; index += 1) {
+    hash ^= origin.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${OVERLAY_SCRIPT_PREFIX}${hash.toString(16).padStart(8, '0')}`
+}
+
+/**
+ * The only content-script registration this extension ever creates: one exact
+ * origin, main frame, isolated world. There is no <all_urls> registration.
+ */
+export function overlayRegistrationForOrigin(origin) {
+  const id = overlayScriptId(origin)
+  const pattern = originToMatchPattern(origin)
+  if (id === null || pattern === null) return null
+
+  return {
+    id,
+    matches: [pattern],
+    js: [OVERLAY_CORE_FILE, OVERLAY_UI_FILE],
+    runAt: 'document_idle',
+    allFrames: false,
+    persistAcrossSessions: true,
+    world: 'ISOLATED'
+  }
+}
+
+/** True only when the exact origin pattern is currently granted. */
+export function hasExactOriginGrant(grantedOrigins, origin) {
+  if (!Array.isArray(grantedOrigins)) return false
+  const pattern = originToMatchPattern(origin)
+  return pattern !== null && grantedOrigins.includes(pattern)
+}
+
+/**
+ * Extract the origin from a stored registration, but only when the registration
+ * has the canonical shape for that origin. Anything else is treated as orphaned
+ * and can be removed by reconciliation.
+ */
+export function overlayOriginFromRegistration(registration) {
+  if (!registration || typeof registration !== 'object') return null
+  const id = typeof registration.id === 'string' ? registration.id : ''
+  if (!id.startsWith(OVERLAY_SCRIPT_PREFIX)) return null
+  const matches = Array.isArray(registration.matches) ? registration.matches : []
+  if (matches.length !== 1) return null
+  const origin = matchPatternToOrigin(matches[0])
+  if (origin === null) return null
+  if (overlayScriptId(origin) !== id) return null
+
+  const js = Array.isArray(registration.js) ? registration.js : []
+  if (js.length !== 2 || js[0] !== OVERLAY_CORE_FILE || js[1] !== OVERLAY_UI_FILE) {
+    return null
+  }
+  return origin
+}
