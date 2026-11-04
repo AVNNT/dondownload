@@ -18,19 +18,30 @@ export const PROGRESS_TEMPLATE =
   '%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|' +
   '%(progress.speed)s|%(info.format_id)s'
 
-/** Analysis uses a read-only, single-video JSON dump. */
-export function buildAnalyzeArgs(url: string): string[] {
-  return [
-    '--ignore-config',
-    '--no-plugin-dirs',
-    '--no-playlist',
-    '--no-warnings',
-    '--skip-download',
-    '--dump-single-json',
-    '--no-cache-dir',
-    '--',
-    url
-  ]
+/** Add the app-located Deno runtime without accepting caller-controlled flags. */
+function withJsRuntime(args: string[], denoPath?: string | null): string[] {
+  if (!denoPath) return args
+  const separator = args.indexOf('--')
+  const runtimeArgs = ['--js-runtimes', `deno:${denoPath}`]
+  if (separator < 0) return [...args, ...runtimeArgs]
+  return [...args.slice(0, separator), ...runtimeArgs, ...args.slice(separator)]
+}
+
+export function buildAnalyzeArgs(url: string, denoPath?: string | null): string[] {
+  return withJsRuntime(
+    [
+      '--ignore-config',
+      '--no-plugin-dirs',
+      '--no-playlist',
+      '--no-warnings',
+      '--skip-download',
+      '--dump-single-json',
+      '--no-cache-dir',
+      '--',
+      url
+    ],
+    denoPath
+  )
 }
 
 /**
@@ -43,18 +54,21 @@ export function buildAnalyzeArgs(url: string): string[] {
  * cookie source, browser profile, config file, auth option or user flag is
  * accepted.
  */
-export function buildPlaylistArgs(url: string): string[] {
-  return [
-    '--ignore-config',
-    '--no-plugin-dirs',
-    '--flat-playlist',
-    '--dump-single-json',
-    '--skip-download',
-    '--no-warnings',
-    '--no-cache-dir',
-    '--',
-    url
-  ]
+export function buildPlaylistArgs(url: string, denoPath?: string | null): string[] {
+  return withJsRuntime(
+    [
+      '--ignore-config',
+      '--no-plugin-dirs',
+      '--flat-playlist',
+      '--dump-single-json',
+      '--skip-download',
+      '--no-warnings',
+      '--no-cache-dir',
+      '--',
+      url
+    ],
+    denoPath
+  )
 }
 
 export interface DownloadArgumentInput {
@@ -67,6 +81,8 @@ export interface DownloadArgumentInput {
   mergeOutputFormat: string | null
   /** Verified FFmpeg executable when a separate-stream merge is selected. */
   ffmpegLocation: string | null
+  /** Optional explicitly located Deno runtime for yt-dlp's JS challenges. */
+  denoPath?: string | null
 }
 
 /**
@@ -77,24 +93,27 @@ export interface DownloadArgumentInput {
  * verified from the trusted output directory rather than trusted from stdout.
  */
 export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
-  const args = [
-    '--ignore-config',
-    '--no-plugin-dirs',
-    '--no-playlist',
-    '--no-warnings',
-    '--no-simulate',
-    '--windows-filenames',
-    '--newline',
-    '--progress',
-    '--no-mtime',
-    '--no-cache-dir',
-    '--progress-template',
-    PROGRESS_TEMPLATE,
-    '--format',
-    input.formatSelector,
-    '--output',
-    input.outputTemplate
-  ]
+  const args = withJsRuntime(
+    [
+      '--ignore-config',
+      '--no-plugin-dirs',
+      '--no-playlist',
+      '--no-warnings',
+      '--no-simulate',
+      '--windows-filenames',
+      '--newline',
+      '--progress',
+      '--no-mtime',
+      '--no-cache-dir',
+      '--progress-template',
+      PROGRESS_TEMPLATE,
+      '--format',
+      input.formatSelector,
+      '--output',
+      input.outputTemplate
+    ],
+    input.denoPath
+  )
 
   if (input.mergeOutputFormat !== null) {
     args.push('--merge-output-format', input.mergeOutputFormat)

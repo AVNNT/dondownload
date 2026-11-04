@@ -281,10 +281,12 @@ testing as a manual step.
 
 ## Known gaps
 
-- Deno is staged and installed, but the current application does not yet pass
-  its path to yt-dlp. The yt-dlp child process must be given a runtime path (or
-  a controlled `PATH`) before bundled Deno is effective. This is an application
-  change outside this packaging task.
+- Deno is located from the explicit `DONDOWNLOAD_DENO_PATH` override, packaged
+  `resources/vendor/deno/`, app-local `vendor/deno/`, or `PATH`. The resolved
+  path is passed as a fixed `--js-runtimes deno:<path>` argument to yt-dlp
+  analysis, playlist preview and media-download operations. Unit tests cover
+  the wiring; the baseline artifact predates this change and must be rebuilt
+  before release review.
 - ffprobe is staged but not invoked by the current application.
 - The installer is not code-signed. Public distribution requires signing.
 - No auto-update, publish provider or telemetry is configured.

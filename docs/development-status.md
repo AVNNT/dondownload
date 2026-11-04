@@ -10,11 +10,12 @@ preload wiring, a desktop-first renderer batch UI, opt-in local batch
 integration coverage, and an opt-in live playlist preview/selection check.
 Neither new check downloads public media. There is still no
 native-bridge batch route, and no live-provider verification was run for the UI.
-Milestone 4 is explicitly deferred. Milestone 5A now has its shared
-download-settings contract, additive SQLite schema v5 foundation, runtime
-settings service, trusted IPC/preload API and startup/live aria2 application.
-Scheduling, individual download controls, renderer UI and installer work remain
-outside this slice.
+Milestone 4 is explicitly deferred. Milestone 5A has its shared download-settings
+contract, additive SQLite schema v5, runtime settings service, trusted
+IPC/preload API and startup/live aria2 application. The Windows installer
+baseline is integrated locally, and packaged Deno is wired into yt-dlp calls.
+Scheduling, individual download controls, settings UI and final installer
+rebuild/release checks remain open.
 
 ## Current milestone
 

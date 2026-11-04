@@ -41,11 +41,13 @@ package directory is user-scoped rather than machine-wide.
   `PATH`.
 - **ffprobe** is not invoked by the application at runtime. It was used by the
   verification checks to inspect outputs and confirm a full decode.
-- **Deno** is an external JavaScript runtime used by yt-dlp for extraction on
-  sites that require it. DonDownload does not locate, install or manage Deno;
-  yt-dlp uses a runtime available to its process environment.
-- DonDownload does **not** bundle these tools, include them in build output, or
-  download them at runtime.
+- **Deno** is a JavaScript runtime used by yt-dlp for extraction on sites that
+  require it. DonDownload locates an explicit `DONDOWNLOAD_DENO_PATH`, a
+  packaged/app-local vendor copy, or a copy on `PATH`, and passes the located
+  path to yt-dlp. It does not install or update Deno.
+- DonDownload does not download these tools at runtime. The Windows installer
+  packaging baseline can include locally staged vendor copies; see
+  [installer-packaging.md](installer-packaging.md).
 
 ## Licensing
 

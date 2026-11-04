@@ -222,6 +222,7 @@ interface Toolchain {
   state: MediaToolState
   ytdlpPath: string | null
   ffmpegPath: string | null
+  denoPath: string | null
 }
 
 interface ActiveDownload {
@@ -850,7 +851,8 @@ export function createMediaEngine(
           hint: YTDLP_HINT
         },
         ytdlpPath: null,
-        ffmpegPath: null
+        ffmpegPath: null,
+        denoPath: null
       }
     }
 
@@ -868,11 +870,13 @@ export function createMediaEngine(
           hint: YTDLP_HINT
         },
         ytdlpPath: null,
-        ffmpegPath: null
+        ffmpegPath: null,
+        denoPath: null
       }
     }
 
     const ffmpeg = await locateMediaTool('ffmpeg', locationOptions)
+    const deno = await locateMediaTool('deno', locationOptions)
     let ffmpegPath: string | null = null
     let ffmpegVersionValue: string | null = null
     let ffmpegProblem: string | null = null
@@ -911,7 +915,8 @@ export function createMediaEngine(
         hint: ffmpegProblem === null ? null : FFMPEG_HINT
       },
       ytdlpPath: ytdlp.path,
-      ffmpegPath
+      ffmpegPath,
+      denoPath: deno.path
     }
   }
 
@@ -1058,7 +1063,7 @@ export function createMediaEngine(
     try {
       result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
-        buildAnalyzeArgs(normalized),
+        buildAnalyzeArgs(normalized, toolchain.denoPath),
         {
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
@@ -1191,7 +1196,7 @@ export function createMediaEngine(
     try {
       result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
-        buildPlaylistArgs(normalized),
+        buildPlaylistArgs(normalized, toolchain.denoPath),
         {
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
@@ -1558,7 +1563,8 @@ export function createMediaEngine(
       outputTemplate,
       mergeOutputFormat: option.mergeOutputFormat,
       ffmpegLocation:
-        option.mergeOutputFormat === null ? null : toolchain.ffmpegPath
+        option.mergeOutputFormat === null ? null : toolchain.ffmpegPath,
+      denoPath: toolchain.denoPath
     })
 
     const safeProgress: (update: MediaDownloadProgress) => void =

@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
-export type MediaToolName = 'ytdlp' | 'ffmpeg'
+export type MediaToolName = 'ytdlp' | 'ffmpeg' | 'deno'
 
 export interface LocateToolOptions {
   env: NodeJS.ProcessEnv
@@ -50,7 +50,7 @@ function executableNames(
   tool: MediaToolName,
   platform: NodeJS.Platform
 ): string[] {
-  const base = tool === 'ytdlp' ? 'yt-dlp' : 'ffmpeg'
+  const base = tool === 'ytdlp' ? 'yt-dlp' : tool === 'ffmpeg' ? 'ffmpeg' : 'deno'
   return platform === 'win32' ? [`${base}.exe`, base] : [base]
 }
 
@@ -75,10 +75,15 @@ function vendorCandidates(
         candidates.push(path.join(root, 'yt-dlp', name))
         candidates.push(path.join(root, 'bin', name))
       }
-    } else {
+    } else if (tool === 'ffmpeg') {
       for (const name of names) {
         candidates.push(path.join(root, 'ffmpeg', name))
         candidates.push(path.join(root, 'ffmpeg', 'bin', name))
+        candidates.push(path.join(root, 'bin', name))
+      }
+    } else {
+      for (const name of names) {
+        candidates.push(path.join(root, 'deno', name))
         candidates.push(path.join(root, 'bin', name))
       }
     }
@@ -115,7 +120,11 @@ export async function locateMediaTool(
   options: LocateToolOptions
 ): Promise<ToolLocation> {
   const overrideKey =
-    tool === 'ytdlp' ? 'DONDOWNLOAD_YTDLP_PATH' : 'DONDOWNLOAD_FFMPEG_PATH'
+    tool === 'ytdlp'
+      ? 'DONDOWNLOAD_YTDLP_PATH'
+      : tool === 'ffmpeg'
+        ? 'DONDOWNLOAD_FFMPEG_PATH'
+        : 'DONDOWNLOAD_DENO_PATH'
   const override = envValue(options.env, overrideKey, options.platform)
 
   if (override !== undefined && override.trim().length > 0) {
