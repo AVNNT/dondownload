@@ -3,8 +3,11 @@ out/
 dist/
 coverage/
 
-# Local aria2 binaries are intentionally not redistributed with this repo.
-vendor/aria2/
+# Local third-party binaries are intentionally not redistributed with this repo.
+vendor/
+
+# Installer staging output: staged executables, manifest and packaging temp files.
+build/
 
 # Built locally from native/NativeHost.cs with the Windows .NET compiler.
 native/*.exe

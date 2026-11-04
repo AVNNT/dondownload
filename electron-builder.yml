@@ -1,0 +1,83 @@
+# DonDownload Windows installer baseline.
+#
+# Build with:
+#   npm run build:installer
+#
+# The build is intentionally local and offline after dependencies and the
+# electron-builder toolchain are present. There is no publish provider, update
+# feed, telemetry or cloud service configured here.
+
+appId: com.dondownload.app
+productName: DonDownload
+copyright: Copyright 2026 DonDownload contributors
+
+directories:
+  output: dist
+
+files:
+  - out/**/*
+  - package.json
+  - LICENSE
+  # The main/preload bundles use only Electron and Node built-ins, and the
+  # renderer bundles React. Do not ship dev-only node_modules copies.
+  - "!node_modules/**/*"
+  - "!**/*.map"
+
+extraResources:
+  # Staged, version-checked third-party executables plus manifest.json.
+  # build/vendor is produced by scripts/stage-vendor.ps1 and is git-ignored.
+  - from: build/vendor
+    to: vendor
+  # Compiled native messaging host. Produced by scripts/build-native-host.ps1.
+  - from: native/dondownload-native-host.exe
+    to: native/dondownload-native-host.exe
+  # Unpacked Manifest V3 extension assets for manual loading.
+  - from: extension
+    to: extension
+  # Current-user registration helper. It is never run automatically.
+  - from: scripts/register-native-host.ps1
+    to: registration/register-native-host.ps1
+  # Readable third-party notices, license texts and this packaging document.
+  - from: third-party/NOTICE.md
+    to: licenses/THIRD_PARTY_NOTICES.md
+  - from: third-party/licenses
+    to: licenses/third-party
+  - from: docs/installer-packaging.md
+    to: licenses/installer-packaging.md
+  - from: LICENSE
+    to: LICENSE.txt
+
+asar: true
+compression: maximum
+npmRebuild: false
+removePackageScripts: true
+publish: null
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: DonDownload-${version}-${arch}-setup.${ext}
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  # Assisted installer with an explicit install directory. It is not a
+  # one-click silent install and it does not require elevation.
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  # Force current-user mode and skip the install-mode page, so an administrator
+  # account cannot choose a per-machine installation.
+  include: scripts/installer/force-current-user.nsh
+  # Do not ship electron-builder's elevate helper; this installer never elevates.
+  packElevateHelper: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DonDownload
+  runAfterFinish: false
+  # The uninstaller removes only the application installation and shortcuts.
+  # It must not remove Downloads or the per-user application data directory.
+  deleteAppDataOnUninstall: false
+  uninstallDisplayName: DonDownload
