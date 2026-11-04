@@ -38,7 +38,7 @@ explicit user "Download again" action.
   reference an option of the correct kind.
 - `MediaJob`: `id` (server-generated opaque identifier; UUID v4 is the
   reference implementation), `analysisId`, `optionId`, `kind`, `label`,
-  `status`, `completedBytes`, nullable `totalBytes`, `speedBps`,
+  safe analyzed `title`, `status`, `completedBytes`, nullable `totalBytes`, `speedBps`,
   nullable `errorMessage`, `createdAt`, `updatedAt`, `completedAt`.
   It never contains a page URL, disk path, raw yt-dlp format ID/selector,
   headers or cookies.
@@ -48,9 +48,9 @@ explicit user "Download again" action.
 - `MediaQueueInput`: `{ analysisId, optionId, force?: true }`.
 
 `MediaJobRecord` in `src/shared/media.ts` is an **internal persistence shape**
-with `sourceUrl`, `dir` and `filePath`. It must never cross IPC or the native
-bridge. `normalizeMediaSourceUrl` accepts only http(s), requires a host and
-strips userinfo and fragments before storage.
+with `sourceUrl`, `title`, `dir` and `filePath`. It must never cross IPC or the
+native bridge. `normalizeMediaSourceUrl` accepts only http(s), requires a host,
+rejects userinfo, and removes fragments before storage.
 
 ## Native bridge contract
 
@@ -133,7 +133,8 @@ Exact statuses: `queued` | `analyzing` | `downloading` | `merging` | `complete` 
 - Worker C's extension must validate `sender.id`, `sender.tab`, the top frame,
   and the exact current grant/origin before calling native. No host permissions
   are added.
-- Page URLs are normalized http(s) with no userinfo or fragment. The analyzer
+- Page URLs are normalized http(s); credential-bearing URLs are rejected and
+  fragments are removed. The analyzer
   must also block non-public targets and local/private addresses.
 - The future yt-dlp launcher uses fixed arguments only, `shell: false` and
   `--ignore-config`. It must never use browser cookies/credentials, bypass
