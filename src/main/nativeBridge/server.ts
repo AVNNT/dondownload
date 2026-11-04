@@ -10,6 +10,24 @@ import {
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import {
+  MEDIA_BRIDGE_ROUTES,
+  MEDIA_BRIDGE_ROUTE_OPERATIONS,
+  parseMediaAnalyzeRequest,
+  parseMediaCancelRequest,
+  parseMediaQueueRequest,
+  parseMediaStatusRequest,
+  type MediaBridgeRoute,
+  type MediaBridgeTarget
+} from '@shared/mediaBridge'
+import {
+  parseMediaAnalysis,
+  parseMediaJob,
+  type AnalyzeMediaInput,
+  type MediaAnalysis,
+  type MediaJob,
+  type MediaQueueInput
+} from '@shared/media'
+import {
   MAX_BRIDGE_BODY_BYTES,
   NATIVE_BRIDGE_APP,
   NATIVE_BRIDGE_STATE_FILE,
@@ -24,6 +42,44 @@ import { AppError, toErrorInfo } from '../errors'
 const BRIDGE_ROUTE = '/queue-download'
 const LOOPBACK_ADDRESS = '127.0.0.1'
 
+function isMediaRoute(value: string | undefined): value is MediaBridgeRoute {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(MEDIA_BRIDGE_ROUTE_OPERATIONS, value)
+  )
+}
+
+function mediaErrorStatus(code: string): number {
+  if (code === 'DUPLICATE_DOWNLOAD' || code.endsWith('_DUPLICATE')) return 409
+  if (
+    code === 'MEDIA_UNAVAILABLE' ||
+    code.endsWith('_UNAVAILABLE') ||
+    code.endsWith('_FAILED') ||
+    code === 'INTERNAL_ERROR'
+  ) {
+    return 503
+  }
+  return 400
+}
+
+/**
+ * Defence in depth: media errors must never echo a URL, path or credential.
+ * Worker B already returns sanitized errors, but the bridge is the last place
+ * before the value reaches the native host.
+ */
+function safeErrorMessage(message: string): string {
+  const text = message.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  if (
+    text.length === 0 ||
+    text.length > 2000 ||
+    /(?:https?|file):\/\//i.test(text) ||
+    /[A-Za-z]:\\/.test(text)
+  ) {
+    return 'The media operation failed.'
+  }
+  return text
+}
+
 /** The only manager capability the bridge is allowed to use. */
 export interface BridgeDownloadManager {
   add(input: unknown): Promise<unknown>
@@ -34,6 +90,11 @@ export interface NativeBridgeOptions {
   /** Electron's per-user userData directory. */
   userDataPath: string
   logger?: (message: string) => void
+  /**
+   * Additive media capability. Worker B wires this; when it is absent the
+   * media routes stay authenticated but report a safe unavailable error.
+   */
+  mediaBridge?: MediaBridgeTarget
 }
 
 export interface NativeBridge {
@@ -197,7 +258,8 @@ export async function startNativeBridge(
       })
       return
     }
-    if (request.url !== BRIDGE_ROUTE) {
+    const route = request.url
+    if (route !== BRIDGE_ROUTE && !isMediaRoute(route)) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
       return
     }
@@ -213,6 +275,12 @@ export async function startNativeBridge(
     }
     if (!bearerMatches(request.headers.authorization, token)) {
       sendError(response, 401, 'UNAUTHORIZED', 'The bridge token is invalid.')
+      return
+    }
+
+    if (route !== BRIDGE_ROUTE && options.mediaBridge === undefined) {
+      request.resume()
+      sendError(response, 503, 'MEDIA_UNAVAILABLE', 'Media operations are not available.')
       return
     }
 
@@ -260,6 +328,15 @@ export async function startNativeBridge(
       return
     }
 
+    if (route !== BRIDGE_ROUTE) {
+      if (!isMediaRoute(route)) {
+        sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
+        return
+      }
+      await handleMediaRequest(route, parsed, response)
+      return
+    }
+
     let input: { url: string }
     try {
       input = parseQueueDownloadRequest(parsed)
@@ -288,6 +365,149 @@ export async function startNativeBridge(
 
     // Success is reported only after add() resolved.
     sendJson(response, 200, { ok: true, accepted: true })
+  }
+
+  function sendMediaFailure(
+    response: ServerResponse,
+    operation: string,
+    error: unknown
+  ): void {
+    const info = toErrorInfo(error)
+    logger(`Native bridge media operation failed (${operation}, ${info.code}).`)
+    sendError(
+      response,
+      mediaErrorStatus(info.code),
+      info.code,
+      safeErrorMessage(info.message)
+    )
+  }
+
+  async function handleMediaRequest(
+    route: MediaBridgeRoute,
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    const target = options.mediaBridge
+    if (target === undefined) {
+      sendError(response, 503, 'MEDIA_UNAVAILABLE', 'Media operations are not available.')
+      return
+    }
+
+    const operation = MEDIA_BRIDGE_ROUTE_OPERATIONS[route]
+
+    if (route === MEDIA_BRIDGE_ROUTES.analyze) {
+      let input: AnalyzeMediaInput
+      try {
+        input = parseMediaAnalyzeRequest(parsed)
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          sendError(response, 400, error.code, error.message)
+          return
+        }
+        throw error
+      }
+
+      let rawAnalysis: unknown
+      try {
+        rawAnalysis = await target.analyzeMedia(input)
+      } catch (error) {
+        sendMediaFailure(response, operation, error)
+        return
+      }
+
+      let analysis: MediaAnalysis
+      try {
+        analysis = parseMediaAnalysis(rawAnalysis)
+      } catch {
+        logger(`Native bridge media operation returned an invalid response (${operation}).`)
+        sendError(
+          response,
+          500,
+          'MEDIA_RESPONSE_INVALID',
+          'The media operation returned an invalid response.'
+        )
+        return
+      }
+      sendJson(response, 200, { ok: true, operation, analysis })
+      return
+    }
+
+    if (route === MEDIA_BRIDGE_ROUTES.queue) {
+      let input: MediaQueueInput
+      try {
+        input = parseMediaQueueRequest(parsed)
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          sendError(response, 400, error.code, error.message)
+          return
+        }
+        throw error
+      }
+
+      let rawJob: unknown
+      try {
+        rawJob = await target.queueMedia(input)
+      } catch (error) {
+        sendMediaFailure(response, operation, error)
+        return
+      }
+
+      let job: MediaJob
+      try {
+        job = parseMediaJob(rawJob)
+      } catch {
+        logger(`Native bridge media operation returned an invalid response (${operation}).`)
+        sendError(
+          response,
+          500,
+          'MEDIA_RESPONSE_INVALID',
+          'The media operation returned an invalid response.'
+        )
+        return
+      }
+      sendJson(response, 200, { ok: true, operation, job })
+      return
+    }
+
+    let jobId: string
+    try {
+      jobId =
+        route === MEDIA_BRIDGE_ROUTES.status
+          ? parseMediaStatusRequest(parsed).jobId
+          : parseMediaCancelRequest(parsed).jobId
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    let rawJob: unknown
+    try {
+      rawJob =
+        route === MEDIA_BRIDGE_ROUTES.status
+          ? await target.getMediaStatus(jobId)
+          : await target.cancelMedia(jobId)
+    } catch (error) {
+      sendMediaFailure(response, operation, error)
+      return
+    }
+
+    let job: MediaJob
+    try {
+      job = parseMediaJob(rawJob)
+    } catch {
+      logger(`Native bridge media operation returned an invalid response (${operation}).`)
+      sendError(
+        response,
+        500,
+        'MEDIA_RESPONSE_INVALID',
+        'The media operation returned an invalid response.'
+      )
+      return
+    }
+    sendJson(response, 200, { ok: true, operation, job })
   }
 
   server.requestTimeout = 5_000

@@ -85,6 +85,18 @@ async function writeTrackedTabs(chromeApi, tracked) {
 }
 
 /**
+ * True only when this exact tab was recorded as running the overlay for the
+ * exact origin. The service worker uses this before any native media call so an
+ * arbitrary same-origin message cannot borrow another tab's grant.
+ */
+export async function isOverlayTabTracked(chromeApi, origin, tabId) {
+  if (!isExactOrigin(origin)) return false
+  if (!Number.isInteger(tabId) || tabId < 0) return false
+  const tracked = await readTrackedTabs(chromeApi)
+  return Array.isArray(tracked[origin]) && tracked[origin].includes(tabId)
+}
+
+/**
  * Remember a tab that currently runs the overlay for an exact origin. Chrome
  * does not let the extension query same-origin tabs after the host grant is
  * revoked (the URL filter needs `tabs` or a matching host grant), so this

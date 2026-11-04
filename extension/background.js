@@ -15,6 +15,11 @@ import {
   handlePermissionsRemoved,
   syncOverlayForTab
 } from './overlay-controller.js'
+import {
+  MEDIA_MESSAGE_TYPES,
+  analyzeMediaForSender,
+  queueMediaForSender
+} from './media-bridge.js'
 
 const MENU_ID = 'dondownload-link'
 const BADGE_CLEAR_MS = 4_000
@@ -194,6 +199,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // never reported back to the page.
     void handleOverlayReady(chrome, message, sender).catch(() => undefined)
     return false
+  }
+
+  if (message.type === MEDIA_MESSAGE_TYPES.ANALYZE) {
+    void analyzeMediaForSender(chrome, message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('MEDIA_REQUEST_FAILED', 'The media request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === MEDIA_MESSAGE_TYPES.QUEUE) {
+    void queueMediaForSender(chrome, message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure('MEDIA_REQUEST_FAILED', 'The media request could not be completed.')
+        )
+      )
+    return true
   }
 
   if (message.type === OVERLAY_MESSAGE_TYPES.DISABLE) {

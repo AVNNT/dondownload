@@ -1,5 +1,9 @@
-// The browser extension has exactly one outbound operation. It never touches
-// the browser's downloads API, webRequest, cookies, tabs history or page DOM.
+// Outbound native messaging. The manual capture operation stays exactly as it
+// was; media operations add strict analyze/queue/status/cancel envelopes over
+// the same native host. This module never touches the browser's downloads API,
+// network interception, cookies, tabs history or page DOM.
+
+import { isOpaqueMediaId, parseMediaBridgeResponse } from './media-contract.js'
 
 export const NATIVE_HOST = 'com.dondownload.bridge'
 export const QUEUE_MESSAGE_TYPE = 'queue-download'
@@ -171,5 +175,127 @@ export function sendQueueDownload(rawUrl, options = {}) {
         }
       })
     }
+  })
+}
+
+function invalidMediaResponse() {
+  return {
+    ok: false,
+    error: {
+      code: 'NATIVE_RESPONSE_INVALID',
+      message: 'The DonDownload helper returned an unexpected media response.'
+    }
+  }
+}
+
+/**
+ * Send one exact media envelope and validate the entire response against the
+ * frozen DTO contract. Any transport, host or shape error resolves as ok:false
+ * with a safe message.
+ */
+function sendMediaMessage(message) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, message, (response) => {
+        const runtimeError = chrome.runtime.lastError
+        if (runtimeError) {
+          finish({ ok: false, error: describeNativeError(runtimeError.message) })
+          return
+        }
+
+        let parsed
+        try {
+          parsed = parseMediaBridgeResponse(response)
+        } catch {
+          finish(invalidMediaResponse())
+          return
+        }
+        finish(parsed)
+      })
+    } catch (error) {
+      finish({
+        ok: false,
+        error: describeNativeError(error instanceof Error ? error.message : '')
+      })
+    }
+  })
+}
+
+/** Analyze the page URL obtained by the background worker, never the DOM. */
+export function sendAnalyzeMedia(rawUrl) {
+  const normalized = normalizeSupportedUrl(rawUrl)
+  if (!normalized.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: normalized.code, message: normalized.message }
+    })
+  }
+
+  return sendMediaMessage({ type: 'analyze-media', url: normalized.url }).then(
+    (result) => {
+      if (result.ok === false) return result
+      if (result.operation !== 'analyze-media') return invalidMediaResponse()
+      return { ok: true, analysis: result.analysis }
+    }
+  )
+}
+
+/** Queue one opaque analysis/option pair. Raw format selectors never leave. */
+export function sendQueueMedia(input) {
+  const analysisId = input && input.analysisId
+  const optionId = input && input.optionId
+  if (!isOpaqueMediaId(analysisId) || !isOpaqueMediaId(optionId)) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_MEDIA_OPTION',
+        message: 'The selected media option is not valid. Analyze the page again.'
+      }
+    })
+  }
+
+  return sendMediaMessage({
+    type: 'queue-media',
+    analysisId,
+    optionId
+  }).then((result) => {
+    if (result.ok === false) return result
+    if (result.operation !== 'queue-media') return invalidMediaResponse()
+    return { ok: true, job: result.job }
+  })
+}
+
+export function sendMediaStatus(jobId) {
+  if (!isOpaqueMediaId(jobId)) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: 'INVALID_MEDIA_JOB', message: 'The media job identifier is not valid.' }
+    })
+  }
+  return sendMediaMessage({ type: 'media-status', jobId }).then((result) => {
+    if (result.ok === false) return result
+    if (result.operation !== 'media-status') return invalidMediaResponse()
+    return { ok: true, job: result.job }
+  })
+}
+
+export function sendCancelMedia(jobId) {
+  if (!isOpaqueMediaId(jobId)) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: 'INVALID_MEDIA_JOB', message: 'The media job identifier is not valid.' }
+    })
+  }
+  return sendMediaMessage({ type: 'cancel-media', jobId }).then((result) => {
+    if (result.ok === false) return result
+    if (result.operation !== 'cancel-media') return invalidMediaResponse()
+    return { ok: true, job: result.job }
   })
 }

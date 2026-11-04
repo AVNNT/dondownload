@@ -179,9 +179,169 @@
     return code === 'KeyD' || key === 'd'
   }
 
+  var OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+  function isNonEmptyText(value, maximum) {
+    return (
+      typeof value === 'string' &&
+      value.trim().length > 0 &&
+      value.length <= maximum
+    )
+  }
+
+  function nullableInteger(value, minimum, maximum) {
+    if (value === null) return null
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) return null
+    if (value < minimum || value > maximum) return null
+    return value
+  }
+
+  function nullableNumber(value, minimum, maximum) {
+    if (value === null) return null
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null
+    if (value < minimum || value > maximum) return null
+    return value
+  }
+
+  function safeOption(option) {
+    if (!option || typeof option !== 'object') return null
+    if (option.kind !== 'video' && option.kind !== 'audio') return null
+    if (typeof option.optionId !== 'string' || !OPAQUE_MEDIA_ID.test(option.optionId)) {
+      return null
+    }
+    if (!isNonEmptyText(option.label, 240)) return null
+    if (!isNonEmptyText(option.container, 32)) return null
+    return {
+      kind: option.kind,
+      optionId: option.optionId,
+      label: option.label,
+      container: option.container,
+      width: nullableInteger(option.width, 1, 65535),
+      height: nullableInteger(option.height, 1, 65535),
+      fps: nullableNumber(option.fps, 0, 1000),
+      videoCodec: isNonEmptyText(option.videoCodec, 64) ? option.videoCodec : null,
+      audioCodec: isNonEmptyText(option.audioCodec, 64) ? option.audioCodec : null,
+      hasAudio: option.hasAudio === true,
+      requiresMerge: option.requiresMerge === true,
+      filesizeBytes: nullableInteger(option.filesizeBytes, 0, Number.MAX_SAFE_INTEGER)
+    }
+  }
+
   /**
-   * The only statements this milestone may make about media downloads. There
-   * are deliberately no format or quality choices here.
+   * Build a safe display view from a verified analysis. Only response fields
+   * are used; the overlay never invents a quality, format or identifier.
+   */
+  function mediaView(analysis) {
+    if (!analysis || typeof analysis !== 'object') return null
+    if (
+      typeof analysis.analysisId !== 'string' ||
+      !OPAQUE_MEDIA_ID.test(analysis.analysisId)
+    ) {
+      return null
+    }
+    if (!isNonEmptyText(analysis.title, 500)) return null
+    if (!Array.isArray(analysis.options)) return null
+
+    var options = []
+    var byId = Object.create(null)
+    for (var index = 0; index < analysis.options.length; index += 1) {
+      var option = safeOption(analysis.options[index])
+      if (!option) continue
+      if (byId[option.optionId]) continue
+      byId[option.optionId] = option
+      options.push(option)
+    }
+
+    function referencedKind(value, expectedKind) {
+      if (typeof value !== 'string' || !OPAQUE_MEDIA_ID.test(value)) return null
+      var referenced = byId[value]
+      if (!referenced || referenced.kind !== expectedKind) return null
+      return value
+    }
+
+    var videoOptions = []
+    var audioOptions = []
+    for (var optionIndex = 0; optionIndex < options.length; optionIndex += 1) {
+      if (options[optionIndex].kind === 'video') videoOptions.push(options[optionIndex])
+      else audioOptions.push(options[optionIndex])
+    }
+
+    return {
+      analysisId: analysis.analysisId,
+      title: analysis.title,
+      durationSeconds: nullableNumber(
+        analysis.durationSeconds,
+        0,
+        Number.MAX_SAFE_INTEGER
+      ),
+      options: options,
+      videoOptions: videoOptions,
+      audioOptions: audioOptions,
+      bestVideoOptionId: referencedKind(analysis.bestVideoOptionId, 'video'),
+      bestAudioOptionId: referencedKind(analysis.bestAudioOptionId, 'audio')
+    }
+  }
+
+  function formatBytes(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return ''
+    if (value < 1024) return value + ' B'
+    if (value < 1024 * 1024) return Math.round(value / 1024) + ' KB'
+    if (value < 1024 * 1024 * 1024) {
+      return (Math.round(value / (1024 * 1024) * 10) / 10) + ' MB'
+    }
+    return (Math.round(value / (1024 * 1024 * 1024) * 10) / 10) + ' GB'
+  }
+
+  function describeMediaOption(option) {
+    if (!option || typeof option !== 'object') return ''
+    var parts = []
+    if (typeof option.height === 'number') parts.push(option.height + 'p')
+    else if (typeof option.width === 'number') parts.push(option.width + 'px wide')
+    if (typeof option.container === 'string' && option.container.length > 0) {
+      parts.push(option.container.toUpperCase())
+    }
+    if (typeof option.fps === 'number' && option.fps > 0) {
+      parts.push(Math.round(option.fps) + ' fps')
+    }
+    if (option.kind === 'video' && option.hasAudio === true) parts.push('with audio')
+    if (option.requiresMerge === true) parts.push('merged')
+    var size = formatBytes(option.filesizeBytes)
+    if (size) parts.push(size)
+    return parts.join(' · ')
+  }
+
+  function formatDuration(seconds) {
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+      return ''
+    }
+    var total = Math.round(seconds)
+    var hours = Math.floor(total / 3600)
+    var minutes = Math.floor((total % 3600) / 60)
+    var remaining = total % 60
+    if (hours > 0) {
+      return hours + ':' + String(minutes).padStart(2, '0') + ':' + String(remaining).padStart(2, '0')
+    }
+    return minutes + ':' + String(remaining).padStart(2, '0')
+  }
+
+  /** Initial, truthful panel copy for the media milestone. */
+  function initialMediaState() {
+    return Object.freeze({
+      title: 'Video options for this page',
+      detail:
+        'Choose Analyze to ask DonDownload about this page. Only the page address from the browser is used; the video source, cookies and player state are never read.',
+      actionLabel: 'Analyze this page',
+      analyzingLabel: 'Analyzing…',
+      optionsHint:
+        'Options come from a verified analysis. Nothing is captured or downloaded until you choose one.',
+      disableLabel: 'Turn off overlay on this site',
+      shortcutLabel: SHORTCUT_LABEL
+    })
+  }
+
+  /**
+   * Retained for the pre-media fallback path. The live overlay uses
+   * initialMediaState and only shows verified response options.
    */
   function unavailableState() {
     return Object.freeze({
@@ -209,6 +369,10 @@
     nextActiveVideo: nextActiveVideo,
     isTypingTarget: isTypingTarget,
     isOverlayShortcut: isOverlayShortcut,
+    initialMediaState: initialMediaState,
+    mediaView: mediaView,
+    describeMediaOption: describeMediaOption,
+    formatDuration: formatDuration,
     unavailableState: unavailableState
   })
 

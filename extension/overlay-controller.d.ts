@@ -75,6 +75,11 @@ export function handleOverlayReady(
   message: unknown,
   sender: unknown
 ): Promise<boolean>
+export function isOverlayTabTracked(
+  chromeApi: unknown,
+  origin: unknown,
+  tabId: unknown
+): Promise<boolean>
 export function rememberOverlayTab(
   chromeApi: unknown,
   origin: unknown,
