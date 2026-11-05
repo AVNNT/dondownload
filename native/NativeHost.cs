@@ -787,7 +787,7 @@ internal static class NativeHost
                     "requiresMerge",
                     "filesizeBytes"
                 },
-                new string[0]))
+                new string[] { "estimatedBytes", "sizeIsEstimate" }))
         {
             return false;
         }
@@ -812,6 +812,16 @@ internal static class NativeHost
         if (!ValidateNullableInteger(record["width"], 1, 65535) ||
             !ValidateNullableInteger(record["height"], 1, 65535) ||
             !ValidateNullableInteger(record["filesizeBytes"], 0, long.MaxValue))
+        {
+            return false;
+        }
+        if (record.ContainsKey("estimatedBytes") &&
+            !ValidateNullableInteger(record["estimatedBytes"], 0, long.MaxValue))
+        {
+            return false;
+        }
+        if (record.ContainsKey("sizeIsEstimate") &&
+            !(record["sizeIsEstimate"] is bool))
         {
             return false;
         }

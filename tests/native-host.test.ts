@@ -79,6 +79,8 @@ function videoOption(overrides: Record<string, unknown> = {}): Record<string, un
     hasAudio: true,
     requiresMerge: true,
     filesizeBytes: 10_000,
+    estimatedBytes: 10_000,
+    sizeIsEstimate: false,
     ...overrides
   }
 }
@@ -97,6 +99,8 @@ function audioOption(overrides: Record<string, unknown> = {}): Record<string, un
     hasAudio: true,
     requiresMerge: false,
     filesizeBytes: null,
+    estimatedBytes: null,
+    sizeIsEstimate: false,
     ...overrides
   }
 }
@@ -556,6 +560,38 @@ describeWindows('Windows native messaging host', () => {
     })
   })
 
+  it('accepts estimated media sizes and legacy options without estimate fields', async () => {
+    const withEstimate = mediaAnalysis({
+      options: [
+        videoOption({ estimatedBytes: 12_000, sizeIsEstimate: true }),
+        audioOption({ estimatedBytes: null, sizeIsEstimate: false })
+      ]
+    })
+    const legacyOptions = [videoOption(), audioOption()].map((option) => {
+      const { estimatedBytes: _estimatedBytes, sizeIsEstimate: _sizeIsEstimate, ...legacy } =
+        option
+      return legacy
+    })
+    const legacy = mediaAnalysis({ options: legacyOptions })
+
+    for (const analysis of [withEstimate, legacy]) {
+      const app = await startFakeApp(
+        jsonRespond({ ok: true, operation: 'analyze-media', analysis })
+      )
+      const dir = await makeTempDir()
+      const statePath = await writeState(dir, { port: app.port, token: app.token })
+      const run = await runHost(
+        [frame(JSON.stringify({ type: 'analyze-media', url: 'https://example.com/watch?v=1' }))],
+        { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+      )
+
+      expect(run.code).toBe(0)
+      expect(parseFrames(run.stdout)).toEqual([
+        { ok: true, operation: 'analyze-media', analysis }
+      ])
+    }
+  })
+
   it(
     'lets analyze-media outlast the regular 20s bridge timeout',
     async () => {
@@ -769,6 +805,34 @@ describeWindows('Windows native messaging host', () => {
       { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
     )
 
+    const responses = parseFrames(run.stdout) as Array<{
+      ok: boolean
+      error: { code: string }
+    }>
+    expect(responses[0]?.ok).toBe(false)
+    expect(responses[0]?.error.code).toBe('APP_RESPONSE_INVALID')
+  })
+
+  it.each([
+    ['a non-boolean estimate marker', { sizeIsEstimate: 'yes' }],
+    ['a negative estimate size', { estimatedBytes: -1 }]
+  ])('rejects %s in media response options', async (_label, invalidSizeFields) => {
+    const app = await startFakeApp(
+      jsonRespond({
+        ok: true,
+        operation: 'analyze-media',
+        analysis: mediaAnalysis({
+          options: [videoOption(invalidSizeFields), audioOption()]
+        })
+      })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'analyze-media', url: 'https://example.com/a' }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
     const responses = parseFrames(run.stdout) as Array<{
       ok: boolean
       error: { code: string }

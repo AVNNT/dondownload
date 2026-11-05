@@ -17,9 +17,20 @@ Electron screenshots (including narrow layout) are in
 `artifacts/test-runs/theme-visual-verification/`.
 
 The extension handoff passes focused automated coverage (120 tests across the
-bridge and overlay set, including the media-size DTO regression). Real Helium
-verification of the new overlay-size and handoff copy is still pending. The
-aria2 performance workstream is measuring a local HTTP baseline before any
+bridge and overlay set, including the media-size DTO regression). Disposable
+Helium verification then exposed a stale C# native-host response allowlist: it
+rejected the new optional `estimatedBytes` and `sizeIsEstimate` fields. The host
+now accepts those two strictly validated optional fields while retaining
+compatibility with older payloads. Rebuilt host tests pass (31/31), and a real
+Helium analysis of the public CC-BY Caminandes video returned 26 video and 7
+audio options; the overlay showed exact, estimated and unknown sizes. Selecting
+an estimated quality kept the status at “choose an option to queue”; the
+isolated app database remained at zero downloads and zero media jobs. No file
+was queued or written. The exact YouTube origin was granted in the disposable
+profile only, which was removed after verification. Popup and overlay captures
+are in `artifacts/test-runs/theme-visual-verification/`.
+
+The aria2 performance workstream is measuring a local HTTP baseline before any
 tuning; no throughput improvement is claimed yet.
 
 As of 2026-11-05. Milestone 2B checkpoint: `e15c772`
