@@ -89,3 +89,25 @@ this site" prompt (headless has no permission bubble) and a manual pass in real
 Helium with a disposable profile. DRM-protected media remains unsupported by
 design; streaming and embedded sources now go through the existing explicit
 yt-dlp analysis flow.
+
+## 2026-11-05 evening round (DeepSeek V4.1 Flash workers, reviewed)
+
+- User-reported YouTube bugs fixed: HLS progress (`cdd16f7`), plain-title
+  filenames via per-job staging (`ba541e6`), fast icon + prefetched qualities +
+  streaming detection in popup (`b430810`).
+- NDM-style media sniffing with badge, detected-media list, referer/UA-aware
+  downloads, per-site cookie opt-in default OFF (`5dca13c`..`d702e82`).
+- Multi-site: codec-less formats accepted, short-side quality labels
+  (`e36f9b6`); `--impersonate chrome` when supported, Vimeo player URL + DRM
+  error, size cap for unknown sizes, cookie opt-in for yt-dlp
+  (`b97144e`..`3c9b577`).
+- Verified yt-dlp updater (`84caad9`), onedir yt-dlp (~0.7 s faster per
+  analysis, `f7f9281`), app/tray/extension icon (`5d63939`).
+- Unified compact download list UI (`ac02c23`..`4af7dd3`, `79a1ec7`).
+- Final gate: 804 unit tests pass; Chromium/Helium native 20 PASS / 1
+  NOT-RUNNABLE (permission prompt); real-site YouTube/w3schools/embed 11 PASS
+  in both; packaged smoke PASS; installer rebuilt with onedir yt-dlp and icon.
+- Known limits: interactive permission prompt untested; live media thumbnails
+  not supplied by backend; failed media has "Analyze again" not one-click
+  retry; no delete-file action; Reddit/Bilibili need the cookie opt-in; DRM
+  sites (Vimeo) unsupported; installer unsigned.
