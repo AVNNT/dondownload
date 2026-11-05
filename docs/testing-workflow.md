@@ -179,9 +179,10 @@ measured results.
 check for `extension/`. It is opt-in and is not part of `test:fast` or
 `npm test`. It uses only already-installed tooling: Playwright's Chromium at
 `%LOCALAPPDATA%\ms-playwright\chromium-1248`, the repository FFmpeg at
-`build/vendor/ffmpeg/ffmpeg.exe`, and Node built-ins. No package is installed,
-no OS input is sent, no real browser profile or Downloads folder is used, and
-the native messaging host is never registered.
+`build/vendor/ffmpeg/ffmpeg.exe`, the cached Electron archive when
+`node_modules/electron/dist` is absent, and Node built-ins. No package is
+installed, no OS input is sent, no real browser profile or Downloads folder is
+used, and the default run never registers the native messaging host.
 
 The script starts a loopback HTTP fixture on `127.0.0.1` (random port, Range
 support), generates small H.264 MP4 clips, and drives Chromium through raw CDP
@@ -205,3 +206,52 @@ same extension sources from a temporary copy whose manifest declares the
 optional permissions as required, scoped to the fixture origin only; the code
 files are byte-identical and the deviation is printed in the table. This is a
 test-harness accommodation, not evidence that the interactive grant flow works.
+
+### Native messaging mode (`--native`)
+
+`npm run test:extension:chromium:native` adds N1-N5 after the same browser
+checks:
+
+- N1: a native-message probe reaches the isolated desktop bridge and gets its
+  structured preflight rejection (no queue).
+- N2: a real overlay row click queues the exact captured `/clip.mp4` URL; the
+  app's SQLite row and downloaded SHA-256 are verified and click-to-accepted
+  latency is measured.
+- N3: an automatic `handoff.bin` browser download is cancelled only after the
+  app's durable SQLite acceptance; the app file matches the fixture hash and no
+  final browser file remains.
+- N4: a cookie-only `secure.bin` fixture completes in the browser because the
+  anonymous desktop preflight fails; the app queues nothing.
+- N5: the temporary registry entry is gone and the user's Chromium/Helium key is
+  byte-identical before and after.
+
+Safety rules for this mode:
+
+- It writes **only**
+  `HKCU\Software\Chromium\NativeMessagingHosts\com.dondownload.bridge`, after
+  asserting the key is absent. It never reads, writes or deletes the real
+  `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
+  (Helium) or any Edge key; that value is compared before and after.
+- The manifest lives in the run's temp directory, `allowed_origins` is exactly
+  the temp extension's `chrome-extension://<id>/`, and the host executable is a
+  temp compile when `native/NativeHost.cs` is newer than the checked-in `.exe`.
+- The app runs from the current `out/` build with `--smoke-test` and a temp
+  userData directory, so SQLite, settings, bridge state, the download directory
+  and aria2 output are all isolated. `DONDOWNLOAD_BRIDGE_STATE` points the
+  native host at that temp state file. The window stays hidden/offscreen.
+- The obsolete registry key, app tree, Chromium tree, aria2 children, fixture
+  servers and temp directories are removed on success, failure and SIGINT.
+  The cleanup result is printed and recorded as N5.
+
+The app's production target policy rejects loopback/private URLs. To exercise
+the real bridge and preflight against a deterministic fixture, the isolated
+smoke process (and only that process) is given the exact fixture host name once
+the harness resolves it. All range, size, content-type, redirect and anonymous
+preflight checks still run; the browser also reaches the fixture through a
+`nip.io` name so the app's own aria2 resolves the same address. This is a
+harness accommodation, not a relaxation of the shipped desktop policy.
+
+Native mode needs outbound DNS once for `nip.io` name resolution. If no
+non-internal IPv4 address, DNS, Electron runtime, aria2 or native compiler is
+available, N0/N1-N4 are reported NOT-RUNNABLE with the exact reason and the
+cleanup checks still run.

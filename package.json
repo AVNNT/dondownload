@@ -32,6 +32,7 @@
     "smoke:packaged": "node scripts/smoke-test.mjs --app dist/win-unpacked/DonDownload.exe",
     "test:extension": "vitest run tests/extension-bridge.test.ts tests/extension-handoff.test.ts tests/extension-manifest.test.ts tests/extension-media-bridge.test.ts tests/extension-overlay-controller.test.ts tests/extension-overlay.test.ts tests/extension-site-policy.test.ts",
     "test:extension:chromium": "node scripts/e2e-extension-chromium.mjs",
+    "test:extension:chromium:native": "node scripts/e2e-extension-chromium.mjs --native",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
     "test:gate": "npm test && npm run build"
   },

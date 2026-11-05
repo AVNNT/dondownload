@@ -17,21 +17,32 @@
 // reported explicitly in the result table; it is not presented as the real
 // grant flow.
 
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
+import dns from 'node:dns/promises'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(SCRIPT_DIR, '..')
 const EXTENSION_DIR = path.join(ROOT, 'extension')
 const FFMPEG = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffmpeg.exe')
+const ARIA2 = path.join(ROOT, 'build', 'vendor', 'aria2', 'aria2c.exe')
 const CHROME =
   process.env.DONDOWNLOAD_CHROME_PATH ||
   path.join(process.env.LOCALAPPDATA || '', 'ms-playwright', 'chromium-1248', 'chrome-win64', 'chrome.exe')
+const NATIVE_MODE = process.argv.includes('--native')
+const NATIVE_HOST_NAME = 'com.dondownload.bridge'
+// Chromium-branded builds read this exact per-user key. Only this key is
+// written, and only after proving it did not exist.
+const CHROMIUM_REG_KEY = `HKCU\\Software\\Chromium\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
+// The user's real Helium registration. It is read once for an identity check
+// and is never written, modified or deleted.
+const HELIUM_REG_KEY = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
 
 const EXTENSION_NAME = 'DonDownload Capture'
 const HANDOFF_STATE_KEY = 'dondownloadHandoffState'
@@ -234,7 +245,7 @@ function killTree(pid) {
   }
 }
 
-async function launchChromium({ userDataDir, extensionPath, label, extraArgs = [] }) {
+async function launchChromium({ userDataDir, extensionPath, label, extraArgs = [], env = {} }) {
   const portFile = path.join(userDataDir, 'DevToolsActivePort')
   fs.mkdirSync(userDataDir, { recursive: true })
   try {
@@ -264,7 +275,10 @@ async function launchChromium({ userDataDir, extensionPath, label, extraArgs = [
     ...extraArgs,
     'about:blank'
   ]
-  const proc = spawn(CHROME, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = spawn(CHROME, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...env }
+  })
   proc.stderr.on('data', (chunk) => {
     const text = String(chunk)
     stderr.push(text)
@@ -418,10 +432,9 @@ async function pageEvaluate(page, expression, options) {
 // fixture server
 // ---------------------------------------------------------------------------
 
-function makeFileBin() {
-  const size = 2 * 1024 * 1024
+function makeDeterministicBytes(size, seed) {
   const buffer = Buffer.allocUnsafe(size)
-  let state = 0x12345678
+  let state = seed
   for (let index = 0; index < size; index += 1) {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0
     buffer[index] = state & 0xff
@@ -429,12 +442,48 @@ function makeFileBin() {
   return buffer
 }
 
-function startFixtureServer({ clip, clip720 }) {
+function makeFileBin() {
+  return makeDeterministicBytes(2 * 1024 * 1024, 0x12345678)
+}
+
+function makeSecureBin() {
+  return makeDeterministicBytes(512 * 1024, 0x9abcdef0)
+}
+
+function localIpv4Address() {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address
+    }
+  }
+  return null
+}
+
+async function resolveNativeFixtureHost() {
+  const address = localIpv4Address()
+  if (address === null) return null
+  // A single-label machine name resolves through Node and Chromium but not
+  // through aria2's c-ares resolver. nip.io maps a dashed IPv4 name back to the
+  // same address for every resolver, so the app's own aria2 can fetch the
+  // fixture while all policy checks still run.
+  const hostname = `${address.replace(/\./g, '-')}.nip.io`
+  try {
+    const resolved = await dns.lookup(hostname, { all: true, family: 4 })
+    if (!resolved.some((entry) => entry.address === address)) return null
+  } catch {
+    return null
+  }
+  return { hostname, address }
+}
+
+async function startFixtureServer({ clip, clip720 }) {
   const fileBin = makeFileBin()
+  const secureBin = makeSecureBin()
   const log = []
   let hitRanges = 0
+  const nativeHost = NATIVE_MODE ? await resolveNativeFixtureHost() : null
 
-  const server = http.createServer((req, res) => {
+  const handleRequest = (req, res) => {
     let parsed
     try {
       parsed = new URL(req.url, 'http://127.0.0.1')
@@ -447,10 +496,12 @@ function startFixtureServer({ clip, clip720 }) {
       method: req.method,
       path: parsed.pathname + parsed.search,
       range: req.headers.range || null,
+      cookie: req.headers.cookie || null,
+      userAgent: req.headers['user-agent'] || null,
       at: Date.now()
     })
 
-    const sendBuffer = (buffer, contentType, extraHeaders = {}) => {
+    const sendBuffer = (buffer, contentType, extraHeaders = {}, options = {}) => {
       const range = req.headers.range
       if (range) {
         const match = /^bytes=(\d+)-(\d*)$/.exec(range.trim())
@@ -480,7 +531,39 @@ function startFixtureServer({ clip, clip720 }) {
         'content-length': buffer.length,
         ...extraHeaders
       })
-      res.end(req.method === 'HEAD' ? undefined : buffer)
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
+      if (options.slow !== true) {
+        res.end(buffer)
+        return
+      }
+      // A slow full response keeps the browser download in progress long
+      // enough to observe the durable receipt and the subsequent cancellation.
+      let offset = 0
+      const step = 64 * 1024
+      let timer = null
+      const stop = () => {
+        if (timer !== null) {
+          clearInterval(timer)
+          timer = null
+        }
+      }
+      res.on('close', stop)
+      timer = setInterval(() => {
+        if (res.destroyed || res.writableEnded) {
+          stop()
+          return
+        }
+        const end = Math.min(offset + step, buffer.length)
+        res.write(buffer.subarray(offset, end))
+        offset = end
+        if (offset >= buffer.length) {
+          stop()
+          res.end()
+        }
+      }, 60)
     }
 
     if (parsed.pathname === '/') {
@@ -522,24 +605,79 @@ function startFixtureServer({ clip, clip720 }) {
       })
       return
     }
+    if (parsed.pathname === '/handoff.bin') {
+      sendBuffer(
+        fileBin,
+        'application/octet-stream',
+        {
+          'content-disposition': 'attachment; filename="handoff.bin"',
+          'cache-control': 'no-store'
+        },
+        { slow: true }
+      )
+      return
+    }
+    if (parsed.pathname === '/secure.bin') {
+      const cookie = typeof req.headers.cookie === 'string' ? req.headers.cookie : ''
+      if (!/(?:^|;\s*)auth=1(?:;|$)/.test(cookie)) {
+        res.writeHead(401, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-length': '23'
+        })
+        res.end('authentication required')
+        return
+      }
+      sendBuffer(secureBin, 'application/octet-stream', {
+        'content-disposition': 'attachment; filename="secure.bin"',
+        'cache-control': 'no-store'
+      })
+      return
+    }
     res.writeHead(404, { 'content-type': 'text/plain' })
     res.end('not found')
-  })
+  }
 
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address()
-      resolve({
-        origin: `http://127.0.0.1:${port}`,
-        fileBin,
-        fileBinSha256: crypto.createHash('sha256').update(fileBin).digest('hex'),
-        log,
-        rangeHits: () => hitRanges,
-        close: () => new Promise((done) => server.close(() => done()))
+  const server = http.createServer(handleRequest)
+  const nativeServer = nativeHost === null ? null : http.createServer(handleRequest)
+
+  const listen = (instance, addressValue) =>
+    new Promise((resolve, reject) => {
+      instance.once('error', reject)
+      instance.listen(0, addressValue, () => {
+        instance.off('error', reject)
+        resolve(instance.address().port)
       })
     })
-  })
+
+  const port = await listen(server, '127.0.0.1')
+  const nativePort =
+    nativeServer === null
+      ? null
+      : await listen(nativeServer, nativeHost.address)
+
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    nativeOrigin:
+      nativeServer === null
+        ? null
+        : `http://${nativeHost.hostname}:${nativePort}`,
+    nativeHost,
+    fileBin,
+    fileBinSha256: crypto.createHash('sha256').update(fileBin).digest('hex'),
+    secureBinBytes: secureBin.length,
+    secureBinSha256: crypto.createHash('sha256').update(secureBin).digest('hex'),
+    log,
+    rangeHits: () => hitRanges,
+    close: async () => {
+      await Promise.all([
+        new Promise((done) => server.close(() => done())),
+        nativeServer === null
+          ? Promise.resolve()
+          : new Promise((done) => nativeServer.close(() => done()))
+      ])
+    }
+  }
 }
 
 async function generateClip(ffmpegPath, output, { width, height }) {
@@ -752,6 +890,430 @@ async function waitForOverlayHost(page, timeoutMs = 15000) {
 }
 
 // ---------------------------------------------------------------------------
+// native messaging / isolated app helpers (--native only)
+// ---------------------------------------------------------------------------
+
+const nativeRun = {
+  attempted: false,
+  chromiumKeyCreated: false,
+  heliumBefore: null,
+  heliumAfter: null,
+  cleanupRecorded: false,
+  app: null,
+  db: null,
+  hostExe: null,
+  hostBuilt: false,
+  manifestPath: null,
+  userDataDir: null,
+  downloadDir: null,
+  page: null,
+  appStderr: () => ''
+}
+
+function queryRegistryDefault(key) {
+  const result = spawnSync('reg', ['query', key, '/ve'], {
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  const output = `${result.stdout || ''}${result.stderr || ''}`
+    .replace(/\r/g, '')
+    .trim()
+  return { exists: result.status === 0, status: result.status, output }
+}
+
+function deleteChromiumRegistryKey() {
+  spawnSync('reg', ['delete', CHROMIUM_REG_KEY, '/f'], {
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  return !queryRegistryDefault(CHROMIUM_REG_KEY).exists
+}
+
+function finalizeNativeCleanup() {
+  if (!nativeRun.attempted || nativeRun.cleanupRecorded) return
+  nativeRun.cleanupRecorded = true
+
+  const created = nativeRun.chromiumKeyCreated
+  let removed = true
+  if (created) {
+    removed = deleteChromiumRegistryKey()
+    if (removed) nativeRun.chromiumKeyCreated = false
+    console.log(
+      `[native] registry cleanup: ${removed ? 'removed' : 'NOT REMOVED'} ${CHROMIUM_REG_KEY}`
+    )
+  } else {
+    console.log('[native] registry cleanup: no temporary Chromium key was written')
+  }
+
+  const keyGone = !queryRegistryDefault(CHROMIUM_REG_KEY).exists
+  const helium = queryRegistryDefault(HELIUM_REG_KEY)
+  nativeRun.heliumAfter = helium.exists ? helium.output : '<absent>'
+  const heliumSame = nativeRun.heliumAfter === nativeRun.heliumBefore
+  const ok = removed && keyGone && heliumSame
+  record(
+    'N5',
+    'Temporary Chromium registration removed; Helium key byte-identical before/after',
+    ok ? 'PASS' : 'FAIL',
+    `chromiumKeyCreated=${created}; removed=${removed}; keyGone=${keyGone}; heliumBefore=${JSON.stringify(nativeRun.heliumBefore)}; heliumAfter=${JSON.stringify(nativeRun.heliumAfter)}; heliumSame=${heliumSame}; key=${CHROMIUM_REG_KEY}`
+  )
+}
+
+// A last-resort synchronous cleanup for Ctrl+C or an abrupt exit. The normal
+// path also verifies and records the result in finalizeNativeCleanup().
+process.on('exit', () => {
+  if (!nativeRun.chromiumKeyCreated) return
+  try {
+    execFileSync('reg', ['delete', CHROMIUM_REG_KEY, '/f'], {
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    console.log(`[native] registry cleanup on exit: removed ${CHROMIUM_REG_KEY}`)
+  } catch {
+    console.error(`[native] registry cleanup on exit FAILED: ${CHROMIUM_REG_KEY}`)
+  } finally {
+    nativeRun.chromiumKeyCreated = false
+  }
+})
+
+function resolveNativeHost(tempRoot) {
+  const source = path.join(ROOT, 'native', 'NativeHost.cs')
+  const checkedIn = path.join(ROOT, 'native', 'dondownload-native-host.exe')
+  const stale =
+    !fs.existsSync(checkedIn) ||
+    !fs.existsSync(source) ||
+    fs.statSync(checkedIn).mtimeMs < fs.statSync(source).mtimeMs
+  if (!stale) return { exe: checkedIn, built: false }
+
+  const output = path.join(tempRoot, 'native-host', 'dondownload-native-host.exe')
+  execFileSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.join(ROOT, 'scripts', 'build-native-host.ps1'),
+      '-OutputPath',
+      output
+    ],
+    { encoding: 'utf8', windowsHide: true, stdio: 'pipe' }
+  )
+  if (!fs.existsSync(output)) {
+    throw new Error('the temporary native host build did not produce an executable')
+  }
+  return { exe: output, built: true }
+}
+
+function writeNativeManifest(manifestPath, hostExe, extensionId) {
+  const manifest = {
+    name: NATIVE_HOST_NAME,
+    description: 'DonDownload native messaging bridge (isolated E2E fixture)',
+    path: hostExe,
+    type: 'stdio',
+    allowed_origins: [`chrome-extension://${extensionId}/`]
+  }
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true })
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+  return manifest
+}
+
+function registerChromiumHost(manifestPath) {
+  const before = queryRegistryDefault(CHROMIUM_REG_KEY)
+  if (before.exists) {
+    throw new Error(
+      `${CHROMIUM_REG_KEY} already exists; refusing to overwrite it. Native scenarios aborted.`
+    )
+  }
+  const result = spawnSync(
+    'reg',
+    [
+      'add',
+      CHROMIUM_REG_KEY,
+      '/ve',
+      '/t',
+      'REG_SZ',
+      '/d',
+      manifestPath,
+      '/f'
+    ],
+    { encoding: 'utf8', windowsHide: true }
+  )
+  if (result.status !== 0) {
+    throw new Error(
+      `reg add failed for ${CHROMIUM_REG_KEY}: ${`${result.stdout || ''}${result.stderr || ''}`.trim()}`
+    )
+  }
+  const after = queryRegistryDefault(CHROMIUM_REG_KEY)
+  if (!after.exists || !after.output.includes(manifestPath)) {
+    throw new Error(`registration verification failed: ${after.output}`)
+  }
+  nativeRun.chromiumKeyCreated = true
+  return after
+}
+
+function resolveElectronExecutable(tempRoot) {
+  const installed = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe')
+  if (fs.existsSync(installed)) return installed
+
+  const packagePath = path.join(ROOT, 'node_modules', 'electron', 'package.json')
+  if (!fs.existsSync(packagePath)) {
+    throw new Error('node_modules/electron is not installed')
+  }
+  const { version } = JSON.parse(fs.readFileSync(packagePath, 'utf8'))
+  const cacheRoot = path.join(process.env.LOCALAPPDATA || '', 'electron', 'Cache')
+  const archiveName = `electron-v${version}-win32-x64.zip`
+  const candidates = []
+  const walk = (directory) => {
+    let entries = []
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const target = path.join(directory, entry.name)
+      if (entry.isDirectory()) walk(target)
+      else if (entry.name === archiveName) candidates.push(target)
+    }
+  }
+  walk(cacheRoot)
+  if (candidates.length === 0) {
+    throw new Error(
+      `Electron ${version} is not installed and ${archiveName} is not in ${cacheRoot}`
+    )
+  }
+  const target = path.join(tempRoot, 'electron-dist')
+  const executable = path.join(target, 'electron.exe')
+  if (!fs.existsSync(executable)) {
+    fs.mkdirSync(target, { recursive: true })
+    // Extract the already-cached archive; nothing is downloaded or installed.
+    execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Expand-Archive -LiteralPath ${JSON.stringify(candidates[0])} -DestinationPath ${JSON.stringify(target)} -Force`
+      ],
+      { stdio: 'pipe', windowsHide: true }
+    )
+  }
+  if (!fs.existsSync(executable)) {
+    throw new Error(`the cached Electron archive did not contain ${executable}`)
+  }
+  return executable
+}
+
+async function startIsolatedApp({
+  userDataDir,
+  statePath,
+  tempRoot,
+  fixtureHost,
+  fixtureAddress
+}) {
+  const electronExe = resolveElectronExecutable(tempRoot)
+  if (!fs.existsSync(ARIA2)) {
+    throw new Error(`aria2 binary not found: ${ARIA2}`)
+  }
+  fs.mkdirSync(userDataDir, { recursive: true })
+  let stderr = ''
+  const env = { ...process.env }
+  delete env.ELECTRON_RUN_AS_NODE
+  env.DONDOWNLOAD_SMOKE_TEST = '1'
+  env.DONDOWNLOAD_INTERACTIVE_SMOKE = '1'
+  env.DONDOWNLOAD_INTERACTIVE_BRIDGE = '1'
+  env.DONDOWNLOAD_SMOKE_FIXTURE_HOST = fixtureHost
+  env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS = fixtureAddress
+  // A globally routable placeholder keeps the production public-target check
+  // in force; the injected preflight pins the real connection to the fixture.
+  env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS = '93.184.216.34'
+  env.DONDOWNLOAD_ARIA2_PATH = ARIA2
+
+  const proc = spawn(
+    electronExe,
+    [ROOT, '--smoke-test', `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+    {
+      cwd: ROOT,
+      env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
+  )
+  proc.stdout.on('data', (chunk) => {
+    stderr += String(chunk)
+  })
+  proc.stderr.on('data', (chunk) => {
+    stderr += String(chunk)
+    if (stderr.length > 200_000) stderr = stderr.slice(-200_000)
+  })
+
+  const deadline = Date.now() + 90_000
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null) {
+      throw new Error(
+        `the isolated app exited early (${proc.exitCode}): ${stderr.slice(-4000)}`
+      )
+    }
+    if (fs.existsSync(statePath) && /INTERACTIVE_READY/.test(stderr)) {
+      return { proc, stderr: () => stderr }
+    }
+    await sleep(150)
+  }
+  killTree(proc.pid)
+  throw new Error(`the isolated app did not become ready: ${stderr.slice(-4000)}`)
+}
+
+async function openDownloadsDatabase(dbPath, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    if (fs.existsSync(dbPath)) {
+      let db = null
+      try {
+        db = new DatabaseSync(dbPath, { readOnly: true })
+        db.exec('PRAGMA busy_timeout = 2000')
+        db.prepare('SELECT count(*) AS count FROM downloads').get()
+        return db
+      } catch (error) {
+        lastError = error
+        try {
+          db?.close()
+        } catch {
+          // ignore
+        }
+      }
+    }
+    await sleep(100)
+  }
+  throw new Error(
+    `the isolated app database did not become readable: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+  )
+}
+
+function readDownloadRows(db) {
+  try {
+    return db
+      .prepare(
+        'SELECT id, url, filename, status, file_path, dir, total_bytes, completed_bytes, created_at, updated_at FROM downloads ORDER BY created_at'
+      )
+      .all()
+  } catch {
+    return []
+  }
+}
+
+async function waitForValue(read, predicate, timeoutMs, label, intervalMs = 25) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    try {
+      last = await read()
+      if (predicate(last)) return last
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : String(error) }
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(`${label} timed out; last=${JSON.stringify(last)}`)
+}
+
+async function searchDownloads(browser, optionsSession) {
+  return browser.connection.evaluate(
+    optionsSession,
+    'new Promise((resolve) => chrome.downloads.search({}, (items) => resolve(items || [])))',
+    { userGesture: false }
+  )
+}
+
+async function ensureHandoffEnabled(browser, optionsSession) {
+  const stored = await readStorage(browser, optionsSession, 'local', CAPTURE_SETTINGS_KEY)
+  let setting = stored && stored[CAPTURE_SETTINGS_KEY]
+  if (setting && setting.automaticFileHandoff === true) return setting
+  await browser.connection.evaluate(
+    optionsSession,
+    `(() => {
+      const checkbox = document.getElementById('automatic-handoff')
+      if (checkbox && !checkbox.checked) checkbox.click()
+      return Boolean(checkbox)
+    })()`,
+    { userGesture: true }
+  )
+  return waitForValue(
+    () => readStorage(browser, optionsSession, 'local', CAPTURE_SETTINGS_KEY),
+    (value) => value && value[CAPTURE_SETTINGS_KEY] && value[CAPTURE_SETTINGS_KEY].automaticFileHandoff === true,
+    5000,
+    'automaticFileHandoff setting'
+  ).then((value) => value[CAPTURE_SETTINGS_KEY])
+}
+
+async function installDownloadEventLog(browser, optionsSession) {
+  await browser.connection.evaluate(
+    optionsSession,
+    `(() => {
+      globalThis.__ddDownloadEvents = []
+      if (!globalThis.__ddDownloadListener) {
+        globalThis.__ddDownloadListener = (delta) => {
+          globalThis.__ddDownloadEvents.push({
+            id: delta.id,
+            state: delta.state ? delta.state.current : null,
+            error: delta.error ? delta.error.current : null,
+            at: Date.now()
+          })
+        }
+        chrome.downloads.onChanged.addListener(globalThis.__ddDownloadListener)
+      }
+      return true
+    })()`,
+    { userGesture: false }
+  )
+}
+
+async function readDownloadEvents(browser, optionsSession) {
+  return browser.connection.evaluate(
+    optionsSession,
+    'globalThis.__ddDownloadEvents || []',
+    { userGesture: false }
+  )
+}
+
+function hashFile(filePath) {
+  const bytes = fs.readFileSync(filePath)
+  return {
+    bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+  }
+}
+
+async function waitForCompletedAppDownload(db, url, timeoutMs = 60_000) {
+  const row = await waitForValue(
+    () => readDownloadRows(db).find((entry) => entry.url === url && entry.status === 'complete') || null,
+    (match) => match !== null,
+    timeoutMs,
+    `app download completion for ${url}`,
+    50
+  )
+  const filePath = row.file_path || path.join(row.dir, row.filename)
+  await waitForValue(
+    () => fs.existsSync(filePath),
+    (exists) => exists === true,
+    10_000,
+    `downloaded file ${filePath}`
+  )
+  return { row, filePath, hash: hashFile(filePath) }
+}
+
+function filesInDirectory(directory) {
+  try {
+    return fs
+      .readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -768,6 +1330,23 @@ async function main() {
 
   const cleanup = async () => {
     try {
+      if (nativeRun.db) {
+        nativeRun.db.close()
+        nativeRun.db = null
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (nativeRun.app) {
+        killTree(nativeRun.app.proc.pid)
+        nativeRun.app = null
+        await sleep(500)
+      }
+    } catch {
+      // ignore
+    }
+    try {
       if (browserA) await browserA.close()
     } catch {
       // ignore
@@ -781,6 +1360,13 @@ async function main() {
       if (server) await server.close()
     } catch {
       // ignore
+    }
+    try {
+      finalizeNativeCleanup()
+    } catch (error) {
+      console.error(
+        `[native] registry cleanup verification failed: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
     if (!process.env.DONDOWNLOAD_E2E_KEEP) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -818,13 +1404,15 @@ async function main() {
     const clip = fs.readFileSync(clipPath)
     const clip720 = fs.readFileSync(clip720Path)
     server = await startFixtureServer({ clip, clip720 })
-    const { origin } = server
+    const { origin, nativeOrigin } = server
     const originPattern = `${origin}/*`
+    const nativeOriginPattern =
+      nativeOrigin === null ? null : `${nativeOrigin}/*`
     record(
       '0',
       'Fixtures ready (local HTTP + generated MP4 + 2 MiB attachment)',
       'PASS',
-      `origin=${origin}; clip.mp4=${clipBytes}B; clip-720.mp4=${clip720Bytes}B; file.bin=${server.fileBin.length}B sha256=${server.fileBinSha256}`
+      `origin=${origin}; nativeFixtureOrigin=${nativeOrigin ?? '<unavailable>'}; clip.mp4=${clipBytes}B; clip-720.mp4=${clip720Bytes}B; file.bin=${server.fileBin.length}B sha256=${server.fileBinSha256}; handoff.bin=${server.fileBin.length}B (slow); secure.bin=${server.secureBinBytes}B sha256=${server.secureBinSha256} (cookie-only)`
     )
 
     // ------------------------------------------------------------------
@@ -933,7 +1521,10 @@ async function main() {
     fs.cpSync(EXTENSION_DIR, harnessDir, { recursive: true })
     const harnessManifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'))
     harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest'])]
-    harnessManifest.host_permissions = [originPattern]
+    harnessManifest.host_permissions =
+      nativeOriginPattern === null
+        ? [originPattern]
+        : [originPattern, nativeOriginPattern]
     delete harnessManifest.optional_permissions
     delete harnessManifest.optional_host_permissions
     fs.writeFileSync(path.join(harnessDir, 'manifest.json'), `${JSON.stringify(harnessManifest, null, 2)}\n`)
@@ -941,7 +1532,12 @@ async function main() {
     browserB = await launchChromium({
       userDataDir: path.join(tempRoot, 'profile-harness'),
       extensionPath: harnessDir,
-      label: 'harness'
+      label: 'harness',
+      env: NATIVE_MODE
+        ? {
+            DONDOWNLOAD_BRIDGE_STATE: path.join(tempRoot, 'app-user-data', 'native-bridge.json')
+          }
+        : {}
     })
     const workerB = await findExtensionWorker(browserB)
     const optionsB = await openExtensionPage(browserB, workerB.id, 'options.html')
@@ -954,7 +1550,13 @@ async function main() {
       const permissions = await getAllPermissions(browserB, optionsB.sessionId)
       const origins = Array.isArray(permissions.origins) ? permissions.origins : []
       const apis = Array.isArray(permissions.permissions) ? permissions.permissions : []
-      const originsExact = origins.length === 1 && origins[0] === originPattern
+      const expectedOrigins =
+        nativeOriginPattern === null
+          ? [originPattern]
+          : [originPattern, nativeOriginPattern]
+      const originsExact =
+        origins.length === expectedOrigins.length &&
+        expectedOrigins.every((pattern) => origins.includes(pattern))
       const downloads = apis.includes('downloads')
       const webRequest = apis.includes('webRequest')
 
@@ -999,7 +1601,7 @@ async function main() {
       const ok = originsExact && downloads && webRequest && pointed && (siteGranted || responseOk) && host.host && host.shadow && host.trigger
       return {
         status: ok ? 'PASS' : 'FAIL',
-        evidence: `getAll origins=${JSON.stringify(origins)} (exact=${originsExact}); downloads API=${downloads}; webRequest API=${webRequest}; options target shown=${pointed}; site-state="${siteState}"; enable=${JSON.stringify(enableResponse.response || enableResponse)}; registrations=${JSON.stringify(registrations)}; overlay host/shadow/trigger=${host.host}/${host.shadow}/${host.trigger}; tabs=${JSON.stringify(tabsSnapshot)}`
+        evidence: `getAll origins=${JSON.stringify(origins)} (expected=${JSON.stringify(expectedOrigins)} exact=${originsExact}); downloads API=${downloads}; webRequest API=${webRequest}; options target shown=${pointed}; site-state="${siteState}"; enable=${JSON.stringify(enableResponse.response || enableResponse)}; registrations=${JSON.stringify(registrations)}; overlay host/shadow/trigger=${host.host}/${host.shadow}/${host.trigger}; tabs=${JSON.stringify(tabsSnapshot)}`
       }
     })
 
@@ -1305,6 +1907,492 @@ async function main() {
           (optionsErrors.length ? `\n${optionsErrors.join('\n')}` : '')
       }
     })
+
+    // ------------------------------------------------------------------
+    // Phase C: native messaging against an isolated dev app (--native)
+    // ------------------------------------------------------------------
+    if (!NATIVE_MODE) {
+      record(
+        'N',
+        'Native messaging scenarios (N1-N4) not requested',
+        'INFO',
+        'Run npm run test:extension:chromium:native (--native) for the temporary HKCU registration, isolated app and native-messaging paths.'
+      )
+    } else {
+      nativeRun.attempted = true
+      const heliumSnapshot = queryRegistryDefault(HELIUM_REG_KEY)
+      nativeRun.heliumBefore = heliumSnapshot.exists ? heliumSnapshot.output : '<absent>'
+      nativeRun.heliumAfter = nativeRun.heliumBefore
+
+      let setupError = null
+      try {
+        if (nativeOrigin === null || server.nativeHost === null) {
+          throw new Error(
+            'no non-internal IPv4 address with a host name that resolves to it is available for the native fixture'
+          )
+        }
+        if (queryRegistryDefault(CHROMIUM_REG_KEY).exists) {
+          throw new Error(
+            `${CHROMIUM_REG_KEY} already exists; refusing to overwrite it, so the native scenarios were aborted.`
+          )
+        }
+        const host = resolveNativeHost(tempRoot)
+        nativeRun.hostExe = host.exe
+        nativeRun.hostBuilt = host.built
+        const manifestPath = path.join(
+          tempRoot,
+          'native-manifest',
+          `${NATIVE_HOST_NAME}.json`
+        )
+        nativeRun.manifestPath = manifestPath
+        const manifest = writeNativeManifest(manifestPath, host.exe, workerB.id)
+        const registration = registerChromiumHost(manifestPath)
+        const userDataDir = path.join(tempRoot, 'app-user-data')
+        const statePath = path.join(userDataDir, 'native-bridge.json')
+        nativeRun.userDataDir = userDataDir
+        nativeRun.downloadDir = path.join(userDataDir, 'smoke-downloads')
+        nativeRun.app = await startIsolatedApp({
+          userDataDir,
+          statePath,
+          tempRoot,
+          fixtureHost: server.nativeHost.hostname,
+          fixtureAddress: server.nativeHost.address
+        })
+        nativeRun.appStderr = nativeRun.app.stderr
+        nativeRun.db = await openDownloadsDatabase(
+          path.join(userDataDir, 'downloads.sqlite3')
+        )
+
+        // Open the same fixture through the resolved host name. A literal IP
+        // would be rejected by the production target policy before any lookup.
+        const nativePage = await createPage(browserB, `${nativeOrigin}/`)
+        nativePage.browser = browserB
+        const nativeTab = await waitForValue(
+          () => tabIdForOrigin(browserB, optionsB.sessionId, nativeOrigin),
+          (value) => typeof value === 'number',
+          8000,
+          'native fixture tab visible to the extension',
+          100
+        ).catch(async () => {
+          const tabs = await browserB.connection.evaluate(
+            optionsB.sessionId,
+            'new Promise((resolve) => chrome.tabs.query({}, (items) => resolve(items.map((tab) => ({ id: tab.id, url: tab.url, status: tab.status })))))',
+            { userGesture: false }
+          )
+          throw new Error(
+            `the native fixture tab was not visible to the extension; tabs=${JSON.stringify(tabs)}`
+          )
+        })
+        await browserB.connection.send('Target.activateTarget', {
+          targetId: nativePage.targetId
+        })
+        const nativeEnable = await enableOverlayForTab(
+          browserB,
+          optionsB.sessionId,
+          nativeOrigin,
+          nativeTab
+        )
+        const nativeOverlay = await waitForOverlayHost(nativePage)
+        await waitForVideoPlaying(nativePage)
+        await waitForCapturedSources(
+          browserB,
+          optionsB.sessionId,
+          nativeTab,
+          (list) =>
+            list.some(
+              (item) =>
+                typeof item.url === 'string' &&
+                item.url.endsWith('/clip.mp4')
+            )
+        )
+        nativeRun.page = nativePage
+        record(
+          'N0',
+          'Isolated dev app and temporary Chromium registration ready',
+          'PASS',
+          `extensionId=${workerB.id}; allowed_origins=${JSON.stringify(manifest.allowed_origins)}; host=${host.exe} (tempBuild=${host.built}); manifest=${manifestPath}; key=${CHROMIUM_REG_KEY}; userData=${userDataDir}; downloadDir=${nativeRun.downloadDir}; state=${statePath}; nativeFixtureOrigin=${nativeOrigin} (${server.nativeHost.hostname} -> ${server.nativeHost.address}); overlayEnable=${JSON.stringify(nativeEnable)}; overlay=${JSON.stringify(nativeOverlay)}; heliumBefore=${JSON.stringify(nativeRun.heliumBefore)}; appLog=${JSON.stringify(nativeRun.appStderr().slice(-1200))}`
+        )
+      } catch (error) {
+        setupError = error
+        record(
+          'N0',
+          'Isolated dev app and temporary Chromium registration ready',
+          'FAIL',
+          error instanceof Error ? error.message : String(error)
+        )
+      }
+
+      const blocked = (title) => ({
+        status: 'NOT-RUNNABLE',
+        evidence: `native setup did not complete: ${setupError instanceof Error ? setupError.message : String(setupError)}`
+      })
+
+      await scenario('N1', 'Native probe from the extension reaches the isolated app', async () => {
+        if (setupError) return blocked()
+        const probeUrl = `${nativeOrigin}/probe-missing.bin`
+        const started = Date.now()
+        const probe = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `new Promise((resolve) => chrome.runtime.sendNativeMessage(${JSON.stringify(NATIVE_HOST_NAME)}, {
+            type: 'handoff-download',
+            url: ${JSON.stringify(probeUrl)},
+            filename: 'probe-missing.bin'
+          }, (response) => resolve({
+            response: response || null,
+            error: chrome.runtime.lastError && chrome.runtime.lastError.message
+          })))`,
+          { userGesture: false }
+        )
+        const latencyMs = Date.now() - started
+        const code =
+          probe &&
+          probe.response &&
+          probe.response.error &&
+          probe.response.error.code
+        const rows = readDownloadRows(nativeRun.db)
+        const queued = rows.some((row) => row.url === probeUrl)
+        const appLog = nativeRun.appStderr()
+        const appSawIt = /Durable hand-off preflight rejected \(HANDOFF_PREFLIGHT_FAILED\)/.test(appLog)
+        const ok =
+          !probe.error &&
+          probe.response &&
+          probe.response.ok === false &&
+          code === 'HANDOFF_PREFLIGHT_FAILED' &&
+          appSawIt &&
+          !queued
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `native message=${JSON.stringify(probe)}; latency=${latencyMs} ms; app logged the preflight rejection=${appSawIt}; queued=${queued}; probeUrl=${probeUrl}`
+        }
+      })
+
+      await scenario('N2', 'One-click overlay queue reaches the app and downloads the exact clip', async () => {
+        if (setupError) return blocked()
+        await browserB.connection.send('Target.activateTarget', {
+          targetId: nativeRun.page.targetId
+        })
+        await waitForVideoPlaying(nativeRun.page)
+        const clipUrl = `${nativeOrigin}/clip.mp4`
+        const clipSha256 = crypto
+          .createHash('sha256')
+          .update(clip)
+          .digest('hex')
+        const clickResult = await pageEvaluate(
+          nativeRun.page,
+          `new Promise((resolve) => {
+            const host = document.getElementById('dondownload-overlay-host')
+            const shadow = host && host.shadowRoot
+            const trigger = shadow && shadow.querySelector('.trigger')
+            const panel = shadow && shadow.querySelector('.panel')
+            if (panel && panel.hidden && trigger) trigger.click()
+            const rows = shadow ? Array.from(shadow.querySelectorAll('.source-list .source')) : []
+            const row = rows.find((entry) => {
+              const title = entry.querySelector('.source-title')
+              return title && title.textContent && title.textContent.indexOf('clip.mp4') !== -1
+            })
+            if (!row) {
+              resolve({ ok: false, error: 'row-not-found', rows: rows.map((entry) => entry.textContent) })
+              return
+            }
+            const button = row.querySelector('.source-action')
+            if (!button) {
+              resolve({ ok: false, error: 'button-not-found' })
+              return
+            }
+            const status = shadow.querySelector('.status')
+            const started = performance.now()
+            button.click()
+            const deadline = started + 25000
+            const timer = setInterval(() => {
+              const text = status ? status.textContent : ''
+              const elapsed = performance.now() - started
+              if (text === 'Added to DonDownload') {
+                clearInterval(timer)
+                resolve({ ok: true, latencyMs: Math.round(elapsed), status: text })
+              } else if (text && text.indexOf('Adding ') !== 0) {
+                clearInterval(timer)
+                resolve({ ok: false, latencyMs: Math.round(elapsed), status: text })
+              } else if (performance.now() > deadline) {
+                clearInterval(timer)
+                resolve({ ok: false, timeout: true, status: text })
+              }
+            }, 10)
+          })`,
+          { userGesture: true }
+        )
+        const clickStartedAt = Date.now()
+        const rowFound = await waitForValue(
+          () => readDownloadRows(nativeRun.db).find((entry) => entry.url === clipUrl) || null,
+          (match) => match !== null,
+          15000,
+          'app row for the captured clip',
+          20
+        )
+        const rowObservedAfterMs = Date.now() - clickStartedAt
+        const completed = await waitForCompletedAppDownload(
+          nativeRun.db,
+          clipUrl,
+          60000
+        )
+        const hashOk = completed.hash.sha256 === clipSha256
+        const sizeOk = completed.hash.bytes === clip.length
+        const exactUrl = completed.row.url === clipUrl
+        const ok =
+          clickResult.ok === true &&
+          typeof clickResult.latencyMs === 'number' &&
+          rowFound &&
+          exactUrl &&
+          completed.row.filename === 'clip.mp4' &&
+          hashOk &&
+          sizeOk &&
+          completed.row.status === 'complete'
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `click=${JSON.stringify(clickResult)} (click-to-accepted ${clickResult.latencyMs} ms); db row first observed ${rowObservedAfterMs} ms after click; row=${JSON.stringify({ id: rowFound.id, url: rowFound.url, filename: rowFound.filename, status: completed.row.status, total: completed.row.total_bytes, dir: completed.row.dir })}; file=${completed.filePath} (${completed.hash.bytes}B); sha256=${completed.hash.sha256} expected=${clipSha256} match=${hashOk}; exactUrl=${exactUrl}`
+        }
+      })
+
+      await scenario('N3', 'Hand-off success: durable app acceptance, then browser cancel, same bytes', async () => {
+        if (setupError) return blocked()
+        const setting = await ensureHandoffEnabled(browserB, optionsB.sessionId)
+        const browserDownloadDir = path.join(tempRoot, 'downloads-handoff')
+        fs.mkdirSync(browserDownloadDir, { recursive: true })
+        await installDownloadEventLog(browserB, optionsB.sessionId)
+        await browserB.connection.send('Browser.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: browserDownloadDir,
+          eventsEnabled: true
+        })
+        const handoffUrl = `${nativeOrigin}/handoff.bin`
+        const beforeRows = readDownloadRows(nativeRun.db)
+        if (beforeRows.some((row) => row.url === handoffUrl)) {
+          throw new Error('the hand-off fixture was already queued before this scenario')
+        }
+
+        const downloadPage = await createPage(browserB, handoffUrl)
+        downloadPage.browser = browserB
+        const item = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    typeof candidate.url === 'string' &&
+                    candidate.url.endsWith('/handoff.bin')
+                ) || null
+            ),
+          (match) => match !== null,
+          20000,
+          'browser download item for handoff.bin',
+          50
+        )
+        const itemId = item.id
+        const rowFound = await waitForValue(
+          () =>
+            readDownloadRows(nativeRun.db).find(
+              (entry) => entry.url === handoffUrl
+            ) || null,
+          (match) => match !== null,
+          20000,
+          'durable app row for handoff.bin',
+          10
+        )
+        const dbObservedAt = Date.now()
+        const terminal = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    candidate.id === itemId &&
+                    (candidate.state === 'interrupted' ||
+                      candidate.state === 'complete')
+                ) || null
+            ),
+          (match) => match !== null,
+          25000,
+          'browser download terminal state',
+          50
+        )
+        const terminalObservedAt = Date.now()
+        const events = await readDownloadEvents(browserB, optionsB.sessionId)
+        const ownEvents = events.filter((event) => event.id === itemId)
+        const stateEvents = ownEvents.filter(
+          (event) => event.state === 'interrupted' || event.state === 'complete'
+        )
+        const terminalEvent = stateEvents[stateEvents.length - 1] || null
+        const completed = await waitForCompletedAppDownload(
+          nativeRun.db,
+          handoffUrl,
+          60000
+        )
+        const sessionState = await readStorage(
+          browserB,
+          optionsB.sessionId,
+          'session',
+          HANDOFF_STATE_KEY
+        )
+        const processed =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].processed
+        const pending =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].pending
+        const files = filesInDirectory(browserDownloadDir)
+        const finalBrowserFile = files.includes('handoff.bin')
+        const hashOk = completed.hash.sha256 === server.fileBinSha256
+        const cancelled =
+          terminal.state === 'interrupted' &&
+          /cancel/i.test(terminal.error || '')
+        const completedInBrowser = terminal.state === 'complete'
+        const cancelAt = terminalEvent ? terminalEvent.at : terminalObservedAt
+        // The row timestamp is written before the durable SQLite commit that
+        // produces the receipt the extension waits for. A cancel at/after that
+        // time therefore cannot have happened before acceptance.
+        const acceptedBeforeCancel =
+          completed.row.created_at <= cancelAt &&
+          dbObservedAt <= terminalObservedAt
+        const ok =
+          setting.automaticFileHandoff === true &&
+          cancelled &&
+          !completedInBrowser &&
+          acceptedBeforeCancel &&
+          hashOk &&
+          !finalBrowserFile &&
+          Array.isArray(processed) &&
+          processed.includes(itemId) &&
+          Array.isArray(pending) &&
+          pending.length === 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `setting=${JSON.stringify({ automaticFileHandoff: setting.automaticFileHandoff })}; browser item=${JSON.stringify({ id: itemId, state: terminal.state, error: terminal.error, totalBytes: terminal.totalBytes, bytesReceived: terminal.bytesReceived })}; state events=${JSON.stringify(stateEvents)}; app row=${JSON.stringify({ id: rowFound.id, created_at: completed.row.created_at, status: completed.row.status, total: completed.row.total_bytes })}; db observed at=${dbObservedAt}; terminal observed at=${terminalObservedAt}; accepted before cancel=${acceptedBeforeCancel}; app file=${completed.filePath} (${completed.hash.bytes}B) sha256=${completed.hash.sha256} expected=${server.fileBinSha256} match=${hashOk}; browser download dir files=${JSON.stringify(files)}; final browser file present=${finalBrowserFile}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        }
+      })
+
+      await scenario('N4', 'Hand-off refusal: auth-only fixture completes in the browser and is not queued', async () => {
+        if (setupError) return blocked()
+        const setting = await ensureHandoffEnabled(browserB, optionsB.sessionId)
+        const browserDownloadDir = path.join(tempRoot, 'downloads-refused')
+        fs.mkdirSync(browserDownloadDir, { recursive: true })
+        await installDownloadEventLog(browserB, optionsB.sessionId)
+        await browserB.connection.send('Browser.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: browserDownloadDir,
+          eventsEnabled: true
+        })
+        // The browser has the session cookie; the app's anonymous preflight
+        // deliberately does not, so it must reject this target.
+        const cookie = await pageEvaluate(
+          nativeRun.page,
+          `(() => {
+            document.cookie = 'auth=1; path=/'
+            return document.cookie
+          })()`,
+          { userGesture: false }
+        )
+        const secureUrl = `${nativeOrigin}/secure.bin`
+        const stderrBefore = nativeRun.appStderr().length
+        const downloadPage = await createPage(browserB, secureUrl)
+        downloadPage.browser = browserB
+        const item = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    typeof candidate.url === 'string' &&
+                    candidate.url.endsWith('/secure.bin')
+                ) || null
+            ),
+          (match) => match !== null,
+          20000,
+          'browser download item for secure.bin',
+          50
+        )
+        const itemId = item.id
+        const complete = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    candidate.id === itemId && candidate.state === 'complete'
+                ) || null
+            ),
+          (match) => match !== null,
+          30000,
+          'browser download completion for secure.bin',
+          50
+        )
+        const hash = hashFile(complete.filename)
+        // The browser can finish before the desktop's bounded anonymous probe
+        // returns, so wait for that exact request before judging the refusal.
+        const anonymousPreflight = await waitForValue(
+          () =>
+            server.log.filter(
+              (entry) =>
+                entry.path === '/secure.bin' &&
+                !entry.cookie &&
+                typeof entry.range === 'string' &&
+                entry.range.startsWith('bytes=0-0')
+            ),
+          (hits) => (hits.length > 0 ? hits : null),
+          12000,
+          'anonymous secure.bin preflight',
+          100
+        ).catch(() => [])
+        await sleep(2500)
+        const secureHits = server.log.filter(
+          (entry) => entry.path === '/secure.bin'
+        )
+        const authenticatedBrowser = secureHits.filter(
+          (entry) => entry.cookie && /auth=1/.test(entry.cookie)
+        )
+        const rows = readDownloadRows(nativeRun.db)
+        const appRow =
+          rows.find((entry) => entry.url === secureUrl) || null
+        const appFiles = filesInDirectory(nativeRun.downloadDir)
+        const sessionState = await readStorage(
+          browserB,
+          optionsB.sessionId,
+          'session',
+          HANDOFF_STATE_KEY
+        )
+        const processed =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].processed
+        const pending =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].pending
+        const newAppLog = nativeRun.appStderr().slice(stderrBefore)
+        const preflightRejected =
+          /Durable hand-off preflight rejected \(HANDOFF_PREFLIGHT_FAILED\)/.test(
+            newAppLog
+          )
+        const hashOk = hash.sha256 === server.secureBinSha256
+        const ok =
+          setting.automaticFileHandoff === true &&
+          complete.state === 'complete' &&
+          hashOk &&
+          anonymousPreflight.length > 0 &&
+          authenticatedBrowser.length > 0 &&
+          preflightRejected &&
+          appRow === null &&
+          !appFiles.includes('secure.bin') &&
+          Array.isArray(processed) &&
+          processed.includes(itemId) &&
+          Array.isArray(pending) &&
+          pending.length === 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: complete.state, totalBytes: complete.totalBytes, bytesReceived: complete.bytesReceived, filename: complete.filename })}; file (${hash.bytes}B) sha256=${hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; secure requests=${JSON.stringify(secureHits)}; anonymous range probes=${JSON.stringify(anonymousPreflight)}; authenticated browser requests=${authenticatedBrowser.length}; app preflight rejection logged=${preflightRejected}; app log=${JSON.stringify(newAppLog.slice(-1200))}; app row=${JSON.stringify(appRow)}; app files=${JSON.stringify(appFiles)}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        }
+      })
+    }
   } finally {
     await cleanup()
   }

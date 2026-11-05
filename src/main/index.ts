@@ -28,6 +28,10 @@ import {
   SmokeDiagnosticsCollector
 } from './smoke/diagnostics'
 import {
+  createSmokeFixtureLookup,
+  createSmokeFixturePreflight
+} from './smoke/smokeFixture'
+import {
   createSmokeResult,
   safeDetail,
   writeSmokeResultSync,
@@ -294,14 +298,59 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
     // The browser bridge is intentionally started without touching the
     // window. It keeps working while the app lives only in the tray and only
     // forwards validated URLs to the same DownloadManager/aria2 instance.
-    // Smoke verification must not open a loopback port or write a state file.
-    if (smoke === null) {
+    // Ordinary smoke verification must not open a loopback port or write a
+    // state file. An explicitly opted-in interactive smoke session may start
+    // the bridge with the same isolated paths so a real browser can exercise
+    // native messaging end to end.
+    const interactiveBridge =
+      interactiveSmoke && process.env.DONDOWNLOAD_INTERACTIVE_BRIDGE === '1'
+    if (smoke === null || interactiveBridge) {
+      const fixtureHost = process.env.DONDOWNLOAD_SMOKE_FIXTURE_HOST?.trim()
+      const fixtureAddress = process.env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS?.trim()
+      const fixturePublicAddress =
+        process.env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS?.trim()
+      const fixtureTargets =
+        interactiveBridge &&
+        fixtureHost !== undefined &&
+        fixtureHost.length > 0 &&
+        fixtureAddress !== undefined &&
+        fixtureAddress.length > 0 &&
+        fixturePublicAddress !== undefined &&
+        fixturePublicAddress.length > 0
+          ? [
+              {
+                hostname: fixtureHost,
+                address: fixtureAddress,
+                publicAddress: fixturePublicAddress,
+                family: 4
+              }
+            ]
+          : []
+      const fixtureLookup =
+        fixtureTargets.length > 0
+          ? createSmokeFixtureLookup(fixtureTargets)
+          : undefined
+      const fixturePreflight =
+        fixtureTargets.length > 0
+          ? createSmokeFixturePreflight(fixtureTargets)
+          : undefined
+      if (interactiveBridge) {
+        console.error(
+          `[dondownload-smoke] interactive bridge enabled; fixtureTargetLookup=${fixtureLookup !== undefined}`
+        )
+      }
       try {
         nativeBridge = await startNativeBridge({
           manager,
           mediaBridge: mediaJobs,
           userDataPath: app.getPath('userData'),
-          logger: (message) => console.error(message)
+          logger: (message) => console.error(message),
+          ...(fixtureLookup === undefined
+            ? {}
+            : { publicTargetLookup: fixtureLookup }),
+          ...(fixturePreflight === undefined
+            ? {}
+            : { publicResourcePreflight: fixturePreflight })
         })
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'unknown error'
