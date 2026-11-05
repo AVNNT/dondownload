@@ -10,7 +10,7 @@ import {
   type MediaAnalysis,
   type MediaFormatOption
 } from '@shared/media'
-import { formatBytes } from '@shared/format'
+import { MEDIA_SIZE_UNKNOWN, formatMediaSize } from '@shared/format'
 
 interface MediaAnalyzerProps {
   analysis: MediaAnalysis | null
@@ -117,6 +117,10 @@ export function MediaAnalyzer({
     const checked = option.optionId === selectedOptionId
     const isBestVideo = option.optionId === bestVideo?.optionId
     const isBestAudio = option.optionId === bestAudio?.optionId
+    const sizeLabel = formatMediaSize(
+      option.estimatedBytes ?? option.filesizeBytes,
+      option.sizeIsEstimate === true
+    )
 
     return (
       <label
@@ -146,6 +150,13 @@ export function MediaAnalyzer({
                 {isBestVideo ? 'Best' : 'Best audio'}
               </span>
             ) : null}
+            <span
+              className={`shrink-0 tabular-nums text-[10px] ${
+                sizeLabel === MEDIA_SIZE_UNKNOWN ? 'text-zinc-500' : 'text-zinc-400'
+              }`}
+            >
+              {sizeLabel}
+            </span>
           </span>
           <span className="mt-0.5 block text-[11px] leading-5 text-zinc-400">
             {describeOption(option)}
@@ -285,9 +296,11 @@ export function MediaAnalyzer({
                   {' '}
                   · includes audio
                   {bestVideo.requiresMerge ? ' · merges video + audio' : ''}
-                  {bestVideo.filesizeBytes !== null
-                    ? ` · ${formatBytes(bestVideo.filesizeBytes)}`
-                    : ''}
+                  {' · '}
+                  {formatMediaSize(
+                    bestVideo.estimatedBytes ?? bestVideo.filesizeBytes,
+                    bestVideo.sizeIsEstimate === true
+                  )}
                 </span>
               </p>
             </div>
@@ -343,6 +356,13 @@ export function MediaAnalyzer({
               <p className="min-w-0 text-[11px] leading-5 text-zinc-400">
                 Selected:{' '}
                 <span className="text-zinc-300">{selectedOption.label}</span>
+                <span className="text-zinc-500">
+                  {' · '}
+                  {formatMediaSize(
+                    selectedOption.estimatedBytes ?? selectedOption.filesizeBytes,
+                    selectedOption.sizeIsEstimate === true
+                  )}
+                </span>
               </p>
               <button
                 type="button"
@@ -394,9 +414,6 @@ function describeOption(option: MediaFormatOption): string {
   }
   if (option.requiresMerge) {
     parts.push('merges video + audio')
-  }
-  if (option.filesizeBytes !== null) {
-    parts.push(formatBytes(option.filesizeBytes))
   }
 
   return parts.join(' · ')

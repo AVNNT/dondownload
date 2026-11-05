@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatEta, formatPercent, formatSpeed } from '../src/shared/format'
+import {
+  MEDIA_SIZE_UNKNOWN,
+  formatBytes,
+  formatEta,
+  formatMediaSize,
+  formatPercent,
+  formatSpeed
+} from '../src/shared/format'
 import { MAX_DOWNLOAD_ATTEMPTS, canRetry } from '../src/shared/policy'
 
 describe('formatBytes', () => {
@@ -9,6 +16,23 @@ describe('formatBytes', () => {
     expect(formatBytes(1023)).toBe('1023 B')
     expect(formatBytes(1024)).toBe('1.00 KB')
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.00 MB')
+  })
+})
+
+describe('formatMediaSize', () => {
+  it('auto-formats exact and estimated media sizes', () => {
+    expect(formatMediaSize(5 * 1024 * 1024)).toBe('5.00 MB')
+    expect(formatMediaSize(1.5 * 1024 * 1024 * 1024)).toBe('1.50 GB')
+    expect(formatMediaSize(5 * 1024 * 1024, true)).toBe('~5.00 MB estimated')
+  })
+
+  it('uses the exact unknown copy instead of inventing a size', () => {
+    expect(formatMediaSize(null)).toBe(MEDIA_SIZE_UNKNOWN)
+    expect(formatMediaSize(undefined)).toBe(MEDIA_SIZE_UNKNOWN)
+    expect(formatMediaSize(0)).toBe(MEDIA_SIZE_UNKNOWN)
+    expect(formatMediaSize(-1, true)).toBe(MEDIA_SIZE_UNKNOWN)
+    expect(formatMediaSize(Number.NaN)).toBe(MEDIA_SIZE_UNKNOWN)
+    expect(MEDIA_SIZE_UNKNOWN).toBe('Size unknown')
   })
 })
 

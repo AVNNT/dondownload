@@ -67,9 +67,15 @@ interface FormatDescriptor {
   height: number | null
   fps: number | null
   filesize: number | null
+  filesizeApprox: number | null
   tbr: number
   abr: number
   kind: 'muxed' | 'video' | 'audio'
+}
+
+interface DisplaySize {
+  bytes: number | null
+  isEstimate: boolean
 }
 
 interface VideoDraft {
@@ -128,6 +134,36 @@ function cleanContainer(value: unknown): string | null {
 function cleanFormatId(value: unknown): string | null {
   if (typeof value !== 'string') return null
   return SAFE_FORMAT_ID.test(value) ? value : null
+}
+
+/**
+ * Prefer yt-dlp's exact `filesize`; fall back to `filesize_approx`. Both are
+ * already-reported metadata and are never calculated by downloading.
+ */
+function displaySize(descriptor: FormatDescriptor): DisplaySize {
+  if (descriptor.filesize !== null) {
+    return { bytes: descriptor.filesize, isEstimate: false }
+  }
+  if (descriptor.filesizeApprox !== null) {
+    return { bytes: descriptor.filesizeApprox, isEstimate: true }
+  }
+  return { bytes: null, isEstimate: false }
+}
+
+/**
+ * A merged output needs both streams. If either stream size is missing the
+ * total is unknown; the two known/approximate stream sizes are only summed.
+ */
+function mergedDisplaySize(
+  video: FormatDescriptor,
+  audio: FormatDescriptor
+): DisplaySize {
+  const videoSize = displaySize(video)
+  const audioSize = displaySize(audio)
+  if (videoSize.bytes === null || audioSize.bytes === null) {
+    return { bytes: null, isEstimate: false }
+  }
+  return { bytes: videoSize.bytes + audioSize.bytes, isEstimate: true }
 }
 
 function safeInteger(
@@ -213,6 +249,7 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   const height = safeInteger(record.height, 1, 65_535)
   const fps = finitePositive(record.fps, 1_000)
   const filesize = safeInteger(record.filesize, 1)
+  const filesizeApprox = safeInteger(record.filesize_approx, 1)
   const tbr = finiteNonNegative(record.tbr)
   const abr = finiteNonNegative(record.abr)
 
@@ -230,6 +267,7 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
     height,
     fps,
     filesize,
+    filesizeApprox,
     tbr,
     abr,
     kind: hasVideo ? (hasAudio ? 'muxed' : 'video') : 'audio'
@@ -293,6 +331,7 @@ function buildVideoDrafts(
 
     if (descriptor.kind === 'muxed' && descriptor.audioCodec !== null) {
       const container = descriptor.ext
+      const size = displaySize(descriptor)
       drafts.push({
         dto: {
           kind: 'video',
@@ -307,7 +346,9 @@ function buildVideoDrafts(
           audioCodec: descriptor.audioCodec,
           hasAudio: true,
           requiresMerge: false,
-          filesizeBytes: descriptor.filesize
+          filesizeBytes: descriptor.filesize,
+          estimatedBytes: size.bytes,
+          sizeIsEstimate: size.isEstimate
         },
         formatIds: [descriptor.formatId],
         mergeOutputFormat: null,
@@ -335,6 +376,7 @@ function buildVideoDrafts(
     }
 
     const container = mergeContainer(descriptor.ext, bestAudio.ext)
+    const size = mergedDisplaySize(descriptor, bestAudio)
     drafts.push({
       dto: {
         kind: 'video',
@@ -349,8 +391,12 @@ function buildVideoDrafts(
         audioCodec: bestAudio.audioCodec,
         hasAudio: true,
         requiresMerge: true,
-        // The merged container size is not the sum of the two stream sizes.
-        filesizeBytes: null
+        // No exact merged file size is verified; estimatedBytes is only the
+        // sum of the two reported stream sizes.
+        filesizeBytes: null,
+        estimatedBytes: size.bytes,
+        // Any merged total is an estimate even when both streams are exact.
+        sizeIsEstimate: size.bytes !== null
       },
       formatIds: [descriptor.formatId, bestAudio.formatId],
       mergeOutputFormat: container,
@@ -381,6 +427,7 @@ function buildAudioDrafts(descriptors: FormatDescriptor[]): AudioDraft[] {
     if (descriptor.kind !== 'audio' || descriptor.audioCodec === null) continue
 
     const container = descriptor.ext
+    const size = displaySize(descriptor)
     drafts.push({
       dto: {
         kind: 'audio',
@@ -398,7 +445,9 @@ function buildAudioDrafts(descriptors: FormatDescriptor[]): AudioDraft[] {
         audioCodec: descriptor.audioCodec,
         hasAudio: true,
         requiresMerge: false,
-        filesizeBytes: descriptor.filesize
+        filesizeBytes: descriptor.filesize,
+        estimatedBytes: size.bytes,
+        sizeIsEstimate: size.isEstimate
       },
       formatIds: [descriptor.formatId],
       outputExt: container,

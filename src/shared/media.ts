@@ -79,8 +79,19 @@ export interface MediaFormatOption {
   hasAudio: boolean
   /** True when yt-dlp/ffmpeg must combine separate streams. */
   requiresMerge: boolean
-  /** Only a verified size is exposed; unverified estimates stay null. */
+  /** Only a verified size is exposed here; unverified estimates stay null. */
   filesizeBytes: number | null
+  /**
+   * Best available size for display: exact `filesize`, fallback
+   * `filesize_approx`, or the sum of both streams for a merged output.
+   * Null when yt-dlp reported no usable size.
+   */
+  estimatedBytes?: number | null
+  /**
+   * True when `estimatedBytes` is an approximation or a merged-stream sum
+   * rather than an exact single-file size.
+   */
+  sizeIsEstimate?: boolean
 }
 
 export interface MediaAnalysis {
@@ -365,20 +376,24 @@ export function normalizeMediaSourceUrl(value: unknown): string {
 
 export function parseMediaFormatOption(value: unknown): MediaFormatOption {
   const record = asPlainObject(value)
-  exactKeys(record, [
-    'kind',
-    'optionId',
-    'label',
-    'container',
-    'width',
-    'height',
-    'fps',
-    'videoCodec',
-    'audioCodec',
-    'hasAudio',
-    'requiresMerge',
-    'filesizeBytes'
-  ])
+  exactKeys(
+    record,
+    [
+      'kind',
+      'optionId',
+      'label',
+      'container',
+      'width',
+      'height',
+      'fps',
+      'videoCodec',
+      'audioCodec',
+      'hasAudio',
+      'requiresMerge',
+      'filesizeBytes'
+    ],
+    ['estimatedBytes', 'sizeIsEstimate']
+  )
 
   const kind = record.kind
   if (kind !== 'video' && kind !== 'audio') {
@@ -402,7 +417,15 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
     audioCodec: nullableTextValue(record, 'audioCodec', 64),
     hasAudio: booleanValue(record, 'hasAudio'),
     requiresMerge: booleanValue(record, 'requiresMerge'),
-    filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0)
+    filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0),
+    estimatedBytes:
+      record.estimatedBytes === undefined
+        ? null
+        : nullableIntegerValue(record, 'estimatedBytes', 0),
+    sizeIsEstimate:
+      record.sizeIsEstimate === undefined
+        ? false
+        : booleanValue(record, 'sizeIsEstimate')
   }
 
   if (kind === 'video' && !option.hasAudio) {

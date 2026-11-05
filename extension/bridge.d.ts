@@ -20,6 +20,8 @@ export interface MediaFormatOptionDto {
   hasAudio: boolean
   requiresMerge: boolean
   filesizeBytes: number | null
+  estimatedBytes?: number | null
+  sizeIsEstimate?: boolean
 }
 
 export interface MediaAnalysisDto {

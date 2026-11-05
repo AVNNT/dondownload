@@ -18,7 +18,7 @@ import {
   type CollectionPreview,
   type CollectionSelectionAvailability
 } from '@shared/batches'
-import { formatBytes, formatPercent } from '@shared/format'
+import { formatBytes, formatMediaSize, formatPercent } from '@shared/format'
 import type {
   ApiResult,
   AppErrorInfo,
@@ -771,8 +771,31 @@ function PreviewCard({
   }
 
   const qualityCounts = new Map<BatchMediaQuality, number>()
+  const qualitySizes = new Map<
+    BatchMediaQuality,
+    { count: number; bytes: number | null; isEstimate: boolean }
+  >()
   for (const entry of availability?.entries ?? []) {
-    for (const option of entry.qualities) qualityCounts.set(option.quality, (qualityCounts.get(option.quality) ?? 0) + 1)
+    for (const option of entry.qualities) {
+      qualityCounts.set(
+        option.quality,
+        (qualityCounts.get(option.quality) ?? 0) + 1
+      )
+      const summary = qualitySizes.get(option.quality) ?? {
+        count: 0,
+        bytes: 0,
+        isEstimate: false
+      }
+      summary.count += 1
+      if (summary.bytes !== null) {
+        summary.bytes =
+          option.estimatedBytes === null
+            ? null
+            : summary.bytes + option.estimatedBytes
+      }
+      summary.isEstimate = summary.isEstimate || option.sizeIsEstimate === true
+      qualitySizes.set(option.quality, summary)
+    }
   }
   const matchingCount = qualityCounts.get(quality) ?? 0
   const maxBytes = maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
@@ -901,7 +924,7 @@ function PreviewCard({
                   {preview.kind === 'playlist' && checked && availability ? (
                     <span className="mt-1 block text-[10px] leading-4 text-zinc-500">
                       {availability.entries.find(result => result.entryId === entry.id)?.qualities.length
-                        ? `Verified: ${availability.entries.find(result => result.entryId === entry.id)!.qualities.map(option => `${qualityLabel(option.quality)}${option.estimatedBytes === null ? '' : ` (~${formatBytes(option.estimatedBytes)})`}`).join(', ')}`
+                        ? `Verified: ${availability.entries.find(result => result.entryId === entry.id)!.qualities.map(option => `${qualityLabel(option.quality)} · ${formatMediaSize(option.estimatedBytes, option.sizeIsEstimate === true)}`).join(', ')}`
                         : 'No verified media formats available'}
                     </span>
                   ) : null}
@@ -945,7 +968,15 @@ function PreviewCard({
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="text-[10px] font-medium text-zinc-400">Quality
               <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100">
-                {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => <option key={option} value={option}>{qualityLabel(option)} · available for {qualityCounts.get(option)}/{selectedCount}</option>)}
+                {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => {
+                  const summary = qualitySizes.get(option)
+                  return (
+                    <option key={option} value={option}>
+                      {qualityLabel(option)} · {summary?.count ?? 0}/{selectedCount} ·{' '}
+                      {formatMediaSize(summary?.bytes ?? null, summary?.isEstimate === true)}
+                    </option>
+                  )
+                })}
               </select>
             </label>
             <label className="text-[10px] font-medium text-zinc-400">Optional max per-job size (MiB)

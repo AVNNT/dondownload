@@ -306,8 +306,13 @@ export type BatchMediaQuality = (typeof BATCH_MEDIA_QUALITIES)[number]
 
 export interface CollectionEntryQuality {
   quality: BatchMediaQuality
-  /** Null when yt-dlp does not report an exact verified byte count. */
+  /**
+   * Best available display estimate for this entry's chosen quality. Null
+   * when yt-dlp reported no exact or approximate size.
+   */
   estimatedBytes: number | null
+  /** True when the size is approximate or a merged-stream sum. */
+  sizeIsEstimate?: boolean
 }
 
 export interface CollectionSelectionAvailability {

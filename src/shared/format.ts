@@ -1,5 +1,8 @@
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
 
+/** Exact user-facing copy for a media size without usable metadata. */
+export const MEDIA_SIZE_UNKNOWN = 'Size unknown'
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B'
@@ -14,6 +17,28 @@ export function formatBytes(bytes: number): string {
 
   const decimals = unit === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2
   return `${value.toFixed(decimals)} ${UNITS[unit]}`
+}
+
+/**
+ * Render a media size from existing yt-dlp metadata. Only values already
+ * reported by the analysis are formatted; a missing value never gains a
+ * made-up estimate. Approximate and merged sizes are explicitly marked.
+ */
+export function formatMediaSize(
+  bytes: number | null | undefined,
+  estimate = false
+): string {
+  if (
+    bytes === null ||
+    bytes === undefined ||
+    !Number.isFinite(bytes) ||
+    bytes <= 0
+  ) {
+    return MEDIA_SIZE_UNKNOWN
+  }
+
+  const formatted = formatBytes(bytes)
+  return estimate ? `~${formatted} estimated` : formatted
 }
 
 export function formatSpeed(bytesPerSecond: number): string {

@@ -564,14 +564,18 @@ describe('media engine format mapping', () => {
       audioCodec: 'mp4a.40.2',
       hasAudio: true,
       requiresMerge: true,
-      filesizeBytes: null
+      filesizeBytes: null,
+      estimatedBytes: 1_500,
+      sizeIsEstimate: true
     })
     expect(muxed).toMatchObject({
       container: 'mp4',
       height: 720,
       hasAudio: true,
       requiresMerge: false,
-      filesizeBytes: 800
+      filesizeBytes: 800,
+      estimatedBytes: 800,
+      sizeIsEstimate: false
     })
     expect(analysis.bestVideoOptionId).toBe(merged?.optionId)
 
@@ -587,7 +591,9 @@ describe('media engine format mapping', () => {
       audioCodec: 'mp4a.40.2',
       hasAudio: true,
       requiresMerge: false,
-      filesizeBytes: 500
+      filesizeBytes: 500,
+      estimatedBytes: 500,
+      sizeIsEstimate: false
     })
 
     for (const option of analysis.options) {
@@ -671,7 +677,7 @@ describe('media engine format mapping', () => {
     ).toBe(false)
   })
 
-  it('skips DRM, storyboard, unsafe format IDs and approximate sizes', async () => {
+  it('skips DRM, storyboard and unsafe format IDs but keeps approximate display sizes', async () => {
     const harness = await makeHarness({
       analyzeJson: sampleInfo({
         title: 'Filtered formats',
@@ -727,9 +733,46 @@ describe('media engine format mapping', () => {
     expect(videos[0]).toMatchObject({
       height: 360,
       requiresMerge: false,
-      filesizeBytes: null
+      filesizeBytes: null,
+      estimatedBytes: 99_999,
+      sizeIsEstimate: true
     })
     expect(analysis.options.some((option) => option.height === 1080)).toBe(false)
+  })
+
+  it('does not invent a merged display size when one stream size is missing', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        formats: [
+          {
+            format_id: '137',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 1920,
+            height: 1080
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2',
+            abr: 128,
+            filesize: 500
+          }
+        ]
+      })
+    })
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const merged = analysis.options.find(
+      (option) => option.kind === 'video' && option.requiresMerge
+    )
+    expect(merged).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: null,
+      sizeIsEstimate: false
+    })
   })
 
   it('reports playlist, live and malformed analysis results distinctly', async () => {

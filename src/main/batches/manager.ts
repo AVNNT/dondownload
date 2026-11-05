@@ -584,17 +584,24 @@ export class BatchManager {
       const analysis = await this.mediaJobs.analyzeMedia({ url: target.url })
       const optionById = new Map(analysis.options.map(option => [option.optionId, option]))
       const qualities: CollectionSelectionAvailability['entries'][number]['qualities'] = []
+      const displayBytes = (option: MediaAnalysis['options'][number]): number | null =>
+        option.estimatedBytes ?? option.filesizeBytes
+      const qualityEntry = (quality: BatchMediaQuality, option: MediaAnalysis['options'][number]): CollectionSelectionAvailability['entries'][number]['qualities'][number] => ({
+        quality,
+        estimatedBytes: displayBytes(option),
+        ...(option.sizeIsEstimate ? { sizeIsEstimate: true } : {})
+      })
       const bestId = analysis.bestVideoOptionId ?? analysis.bestAudioOptionId
       if (bestId) {
         const best = optionById.get(bestId)
-        if (best) qualities.push({ quality: 'best', estimatedBytes: best.filesizeBytes })
+        if (best) qualities.push(qualityEntry('best', best))
       }
       for (const quality of BATCH_MEDIA_QUALITIES.filter(value => ['1080p','720p','480p','360p'].includes(value))) {
         const selectedOption = selectBatchMediaOption(analysis, quality)
-        if (selectedOption) qualities.push({ quality, estimatedBytes: selectedOption.filesizeBytes })
+        if (selectedOption) qualities.push(qualityEntry(quality, selectedOption))
       }
       if (analysis.bestAudioOptionId && optionById.get(analysis.bestAudioOptionId)?.kind === 'audio') {
-        qualities.push({ quality: 'audio-only', estimatedBytes: optionById.get(analysis.bestAudioOptionId)!.filesizeBytes })
+        qualities.push(qualityEntry('audio-only', optionById.get(analysis.bestAudioOptionId)!))
       }
       entries.push({ entryId, title: entry.title, qualities })
     }

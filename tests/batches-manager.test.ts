@@ -905,6 +905,31 @@ describe('collection previews and explicit selection', () => {
     expect(media.queueCalls).toHaveLength(0)
   })
 
+  it('reports the display estimate for playlist quality choices', async () => {
+    const media = new FakeMediaJobs()
+    media.analysis = analysisFixture({
+      options: [
+        {
+          ...analysisFixture().options[0]!,
+          estimatedBytes: 1_500,
+          sizeIsEstimate: true
+        }
+      ]
+    })
+    const { manager } = createHarness({ media })
+    const preview = await manager.analyzeCollection({
+      url: 'https://media.example/playlist?list=abc'
+    })
+    const availability = await manager.analyzeCollectionSelection({
+      previewId: preview.id,
+      selectedEntryIds: ['colentry_1']
+    })
+    expect(availability.entries[0]?.qualities).toEqual([
+      { quality: 'best', estimatedBytes: 1_500, sizeIsEstimate: true },
+      { quality: '1080p', estimatedBytes: 1_500, sizeIsEstimate: true }
+    ])
+  })
+
   it('skips a selected quality that is absent instead of replacing it with a higher format', async () => {
     const { manager, media } = createHarness()
     const preview = await manager.analyzeCollection({ url: 'https://media.example/playlist?list=abc' })

@@ -123,20 +123,24 @@ export function isOpaqueMediaId(value) {
 
 export function parseMediaFormatOption(value) {
   const record = asPlainObject(value)
-  exactKeys(record, [
-    'kind',
-    'optionId',
-    'label',
-    'container',
-    'width',
-    'height',
-    'fps',
-    'videoCodec',
-    'audioCodec',
-    'hasAudio',
-    'requiresMerge',
-    'filesizeBytes'
-  ])
+  exactKeys(
+    record,
+    [
+      'kind',
+      'optionId',
+      'label',
+      'container',
+      'width',
+      'height',
+      'fps',
+      'videoCodec',
+      'audioCodec',
+      'hasAudio',
+      'requiresMerge',
+      'filesizeBytes'
+    ],
+    ['estimatedBytes', 'sizeIsEstimate']
+  )
 
   const kind = record.kind
   if (kind !== 'video' && kind !== 'audio') {
@@ -160,7 +164,15 @@ export function parseMediaFormatOption(value) {
     audioCodec: nullableTextValue(record, 'audioCodec', 64),
     hasAudio: booleanValue(record, 'hasAudio'),
     requiresMerge: booleanValue(record, 'requiresMerge'),
-    filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0)
+    filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0),
+    estimatedBytes:
+      record.estimatedBytes === undefined
+        ? null
+        : nullableIntegerValue(record, 'estimatedBytes', 0),
+    sizeIsEstimate:
+      record.sizeIsEstimate === undefined
+        ? false
+        : booleanValue(record, 'sizeIsEstimate')
   }
 
   if (kind === 'video' && !option.hasAudio) {

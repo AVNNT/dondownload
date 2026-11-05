@@ -110,9 +110,30 @@ describe('media public schema', () => {
     expect(() => parseMediaFormatOption(videoOption({ kind: 'subtitle' }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ container: 'MP4/../../x' }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ filesizeBytes: -1 }))).toThrow()
+    expect(() => parseMediaFormatOption(videoOption({ estimatedBytes: -1 }))).toThrow()
+    expect(() => parseMediaFormatOption(videoOption({ sizeIsEstimate: 'yes' }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ width: 1.5 }))).toThrow()
     expect(() => parseMediaFormatOption(videoOption({ hasAudio: false }))).toThrow(/audio/)
     expect(() => parseMediaFormatOption(audioOption({ videoCodec: 'avc1' }))).toThrow(/video/)
+  })
+
+  it('parses exact, approximate and unavailable display sizes', () => {
+    const exact = parseMediaFormatOption(
+      videoOption({ estimatedBytes: 10_000, sizeIsEstimate: false })
+    )
+    expect(exact.estimatedBytes).toBe(10_000)
+    expect(exact.sizeIsEstimate).toBe(false)
+
+    const approximate = parseMediaFormatOption(
+      videoOption({ estimatedBytes: 12_000, sizeIsEstimate: true })
+    )
+    expect(approximate.estimatedBytes).toBe(12_000)
+    expect(approximate.sizeIsEstimate).toBe(true)
+
+    // Older/unknown payloads stay display-safe without inventing a size.
+    const unavailable = parseMediaFormatOption(audioOption())
+    expect(unavailable.estimatedBytes).toBeNull()
+    expect(unavailable.sizeIsEstimate).toBe(false)
   })
 
   it('parses an analysis and enforces opaque best-option references', () => {
