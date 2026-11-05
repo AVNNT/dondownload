@@ -200,12 +200,51 @@ observer, and the fail-safe automatic hand-off when no native host answers
 (the browser download must finish with matching SHA-256).
 
 Known limitation: headless Chromium has no extension permission bubble, so
-`chrome.permissions.request` never calls back and grants nothing. That step is
-reported NOT-RUNNABLE with the observed timeout. The remaining checks run the
-same extension sources from a temporary copy whose manifest declares the
-optional permissions as required, scoped to the fixture origin only; the code
-files are byte-identical and the deviation is printed in the table. This is a
-test-harness accommodation, not evidence that the interactive grant flow works.
+`chrome.permissions.request` never calls back and grants nothing. Three
+approaches were tried and all fail: (1) no command-line switch in `chrome.dll`
+auto-confirms extension permission prompts (only unrelated
+`--auto-accept-camera-and-microphone-capture`,
+`--auto-accept-this-tab-capture` and
+`--auto-accept-browser-signin-for-tests` exist;
+`ExtensionInstallPrompt::AutoConfirmPromptIfEnabled` is an in-process
+browser-test hook with no command line); (2) the real unmodified extension with
+an activated options tab and a CDP user gesture, also with `--enable-automation`
+and `--silent-debugger-extension-api`, never resolves the callback; (3) the CDP
+`Extensions` domain (enabled by `--enable-unsafe-extension-debugging`) exposes
+only `loadUnpacked`, `uninstall`, `getExtensions` and storage commands, and
+`Browser.grantPermissions` covers web permissions, not optional extension host
+permissions. That step is reported NOT-RUNNABLE with those reasons. The
+remaining checks run the same extension sources from a temporary copy whose
+manifest declares the optional permissions as required, scoped to the fixture
+origin only; the code files are byte-identical and the deviation is printed in
+the table. This is a test-harness accommodation, not evidence that the
+interactive grant flow works.
+
+### Other Chromium-based builds (`--browser=<path>`)
+
+`--browser=<path>` (or `--browser=helium`) points the same harness at another
+Chromium-based executable. The npm scripts use the installed Helium build:
+
+```powershell
+npm run test:extension:helium         # Helium, browser checks only
+npm run test:extension:helium:native  # Helium plus N1-N5
+```
+
+Each run still uses a fresh temp `--user-data-dir` and `--headless=new`; it never
+opens a window, reads or writes the user's real Helium profile, or signals an
+already-running Helium process. Helium accepts `--load-extension`; if a build
+ignores it, the harness falls back to `Extensions.loadUnpacked` through CDP and
+opens an extension page to start the MV3 worker. Fresh-target navigation in
+Helium can stay on `about:blank` for a few seconds, so page helpers wait for the
+committed URL (download URLs opt out of that check).
+
+Helium resolves the native-messaging host from
+`HKCU\Software\Chromium\NativeMessagingHosts` (verified by the N1-style probe in
+N0, which launches the host and receives its `UNSUPPORTED_OPERATION` reply), so
+`--native` runs the full N1-N4 set under Helium without writing the real
+`HKCU\Software\Google\Chrome\NativeMessagingHosts` value. If a future build only
+read the Google key, the probe would fail and N0/N1-N4 would be reported
+NOT-RUNNABLE with that exact probe result instead of touching the real key.
 
 ### Native messaging mode (`--native`)
 

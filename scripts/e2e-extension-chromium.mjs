@@ -11,11 +11,16 @@
 //
 // The interactive chrome.permissions.request() bubble does not work in
 // headless Chromium: the callback is never invoked and chrome.permissions never
-// changes (verified by scenario 2a). The remaining scenarios therefore run the
-// same extension sources from a temp copy whose manifest declares the optional
-// permissions as required for the loopback fixture origin only. This is
-// reported explicitly in the result table; it is not presented as the real
-// grant flow.
+// changes (verified by scenario 2a, including the command-line, automation-flag
+// and CDP-only approaches listed in its evidence). The remaining scenarios
+// therefore run the same extension sources from a temp copy whose manifest
+// declares the optional permissions as required for the loopback fixture
+// origin only. This is reported explicitly in the result table; it is not
+// presented as the real grant flow.
+//
+// --browser=<path> runs the same checks against another Chromium-based build
+// (npm run test:extension:helium) using a fresh temp profile. It never touches
+// an already-running browser or a real profile.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -32,9 +37,28 @@ const ROOT = path.resolve(SCRIPT_DIR, '..')
 const EXTENSION_DIR = path.join(ROOT, 'extension')
 const FFMPEG = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffmpeg.exe')
 const ARIA2 = path.join(ROOT, 'build', 'vendor', 'aria2', 'aria2c.exe')
+
+function browserArgument() {
+  const prefix = '--browser='
+  const match = process.argv.find((value) => value.startsWith(prefix))
+  if (!match) return null
+  const value = match.slice(prefix.length).trim()
+  if (!value) return null
+  if (/^helium$/i.test(value)) {
+    return path.join(process.env.LOCALAPPDATA || '', 'imput', 'Helium', 'Application', 'chrome.exe')
+  }
+  return value
+}
+
+const BROWSER_ARG = browserArgument()
 const CHROME =
+  BROWSER_ARG ||
   process.env.DONDOWNLOAD_CHROME_PATH ||
   path.join(process.env.LOCALAPPDATA || '', 'ms-playwright', 'chromium-1248', 'chrome-win64', 'chrome.exe')
+// Chromium-branded builds (Playwright's chromium-1248) and Helium share the
+// same CDP surface but differ in native-messaging registry lookup and in how
+// reliably they honour --load-extension.
+const BROWSER_NAME = /helium/i.test(CHROME) ? 'Helium' : 'Chromium'
 const NATIVE_MODE = process.argv.includes('--native')
 const NATIVE_HOST_NAME = 'com.dondownload.bridge'
 // Chromium-branded builds read this exact per-user key. Only this key is
@@ -371,6 +395,37 @@ async function findExtensionWorker(browser, { timeoutMs = 15000 } = {}) {
   throw new Error('The DonDownload service worker target did not appear')
 }
 
+/**
+ * Chromium honours --load-extension, but another Chromium-based build (Helium)
+ * may ignore it. When the worker never appears, load the same directory through
+ * the CDP Extensions domain (available with --enable-unsafe-extension-debugging)
+ * and open an extension page so the MV3 worker starts.
+ */
+async function ensureExtensionLoaded(browser, extensionPath, label) {
+  try {
+    return await findExtensionWorker(browser, { timeoutMs: 8000 })
+  } catch (initialError) {
+    let extensionId = null
+    try {
+      const loaded = await browser.connection.send('Extensions.loadUnpacked', { path: extensionPath })
+      extensionId = loaded && loaded.id
+    } catch (loadError) {
+      throw new Error(
+        `${label}: service worker did not appear (${initialError.message}) and Extensions.loadUnpacked failed: ${loadError.message}`
+      )
+    }
+    if (!extensionId) {
+      throw new Error(`${label}: Extensions.loadUnpacked returned no extension id`)
+    }
+    // An extension page is required to wake the MV3 service worker; it is kept
+    // open for the rest of the run so the worker does not idle out.
+    await browser.connection
+      .send('Target.createTarget', { url: `chrome-extension://${extensionId}/options.html` })
+      .catch(() => undefined)
+    return findExtensionWorker(browser, { timeoutMs: 15000 })
+  }
+}
+
 async function ensureWorkerAttached(browser, extId) {
   const targets = await browser.connection.targets().catch(() => [])
   const target = targets.find(
@@ -406,16 +461,28 @@ async function openExtensionPage(browser, extId, file, { waitMs = 10000 } = {}) 
   throw new Error(`${file} did not become ready`)
 }
 
-async function createPage(browser, url) {
+async function createPage(browser, url, { waitForCommit = true } = {}) {
   const { targetId } = await browser.connection.send('Target.createTarget', { url })
   const sessionId = await browser.connection.attach(targetId)
-  const deadline = Date.now() + 10000
+  const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
     try {
-      const ready = await browser.connection.evaluate(sessionId, 'document.readyState', {
-        userGesture: false
-      })
-      if (ready === 'complete') return { targetId, sessionId }
+      // A freshly created target can still be about:blank with a pending
+      // navigation (Helium keeps that state for a couple of seconds), so the
+      // committed URL must match before the page is considered ready. Download
+      // URLs never commit a document, so callers can opt out of that check.
+      const state = await browser.connection.evaluate(
+        sessionId,
+        '({ ready: document.readyState, href: location.href })',
+        { userGesture: false }
+      )
+      if (
+        state &&
+        state.ready === 'complete' &&
+        (!waitForCommit || state.href === url)
+      ) {
+        return { targetId, sessionId }
+      }
     } catch {
       // still loading
     }
@@ -899,6 +966,8 @@ const nativeRun = {
   heliumBefore: null,
   heliumAfter: null,
   cleanupRecorded: false,
+  heliumProbe: null,
+  notRunnable: false,
   app: null,
   db: null,
   hostExe: null,
@@ -1418,7 +1487,7 @@ async function main() {
 
   try {
     if (!fs.existsSync(CHROME)) {
-      record('0', 'Chromium available', 'FAIL', `not found: ${CHROME}`)
+      record('0', `${BROWSER_NAME} available`, 'FAIL', `not found: ${CHROME}`)
       return
     }
     if (!fs.existsSync(FFMPEG)) {
@@ -1441,7 +1510,7 @@ async function main() {
       '0',
       'Fixtures ready (local HTTP + generated MP4 + 2 MiB attachment)',
       'PASS',
-      `origin=${origin}; nativeFixtureOrigin=${nativeOrigin ?? '<unavailable>'}; clip.mp4=${clipBytes}B; clip-720.mp4=${clip720Bytes}B; file.bin=${server.fileBin.length}B sha256=${server.fileBinSha256}; handoff.bin=${server.fileBin.length}B (slow); secure.bin=${server.secureBinBytes}B sha256=${server.secureBinSha256} (cookie-only)`
+      `origin=${origin}; nativeFixtureOrigin=${nativeOrigin ?? '<unavailable>'}; browser=${BROWSER_NAME} (${CHROME}); clip.mp4=${clipBytes}B; clip-720.mp4=${clip720Bytes}B; file.bin=${server.fileBin.length}B sha256=${server.fileBinSha256}; handoff.bin=${server.fileBin.length}B (slow); secure.bin=${server.secureBinBytes}B sha256=${server.secureBinSha256} (cookie-only)`
     )
 
     // ------------------------------------------------------------------
@@ -1452,7 +1521,7 @@ async function main() {
       extensionPath: EXTENSION_DIR,
       label: 'real'
     })
-    const workerA = await findExtensionWorker(browserA)
+    const workerA = await ensureExtensionLoaded(browserA, EXTENSION_DIR, 'real')
     const optionsA = await openExtensionPage(browserA, workerA.id, 'options.html')
     await sleep(700)
 
@@ -1506,6 +1575,13 @@ async function main() {
 
     await scenario('2a', 'Optional host permission through the real options-page gesture', async () => {
       const before = await getAllPermissions(browserA, optionsA.sessionId)
+      // The real request must come from an active extension page with a CDP
+      // user gesture. The tab is activated explicitly; without a browser UI the
+      // headless build still cannot present the extension permission bubble.
+      await browserA.connection
+        .send('Target.activateTarget', { targetId: optionsA.targetId })
+        .catch(() => undefined)
+      await browserA.connection.send('Page.bringToFront', {}, optionsA.sessionId).catch(() => undefined)
       const result = await browserA.connection.evaluate(
         optionsA.sessionId,
         `Promise.race([
@@ -1521,7 +1597,12 @@ async function main() {
       if (result && result.timeout === true) {
         return {
           status: 'NOT-RUNNABLE',
-          evidence: `chrome.permissions.request never called back in 6 s (headless Chromium has no extension permission bubble), so nothing was granted. before=${JSON.stringify(before)}; after=${JSON.stringify(after)}; requested=${originPattern}`
+          evidence:
+            `chrome.permissions.request never called back in 6 s (headless ${BROWSER_NAME} has no extension permission bubble), so nothing was granted. ` +
+            `before=${JSON.stringify(before)}; after=${JSON.stringify(after)}; requested=${originPattern}; ` +
+            'attempts tried: (1) scanned chrome.dll for a permission/auto-confirm/accept switch: none exists — the only auto-accept switches are --auto-accept-camera-and-microphone-capture, --auto-accept-this-tab-capture and --auto-accept-browser-signin-for-tests, and ExtensionInstallPrompt::AutoConfirmPromptIfEnabled is an in-process browser-test hook with no command line; ' +
+            '(2) real unmodified extension with an activated options tab and CDP userGesture, also with --enable-automation and with --silent-debugger-extension-api: callback never fires in either build; ' +
+            '(3) CDP-only grant: the Extensions domain (--enable-unsafe-extension-debugging) exposes loadUnpacked/uninstall/getExtensions/storage only and Browser.grantPermissions covers web permissions, not optional extension host permissions'
         }
       }
       if (result && result.granted === true) {
@@ -1568,7 +1649,7 @@ async function main() {
           }
         : {}
     })
-    const workerB = await findExtensionWorker(browserB)
+    const workerB = await ensureExtensionLoaded(browserB, harnessDir, 'harness')
     const optionsB = await openExtensionPage(browserB, workerB.id, 'options.html')
     await sleep(700)
 
@@ -1875,7 +1956,7 @@ async function main() {
         downloadPath: downloadsDir,
         eventsEnabled: true
       })
-      const downloadPage = await createPage(browserB, `${origin}/file.bin`)
+      const downloadPage = await createPage(browserB, `${origin}/file.bin`, { waitForCommit: false })
       downloadPage.browser = browserB
 
       const downloadDeadline = Date.now() + 30000
@@ -1977,6 +2058,34 @@ async function main() {
         nativeRun.manifestPath = manifestPath
         const manifest = writeNativeManifest(manifestPath, host.exe, workerB.id)
         const registration = registerChromiumHost(manifestPath)
+        // Chromium-branded builds read HKCU\Software\Chromium. Helium is built
+        // from Chromium but may resolve a different registry root; probe the
+        // temporary key before spending time on the isolated app. An unsupported
+        // operation still proves the host process was launched (the manifest and
+        // executable were found), while a missing key fails with
+        // "Specified native messaging host not found".
+        if (BROWSER_NAME === 'Helium') {
+          const probe = await browserB.connection.evaluate(
+            optionsB.sessionId,
+            `Promise.race([
+              new Promise((resolve) => chrome.runtime.sendNativeMessage(${JSON.stringify(NATIVE_HOST_NAME)}, { type: 'helium-registry-probe' }, (response) => resolve({
+                response: response || null,
+                error: chrome.runtime.lastError && chrome.runtime.lastError.message
+              }))),
+              new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 8000))
+            ])`,
+            { userGesture: false }
+          )
+          nativeRun.heliumProbe = probe
+          const probeCode =
+            probe && probe.response && probe.response.error && probe.response.error.code
+          if (probeCode !== 'UNSUPPORTED_OPERATION') {
+            nativeRun.notRunnable = true
+            throw new Error(
+              `Helium did not resolve the temporary ${CHROMIUM_REG_KEY} registration, so its native-messaging scenarios cannot run against a key this harness may write. probe=${JSON.stringify(probe)}; key=${CHROMIUM_REG_KEY}; the real ${HELIUM_REG_KEY} key is not written.`
+            )
+          }
+        }
         const userDataDir = path.join(tempRoot, 'app-user-data')
         const statePath = path.join(userDataDir, 'native-bridge.json')
         nativeRun.userDataDir = userDataDir
@@ -2040,14 +2149,14 @@ async function main() {
           'N0',
           'Isolated dev app and temporary Chromium registration ready',
           'PASS',
-          `extensionId=${workerB.id}; allowed_origins=${JSON.stringify(manifest.allowed_origins)}; host=${host.exe} (tempBuild=${host.built}); manifest=${manifestPath}; key=${CHROMIUM_REG_KEY}; userData=${userDataDir}; downloadDir=${nativeRun.downloadDir}; state=${statePath}; nativeFixtureOrigin=${nativeOrigin} (${server.nativeHost.hostname} -> ${server.nativeHost.address}); overlayEnable=${JSON.stringify(nativeEnable)}; overlay=${JSON.stringify(nativeOverlay)}; heliumBefore=${JSON.stringify(nativeRun.heliumBefore)}; appLog=${JSON.stringify(nativeRun.appStderr().slice(-1200))}`
+          `extensionId=${workerB.id}; browser=${BROWSER_NAME}; allowed_origins=${JSON.stringify(manifest.allowed_origins)}; host=${host.exe} (tempBuild=${host.built}); manifest=${manifestPath}; key=${CHROMIUM_REG_KEY}; heliumProbe=${JSON.stringify(nativeRun.heliumProbe)}; userData=${userDataDir}; downloadDir=${nativeRun.downloadDir}; state=${statePath}; nativeFixtureOrigin=${nativeOrigin} (${server.nativeHost.hostname} -> ${server.nativeHost.address}); overlayEnable=${JSON.stringify(nativeEnable)}; overlay=${JSON.stringify(nativeOverlay)}; heliumBefore=${JSON.stringify(nativeRun.heliumBefore)}; appLog=${JSON.stringify(nativeRun.appStderr().slice(-1200))}`
         )
       } catch (error) {
         setupError = error
         record(
           'N0',
           'Isolated dev app and temporary Chromium registration ready',
-          'FAIL',
+          nativeRun.notRunnable ? 'NOT-RUNNABLE' : 'FAIL',
           error instanceof Error ? error.message : String(error)
         )
       }
@@ -2199,7 +2308,7 @@ async function main() {
           throw new Error('the hand-off fixture was already queued before this scenario')
         }
 
-        const downloadPage = await createPage(browserB, handoffUrl)
+        const downloadPage = await createPage(browserB, handoffUrl, { waitForCommit: false })
         downloadPage.browser = browserB
         const item = await waitForValue(
           () =>
@@ -2324,7 +2433,7 @@ async function main() {
         )
         const secureUrl = `${nativeOrigin}/secure.bin`
         const stderrBefore = nativeRun.appStderr().length
-        const downloadPage = await createPage(browserB, secureUrl)
+        const downloadPage = await createPage(browserB, secureUrl, { waitForCommit: false })
         downloadPage.browser = browserB
         const item = await waitForValue(
           () =>
