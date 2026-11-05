@@ -921,6 +921,35 @@ function queryRegistryDefault(key) {
   return { exists: result.status === 0, status: result.status, output }
 }
 
+/**
+ * A previous run that was hard-killed (no chance to run its finally/exit
+ * handlers) can leave the temp Chromium registration behind. Remove it only
+ * when it provably belongs to this harness: its value must point into an
+ * os.tmpdir() `dondownload-extension-e2e-*` directory that no longer exists.
+ * Anything else is left untouched and the native scenarios abort.
+ */
+function removeStaleHarnessRegistration() {
+  const current = queryRegistryDefault(CHROMIUM_REG_KEY)
+  if (!current.exists) return false
+  const match = current.output.match(/REG_SZ\s+(.+\.json)\s*$/m)
+  if (!match) return false
+  const manifestPath = path.resolve(match[1].trim())
+  const tmpRoot = path.resolve(os.tmpdir()) + path.sep
+  const relative = manifestPath.startsWith(tmpRoot)
+    ? manifestPath.slice(tmpRoot.length)
+    : null
+  if (relative === null || !/^dondownload-extension-e2e-[^\\/]+[\\/]/.test(relative)) {
+    return false
+  }
+  const runDir = path.join(tmpRoot, relative.split(/[\\/]/)[0])
+  if (fs.existsSync(runDir)) return false
+  const removed = deleteChromiumRegistryKey()
+  if (removed) {
+    console.log(`[native] removed stale harness registration from a killed run: ${manifestPath}`)
+  }
+  return removed
+}
+
 function deleteChromiumRegistryKey() {
   spawnSync('reg', ['delete', CHROMIUM_REG_KEY, '/f'], {
     encoding: 'utf8',
@@ -1931,6 +1960,7 @@ async function main() {
             'no non-internal IPv4 address with a host name that resolves to it is available for the native fixture'
           )
         }
+        removeStaleHarnessRegistration()
         if (queryRegistryDefault(CHROMIUM_REG_KEY).exists) {
           throw new Error(
             `${CHROMIUM_REG_KEY} already exists; refusing to overwrite it, so the native scenarios were aborted.`
