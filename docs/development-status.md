@@ -43,8 +43,37 @@ are in `artifacts/test-runs/theme-visual-verification/`. The integrated fast
 suite passed **553/553**, the native-host suite passed **31/31**, and
 `npm run typecheck` plus `npm run build` passed.
 
-The aria2 performance workstream is measuring a local HTTP baseline before any
-tuning; no throughput improvement is claimed yet.
+### aria2 performance checkpoint (`c66c32a`)
+
+Benchmarking showed that the hard-coded `--split=8` capped users who persisted
+`perHostConnections` values from 9 through 16. aria2 clamps split to the live
+`--max-connection-per-server`, so the fix raises only the launch ceiling to the
+maximum configurable value (16); the default and live server limit remain 4.
+The isolated benchmark uses an in-memory, loopback-only Range fixture with 10 ms
+request latency, per-socket rate caps, SHA-256 checks, connection counts, resource
+sampling and a resume matrix. aria2 1.37.0, one integrated-check run per row:
+
+| Fixture | split 8 | split 16 | Observation |
+| --- | ---: | ---: | --- |
+| 512 KiB, 4-connection cap | 66.6 ms, 7.5 MiB/s, 1 connection | 55.9 ms, 8.9 MiB/s, 1 connection | Too small for a meaningful speed claim |
+| 64 MiB, 4-connection cap | 535.1 ms, 119.6 MiB/s, max 4 active | 539.3 ms, 118.7 MiB/s, max 4 active | Default-cap behavior effectively unchanged |
+| 128 MiB, 16-connection cap | 1863.9 ms, 68.7 MiB/s, 10 connections | 897.4 ms, 142.6 MiB/s, 21 connections | 2.08× faster; 8→16 max active |
+| 2 × 64 MiB, two origins, 16-connection cap | 911.5 ms, 140.4 MiB/s, 20 connections | 427.8 ms, 299.2 MiB/s, 36 connections | 2.13× faster; 8→16 max active |
+| 3 × 32 MiB, three origins, 4-connection cap | 511.1 ms, 187.8 MiB/s | 532.6 ms, 180.2 MiB/s | Single-run variation; max active stayed 4 |
+
+The 128 MiB sampled aria2 CPU/RAM was 0.094 s / 17.3 MiB at split 8 and
+0.125 s / 18.0 MiB at split 16. The two-origin case sampled 0.109 s / 22.0 MiB
+and 0.219 s / 30.1 MiB respectively. These are synthetic fixture measurements,
+not promises for arbitrary internet servers. The implementation worker's
+separate repeated focused run measured 1876 ms → 892 ms (2.10×); its full table
+also found the default 4-connection cases unchanged within noise.
+
+All four 64 MiB resume transitions (`8→8`, `16→16`, `8→16`, `16→8`) completed
+with matching SHA-256, retained aria2 control files and offset Range requests.
+No disk-cache, piece-size, pipelining or other tuning candidate was retained.
+Focused verification: aria2 argument tests 4/4; real local aria2 integration
+tests 5/5; fast suite 554/554; typecheck and production build passed. No public
+host or user download folder was used.
 
 As of 2026-11-05. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
