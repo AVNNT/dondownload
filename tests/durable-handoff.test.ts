@@ -175,13 +175,23 @@ describe('strict durable hand-off', () => {
         persistedAt: 1_800_000_000_000
       })
     }
+    let preflightCalls = 0
     const bridge = await startNativeBridge({
       manager: bridgeManager,
       userDataPath: dir,
       logger: () => undefined,
       publicTargetLookup: async () => [
         { address: '93.184.216.34', family: 4 }
-      ]
+      ],
+      publicResourcePreflight: async (input) => {
+        preflightCalls += 1
+        return {
+          finalUrl: input.url,
+          status: 206,
+          contentType: 'application/zip',
+          totalBytes: 4
+        }
+      }
     })
     bridges.push(bridge)
     const endpoint = parseNativeBridgeEndpoint(
@@ -213,6 +223,7 @@ describe('strict durable hand-off', () => {
         persistedAt: 1_800_000_000_000
       }
     })
+    expect(preflightCalls).toBe(1)
 
     delete bridgeManager.addDurable
     const unavailable = await postHandoff({

@@ -65,7 +65,13 @@ export type UrlResult =
   | { ok: false; code: string; message: string }
 
 export type NormalizedCapturedSource =
-  | { ok: true; url: string; filename?: string }
+  | {
+      ok: true
+      url: string
+      filename?: string
+      contentType?: 'video/mp4' | 'video/webm'
+      expectedBytes?: number
+    }
   | { ok: false; code: string; message: string }
 
 export type AnalyzeMediaResult =
@@ -86,16 +92,22 @@ export type DurableHandoffResult =
 export function normalizeSupportedUrl(value: unknown): UrlResult
 export function normalizeCapturedSource(
   rawUrl: unknown,
-  rawFilename?: unknown
+  rawFilename?: unknown,
+  evidence?: { contentType?: unknown; expectedBytes?: unknown }
 ): NormalizedCapturedSource
 export function sendQueueCapturedSource(
   rawUrl: unknown,
-  rawFilename?: unknown
+  rawFilename?: unknown,
+  evidence?: { contentType?: unknown; expectedBytes?: unknown }
 ): Promise<{ ok: true } | BridgeFailure>
 export function sendDurableHandoff(
   rawUrl: unknown,
   rawFilename?: unknown,
-  options?: { timeoutMs?: number }
+  options?: {
+    timeoutMs?: number
+    expectedBytes?: number
+    expectedContentType?: string
+  }
 ): Promise<DurableHandoffResult>
 export function sendQueueDownload(
   rawUrl: unknown,

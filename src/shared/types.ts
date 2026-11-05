@@ -102,6 +102,13 @@ export interface DownloadItem {
 export interface CapturedSourceInput {
   url: string
   filename?: string
+  /**
+   * Exact video/mp4 or video/webm response type observed for an extensionless
+   * URL. The desktop still verifies it anonymously before queueing.
+   */
+  contentType?: 'video/mp4' | 'video/webm'
+  /** Complete-file total observed from Content-Range/Content-Length. */
+  expectedBytes?: number
 }
 
 export const MAX_CAPTURED_SOURCE_FILENAME_LENGTH = 180

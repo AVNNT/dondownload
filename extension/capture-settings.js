@@ -14,6 +14,7 @@ export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
   floatingTriggerEnabled: true,
   automaticFileHandoff: false,
   handoffNotifications: true,
+  networkObservation: false,
   excludedOrigins: []
 })
 
@@ -38,6 +39,9 @@ export function normalizeCaptureSettings(value) {
       source.floatingTriggerEnabled !== false,
     automaticFileHandoff: source.automaticFileHandoff === true,
     handoffNotifications: source.handoffNotifications !== false,
+    // Off unless the user has explicitly enabled it after granting the
+    // optional webRequest permission. A stored true is not enough on its own.
+    networkObservation: source.networkObservation === true,
     excludedOrigins
   }
 }

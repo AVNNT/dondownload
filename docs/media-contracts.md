@@ -140,14 +140,17 @@ message `queue-captured-source` with exactly `{ type, url, filename? }`.
   as guessed files.
 - The browser validates the URL and filename first; the native host repeats
   strict shape/extension checks; the desktop route revalidates the public
-  network target and calls the existing `DownloadManager.add`/aria2 path.
-- Success is returned only after the manager resolves (queue row persisted).
+  network target and calls `DownloadManager.addDurable`/aria2. The response is
+  successful only after SQLite writes and reads back a durable receipt.
+- A missing database or uncertain persistence fails closed; no success is
+  reported to the extension.
   The route does not open, focus or otherwise interact with the desktop window.
 - No cookies, request headers, DRM data, segment URLs or page dimensions are
   read or sent. No new host permission is required beyond the user's existing
   exact-origin overlay grant.
 - See [media-capture-progressive.md](media-capture-progressive.md) for the
-  UI/source-observation behavior and measured fixture latency.
+  UI/source-observation behavior. No real-browser observed-to-usable latency
+  has been measured.
 
 ## Security constraints
 

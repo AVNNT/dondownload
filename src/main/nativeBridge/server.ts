@@ -11,6 +11,7 @@ import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import {
   CAPTURED_SOURCE_CHANNEL,
+  capturedSourceExtension,
   parseCapturedSourceInput
 } from '@shared/capturedSource'
 import {
@@ -52,6 +53,11 @@ import {
   assertPublicTarget,
   type PublicTargetLookup
 } from '../net/publicTarget'
+import {
+  preflightPublicResource,
+  type PublicResourcePreflightInput,
+  type PublicResourcePreflightResult
+} from '../net/publicPreflight'
 
 const BRIDGE_ROUTE = '/queue-download'
 const CAPTURED_SOURCE_ROUTE = '/queue-captured-source'
@@ -126,6 +132,14 @@ export interface NativeBridgeOptions {
   mediaBridge?: MediaBridgeTarget
   /** Injectable DNS lookup for focused tests; production uses node:dns. */
   publicTargetLookup?: PublicTargetLookup
+  /**
+   * Additive bounded anonymous GET probe. Injectable for focused tests; the
+   * production default never sends cookies, credentials or browser headers.
+   */
+  publicResourcePreflight?: (
+    input: PublicResourcePreflightInput,
+    options?: { lookup?: PublicTargetLookup }
+  ) => Promise<PublicResourcePreflightResult>
 }
 
 export interface NativeBridge {
@@ -266,6 +280,12 @@ export async function startNativeBridge(
   const statePath = path.join(options.userDataPath, NATIVE_BRIDGE_STATE_FILE)
   const token = randomBytes(32).toString('hex')
   let closed = false
+  const runPublicPreflight =
+    options.publicResourcePreflight ??
+    ((input: PublicResourcePreflightInput) =>
+      preflightPublicResource(input, {
+        lookup: options.publicTargetLookup
+      }))
 
   const server = createServer((request, response) => {
     void handleRequest(request, response).catch((error: unknown) => {
@@ -448,13 +468,70 @@ export async function startNativeBridge(
       return
     }
 
+    let pathname = ''
     try {
-      // DownloadManager.add validates the URL/filename again, persists the new
-      // row before resolving, and only then reports success to the extension.
-      await options.manager.add(input)
+      pathname = new URL(input.url).pathname
+    } catch {
+      sendError(response, 400, 'MALFORMED_URL', 'That does not look like a valid URL.')
+      return
+    }
+
+    if (capturedSourceExtension(pathname) === null) {
+      // An extensionless URL is not proven by a filename. Verify the same
+      // anonymous public response with one bounded range GET before queueing.
+      if (input.contentType === undefined || input.expectedBytes === undefined) {
+        sendError(
+          response,
+          400,
+          'CAPTURED_SOURCE_UNVERIFIED',
+          'The extensionless captured source has no verified response evidence.'
+        )
+        return
+      }
+      try {
+        await runPublicPreflight({
+          url: input.url,
+          expectedBytes: input.expectedBytes,
+          expectedContentType: input.contentType,
+          expectedMediaType: input.contentType
+        })
+      } catch (error) {
+        const info = toErrorInfo(error)
+        logger(`Captured source preflight rejected (${info.code}).`)
+        sendError(
+          response,
+          400,
+          'CAPTURED_SOURCE_UNVERIFIED',
+          'The extensionless captured source could not be verified anonymously.'
+        )
+        return
+      }
+    }
+
+    const addDurable = options.manager.addDurable
+    if (typeof addDurable !== 'function') {
+      sendError(
+        response,
+        503,
+        'CAPTURED_SOURCE_DURABILITY_UNAVAILABLE',
+        'DonDownload cannot durably accept this captured source right now.'
+      )
+      return
+    }
+
+    let receipt: { downloadId: string; persistedAt: number }
+    try {
+      // Playback one-click success has the same strict persistence requirement
+      // as automatic hand-off; the dimensions/source URL are not enough to
+      // claim acceptance when the SQLite receipt cannot be verified.
+      const raw = await addDurable.call(options.manager, {
+        url: input.url,
+        ...(input.filename === undefined ? {} : { filename: input.filename })
+      })
+      receipt = parseDurableHandoffReceipt(raw)
     } catch (error) {
       const info = toErrorInfo(error)
-      logger(`Native bridge could not queue a captured source (${info.code}).`)
+      logger(`Native bridge could not durably queue a captured source (${info.code}).`)
       const status = info.code === 'DUPLICATE_DOWNLOAD' ? 409 : 503
       sendError(response, status, info.code, safeErrorMessage(info.message))
       return
@@ -463,7 +540,9 @@ export async function startNativeBridge(
     sendJson(response, 200, {
       ok: true,
       accepted: true,
-      operation: CAPTURED_SOURCE_CHANNEL
+      operation: CAPTURED_SOURCE_CHANNEL,
+      durable: true,
+      receipt
     })
   }
 
@@ -505,6 +584,33 @@ export async function startNativeBridge(
       const info = toErrorInfo(error)
       logger(`Durable hand-off target rejected (${info.code}).`)
       sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    // The downloads API does not expose whether the browser used GET, POST,
+    // cookies or another authenticated session. Prove only that the same
+    // public resource is anonymously retrievable with one bounded range GET.
+    // If that cannot be established, fail closed and leave the browser's own
+    // download running rather than cancel an authenticated/POST transfer.
+    try {
+      await runPublicPreflight({
+        url: input.url,
+        ...(input.expectedBytes === undefined
+          ? {}
+          : { expectedBytes: input.expectedBytes }),
+        ...(input.expectedContentType === undefined
+          ? {}
+          : { expectedContentType: input.expectedContentType })
+      })
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Durable hand-off preflight rejected (${info.code}).`)
+      sendError(
+        response,
+        400,
+        'HANDOFF_PREFLIGHT_FAILED',
+        'The browser download could not be verified as the same anonymous public resource. It was left running.'
+      )
       return
     }
 

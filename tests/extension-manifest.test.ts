@@ -69,10 +69,14 @@ describe('browser extension manifest', () => {
     }
   })
 
-  it('declares the downloads API only as an optional permission', async () => {
+  it('declares downloads and webRequest only as optional permissions', async () => {
     const manifest = await readManifest()
-    expect([...(manifest.optional_permissions ?? [])]).toEqual(['downloads'])
+    expect([...(manifest.optional_permissions ?? [])].sort()).toEqual([
+      'downloads',
+      'webRequest'
+    ])
     expect(manifest.permissions ?? []).not.toContain('downloads')
+    expect(manifest.permissions ?? []).not.toContain('webRequest')
     expect(manifest.permissions ?? []).not.toContain('notifications')
   })
 

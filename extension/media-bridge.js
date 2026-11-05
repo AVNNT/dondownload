@@ -158,7 +158,11 @@ export async function queueCapturedSourceForSender(chromeApi, message, sender) {
   if (
     !message ||
     message.type !== MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE ||
-    !hasExactKeys(message, ['type', 'url'], ['filename'])
+    !hasExactKeys(
+      message,
+      ['type', 'url'],
+      ['filename', 'contentType', 'expectedBytes']
+    )
   ) {
     return failure('INVALID_MESSAGE', 'The captured source request is not valid.')
   }
@@ -173,11 +177,30 @@ export async function queueCapturedSourceForSender(chromeApi, message, sender) {
   ) {
     return failure('INVALID_MESSAGE', 'The captured source filename is not valid.')
   }
+  if (
+    message.contentType !== undefined &&
+    (message.contentType !== 'video/mp4' && message.contentType !== 'video/webm')
+  ) {
+    return failure('INVALID_MESSAGE', 'The captured source content type is not valid.')
+  }
+  if (
+    message.expectedBytes !== undefined &&
+    (!Number.isSafeInteger(message.expectedBytes) || message.expectedBytes <= 0)
+  ) {
+    return failure('INVALID_MESSAGE', 'The captured source size is not valid.')
+  }
 
   const authorization = await authorizeMediaSender(chromeApi, sender)
   if (authorization.ok !== true) return authorization
 
-  const result = await sendQueueCapturedSource(message.url, message.filename)
+  const result = await sendQueueCapturedSource(message.url, message.filename, {
+    ...(message.contentType === undefined
+      ? {}
+      : { contentType: message.contentType }),
+    ...(message.expectedBytes === undefined
+      ? {}
+      : { expectedBytes: message.expectedBytes })
+  })
   if (result.ok !== true) return result
   return { ok: true }
 }

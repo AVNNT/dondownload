@@ -20,6 +20,12 @@ import { ValidationError, normalizeHttpUrl, sanitizeFilename } from './validatio
 
 export const CAPTURED_SOURCE_CHANNEL = 'queue-captured-source'
 
+/** Extensionless URLs require one of these exact complete-file media types. */
+export const CAPTURED_SOURCE_MEDIA_TYPES = Object.freeze([
+  'video/mp4',
+  'video/webm'
+])
+
 /** The only containers this checkpoint queues directly. */
 export const CAPTURED_SOURCE_EXTENSIONS = Object.freeze([
   'mp4',
@@ -70,6 +76,39 @@ function exactKeys(
   }
 }
 
+function readContentType(
+  record: Record<string, unknown>
+): 'video/mp4' | 'video/webm' | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'contentType')) {
+    return undefined
+  }
+  const raw = record.contentType
+  if (
+    typeof raw !== 'string' ||
+    !CAPTURED_SOURCE_MEDIA_TYPES.includes(raw.toLowerCase())
+  ) {
+    throw new ValidationError('The captured source content type is invalid.')
+  }
+  return raw.toLowerCase() as 'video/mp4' | 'video/webm'
+}
+
+function readExpectedBytes(
+  record: Record<string, unknown>
+): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'expectedBytes')) {
+    return undefined
+  }
+  const raw = record.expectedBytes
+  if (
+    typeof raw !== 'number' ||
+    !Number.isSafeInteger(raw) ||
+    raw <= 0
+  ) {
+    throw new ValidationError('The captured source size is invalid.')
+  }
+  return raw
+}
+
 function readFilename(record: Record<string, unknown>): string | undefined {
   if (!Object.prototype.hasOwnProperty.call(record, 'filename')) {
     return undefined
@@ -106,9 +145,11 @@ function readFilename(record: Record<string, unknown>): string | undefined {
  */
 export function parseCapturedSourceInput(value: unknown): CapturedSourceInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'], ['filename'])
+  exactKeys(record, ['url'], ['filename', 'contentType', 'expectedBytes'])
   const url = normalizeHttpUrl(record.url)
   const filename = readFilename(record)
+  const contentType = readContentType(record)
+  const expectedBytes = readExpectedBytes(record)
 
   let pathname = ''
   try {
@@ -116,18 +157,28 @@ export function parseCapturedSourceInput(value: unknown): CapturedSourceInput {
   } catch {
     throw new ValidationError('That does not look like a valid URL.')
   }
-  if (
-    capturedSourceExtension(pathname) === null &&
-    capturedSourceExtension(filename ?? '') === null
-  ) {
-    throw new ValidationError(
-      'The captured source is not a supported progressive media file.'
-    )
+
+  if (capturedSourceExtension(pathname) === null) {
+    // The path is extensionless. A filename alone is only a display label and
+    // is not evidence. Require the exact observed complete-file media type and
+    // total; the bridge additionally probes it anonymously before queueing.
+    if (
+      contentType === undefined ||
+      expectedBytes === undefined
+    ) {
+      throw new ValidationError(
+        'An extensionless captured source requires verified response evidence.'
+      )
+    }
+  } else if (contentType !== undefined && expectedBytes === undefined) {
+    throw new ValidationError('The captured source size is invalid.')
   }
 
   return {
     url,
-    ...(filename === undefined ? {} : { filename })
+    ...(filename === undefined ? {} : { filename }),
+    ...(contentType === undefined ? {} : { contentType }),
+    ...(expectedBytes === undefined ? {} : { expectedBytes })
   }
 }
 
@@ -136,7 +187,7 @@ export function parseNativeCapturedSourceMessage(
   value: unknown
 ): CapturedSourceInput & { type: typeof CAPTURED_SOURCE_CHANNEL } {
   const record = asPlainObject(value)
-  exactKeys(record, ['type', 'url'], ['filename'])
+  exactKeys(record, ['type', 'url'], ['filename', 'contentType', 'expectedBytes'])
   if (record.type !== CAPTURED_SOURCE_CHANNEL) {
     throw new ValidationError('Unsupported captured source operation.')
   }
@@ -144,7 +195,13 @@ export function parseNativeCapturedSourceMessage(
     type: CAPTURED_SOURCE_CHANNEL,
     ...parseCapturedSourceInput({
       url: record.url,
-      ...(record.filename === undefined ? {} : { filename: record.filename })
+      ...(record.filename === undefined ? {} : { filename: record.filename }),
+      ...(record.contentType === undefined
+        ? {}
+        : { contentType: record.contentType }),
+      ...(record.expectedBytes === undefined
+        ? {}
+        : { expectedBytes: record.expectedBytes })
     })
   }
 }

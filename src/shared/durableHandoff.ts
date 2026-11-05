@@ -93,6 +93,10 @@ export const MEDIA_FILE_EXTENSIONS = Object.freeze([
 export interface DurableHandoffInput {
   url: string
   filename?: string
+  /** Browser-reported total bytes, used only to verify the same resource. */
+  expectedBytes?: number
+  /** Browser-reported response media type, compared when it is specific. */
+  expectedContentType?: string
 }
 
 export interface DurableHandoffReceipt {
@@ -155,6 +159,46 @@ function exactKeys(
   }
 }
 
+function readExpectedBytes(
+  record: Record<string, unknown>
+): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'expectedBytes')) {
+    return undefined
+  }
+  const value = record.expectedBytes
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value <= 0
+  ) {
+    throw new ValidationError('The hand-off expected size is invalid.')
+  }
+  return value
+}
+
+function readExpectedContentType(
+  record: Record<string, unknown>
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'expectedContentType')) {
+    return undefined
+  }
+  const raw = record.expectedContentType
+  if (typeof raw !== 'string') {
+    throw new ValidationError('The hand-off expected content type is invalid.')
+  }
+  const mediaType = raw.split(';')[0]?.trim().toLowerCase() ?? ''
+  if (
+    mediaType.length === 0 ||
+    mediaType.length > 128 ||
+    !/^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/.test(
+      mediaType
+    )
+  ) {
+    throw new ValidationError('The hand-off expected content type is invalid.')
+  }
+  return mediaType
+}
+
 function readFilename(record: Record<string, unknown>): string | undefined {
   if (!Object.prototype.hasOwnProperty.call(record, 'filename')) {
     return undefined
@@ -179,9 +223,11 @@ function readFilename(record: Record<string, unknown>): string | undefined {
 /** Parse the loopback/native-host body for the strict hand-off route. */
 export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'], ['filename'])
+  exactKeys(record, ['url'], ['filename', 'expectedBytes', 'expectedContentType'])
   const url = normalizeHttpUrl(record.url)
   const filename = readFilename(record)
+  const expectedBytes = readExpectedBytes(record)
+  const expectedContentType = readExpectedContentType(record)
 
   let pathname = ''
   try {
@@ -202,7 +248,9 @@ export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
 
   return {
     url,
-    ...(filename === undefined ? {} : { filename })
+    ...(filename === undefined ? {} : { filename }),
+    ...(expectedBytes === undefined ? {} : { expectedBytes }),
+    ...(expectedContentType === undefined ? {} : { expectedContentType })
   }
 }
 
@@ -211,7 +259,7 @@ export function parseNativeDurableHandoffMessage(
   value: unknown
 ): DurableHandoffInput & { type: typeof DURABLE_HANDOFF_CHANNEL } {
   const record = asPlainObject(value)
-  exactKeys(record, ['type', 'url'], ['filename'])
+  exactKeys(record, ['type', 'url'], ['filename', 'expectedBytes', 'expectedContentType'])
   if (record.type !== DURABLE_HANDOFF_CHANNEL) {
     throw new ValidationError('Unsupported durable hand-off operation.')
   }
@@ -219,7 +267,13 @@ export function parseNativeDurableHandoffMessage(
     type: DURABLE_HANDOFF_CHANNEL,
     ...parseDurableHandoffInput({
       url: record.url,
-      ...(record.filename === undefined ? {} : { filename: record.filename })
+      ...(record.filename === undefined ? {} : { filename: record.filename }),
+      ...(record.expectedBytes === undefined
+        ? {}
+        : { expectedBytes: record.expectedBytes }),
+      ...(record.expectedContentType === undefined
+        ? {}
+        : { expectedContentType: record.expectedContentType })
     })
   }
 }

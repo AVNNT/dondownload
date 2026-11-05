@@ -1,6 +1,6 @@
 # Automatic browser hand-off checkpoint
 
-Status: locally implemented checkpoint on top of `5765276`. No push,
+Status: locally implemented checkpoint on top of `568cb6b`. No push,
 release, installer, registry change, desktop launch, browser-profile change,
 real network observation or personal download was performed. This note does not
 claim the media/browser mission is complete.
@@ -47,6 +47,8 @@ native call is made:
 - automatic hand-off is on and the downloads grant is still present;
 - the item is `in_progress`, not paused, marked safe by the browser, HTTP(S),
   and not created by an extension;
+- an exact positive browser total is available; if it is initially unknown, the
+  extension waits for a `totalBytes` change and re-reads the item before retrying;
 - neither its source/final origin nor its referring page is excluded;
 - its URL path or filename identifies a supported non-media file (for example
   zip, PDF, 7z or an installer). Video/audio files, HLS/DASH manifests, media
@@ -93,6 +95,9 @@ notification only.
 - Player listeners are owned by each player and removed when that player is
   detached or navigation resets the capture state. Source-row click handlers are
   removed when the row list is rebuilt, so repeated renders do not accumulate.
+- Each player retains the 32 most recently observed exact progressive URLs,
+  enough for real quality switching while bounding memory for token-rotating
+  sources.
 - `emptied` clears only the current marker, since ordinary quality changes also
   emit that event. Navigation/player removal clears stored identities. A player
   reused for a different video without observable navigation remains ambiguous.
@@ -105,13 +110,52 @@ notification only.
   dimensions **after** its exact `currentSrc` has already been proven to be a
   supported progressive URL. Dimensions are never used as source proof.
 
+## Checkpoint 3: optional response evidence and anonymous hand-off proof
+
+`webRequest` is declared only in `optional_permissions`, never in required
+permissions. It is requested from a direct options-page user gesture and the
+preference remains off until then. Listeners are installed only when the
+optional grant is available; callbacks record evidence only while the explicit
+preference is enabled.
+
+The response path is deliberately narrow:
+
+- only `type: "media"`, `method: "GET"`, frame 0, an exact tracked/opted-in page
+  origin and an exact granted media origin;
+- only status and Content-Type/Content-Range/Content-Length/Content-Encoding
+  are read; `extraHeaders` is never requested;
+- evidence is kept in memory by tab/frame/document and exact URL, bounded per
+  document and by document count, with a short TTL;
+- top-frame navigation, tab removal and service-worker restore clear it;
+- delivery is event-driven from `loadeddata`/`playing` or an exact-URL push, not
+  polling;
+- extensionless sources require `video/mp4`/`video/webm` evidence from an
+  honored `bytes=0-0` response with exact `Content-Range: bytes 0-0/total`.
+  HLS/DASH manifests, `.m4s`/`.ts`/init segments, MSE fetch requests and compressed
+  bodies are rejected;
+- an exact size is shown only from a complete Content-Range total or an
+  identity Content-Length. A partial length is never used.
+
+The desktop durably queues captured progressive sources and revalidates
+extensionless URLs with one bounded anonymous range GET. The strict hand-off
+route also performs that preflight before calling `addDurable`: redirects are
+revalidated per hop, DNS results are pinned for each request, credentials and
+cookies are omitted, the response body is destroyed after headers, and the
+exact total must match the browser's known byte count. An unknown total stays
+with the browser.
+The downloads API does not reveal GET vs POST or cookie dependence, so a
+failed preflight leaves the browser transfer running instead of cancelling an
+authenticated/POST transfer.
+
 ## Known limitations
 
-- Capture remains **`currentSrc` only**. The extension does not inspect network
-  requests, response headers, cookies, DRM, MSE segments or resource timing.
-  A `blob:`/Media Source playback or an HLS/DASH manifest is reported as
-  unsupported; it is never guessed into a downloadable file. Cross-origin iframe
-  videos are still out of scope because the overlay is top-frame only.
+- Capture remains **`currentSrc` only**. Optional response evidence can prove
+  the same URL, but it cannot see inside `blob:`/Media Source playback. The
+  extension does not read cookies, credentials, request headers, DRM data, MSE
+  segments or resource timing. A `blob:`/Media Source playback or an HLS/DASH
+  manifest is reported as unsupported; it is never guessed into a downloadable
+  file. Cross-origin iframe videos are still out of scope because the overlay is
+  top-frame only.
 - A quality switch replaces `currentSrc`; each exact URL remains a separate row.
   No quality is inferred when dimensions are unavailable.
 - The automatic route accepts ordinary non-media files only. It is not a general
@@ -122,24 +166,27 @@ notification only.
 
 ## Verification performed
 
-Focused scenarios only (three tests total, selected with `-t`):
+Focused tests only; no broad test suite was run:
 
 | Scenario | Result |
 | --- | --- |
 | Strict durable SQLite receipt, uncertain-write rollback of aria2 and local row, no-database fail-closed, separate bridge route capability/unavailability | passed |
 | Automatic extension hand-off aggregate: success cancel only after receipt; bridge failure, timeout, malformed receipt, storage failure, duplicate recursion, extension download and completed race preserve the browser transfer | passed |
 | Overlay persistent playing icon, command toggle and trusted popup source query with dimension-derived label after source proof | passed |
+| Exact URL/document response evidence, conservative unsupported response rejection, bounded stores and quality/source dedupe | `extension-network-evidence` passed |
+| Anonymous preflight follows public redirects without credentials, verifies expected size/type, destroys the response body, rejects ignored/mismatched ranges | `public-preflight` passed |
 
-Also run:
+Also run for this checkpoint:
 
 ```text
 npm run typecheck
-node --check extension/*.js (all extension scripts, including options)
+node --check extension/background.js
+node --check extension/network-evidence.js
+node --check extension/overlay.js
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-native-host.ps1 \
-  -OutputPath %TEMP%\dondownload-native-host-check.exe
+  -OutputPath C:\Users\PC\AppData\Local\Temp\opencode\dondownload-native-host-check.exe
 ```
 
-The native compile produced a temporary executable
-(`C:\Users\PC\AppData\Local\Temp\dondownload-native-host-check.exe`,
-31,232 bytes). The checked-in `native/dondownload-native-host.exe` was not
-overwritten. No installer was built.
+No real-browser observed-to-usable or native-message timing was measured. The
+network evidence test exercises in-process mapping only; sidebar UI checks do
+not prove Chromium `webRequest`, downloads interception or Helium integration.

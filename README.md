@@ -6,8 +6,9 @@ desktop app with a React renderer, a real aria2 engine, durable SQLite download
 history, conservative restart reconciliation, and a Windows tray) plus
 **Milestone 2A**: an optional Helium/Chrome/Edge Manifest V3 extension for
 **manual** HTTP(S) capture through a strict native messaging bridge, and
-**Milestone 2B**: an opt-in, per-site **UI-only** video overlay that never
-extracts or downloads media. The local setup is verified with Helium 0.20.3.1
+**Milestone 2B**: an opt-in, per-site playback overlay for verified progressive
+MP4/WebM-family sources, plus optional permission-gated browser file hand-off.
+HLS/DASH and blob/MSE streams remain unsupported. The local setup was previously verified with Helium 0.20.3.1
 (Chromium 156.0.8078.79); Chrome and Edge remain supported for future installs.
 
 The UI is deliberately small: an OLED-black, centered (~800 px) layout with a
@@ -96,19 +97,25 @@ chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
 - Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The
   optional 2B overlay adds `scripting`, `storage` (session-only pending state)
   plus declared `optional_host_permissions`, but there are still no required
-  host permissions and no always-on content scripts. `downloads` is an optional
-  permission requested only from the options page on a user gesture; there are
-  no required `downloads`, `webRequest`, `notifications`, `cookies`, history or
-  `tabs` permissions.
+  host permissions and no always-on content scripts. `downloads` and
+  `webRequest` are optional permissions requested only from the options page on
+  a user gesture; there are no required `downloads`, `webRequest`,
+  `notifications`, `cookies`, history or `tabs` permissions.
 - The popup has an explicit **Download with DonDownload** action for the active
   page, lists progressive sources reported by that tab's own content script,
   and links to the separate settings page.
 - Right-clicking a link shows **Download with DonDownload**.
-- It never intercepts network requests. Playback capture is opt-in per site. Automatic
-  browser hand-off is off until the optional downloads permission is approved,
-  and the browser's download is cancelled only after a durable desktop receipt.
-- The 2B video overlay is off by default for every site. See
-  [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b-ui-only).
+- It never intercepts or blocks network requests. Playback capture is opt-in
+  per site. An optional, off-by-default `webRequest` grant lets the worker
+  observe response status and only four headers for exact opted-in media
+  responses; it never reads cookies, credentials, request headers, bodies or
+  DRM data and makes no extra requests. Automatic browser hand-off is off until
+  the optional downloads permission is approved, and the browser's download is
+  cancelled only after a durable desktop receipt and a bounded anonymous
+  preflight confirms matching size/type metadata; this is not byte-for-byte
+  identity proof and real-browser interception still needs verification.
+- The video overlay is off by default for every site and queues only verified
+  progressive sources. See [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b).
 - The toolbar badge shows `OK` only after the desktop app has accepted the URL;
   `!` means the action failed. The popup shows the specific error. No
   notifications permission is needed.
@@ -344,29 +351,25 @@ loaded:
 6. Open a `chrome://`, `edge://` or `file://` page; expect an unsupported-URL
    error before any native message is sent.
 
-## Browser extension: opt-in video overlay (Milestone 2B, UI only)
+## Browser extension: opt-in progressive playback capture
 
-Milestone 2B adds a small **DD** button to the top-right corner of a video when
-you hover it. Clicking the button expands a panel. The panel is deliberately
-honest: **downloading video, format detection, quality choices and media-URL
-inspection are not available in this milestone.** There are no fabricated
-format or quality options and no fake success state.
+The overlay attaches a small **DD** button to a playing video. It accumulates
+the exact verified progressive MP4/WebM-family sources exposed by that player;
+decoded dimensions may label a proven URL but never prove a download source.
+Each row has one Download action and queues through the authenticated native
+bridge with durable SQLite acceptance. Optional `webRequest` response evidence
+can verify extensionless progressive sources and exact sizes. HLS/DASH, blob/MSE,
+and cross-origin iframe playback remain unsupported. See
+[`docs/automatic-browser-handoff.md`](docs/automatic-browser-handoff.md) for
+permissions, focused tests and current limits.
 
 The overlay is **off by default** and applies only to sites you explicitly
 enable. If a site is not opted in, no overlay script or UI exists there.
 
-Local verification status is recorded in
-[`docs/development-status.md`](docs/development-status.md). The headed Helium
-check passes for the enable/Allow/hover/click/keyboard/disable flow. The review
-round 2 external-revoke teardown has also been repeated in a fresh disposable
-headed Helium profile and passed: revoking from the browser UI removed the
-overlay from the already-open page without a reload, removed the persistent
-registration and exact-origin grant, and a reload did not re-inject
-([evidence](docs/verification-helium-external-revoke-2026-11-04.md)). That run
-used OS-level synthetic input rather than hardware input, and activated the
-permission prompt's **Allow** button with UI Automation. The milestone remains
-complete and has been locally checkpointed after review. No push or release was
-made.
+Earlier live Helium checks are historical evidence only. The latest playback
+capture and hand-off changes have focused local tests, but real Chromium request
+observation, Downloads API behavior, Native Messaging integration and Helium
+video capture have not been verified for this checkpoint.
 
 ### Permission and privacy design
 
@@ -425,15 +428,18 @@ made.
   registration is already gone.
 - The required permissions contain **no** `downloads`, `webRequest`,
   `webRequestBlocking`, `cookies`, history, `tabs` or notifications permission.
-  `downloads` is optional and requested only from the options page on a direct
-  user gesture. The overlay does not sniff network traffic, read `srcObject`,
-  decode media, call `play()`/`pause()`, or touch DRM, authentication or
-  CAPTCHAs.
-- The overlay observes only an actual playing video element's `currentSrc` after
-  playback starts. It does not read request headers, cookies, response headers
-  or MSE segment traffic. A `blob:`/Media Source or HLS/DASH source is reported
-  as unsupported rather than guessed. See
-  `docs/automatic-browser-handoff.md` for the currentSrc-only limitation.
+  `downloads` and `webRequest` are optional and requested only from the options
+  page on a direct user gesture. The overlay does not sniff arbitrary traffic,
+  read `srcObject`, decode media, call `play()`/`pause()`, or touch DRM,
+  authentication or CAPTCHAs.
+- The overlay observes an actual playing video element's `currentSrc` after
+  playback starts. With the separate optional `webRequest` grant, the worker may
+  attach exact response evidence (status, Content-Type, Content-Range,
+  Content-Length, Content-Encoding) for that same URL in an opted-in top frame.
+  It does not read request headers, cookies, credentials, bodies or MSE segment
+  traffic. A `blob:`/Media Source or HLS/DASH source is reported as unsupported
+  rather than guessed. See `docs/automatic-browser-handoff.md` for the
+  currentSrc-only limitation and the evidence limits.
 
 **Tradeoff:** Chromium's optional-permission model cannot declare "any exact
 origin the user might choose later" without declaring broad optional patterns
@@ -582,8 +588,9 @@ document whose grant was already revoked is torn down; a failed unregister or
 permission removal returns explicit partial-failure fields instead of success,
 while a concurrent `onRemoved` that already finished still verifies as
 successful; and status copy shows **On** only for a verified registration plus
-injection. A source guard also fails if the overlay starts reading media
-sources, using `downloads`/`webRequest`, or calling `play()`/`pause()`.
+injection. A source guard also fails if the page-facing overlay starts reading
+media sources, using `downloads`/`webRequest`, or calling `play()`/`pause()`.
+The optional network observer is isolated in `extension/network-evidence.js`.
 
 An optional end-to-end test drives a real aria2 process against a local
 throttled HTTP server that implements Range requests. It checks full HTTP
@@ -624,7 +631,7 @@ Run `npm run dev` with aria2 installed, start a download, and confirm:
 React renderer (sandboxed, no Node)
         │ narrow validated IPC through preload
         │
-Browser extension (MV3, manual capture + opt-in UI-only overlay)
+Browser extension (MV3, manual capture + opt-in progressive playback capture + optional safe hand-off)
         │ chrome.runtime.sendNativeMessage
         ▼
 Native messaging host (C# .exe, 1 MiB framed JSON)
@@ -819,11 +826,12 @@ with no way to restore it.
   responses, duplicate responses that never claim acceptance, and manager-level
   duplicate/force/concurrency behavior.
 
-## Implemented in Milestone 2B (UI only)
+## Implemented in the opt-in video overlay
 
-- A hover video overlay with an OLED-black 30 × 30 px button, expandable panel,
-  `Alt+Shift+D` keyboard access, `Escape` close, reduced-motion handling and
-  Shadow DOM-isolated CSS.
+- A player-attached overlay with an OLED-black 30 × 30 px button, expandable
+  panel, Escape close, reduced-motion handling and Shadow DOM-isolated CSS. The
+  extension command is user-configurable at `chrome://extensions/shortcuts`;
+  there is no hard-coded browser-conflicting key.
 - Per-site opt-in from the popup: exact-origin optional host permission,
   exact-origin isolated-world content-script registration, immediate injection
   into the active tab, and explicit disable/revoke that unregisters the script
@@ -854,11 +862,11 @@ These are intentionally **not** claimed by these milestones:
 - Automatic aria2 session restore (DonDownload marks lost transfers as
   interrupted instead of pretending they are still running).
 - Notifications, auto-start/launch-at-login, or background services.
-- Automatic browser interception, browser download takeover/cancellation,
-  clipboard monitoring, or drag-and-drop capture.
-- **Any media extraction or overlay download action.** No network sniffing, no
-  media source URL inspection, no format/quality detection, no DRM/auth/CAPTCHA
-  bypass, and no HLS/DASH download. Milestone 2B is UI-only.
+- Clipboard monitoring and drag-and-drop capture.
+- Universal media extraction, HLS/DASH representation/audio resolution, blob/MSE
+  downloads, DRM/auth/CAPTCHA bypass, and cross-origin iframe capture. The
+  extension supports only exact progressive sources it can verify during
+  playback; optional response evidence does not inspect credentials or bodies.
 - Media/stream downloads (HLS/DASH), file hosts, login/cookie handling.
 - BitTorrent, magnet links, Metalink, scheduling, bandwidth limits.
 - Windows installer/signing, auto-update, and bundled aria2.
@@ -886,7 +894,7 @@ src/renderer/             React UI
 src/shared/               Types, IPC channels, validation, format, policy,
                           native bridge protocol constants
 extension/                Helium/Chrome/Edge MV3 popup, context menu, native client
-                          and opt-in UI-only video overlay
+                           and opt-in progressive playback capture overlay
 native/NativeHost.cs      C# native messaging host source
 scripts/                  Native host build and current-user registration
 tests/                    Vitest unit tests, bridge/host tests and optional
@@ -917,14 +925,19 @@ git-ignored; compile it with `npm run build:native-host`.
   user signs out/restarts. If the tray cannot be created, closing the window
   quits as it did before so the app cannot become unreachable.
 - The browser extension's capture path is manual by default. It does not
-  intercept requests or change browser download settings. Optional automatic
-  hand-off requires the user to grant `downloads`, applies only to supported
-  non-media files, and leaves the browser transfer running on any uncertainty.
+  intercept or block requests or change browser download settings. Optional
+  automatic hand-off requires the user to grant `downloads`, applies only to
+  supported non-media files, and leaves the browser transfer running on any
+  uncertainty. The desktop additionally performs one bounded anonymous range
+  GET before cancelling the browser's copy, so authenticated or POST-only
+  transfers are left running.
 - The 2B video overlay is **opt-in per exact origin** and off by default per
   site. It observes only an actual playing element's `currentSrc` after
-  playback; it does not sniff network traffic, read request headers/cookies,
-  decode media, or bypass DRM, authentication or CAPTCHAs. Segmented Media
-  Source and HLS/DASH playback are reported as unsupported rather than guessed.
+  playback. A separate optional, off-by-default `webRequest` grant adds exact
+  response evidence for the same URL and nothing else; it does not read request
+  headers/cookies/credentials/bodies, decode media, or bypass DRM,
+  authentication or CAPTCHAs. Segmented Media Source and HLS/DASH playback are
+  reported as unsupported rather than guessed.
 - The overlay is registered for the top frame of the exact granted origin only.
   Videos inside cross-origin iframes are not covered, and restricted pages such
   as `chrome://`, `edge://`, the Chrome Web Store and `file://` are ineligible.

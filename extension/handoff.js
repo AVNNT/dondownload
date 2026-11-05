@@ -118,7 +118,10 @@ export async function handleCreatedDownload(chromeApi, item) {
 
   let handoff
   try {
-    handoff = await sendDurableHandoff(candidate.url, candidate.filename)
+    handoff = await sendDurableHandoff(candidate.url, candidate.filename, {
+      expectedBytes: candidate.expectedBytes,
+      expectedContentType: candidate.expectedContentType
+    })
   } catch {
     handoff = {
       ok: false,
@@ -176,6 +179,24 @@ export function installDownloadsListener(chromeApi, onCreated) {
     downloads.onCreated.addListener((item) => {
       Promise.resolve(onCreated(item)).catch(() => undefined)
     })
+    if (downloads.onChanged && typeof downloads.onChanged.addListener === 'function') {
+      downloads.onChanged.addListener((delta) => {
+        if (
+          !delta ||
+          !Number.isSafeInteger(delta.id) ||
+          !delta.totalBytes ||
+          typeof delta.totalBytes.current !== 'number' ||
+          !Number.isSafeInteger(delta.totalBytes.current) ||
+          delta.totalBytes.current <= 0
+        ) {
+          return
+        }
+        void searchDownload(chromeApi, delta.id).then((result) => {
+          if (result.ok) return onCreated(result.item)
+          return undefined
+        }).catch(() => undefined)
+      })
+    }
     downloadsListenerInstalled = true
     return true
   } catch {

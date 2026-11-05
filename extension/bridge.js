@@ -19,6 +19,7 @@ export const MAX_CAPTURED_FILENAME_LENGTH = 180
 export const HANDOFF_TIMEOUT_MS = 25_000
 
 const PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
+const COMPLETE_MEDIA_TYPES = ['video/mp4', 'video/webm']
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 /**
@@ -126,7 +127,7 @@ function normalizeCapturedFilename(value) {
  * cannot prove a single downloadable representation from an MSE segment or an
  * HLS/DASH manifest without a resolver.
  */
-export function normalizeCapturedSource(rawUrl, rawFilename) {
+export function normalizeCapturedSource(rawUrl, rawFilename, rawEvidence) {
   const normalized = normalizeSupportedUrl(rawUrl)
   if (!normalized.ok) {
     return { ok: false, code: normalized.code, message: normalized.message }
@@ -163,22 +164,53 @@ export function normalizeCapturedSource(rawUrl, rawFilename) {
     }
   }
 
+  const pathExtension = progressiveExtension(path)
+  if (pathExtension !== null) {
+    return {
+      ok: true,
+      url: normalized.url,
+      ...(filename === undefined ? {} : { filename })
+    }
+  }
+
+  // An extensionless URL is accepted only with exact response evidence from
+  // the optional network observer. A filename such as `clip.mp4` is a display
+  // label, not proof that the response is one complete progressive file.
+  const evidence =
+    rawEvidence && typeof rawEvidence === 'object' && !Array.isArray(rawEvidence)
+      ? rawEvidence
+      : null
+  const contentType =
+    evidence && typeof evidence.contentType === 'string'
+      ? evidence.contentType.trim().toLowerCase()
+      : ''
+  if (COMPLETE_MEDIA_TYPES.indexOf(contentType) === -1) {
+    return {
+      ok: false,
+      code: 'CAPTURED_SOURCE_UNVERIFIED',
+      message:
+        'This extensionless playback source has no verified complete-file network response, so it was not queued.'
+    }
+  }
   if (
-    progressiveExtension(path) === null &&
-    progressiveExtension(filename || '') === null
+    !evidence ||
+    !Number.isSafeInteger(evidence.expectedBytes) ||
+    evidence.expectedBytes <= 0
   ) {
     return {
       ok: false,
-      code: 'CAPTURED_SOURCE_UNSUPPORTED',
+      code: 'CAPTURED_SOURCE_UNVERIFIED',
       message:
-        'This playback source is not a recognized progressive MP4 or WebM file.'
+        'This extensionless playback source has no verified total size, so it was not queued.'
     }
   }
 
   return {
     ok: true,
     url: normalized.url,
-    ...(filename === undefined ? {} : { filename })
+    ...(filename === undefined ? {} : { filename }),
+    contentType,
+    expectedBytes: evidence.expectedBytes
   }
 }
 
@@ -187,8 +219,8 @@ export function normalizeCapturedSource(rawUrl, rawFilename) {
  * authenticated loopback bridge as the manual capture path. Resolves only
  * after the desktop manager has persisted the download.
  */
-export function sendQueueCapturedSource(rawUrl, rawFilename) {
-  const normalized = normalizeCapturedSource(rawUrl, rawFilename)
+export function sendQueueCapturedSource(rawUrl, rawFilename, rawEvidence) {
+  const normalized = normalizeCapturedSource(rawUrl, rawFilename, rawEvidence)
   if (!normalized.ok) {
     return Promise.resolve({
       ok: false,
@@ -212,7 +244,13 @@ export function sendQueueCapturedSource(rawUrl, rawFilename) {
           url: normalized.url,
           ...(normalized.filename === undefined
             ? {}
-            : { filename: normalized.filename })
+            : { filename: normalized.filename }),
+          ...(normalized.contentType === undefined
+            ? {}
+            : {
+                contentType: normalized.contentType,
+                expectedBytes: normalized.expectedBytes
+              })
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError
@@ -287,7 +325,10 @@ function validReceipt(receipt) {
  * failure) is ok:false so the caller keeps the browser download running.
  */
 export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
-  const normalized = normalizeHandoffFile(rawUrl, rawFilename)
+  const normalized = normalizeHandoffFile(rawUrl, rawFilename, {
+    expectedBytes: options && options.expectedBytes,
+    expectedContentType: options && options.expectedContentType
+  })
   if (!normalized.ok) {
     return Promise.resolve({
       ok: false,
@@ -327,7 +368,13 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
           url: normalized.url,
           ...(normalized.filename === undefined
             ? {}
-            : { filename: normalized.filename })
+            : { filename: normalized.filename }),
+          ...(normalized.expectedBytes === undefined
+            ? {}
+            : { expectedBytes: normalized.expectedBytes }),
+          ...(normalized.expectedContentType === undefined
+            ? {}
+            : { expectedContentType: normalized.expectedContentType })
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError

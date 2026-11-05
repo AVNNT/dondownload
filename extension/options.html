@@ -74,6 +74,37 @@
         <p id="handoff-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
+      <section aria-labelledby="network-heading">
+        <h2 id="network-heading">Playback response evidence (optional)</h2>
+        <p class="hint">
+          Off by default. This requests the optional <strong>webRequest</strong>
+          permission only from the button below. It observes response status and
+          only Content-Type, Content-Range, Content-Length and Content-Encoding
+          for an exact media response in an opted-in top-frame page. It never
+          reads cookies, credentials, request headers, bodies or DRM data. It
+          does not make extra network requests. Without this evidence, an
+          extensionless <code>video/mp4</code> or <code>video/webm</code> source
+          is not queued.
+        </p>
+        <p id="network-state" class="state" role="status" aria-live="polite"></p>
+        <button id="request-network" type="button">
+          Allow network response evidence
+        </button>
+        <label class="toggle-row">
+          <input id="network-observation" type="checkbox" disabled />
+          <span>
+            <strong>Use observed response evidence</strong>
+            <span class="hint">
+              Enabled only after the optional webRequest permission is granted.
+            </span>
+          </span>
+        </label>
+        <button id="remove-network" type="button" class="secondary" hidden>
+          Remove network permission
+        </button>
+        <p id="network-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
       <section aria-labelledby="exclusions-heading">
         <h2 id="exclusions-heading">Excluded sites</h2>
         <p class="hint">

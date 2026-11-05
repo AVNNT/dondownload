@@ -22,12 +22,68 @@ import {
   queueMediaForSender
 } from './media-bridge.js'
 import { handleCreatedDownload, installDownloadsListener } from './handoff.js'
+import { CAPTURE_SETTINGS_KEY, readCaptureSettings } from './capture-settings.js'
+import {
+  NETWORK_EVIDENCE_MESSAGE_TYPES,
+  evidenceForMessage,
+  installNetworkObservation,
+  requestNetworkEvidenceForSender
+} from './network-evidence.js'
 
 const MENU_ID = 'dondownload-link'
 const BADGE_CLEAR_MS = 4_000
 const DEFAULT_TITLE = 'Send this page to DonDownload'
 
 let badgeGeneration = 0
+
+/**
+ * Optional response evidence. The store is intentionally memory-only: a new
+ * service-worker generation starts empty, so a response from before a worker
+ * restore can never be mapped to a current document.
+ */
+const networkObservation = installNetworkObservation(chrome, {
+  onEvidence(tabId, evidence) {
+    const safe = evidenceForMessage(evidence)
+    if (safe === null) return
+    try {
+      chrome.tabs.sendMessage(
+        tabId,
+        {
+          type: NETWORK_EVIDENCE_MESSAGE_TYPES.AVAILABLE,
+          url: safe.url,
+          evidence: safe
+        },
+        clearLastError
+      )
+    } catch {
+      // The tab may be closed or have no overlay content script.
+    }
+  }
+})
+networkObservation.install()
+
+async function refreshNetworkObservation() {
+  let granted = false
+  try {
+    granted =
+      (await chrome.permissions.contains({ permissions: ['webRequest'] })) === true
+  } catch {
+    granted = false
+  }
+  let settings
+  try {
+    settings = await readCaptureSettings(chrome)
+  } catch {
+    settings = { networkObservation: false }
+  }
+  networkObservation.setPermissionGranted(granted)
+  networkObservation.setEnabled(settings.networkObservation === true)
+  if (granted !== true || settings.networkObservation !== true) {
+    networkObservation.store.clearAll()
+  }
+}
+
+void refreshNetworkObservation().catch(() => undefined)
 
 function clearLastError() {
   // Reading lastError prevents "Unchecked runtime.lastError" noise.
@@ -146,6 +202,8 @@ function installLifecycleListeners() {
   installContextMenu()
   void reconcileOverlayRegistrations()
   installDownloadsSupport()
+  networkObservation.install()
+  void refreshNetworkObservation().catch(() => undefined)
 }
 
 /**
@@ -189,17 +247,28 @@ chrome.runtime.onStartup.addListener(installLifecycleListeners)
 // service worker finish the exact-origin registration and injection anyway.
 chrome.permissions.onAdded.addListener((permissions) => {
   installDownloadsSupport()
+  networkObservation.install()
+  void refreshNetworkObservation().catch(() => undefined)
   void handlePermissionsAdded(chrome, permissions).catch(() => undefined)
 })
 
 chrome.permissions.onRemoved.addListener((permissions) => {
+  void refreshNetworkObservation().catch(() => undefined)
   void handlePermissionsRemoved(chrome, permissions).catch(() => undefined)
 })
 
 // Prune session-only tab records. `tabs.onRemoved` needs no `tabs` permission.
 chrome.tabs.onRemoved.addListener((tabId) => {
+  networkObservation.clearTab(tabId)
   void forgetOverlayTab(chrome, tabId).catch(() => undefined)
 })
+
+if (chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes || !changes[CAPTURE_SETTINGS_KEY]) return
+    void refreshNetworkObservation().catch(() => undefined)
+  })
+}
 
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId !== MENU_ID) return
@@ -268,6 +337,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           overlayFailure(
             'CAPTURE_REQUEST_FAILED',
             'The captured source request could not be completed.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === NETWORK_EVIDENCE_MESSAGE_TYPES.REQUEST) {
+    void requestNetworkEvidenceForSender(chrome, message, sender, {
+      store: networkObservation.store,
+      enabled: networkObservation.isEnabled()
+    })
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'EVIDENCE_REQUEST_FAILED',
+            'The playback response evidence request could not be completed.'
           )
         )
       )

@@ -97,10 +97,10 @@ export function isPublicAddress(address: string): boolean {
  * steps remains a residual risk that would require resolver pinning or a
  * controlled proxy to remove.
  */
-export async function assertPublicTarget(
+export async function resolvePublicTargetAddresses(
   url: string,
   lookup: PublicTargetLookup = defaultPublicTargetLookup
-): Promise<void> {
+): Promise<readonly PublicLookupAddress[]> {
   const parsed = new URL(url)
   let host = parsed.hostname
   if (host.startsWith('[') && host.endsWith(']')) {
@@ -130,7 +130,7 @@ export async function assertPublicTarget(
         'Local and private network addresses are not supported.'
       )
     }
-    return
+    return [{ address: host, family: literalFamily }]
   }
 
   let addresses: readonly PublicLookupAddress[]
@@ -158,4 +158,12 @@ export async function assertPublicTarget(
       )
     }
   }
+  return addresses
+}
+
+export async function assertPublicTarget(
+  url: string,
+  lookup: PublicTargetLookup = defaultPublicTargetLookup
+): Promise<void> {
+  await resolvePublicTargetAddresses(url, lookup)
 }

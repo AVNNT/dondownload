@@ -19,6 +19,11 @@ const requestDownloads = document.getElementById('request-downloads')
 const removeDownloads = document.getElementById('remove-downloads')
 const permissionState = document.getElementById('permission-state')
 const handoffStatus = document.getElementById('handoff-status')
+const networkObservation = document.getElementById('network-observation')
+const requestNetwork = document.getElementById('request-network')
+const removeNetwork = document.getElementById('remove-network')
+const networkState = document.getElementById('network-state')
+const networkStatus = document.getElementById('network-status')
 const exclusionForm = document.getElementById('exclusion-form')
 const exclusionOrigin = document.getElementById('exclusion-origin')
 const exclusionList = document.getElementById('exclusion-list')
@@ -32,6 +37,7 @@ const siteStatus = document.getElementById('site-status')
 
 let settings = normalizeCaptureSettings(null)
 let downloadsGranted = false
+let networkGranted = false
 let site = null
 let siteGranted = false
 let siteReady = false
@@ -75,6 +81,23 @@ function renderPermissionState() {
   removeDownloads.hidden = false
 }
 
+function renderNetworkState() {
+  networkObservation.disabled = !networkGranted
+  if (!networkGranted) {
+    networkObservation.checked = false
+    networkState.textContent =
+      'webRequest permission is not granted. Network response evidence is off.'
+    requestNetwork.hidden = false
+    removeNetwork.hidden = true
+    return
+  }
+  networkObservation.checked = settings.networkObservation === true
+  networkState.textContent =
+    'webRequest permission is granted. Response evidence is used only when the toggle is on.'
+  requestNetwork.hidden = true
+  removeNetwork.hidden = false
+}
+
 function renderExclusions() {
   while (exclusionList.children.length > 0) {
     exclusionList.removeChild(exclusionList.children[0])
@@ -111,6 +134,7 @@ function renderSettings() {
   floatingTrigger.checked = settings.floatingTriggerEnabled !== false
   handoffNotifications.checked = settings.handoffNotifications !== false
   renderPermissionState()
+  renderNetworkState()
   renderExclusions()
 }
 
@@ -122,9 +146,20 @@ async function loadSettings() {
   } catch {
     downloadsGranted = false
   }
+  try {
+    networkGranted =
+      (await chrome.permissions.contains({ permissions: ['webRequest'] })) === true
+  } catch {
+    networkGranted = false
+  }
   if (!downloadsGranted) {
     const changed = settings.automaticFileHandoff === true
     settings.automaticFileHandoff = false
+    if (changed) void writeCaptureSettings(chrome, settings)
+  }
+  if (!networkGranted) {
+    const changed = settings.networkObservation === true
+    settings.networkObservation = false
     if (changed) void writeCaptureSettings(chrome, settings)
   }
   renderSettings()
@@ -283,6 +318,64 @@ automaticHandoff.addEventListener('change', () => {
       ? 'Automatic hand-off is on for supported non-media files.'
       : 'Automatic hand-off is off.'
   )
+})
+
+networkObservation.addEventListener('change', () => {
+  if (!networkGranted) {
+    networkObservation.checked = false
+    return
+  }
+  settings.networkObservation = networkObservation.checked
+  saveSettings(
+    networkObservation.checked
+      ? 'Network response evidence is on for opted-in pages.'
+      : 'Network response evidence is off.'
+  )
+})
+
+requestNetwork.addEventListener('click', () => {
+  // Direct user-gesture request. No await may run before permissions.request.
+  try {
+    chrome.permissions.request({ permissions: ['webRequest'] }, (granted) => {
+      const runtimeError = chrome.runtime.lastError
+      if (runtimeError) {
+        setStatus(networkStatus, 'error', 'The webRequest permission could not be requested.')
+        return
+      }
+      networkGranted = granted === true
+      if (!networkGranted) {
+        settings.networkObservation = false
+        renderNetworkState()
+        setStatus(networkStatus, 'error', 'Permission was not granted. Network evidence stays off.')
+        return
+      }
+      settings.networkObservation = true
+      renderNetworkState()
+      saveSettings('webRequest permission granted. Network response evidence is on.')
+      setStatus(networkStatus, 'success', 'Network response evidence is on.')
+    })
+  } catch {
+    setStatus(networkStatus, 'error', 'The webRequest permission could not be requested.')
+  }
+})
+
+removeNetwork.addEventListener('click', () => {
+  try {
+    chrome.permissions.remove({ permissions: ['webRequest'] }, (removed) => {
+      const runtimeError = chrome.runtime.lastError
+      if (runtimeError || removed !== true) {
+        setStatus(networkStatus, 'error', 'The webRequest permission could not be removed.')
+        return
+      }
+      networkGranted = false
+      settings.networkObservation = false
+      renderNetworkState()
+      saveSettings('webRequest permission removed. Network response evidence is off.')
+      setStatus(networkStatus, 'success', 'Network response evidence is off.')
+    })
+  } catch {
+    setStatus(networkStatus, 'error', 'The webRequest permission could not be removed.')
+  }
 })
 
 requestDownloads.addEventListener('click', () => {

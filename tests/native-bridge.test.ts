@@ -174,6 +174,13 @@ function createManager(): FakeManager {
       }
       this.seen.add(url)
       return { accepted: true }
+    },
+    async addDurable(input: unknown): Promise<{ downloadId: string; persistedAt: number }> {
+      await this.add(input)
+      return {
+        downloadId: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+        persistedAt: 1_800_000_000_000
+      }
     }
   }
 }
@@ -444,7 +451,7 @@ describe('native bridge request handling', () => {
 describe('captured source bridge route', () => {
   beforeEach(start)
 
-  it('queues one verified progressive source through DownloadManager.add with its filename', async () => {
+  it('queues one verified progressive source through strict durable acceptance', async () => {
     const response = await post(
       JSON.stringify({
         url: 'https://cdn.example/video/clip.mp4?sig=abc',
@@ -457,7 +464,12 @@ describe('captured source bridge route', () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       accepted: true,
-      operation: 'queue-captured-source'
+      operation: 'queue-captured-source',
+      durable: true,
+      receipt: {
+        downloadId: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+        persistedAt: 1_800_000_000_000
+      }
     })
     expect(manager.calls).toEqual([
       {

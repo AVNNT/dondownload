@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { handleCreatedDownload } from '../extension/handoff.js'
+import { handleCreatedDownload, installDownloadsListener } from '../extension/handoff.js'
 import { claimHandoffDownload, finishHandoffDownload, readHandoffState, writeCaptureSettings } from '../extension/capture-settings.js'
 import { automaticHandoffCandidate } from '../extension/handoff-policy.js'
 import { sendDurableHandoff } from '../extension/bridge.js'
@@ -95,6 +95,8 @@ function createFake(options: FakeOptions = {}) {
             state: options.searchState ?? 'in_progress',
             danger: 'safe',
             url: 'https://example.com/files/report.zip',
+            totalBytes: 4,
+            mime: 'application/zip',
             filename: 'C:\\Downloads\\report.zip',
             ...(options.byExtensionId ? { byExtensionId: options.byExtensionId } : {})
           }
@@ -154,6 +156,8 @@ function fileItem(overrides: Record<string, unknown> = {}) {
     danger: 'safe',
     url: 'https://example.com/files/report.zip',
     filename: 'C:\\Downloads\\report.zip',
+    totalBytes: 4,
+    mime: 'application/zip',
     ...overrides
   }
 }
@@ -172,7 +176,9 @@ describe('automatic browser hand-off is strict and conservative', () => {
         message: {
           type: 'handoff-download',
           url: 'https://example.com/files/report.zip',
-          filename: 'report.zip'
+          filename: 'report.zip',
+          expectedBytes: 4,
+          expectedContentType: 'application/zip'
         }
       }
     ])
@@ -223,6 +229,24 @@ describe('automatic browser hand-off is strict and conservative', () => {
       'left-running'
     )
     expect(unavailable.cancelled).toEqual([])
+
+    // Anonymous preflight failure (for example an authenticated or POST-only
+    // transfer): the browser download is kept.
+    const preflightFailure = createFake({
+      nativeResponse: {
+        ok: false,
+        error: {
+          code: 'HANDOFF_PREFLIGHT_FAILED',
+          message: 'The browser download could not be verified and was left running.'
+        }
+      }
+    })
+    await seedSettings(preflightFailure)
+    useFake(preflightFailure)
+    expect(
+      await handleCreatedDownload(preflightFailure.chrome, fileItem({ id: 44 }))
+    ).toBe('left-running')
+    expect(preflightFailure.cancelled).toEqual([])
 
     // Malformed receipt: never cancel on a claimed-but-invalid durability.
     const malformed = createFake({
@@ -283,6 +307,28 @@ describe('automatic browser hand-off is strict and conservative', () => {
     expect(automaticHandoffCandidate(fileItem({ danger: 'uncommon' }), []).ok).toBe(false)
     expect(automaticHandoffCandidate(fileItem({ paused: true }), []).ok).toBe(false)
     expect(automaticHandoffCandidate(fileItem({ mime: 'video/mp4' }), []).ok).toBe(false)
+    expect(automaticHandoffCandidate(fileItem({ totalBytes: -1 }), []).ok).toBe(false)
     expect(automaticHandoffCandidate(fileItem({ referrer: 'https://excluded.example/page' }), ['https://excluded.example']).ok).toBe(false)
+
+    // The browser may not know the total at onCreated. Wait for the exact size
+    // change, then re-read the trusted DownloadItem before trying takeover.
+    const delayedSize = createFake()
+    await seedSettings(delayedSize)
+    useFake(delayedSize)
+    let createdListener: ((item: unknown) => void) | null = null
+    let changedListener: ((delta: unknown) => void) | null = null
+    delayedSize.chrome.downloads.onCreated = {
+      addListener(listener: (item: unknown) => void) { createdListener = listener }
+    }
+    delayedSize.chrome.downloads.onChanged = {
+      addListener(listener: (delta: unknown) => void) { changedListener = listener }
+    }
+    expect(installDownloadsListener(delayedSize.chrome, (item) => handleCreatedDownload(delayedSize.chrome, item))).toBe(true)
+    createdListener!(fileItem({ id: 88, totalBytes: -1 }))
+    expect(delayedSize.nativeMessages).toEqual([])
+    changedListener!({ id: 88, totalBytes: { current: 4 } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(delayedSize.nativeMessages).toHaveLength(1)
+    expect(delayedSize.cancelled).toEqual([88])
   })
 })

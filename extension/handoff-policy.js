@@ -64,8 +64,27 @@ export function originFromPageUrl(value) {
   return parsed.origin
 }
 
+function normalizeExpectedBytes(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function normalizeExpectedContentType(value) {
+  if (typeof value !== 'string') return undefined
+  const mediaType = value.split(';')[0]?.trim().toLowerCase() ?? ''
+  if (
+    mediaType.length === 0 ||
+    mediaType.length > 128 ||
+    !/^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/.test(
+      mediaType
+    )
+  ) {
+    return undefined
+  }
+  return mediaType
+}
+
 /** Validate one explicit hand-off file. No URL is logged by the caller. */
-export function normalizeHandoffFile(rawUrl, rawFilename) {
+export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}) {
   if (typeof rawUrl !== 'string') {
     return { ok: false, code: 'UNSUPPORTED_URL', message: 'No download URL is available.' }
   }
@@ -130,10 +149,18 @@ export function normalizeHandoffFile(rawUrl, rawFilename) {
     }
   }
 
+  const expectedBytes = normalizeExpectedBytes(
+    rawExpected && rawExpected.expectedBytes
+  )
+  const expectedContentType = normalizeExpectedContentType(
+    rawExpected && rawExpected.expectedContentType
+  )
   return {
     ok: true,
     url: url.href,
-    ...(filename === undefined ? {} : { filename })
+    ...(filename === undefined ? {} : { filename }),
+    ...(expectedBytes === undefined ? {} : { expectedBytes }),
+    ...(expectedContentType === undefined ? {} : { expectedContentType })
   }
 }
 
@@ -190,12 +217,26 @@ export function automaticHandoffCandidate(item, excludedOrigins) {
     typeof item.filename === 'string' && item.filename.length > 0
       ? item.filename.split(/[\\/]/).pop()
       : undefined
-  const normalized = normalizeHandoffFile(rawUrl, rawFilename)
+  const normalized = normalizeHandoffFile(rawUrl, rawFilename, {
+    expectedBytes: item.totalBytes,
+    expectedContentType: item.mime
+  })
   if (!normalized.ok) return { ok: false, reason: 'unsupported-file' }
+  if (normalized.expectedBytes === undefined) {
+    // Without the browser's exact total, the anonymous preflight cannot
+    // establish that it is seeing the same file. Leave this transfer intact.
+    return { ok: false, reason: 'size-unavailable' }
+  }
   return {
     ok: true,
     url: normalized.url,
     ...(normalized.filename === undefined ? {} : { filename: normalized.filename }),
+    ...(normalized.expectedBytes === undefined
+      ? {}
+      : { expectedBytes: normalized.expectedBytes }),
+    ...(normalized.expectedContentType === undefined
+      ? {}
+      : { expectedContentType: normalized.expectedContentType }),
     origin
   }
 }

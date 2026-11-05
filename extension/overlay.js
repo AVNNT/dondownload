@@ -19,6 +19,8 @@
   var MEDIA_ANALYZE = 'dondownload:media-analyze'
   var MEDIA_QUEUE = 'dondownload:media-queue'
   var CAPTURE_QUEUE = 'dondownload:capture-queue'
+  var NETWORK_EVIDENCE_REQUEST = 'dondownload:network-evidence-request'
+  var NETWORK_EVIDENCE = 'dondownload:network-evidence'
 
   var state = {
     active: true,
@@ -878,6 +880,7 @@
       unsupported: null,
       lastSrc: '',
       listening: false,
+      evidenceRequested: Object.create(null),
       cleanups: []
     }
     state.capture.players.push(player)
@@ -907,8 +910,9 @@
     listen('emptied', function () {
       var current = playerFor(video)
       if (!current) return
-      // Changing progressive quality normally emits emptied too. Keep the
-      // accumulated URLs until navigation/player removal proves a new identity.
+      // A normal progressive quality switch emits `emptied` too. Keep the
+      // accumulated exact URLs and their display labels; only the current
+      // marker changes. Navigation/player removal owns clearing identities.
       current.lastSrc = ''
       current.sources = current.sources.map(function (source) {
         return Object.assign({}, source, { current: false })
@@ -926,9 +930,86 @@
     }
   }
 
+  function playbackInput(video) {
+    return {
+      currentSrc: typeof video.currentSrc === 'string' ? video.currentSrc : '',
+      paused: video.paused,
+      readyState: video.readyState,
+      ended: video.ended,
+      error: video.error || null,
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight
+    }
+  }
+
   /**
-   * Observe only the exact player's currentSrc after real playback. No
-   * dimensions, segment URLs, headers or network entries are consulted.
+   * Ask the background worker for exact response evidence for one exact URL.
+   * The sender tab is derived by the worker; this message never carries a tab
+   * id. There is no polling: media events trigger the request and the worker
+   * also pushes the exact URL when headers arrive.
+   */
+  function requestNetworkEvidence(player, url, required) {
+    if (!player || typeof url !== 'string' || url.length === 0) return
+    if (player.evidenceRequested[url] === true) return
+    player.evidenceRequested[url] = true
+
+    sendRuntimeMessage(
+      { type: NETWORK_EVIDENCE_REQUEST, url: url },
+      function (response, runtimeError) {
+        if (runtimeError || !response || response.ok !== true) {
+          if (required) markEvidenceUnavailable(player, url, 'The response evidence request failed.')
+          return
+        }
+        if (!response.evidence) {
+          if (required) {
+            markEvidenceUnavailable(
+              player,
+              url,
+              'No complete-file response evidence was observed. Enable optional network observation and play this video again.'
+            )
+          }
+          return
+        }
+        handleNetworkEvidence(url, response.evidence)
+      }
+    )
+  }
+
+  function markEvidenceUnavailable(player, url, message) {
+    if (!player || !player.video) return
+    var candidate = core.evaluatePlaybackSource(playbackInput(player.video))
+    if (!candidate || candidate.url !== url) return
+    player.unsupported = {
+      code: 'NETWORK_EVIDENCE_UNAVAILABLE',
+      message: message
+    }
+    if (player.video === state.activeVideo && state.panelOpen) renderCapturedSources()
+  }
+
+  function handleNetworkEvidence(url, evidence) {
+    if (state.disabled || typeof url !== 'string' || !evidence) return
+    if (evidence.url !== url || evidence.completeFile !== true) return
+    var changed = false
+    for (var index = 0; index < state.capture.players.length; index += 1) {
+      var player = state.capture.players[index]
+      if (!player || !player.video) continue
+      var candidate = core.evaluatePlaybackSource(playbackInput(player.video))
+      // Match the exact canonical currentSrc, not the raw string (which may
+      // include a media fragment) and never a dimension or "only player" guess.
+      if (!candidate || candidate.url !== url) continue
+      var verified = core.applyNetworkEvidence(candidate, evidence)
+      if (verified) {
+        player.sources = core.addCapturedSource(player.sources, verified)
+        player.unsupported = null
+        changed = true
+      }
+    }
+    if (changed && state.activeVideo && state.panelOpen) renderCapturedSources()
+  }
+
+  /**
+   * Observe only the exact player's currentSrc after real playback. Dimensions
+   * label a source only after its URL is proven; they never prove a source.
    */
   function observePlayback(video) {
     if (state.disabled || !video || maybeResetCaptureForNavigation()) return
@@ -940,19 +1021,19 @@
     if (currentSrc === player.lastSrc && player.sources.length > 0) return
     player.lastSrc = currentSrc
 
-    var result = core.evaluatePlaybackSource({
-      currentSrc: currentSrc,
-      paused: video.paused,
-      readyState: video.readyState,
-      ended: video.ended,
-      error: video.error || null,
-      videoWidth: video.videoWidth,
-      videoHeight: video.videoHeight
-    })
+    var result = core.evaluatePlaybackSource(playbackInput(video))
 
     if (result.kind === 'verified') {
       player.sources = core.addCapturedSource(player.sources, result)
       player.unsupported = null
+      // Optional: enrich the already-proven progressive URL with an exact
+      // total and response type. It is never required for an extensionful URL.
+      requestNetworkEvidence(player, result.url, false)
+    } else if (result.kind === 'needs-evidence') {
+      // An extensionless URL is not a source yet. Wait for exact complete-file
+      // response evidence; do not infer a container from a filename.
+      requestNetworkEvidence(player, result.url, true)
+      return
     } else if (result.kind === 'unsupported') {
       player.sources = player.sources.map(function (source) {
         return Object.assign({}, source, { current: false })
@@ -1023,6 +1104,16 @@
     var details = []
     if (source.qualityLabel) details.push(source.qualityLabel)
     details.push(String(source.container || '').toUpperCase())
+    if (
+      typeof source.sizeBytes === 'number' &&
+      Number.isSafeInteger(source.sizeBytes) &&
+      source.sizeBytes > 0 &&
+      core.formatMediaSize
+    ) {
+      // Exact only because it came from a complete Content-Range total or an
+      // identity Content-Length. Unknown stays unstated rather than guessed.
+      details.push(core.formatMediaSize(source.sizeBytes, false))
+    }
     if (source.current) details.push('current playback')
     copyNode.appendChild(
       createElement('span', 'source-detail', details.join(' · '))
@@ -1071,7 +1162,15 @@
       {
         type: CAPTURE_QUEUE,
         url: source.url,
-        filename: source.filename
+        filename: source.filename,
+        ...(source.contentType === 'video/mp4' || source.contentType === 'video/webm'
+          ? { contentType: source.contentType }
+          : {}),
+        ...(typeof source.sizeBytes === 'number' &&
+        Number.isSafeInteger(source.sizeBytes) &&
+        source.sizeBytes > 0
+          ? { expectedBytes: source.sizeBytes }
+          : {})
       },
       function (response, runtimeError) {
         if (token !== state.capture.queueToken || state.disabled) {
@@ -1922,6 +2021,12 @@
       if (message && message.type === 'dondownload:capture-download') {
         downloadQueriedSource(message.url, respond)
         return true
+      }
+      if (message && message.type === NETWORK_EVIDENCE) {
+        if (typeof message.url === 'string') {
+          handleNetworkEvidence(message.url, message.evidence)
+        }
+        return false
       }
       return false
     }

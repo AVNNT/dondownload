@@ -197,11 +197,23 @@ describe('extension wiring guardrails', () => {
     expect(overlay).toContain('message.origin === location.origin')
   })
 
-  it('does not use download, network interception or cookie APIs', () => {
-    for (const source of [background, popup, overlay, controller]) {
+  it('does not use download, broad network interception or cookie APIs', () => {
+    // The optional response-evidence listener lives in network-evidence.js and
+    // is installed by background.js only after the user grants webRequest. The
+    // page-facing overlay and popup still never touch those APIs.
+    for (const source of [popup, overlay, controller]) {
       for (const forbidden of [
         'chrome.downloads',
         'webRequest',
+        'chrome.cookies',
+        'chrome.history',
+        'chrome.tabs.captureVisibleTab'
+      ]) {
+        expect(source).not.toContain(forbidden)
+      }
+    }
+    for (const source of [background]) {
+      for (const forbidden of [
         'chrome.cookies',
         'chrome.history',
         'chrome.tabs.captureVisibleTab'

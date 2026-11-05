@@ -8,6 +8,7 @@ export interface CaptureSettings {
   floatingTriggerEnabled: boolean
   automaticFileHandoff: boolean
   handoffNotifications: boolean
+  networkObservation: boolean
   excludedOrigins: string[]
 }
 

@@ -174,7 +174,7 @@ describe('captured progressive source envelope', () => {
       ['blob:https://example.com/abc', 'UNSUPPORTED_URL'],
       ['https://cdn.example/index.m3u8', 'CAPTURED_SOURCE_UNSUPPORTED'],
       ['https://cdn.example/manifest.mpd', 'CAPTURED_SOURCE_UNSUPPORTED'],
-      ['https://cdn.example/stream', 'CAPTURED_SOURCE_UNSUPPORTED'],
+      ['https://cdn.example/stream', 'CAPTURED_SOURCE_UNVERIFIED'],
       ['https://cdn.example/video.mp4', 'INVALID_FILENAME']
     ] as const) {
       const result = await sendQueueCapturedSource(
@@ -188,11 +188,22 @@ describe('captured progressive source envelope', () => {
     expect(fake.messages).toHaveLength(0)
   })
 
-  it('accepts an extensionless CDN URL only when the observed filename supplies a progressive container', () => {
-    expect(normalizeCapturedSource('https://cdn.example/stream?id=1', 'clip.webm')).toEqual({
+  it('accepts an extensionless CDN URL only with exact complete-file response evidence', () => {
+    expect(normalizeCapturedSource('https://cdn.example/stream?id=1', 'clip.webm')).toMatchObject({
+      ok: false,
+      code: 'CAPTURED_SOURCE_UNVERIFIED'
+    })
+    expect(
+      normalizeCapturedSource('https://cdn.example/stream?id=1', 'clip.webm', {
+        contentType: 'video/webm',
+        expectedBytes: 1234
+      })
+    ).toEqual({
       ok: true,
       url: 'https://cdn.example/stream?id=1',
-      filename: 'clip.webm'
+      filename: 'clip.webm',
+      contentType: 'video/webm',
+      expectedBytes: 1234
     })
   })
 

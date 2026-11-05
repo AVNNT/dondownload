@@ -5,7 +5,7 @@
   "description": "Send an explicit HTTP(S) page or right-clicked link to the DonDownload desktop app, with an optional per-site video overlay.",
   "minimum_chrome_version": "102",
   "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage"],
-  "optional_permissions": ["downloads"],
+  "optional_permissions": ["downloads", "webRequest"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

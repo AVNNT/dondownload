@@ -68,6 +68,11 @@ internal static class NativeHost
     private static readonly Regex HandoffExtensionPattern =
         new Regex("\\.(7z|apk|bin|bz2|csv|deb|dmg|doc|docx|epub|exe|gz|img|iso|jar|json|md|msi|odp|ods|odt|pkg|pdf|ppt|pptx|rar|rpm|sqlite|tar|tgz|txt|whl|xls|xlsx|xz|zip|zst)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex CompleteMediaTypePattern =
+        new Regex("^video/(mp4|webm)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ContentTypePattern =
+        new Regex("^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex DownloadIdPattern =
         new Regex("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -345,11 +350,14 @@ internal static class NativeHost
     private static Dictionary<string, object> HandleQueueCapturedSourceMessage(
         Dictionary<string, object> message)
     {
-        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[] { "filename" }))
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "url" },
+            new string[] { "filename", "contentType", "expectedBytes" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only queue-captured-source messages containing type, url and an optional filename are accepted.");
+                "Only queue-captured-source messages containing type, url and optional filename/contentType/expectedBytes are accepted.");
         }
 
         string normalizedUrl;
@@ -369,6 +377,30 @@ internal static class NativeHost
             }
         }
 
+        string contentType = null;
+        long expectedBytes = 0;
+        bool hasContentType = message.ContainsKey("contentType");
+        bool hasExpectedBytes = message.ContainsKey("expectedBytes");
+        if (hasContentType != hasExpectedBytes)
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "An extensionless captured source requires both contentType and expectedBytes.");
+        }
+        if (hasContentType)
+        {
+            contentType = message["contentType"] as string;
+            if (contentType == null || !CompleteMediaTypePattern.IsMatch(contentType))
+            {
+                return Error("INVALID_MESSAGE", "The captured source content type is invalid.");
+            }
+            contentType = contentType.ToLowerInvariant();
+            if (!TryReadPositiveLong(message["expectedBytes"], out expectedBytes))
+            {
+                return Error("INVALID_MESSAGE", "The captured source size is invalid.");
+            }
+        }
+
         bool progressive = false;
         try
         {
@@ -383,7 +415,7 @@ internal static class NativeHost
         {
             progressive = ProgressiveExtensionPattern.IsMatch(filename);
         }
-        if (!progressive)
+        if (!progressive && !hasContentType)
         {
             return Error(
                 "CAPTURED_SOURCE_UNSUPPORTED",
@@ -396,17 +428,25 @@ internal static class NativeHost
         {
             body.Add("filename", filename);
         }
+        if (hasContentType)
+        {
+            body.Add("contentType", contentType);
+            body.Add("expectedBytes", expectedBytes);
+        }
         return ForwardCapturedSource(body);
     }
 
     private static Dictionary<string, object> HandleHandoffDownloadMessage(
         Dictionary<string, object> message)
     {
-        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[] { "filename" }))
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "url" },
+            new string[] { "filename", "expectedBytes", "expectedContentType" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only handoff-download messages containing type, url and an optional filename are accepted.");
+                "Only handoff-download messages containing type, url and optional filename/expectedBytes/expectedContentType are accepted.");
         }
 
         string normalizedUrl;
@@ -424,6 +464,25 @@ internal static class NativeHost
             {
                 return Error("INVALID_MESSAGE", "The hand-off filename is invalid.");
             }
+        }
+
+        long expectedBytes = 0;
+        if (message.ContainsKey("expectedBytes") &&
+            !TryReadPositiveLong(message["expectedBytes"], out expectedBytes))
+        {
+            return Error("INVALID_MESSAGE", "The hand-off expected size is invalid.");
+        }
+
+        string expectedContentType = null;
+        if (message.ContainsKey("expectedContentType"))
+        {
+            expectedContentType = message["expectedContentType"] as string;
+            if (expectedContentType == null ||
+                !ContentTypePattern.IsMatch(expectedContentType))
+            {
+                return Error("INVALID_MESSAGE", "The hand-off expected content type is invalid.");
+            }
+            expectedContentType = expectedContentType.ToLowerInvariant();
         }
 
         bool supported = false;
@@ -453,7 +512,45 @@ internal static class NativeHost
         {
             body.Add("filename", filename);
         }
+        if (message.ContainsKey("expectedBytes"))
+        {
+            body.Add("expectedBytes", expectedBytes);
+        }
+        if (expectedContentType != null)
+        {
+            body.Add("expectedContentType", expectedContentType);
+        }
         return ForwardHandoff(body);
+    }
+
+    private static bool TryReadPositiveLong(object value, out long result)
+    {
+        result = 0;
+        if (value == null)
+        {
+            return false;
+        }
+        if (!(value is int || value is long || value is decimal || value is double))
+        {
+            return false;
+        }
+        if (value is double)
+        {
+            double doubleValue = (double)value;
+            if (doubleValue != Math.Truncate(doubleValue))
+            {
+                return false;
+            }
+        }
+        try
+        {
+            result = Convert.ToInt64(value, CultureInfo.InvariantCulture);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        return result > 0;
     }
 
     private static bool IsSafeCapturedFilename(string filename)

@@ -186,6 +186,7 @@
   // because the exact downloadable representation cannot be proven.
   var PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
   var MANIFEST_EXTENSIONS = ['m3u8', 'mpd']
+  var MAX_CAPTURED_SOURCES_PER_PLAYER = 32
 
   function pathExtension(value) {
     var match = /\.([a-z0-9]{2,5})$/i.exec(String(value || '').trim())
@@ -294,7 +295,7 @@
           'This HLS or DASH stream needs an explicit resolver. It is not queued as a guessed file.'
       }
     }
-    if (extension === null || PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1) {
+    if (extension !== null && PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1) {
       return {
         kind: 'unsupported',
         code: 'NOT_PROGRESSIVE',
@@ -314,24 +315,95 @@
       return { kind: 'not-playing' }
     }
 
+    var width =
+      typeof input.videoWidth === 'number' && input.videoWidth > 0
+        ? Math.round(input.videoWidth)
+        : null
+    var height =
+      typeof input.videoHeight === 'number' && input.videoHeight > 0
+        ? Math.round(input.videoHeight)
+        : null
+    var qualityLabel = qualityLabelForDimensions(
+      input.videoWidth,
+      input.videoHeight
+    )
+
+    // An extensionless URL is not guessed from a filename or dimensions. The
+    // caller requests exact response evidence and only then builds a source.
+    if (extension === null) {
+      return {
+        kind: 'needs-evidence',
+        url: url,
+        currentSrc: raw,
+        width: width,
+        height: height,
+        qualityLabel: qualityLabel
+      }
+    }
+
     return {
       kind: 'verified',
       url: url,
       container: extension,
       filename: capturedSourceFilename(url, extension),
       currentSrc: raw,
-      width:
-        typeof input.videoWidth === 'number' && input.videoWidth > 0
-          ? Math.round(input.videoWidth)
+      width: width,
+      height: height,
+      qualityLabel: qualityLabel
+    }
+  }
+
+  /**
+   * Apply exact response evidence to a candidate for the same currentSrc.
+   * The evidence must prove the same URL and a complete total. Extensionless
+   * sources additionally require an exact video/mp4 or video/webm type. Width
+   * and height are used only for the display label after this proof.
+   */
+  function applyNetworkEvidence(candidate, evidence) {
+    if (!candidate || !evidence) return null
+    if (candidate.kind !== 'verified' && candidate.kind !== 'needs-evidence') {
+      return null
+    }
+    if (typeof candidate.url !== 'string' || evidence.url !== candidate.url) {
+      return null
+    }
+    if (evidence.completeFile !== true) return null
+    if (
+      typeof evidence.totalBytes !== 'number' ||
+      !Number.isSafeInteger(evidence.totalBytes) ||
+      evidence.totalBytes <= 0
+    ) {
+      return null
+    }
+
+    var container = candidate.container
+    if (candidate.kind === 'needs-evidence') {
+      if (evidence.contentType === 'video/mp4') container = 'mp4'
+      else if (evidence.contentType === 'video/webm') container = 'webm'
+      else return null
+    }
+    if (
+      typeof container !== 'string' ||
+      PROGRESSIVE_EXTENSIONS.indexOf(container) === -1
+    ) {
+      return null
+    }
+
+    return {
+      kind: 'verified',
+      url: candidate.url,
+      container: container,
+      filename: capturedSourceFilename(candidate.url, container),
+      currentSrc: candidate.currentSrc,
+      width: candidate.width,
+      height: candidate.height,
+      qualityLabel: candidate.qualityLabel,
+      sizeBytes: evidence.totalBytes,
+      contentType:
+        evidence.contentType === 'video/mp4' || evidence.contentType === 'video/webm'
+          ? evidence.contentType
           : null,
-      height:
-        typeof input.videoHeight === 'number' && input.videoHeight > 0
-          ? Math.round(input.videoHeight)
-          : null,
-      qualityLabel: qualityLabelForDimensions(
-        input.videoWidth,
-        input.videoHeight
-      )
+      networkEvidence: true
     }
   }
 
@@ -340,8 +412,7 @@
    * source moves it back to the current position (for example 1080p -> 720p ->
    * 1080p) and keeps a single row for that exact URL.
    */
-  function addCapturedSource(sources, candidate, maximum) {
-    var limit = typeof maximum === 'number' && maximum > 0 ? maximum : 5
+  function addCapturedSource(sources, candidate) {
     if (!candidate || candidate.kind !== 'verified') return Array.isArray(sources) ? sources.slice() : []
     if (typeof candidate.url !== 'string') return Array.isArray(sources) ? sources.slice() : []
 
@@ -354,6 +425,16 @@
       width: candidate.width,
       height: candidate.height,
       qualityLabel: candidate.qualityLabel,
+      sizeBytes:
+        typeof candidate.sizeBytes === 'number' &&
+        Number.isSafeInteger(candidate.sizeBytes) &&
+        candidate.sizeBytes > 0
+          ? candidate.sizeBytes
+          : null,
+      contentType:
+        candidate.contentType === 'video/mp4' || candidate.contentType === 'video/webm'
+          ? candidate.contentType
+          : null,
       current: true
     })
     for (var index = 0; index < previous.length; index += 1) {
@@ -366,9 +447,19 @@
         width: entry.width,
         height: entry.height,
         qualityLabel: entry.qualityLabel,
+        sizeBytes:
+          typeof entry.sizeBytes === 'number' &&
+          Number.isSafeInteger(entry.sizeBytes) &&
+          entry.sizeBytes > 0
+            ? entry.sizeBytes
+            : null,
+        contentType:
+          entry.contentType === 'video/mp4' || entry.contentType === 'video/webm'
+            ? entry.contentType
+            : null,
         current: false
       })
-      if (next.length >= limit) break
+      if (next.length >= MAX_CAPTURED_SOURCES_PER_PLAYER) break
     }
     return next
   }
@@ -838,6 +929,7 @@
     normalizeCapturedSourceUrl: normalizeCapturedSourceUrl,
     capturedSourceFilename: capturedSourceFilename,
     evaluatePlaybackSource: evaluatePlaybackSource,
+    applyNetworkEvidence: applyNetworkEvidence,
     addCapturedSource: addCapturedSource,
     currentCapturedSource: currentCapturedSource,
     mediaView: mediaView,
