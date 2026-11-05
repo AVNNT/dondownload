@@ -1,7 +1,7 @@
 # DonDownload 10/10 mission checkpoint
 
-Updated: 2026-11-05. Latest local commit: `2796dc0`; working tree is clean.
-No push or release.
+Updated: 2026-11-05. Latest implementation commit: `2796dc0`; working tree is
+clean. No push or release.
 
 ## DONE
 
