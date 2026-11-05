@@ -310,7 +310,9 @@ function TableRow({
         role="gridcell"
         className="hidden text-right text-[11px] tabular-nums text-zinc-400 min-[1180px]:block"
       >
-        {row.etaSeconds !== null ? formatEta(row.etaSeconds) : '—'}
+        {row.etaSeconds !== null && row.etaSeconds > 0
+          ? formatEta(row.etaSeconds)
+          : '—'}
       </div>
 
       <div role="gridcell" className="flex justify-end">
