@@ -2,6 +2,17 @@
 
 ## Autonomous performance, extension and theme mission (2026-11-05)
 
+**Testing boundary update:** desktop/browser-control permission has since been
+revoked. For follow-up work, use only terminal-contained tests and T3 Code's
+built-in browser; do not use OS input, real Helium, registry or personal profiles.
+The built-in browser returned `[browser.disconnected]` in this session. Its
+supported reconnection path requires the user to open the session in T3 Code's
+desktop app; no browser retry or external automation fallback was attempted.
+Earlier desktop-captured images and native-window checks are historical evidence
+only, not screenshots produced inside the currently disconnected T3 browser.
+Browser visual checks and live Electron/Helium interactions remain unverified
+under the updated boundary.
+
 The media-size implementation is integrated at `93f0e54`; the extension video
 overlay handoff is integrated at `f1c622c`; and the persistent OLED/Dark/Light
 theme system is integrated at `fef76df`. `2484b37` updates the native-bridge
