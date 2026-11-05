@@ -1,7 +1,7 @@
 # DonDownload 10/10 mission checkpoint
 
-Updated: 2026-11-05. Latest feature commit: `4687306`; recovery audit changes
-are ready for commit. No push or release.
+Updated: 2026-11-05. Latest local commit: `2796dc0`; working tree is clean.
+No push or release.
 
 ## DONE
 
@@ -23,10 +23,11 @@ are ready for commit. No push or release.
   transient status RPC errors preserve the record and partial progress.
 - A GID lost during runtime polling now becomes `interrupted`, not `error`; this
   preserves the existing retry budget and partial-file recovery semantics.
+- `f69a38b` and `2796dc0`: recovery audit and its focused tests are committed.
 
 ## IN PROGRESS
 
-- Commit the recovery audit and perform the final status/history audit.
+- None. Final local status/history audit is complete.
 
 ## DEFERRED / UNSUPPORTED
 
@@ -45,7 +46,8 @@ are ready for commit. No push or release.
 
 ## NEXT ACTION
 
-Focused recovery verification: all five manager-recovery tests passed, covering
-runtime GID loss without retry consumption, confirmed startup GID loss, aria2
-unavailability and transient RPC failure preservation, and tracked GID recovery.
-Then check the committed tree and report remaining platform gaps.
+Final focused recovery verification: all five manager-recovery tests passed,
+covering runtime GID loss without retry consumption, confirmed startup GID loss,
+aria2 unavailability and transient RPC failure preservation, and tracked GID
+recovery. Next useful verification requires a disposable supported Chromium/Helium
+environment; do not substitute the sidebar preview for those platform APIs.
