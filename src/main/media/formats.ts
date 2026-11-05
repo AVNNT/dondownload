@@ -94,7 +94,7 @@ export interface BuiltMediaAnalysis {
   bestAudioOptionId: string | null
 }
 
-export type MediaInfoRejection = 'playlist' | 'live' | 'unsupported'
+export type MediaInfoRejection = 'playlist' | 'live' | 'drm' | 'unsupported'
 
 export class MediaInfoError extends Error {
   constructor(readonly reason: MediaInfoRejection) {
@@ -103,7 +103,9 @@ export class MediaInfoError extends Error {
         ? 'Playlists and collections are not supported.'
         : reason === 'live'
           ? 'Live streams are not supported.'
-          : 'No downloadable video or audio formats were found.'
+          : reason === 'drm'
+            ? "This video is DRM-protected and can't be downloaded."
+            : 'No downloadable video or audio formats were found.'
     )
     this.name = 'MediaInfoError'
   }
@@ -930,6 +932,24 @@ export function buildMediaAnalysis(
   }
 
   const rawFormats = Array.isArray(info.formats) ? info.formats : []
+  // Some extractors (Vimeo's player, for example) report renditions but mark
+  // every one of them as DRM. That is a distinct, actionable outcome, not a
+  // generic "no formats" page.
+  const rawFormatRecords = rawFormats
+    .map((rawFormat) => asRecord(rawFormat))
+    .filter((record): record is Record<string, unknown> => record !== null)
+  const drmFormats = rawFormatRecords.filter(
+    (record) => record.has_drm === true || record.drm === true
+  )
+  if (
+    (rawFormatRecords.length > 0 &&
+      drmFormats.length === rawFormatRecords.length) ||
+    (rawFormatRecords.length === 0 &&
+      (info.has_drm === true || info.drm === true))
+  ) {
+    throw new MediaInfoError('drm')
+  }
+
   const descriptors: FormatDescriptor[] = []
   for (const rawFormat of rawFormats) {
     const descriptor = describeFormat(rawFormat)

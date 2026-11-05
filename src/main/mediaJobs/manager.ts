@@ -127,6 +127,8 @@ const MEDIA_DOWNLOAD_FAILED_MESSAGE =
   'The media download failed. Analyze the page again and retry.'
 
 const MEDIA_ANALYSIS_FAILED_MESSAGE = 'The media could not be analyzed.'
+const MEDIA_DRM_PROTECTED_MESSAGE =
+  "This video is DRM-protected and can't be downloaded."
 const MEDIA_INVALID_ANALYSIS_MESSAGE =
   'The media analyzer returned an invalid result.'
 const MEDIA_TOOL_STATE_FAILED_MESSAGE =
@@ -333,6 +335,12 @@ export class MediaJobsManager {
             'The page was not analyzed with the old yt-dlp. Run the analysis again.'
           )
         }
+      }
+      if (
+        error instanceof AppError &&
+        error.code === 'MEDIA_DRM_PROTECTED'
+      ) {
+        throw new AppError('MEDIA_DRM_PROTECTED', MEDIA_DRM_PROTECTED_MESSAGE)
       }
       throw sanitizedEngineError(
         error,
@@ -901,7 +909,9 @@ export class MediaJobsManager {
     job.record.errorMessage =
       error instanceof AppError && error.code === 'MEDIA_SIZE_CAP_EXCEEDED'
         ? error.message
-        : MEDIA_DOWNLOAD_FAILED_MESSAGE
+        : error instanceof AppError && error.code === 'MEDIA_DRM_PROTECTED'
+          ? MEDIA_DRM_PROTECTED_MESSAGE
+          : MEDIA_DOWNLOAD_FAILED_MESSAGE
     job.record.updatedAt = this.now()
     job.speedBps = 0
 

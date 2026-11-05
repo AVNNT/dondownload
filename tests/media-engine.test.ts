@@ -4,7 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createMediaEngine } from '../src/main/media/engine'
+import {
+  createMediaEngine,
+  looksLikeDrmError,
+  normalizeVimeoPlayerUrl
+} from '../src/main/media/engine'
 import type {
   MediaDownloadProgress,
   MediaDownloadResult,
@@ -971,6 +975,112 @@ describe('media engine format mapping', () => {
     await expect(malformed.engine.analyze(SOURCE_URL)).rejects.toMatchObject({
       code: 'MEDIA_ANALYSIS_FAILED'
     })
+  })
+})
+
+describe('media engine Vimeo normalization and DRM handling', () => {
+  it('normalizes public, unlisted and channel Vimeo pages to the player URL', () => {
+    expect(normalizeVimeoPlayerUrl('https://vimeo.com/76979871')).toBe(
+      'https://player.vimeo.com/video/76979871'
+    )
+    expect(
+      normalizeVimeoPlayerUrl('https://www.vimeo.com/76979871/abcDEF123')
+    ).toBe('https://player.vimeo.com/video/76979871?h=abcDEF123')
+    expect(
+      normalizeVimeoPlayerUrl('https://vimeo.com/channels/staffpicks/76979871')
+    ).toBe('https://player.vimeo.com/video/76979871')
+    expect(
+      normalizeVimeoPlayerUrl('https://vimeo.com/76979871?h=queryhash1')
+    ).toBe('https://player.vimeo.com/video/76979871?h=queryhash1')
+    expect(normalizeVimeoPlayerUrl('https://vimeo.com/channels/staffpicks')).toBeNull()
+    expect(normalizeVimeoPlayerUrl('https://vimeo.com/ondemand/movie')).toBeNull()
+    expect(normalizeVimeoPlayerUrl('https://player.vimeo.com/video/1')).toBeNull()
+    expect(normalizeVimeoPlayerUrl('https://example.com/76979871')).toBeNull()
+  })
+
+  it('analyzes and downloads a Vimeo page through the player URL while keeping the original URL', async () => {
+    const harness = await makeHarness()
+    const original = 'https://vimeo.com/76979871'
+    const analysis = await harness.engine.analyze(original)
+
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    expect(analyzeCall?.args.at(-1)).toBe(
+      'https://player.vimeo.com/video/76979871'
+    )
+
+    const result = await harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir,
+        { sourceUrl: original }
+      ),
+      () => undefined
+    )
+    expect(result.filePath).toContain('Example video')
+    expect(downloadCall(harness.calls).args.at(-1)).toBe(
+      'https://player.vimeo.com/video/76979871'
+    )
+  })
+
+  it('reports an all-DRM metadata response as MEDIA_DRM_PROTECTED', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        formats: [
+          {
+            format_id: 'hls-720',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a',
+            width: 1280,
+            height: 720,
+            has_drm: true
+          }
+        ]
+      })
+    })
+
+    await expect(
+      harness.engine.analyze('https://player.vimeo.com/video/76979871')
+    ).rejects.toMatchObject({ code: 'MEDIA_DRM_PROTECTED' })
+    expect(harness.calls.some((call) => call.args.includes('--format'))).toBe(false)
+  })
+
+  it('maps yt-dlp DRM refusals on analyze and download to the same code', async () => {
+    expect(looksLikeDrmError('ERROR: This video is DRM protected')).toBe(true)
+    expect(looksLikeDrmError('ERROR: This format is DRM protected')).toBe(true)
+    expect(looksLikeDrmError('ERROR: HTTP Error 403: Forbidden')).toBe(false)
+
+    const analyzeHarness = await makeHarness({
+      analyze: (call) => {
+        call.child.stderr.write('ERROR: This video is DRM protected\n')
+        call.child.close(1)
+      }
+    })
+    await expect(
+      analyzeHarness.engine.analyze('https://vimeo.com/76979871')
+    ).rejects.toMatchObject({ code: 'MEDIA_DRM_PROTECTED' })
+
+    const downloadHarness = await makeHarness({
+      download: (call) => {
+        call.child.stderr.write('ERROR: This format is DRM protected\n')
+        call.child.close(1)
+      }
+    })
+    const analysis = await downloadHarness.engine.analyze(SOURCE_URL)
+    await expect(
+      downloadHarness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          downloadHarness.downloadDir
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_DRM_PROTECTED' })
+    expect(await fs.readdir(downloadHarness.downloadDir)).toEqual([])
   })
 })
 

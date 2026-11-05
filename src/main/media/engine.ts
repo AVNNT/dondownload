@@ -222,7 +222,10 @@ export interface MediaEngineOptions {
 
 interface StoredAnalysis {
   id: string
+  /** Normalized page URL exactly as the user supplied it. */
   url: string
+  /** yt-dlp target; differs only for a normalized Vimeo player URL. */
+  targetUrl: string
   title: string
   expiresAt: number
   options: Map<string, InternalMediaOption>
@@ -400,6 +403,71 @@ function cleanDisplayText(
   if (UNSAFE_DISPLAY_TEXT.test(cleaned)) return fallback
   const bounded = cleaned.slice(0, maximum).trim()
   return bounded.length === 0 ? fallback : bounded
+}
+
+/**
+ * Vimeo's public watch page regularly refuses yt-dlp's web client
+ * (`The web client only works when logged-in`), while the player endpoint for
+ * the same numeric video works without credentials. Only the target handed to
+ * yt-dlp changes: the analysis keeps the user's original page URL for display
+ * and association checks.
+ */
+export function normalizeVimeoPlayerUrl(value: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  const host = parsed.hostname.toLowerCase()
+  if (host !== 'vimeo.com' && host !== 'www.vimeo.com') return null
+
+  const segments = parsed.pathname
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => decodeURIComponent(segment))
+  const numericId = /^\d{1,12}$/
+  let id: string | null = null
+  let hash: string | null = null
+
+  if (segments.length === 1 && numericId.test(segments[0] ?? '')) {
+    id = segments[0] ?? null
+  } else if (
+    segments.length === 2 &&
+    numericId.test(segments[0] ?? '') &&
+    /^[A-Za-z0-9]{1,64}$/.test(segments[1] ?? '')
+  ) {
+    // Unlisted video: vimeo.com/<id>/<hash>
+    id = segments[0] ?? null
+    hash = segments[1] ?? null
+  } else if (
+    segments.length === 3 &&
+    segments[0] === 'channels' &&
+    /^[A-Za-z0-9_-]{1,64}$/.test(segments[1] ?? '') &&
+    numericId.test(segments[2] ?? '')
+  ) {
+    // Channel page: vimeo.com/channels/<channel>/<id>
+    id = segments[2] ?? null
+  }
+  if (id === null) return null
+
+  if (hash === null) {
+    const queryHash = parsed.searchParams.get('h')
+    if (queryHash !== null && /^[A-Za-z0-9]{1,64}$/.test(queryHash)) {
+      hash = queryHash
+    }
+  }
+
+  const player = new URL(`https://player.vimeo.com/video/${id}`)
+  if (hash !== null) player.searchParams.set('h', hash)
+  return player.href
+}
+
+/** yt-dlp's DRM refusal must not be shown as a generic download failure. */
+const DRM_ERROR_TEXT = /DRM(?:[-\s]*protected)|\bDRM protection\b/i
+
+export function looksLikeDrmError(output: string): boolean {
+  return DRM_ERROR_TEXT.test(output)
 }
 
 /** Durations stay private; only finite, non-negative values are retained. */
@@ -1236,7 +1304,9 @@ export function createMediaEngine(
       )
     }
     const normalized = normalizeMediaSourceUrl(url)
+    const targetUrl = normalizeVimeoPlayerUrl(normalized) ?? normalized
     await assertPublicTarget(normalized)
+    if (targetUrl !== normalized) await assertPublicTarget(targetUrl)
 
     const toolchain = await resolveToolchain()
     if (toolchain.ytdlpPath === null) {
@@ -1247,7 +1317,7 @@ export function createMediaEngine(
     try {
       result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
-        buildAnalyzeArgs(normalized, toolchain.denoPath, toolchain.impersonate),
+        buildAnalyzeArgs(targetUrl, toolchain.denoPath, toolchain.impersonate),
         {
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
@@ -1286,6 +1356,12 @@ export function createMediaEngine(
     }
 
     if (result.code !== 0) {
+      if (looksLikeDrmError(`${result.stderr}\n${result.stdout}`)) {
+        throw new AppError(
+          'MEDIA_DRM_PROTECTED',
+          "This video is DRM-protected and can't be downloaded."
+        )
+      }
       // A YouTube extractor change usually appears only in stderr. Mark that
       // category without forwarding the raw output so the job manager can try
       // a verified yt-dlp update before showing the generic failure.
@@ -1334,6 +1410,9 @@ export function createMediaEngine(
         if (error.reason === 'live') {
           throw new AppError('MEDIA_UNSUPPORTED_LIVE', error.message)
         }
+        if (error.reason === 'drm') {
+          throw new AppError('MEDIA_DRM_PROTECTED', error.message)
+        }
         throw new AppError('MEDIA_UNSUPPORTED_MEDIA', error.message)
       }
       throw new AppError(
@@ -1366,6 +1445,7 @@ export function createMediaEngine(
     storeAnalysis({
       id: analysisId,
       url: normalized,
+      targetUrl,
       title: built.title,
       expiresAt,
       options: storedOptions
@@ -1677,6 +1757,7 @@ export function createMediaEngine(
     const maxBytes = request.maxBytes ?? null
     let title: string
     let outputChoice: InternalOutputChoice
+    let downloadTargetUrl = sourceUrl
     let selectedSize: { bytes: number | null; isEstimate: boolean }
     let directHeaders: {
       referer?: string
@@ -1752,6 +1833,10 @@ export function createMediaEngine(
       // Re-resolve the page target immediately before starting a download. The
       // URL came from an earlier analysis and DNS may have changed since then.
       await assertPublicTarget(sourceUrl)
+      downloadTargetUrl = analysis.targetUrl
+      if (downloadTargetUrl !== sourceUrl) {
+        await assertPublicTarget(downloadTargetUrl)
+      }
 
       const option = analysis.options.get(optionId)
       if (!option) {
@@ -1865,7 +1950,7 @@ export function createMediaEngine(
       outputChoice.mergeOutputFormat !== null ||
       outputChoice.remuxOutputFormat !== null
     const args = buildDownloadArgs({
-      sourceUrl,
+      sourceUrl: downloadTargetUrl,
       formatSelector,
       outputTemplate,
       mergeOutputFormat: outputChoice.mergeOutputFormat,
@@ -1885,6 +1970,7 @@ export function createMediaEngine(
       let stderrRemainder = ''
       let mergingSeen = false
       let sizeCapExceeded = false
+      let drmDetected = false
       // The analysis estimate keeps combined video+audio progress from
       // reaching 100% while only the first stream has reported a total.
       const expectedTotal = selectedSize.bytes
@@ -2036,6 +2122,13 @@ export function createMediaEngine(
           )
         } else if (sizeCapExceeded) {
           reject(new AppError('MEDIA_SIZE_CAP_EXCEEDED', 'The media output exceeded the configured per-job size limit.'))
+        } else if (drmDetected) {
+          reject(
+            new AppError(
+              'MEDIA_DRM_PROTECTED',
+              "This video is DRM-protected and can't be downloaded."
+            )
+          )
         } else {
           reject(
             new AppError(
@@ -2061,6 +2154,7 @@ export function createMediaEngine(
         // yt-dlp writes post-processing markers such as `[Merger] Merging
         // formats into ...` to stdout (older releases used stderr).
         if (isMergingLine(line)) markMerging()
+        if (looksLikeDrmError(line)) drmDetected = true
 
         const progress = parseProgressLine(line)
         if (progress !== null) {
@@ -2112,6 +2206,7 @@ export function createMediaEngine(
 
       const handleStderrText = (text: string): void => {
         stderrRemainder += text
+        if (looksLikeDrmError(stderrRemainder)) drmDetected = true
         const lines = stderrRemainder.split(/\r?\n/)
         stderrRemainder = lines.pop() ?? ''
         for (const line of lines) {

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildMediaAnalysis } from '../src/main/media/formats'
+import { MediaInfoError, buildMediaAnalysis } from '../src/main/media/formats'
 
 function optionIds(): () => string {
   let next = 0
@@ -31,6 +31,69 @@ function analyze(name: string, ffmpegAvailable = true) {
     newOptionId: optionIds()
   })
 }
+
+describe('media format DRM detection', () => {
+  it('rejects a metadata set whose every rendition is DRM-protected', () => {
+    expect(() =>
+      buildMediaAnalysis(
+        {
+          title: 'DRM video',
+          formats: [
+            format({
+              format_id: 'hls-720',
+              vcodec: 'avc1',
+              acodec: 'mp4a',
+              width: 1280,
+              height: 720,
+              has_drm: true
+            }),
+            format({
+              format_id: 'hls-1080',
+              vcodec: 'avc1',
+              acodec: 'mp4a',
+              width: 1920,
+              height: 1080,
+              has_drm: true
+            })
+          ]
+        },
+        { ffmpegAvailable: true, newOptionId: optionIds() }
+      )
+    ).toThrowError(MediaInfoError)
+    try {
+      buildMediaAnalysis(
+        { formats: [format({ format_id: '1', has_drm: true })] },
+        { ffmpegAvailable: true, newOptionId: optionIds() }
+      )
+    } catch (error) {
+      expect((error as MediaInfoError).reason).toBe('drm')
+    }
+  })
+
+  it('still offers the non-DRM renditions of a mixed response', () => {
+    const analysis = buildMediaAnalysis(
+      {
+        title: 'Mixed video',
+        formats: [
+          format({ format_id: '1', has_drm: true, vcodec: 'avc1', acodec: 'mp4a' }),
+          format({
+            format_id: '2',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a',
+            width: 640,
+            height: 360
+          })
+        ]
+      },
+      { ffmpegAvailable: true, newOptionId: optionIds() }
+    )
+    expect(analysis.options.length).toBeGreaterThan(0)
+    expect(
+      analysis.options.some((option) => option.dto.formatIds?.includes('1'))
+    ).toBe(false)
+  })
+})
 
 describe('media format protocol preference', () => {
   it('prefers direct HTTPS video over an equivalent HLS playlist', () => {

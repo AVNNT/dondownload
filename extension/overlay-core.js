@@ -1061,6 +1061,8 @@
       MEDIA_UNSUPPORTED_LIVE: 'Live streams are not supported by DonDownload.',
       MEDIA_UNSUPPORTED_MEDIA:
         'This page does not expose a supported video that DonDownload can download.',
+      MEDIA_DRM_PROTECTED:
+        "This video is DRM-protected and can't be downloaded.",
       MEDIA_TARGET_NOT_PUBLIC:
         'Local and private network addresses are not supported by DonDownload.',
       MEDIA_TARGET_UNRESOLVED: 'Check the connection to this site, then try again.',

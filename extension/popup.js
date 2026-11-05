@@ -61,6 +61,9 @@ function errorHint(error) {
   if (code === 'MEDIA_DUPLICATE_JOB') {
     return 'That option is already downloading in DonDownload.'
   }
+  if (code === 'MEDIA_DRM_PROTECTED') {
+    return "This video is DRM-protected and can't be downloaded."
+  }
   return message
 }
 
