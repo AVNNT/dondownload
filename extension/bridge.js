@@ -859,8 +859,15 @@ function sendMediaMessage(message) {
   })
 }
 
+function normalizeJobCookie(value) {
+  if (value === undefined) return undefined
+  const cookie = normalizeHeaderText(value, MAX_COOKIE_HEADER_LENGTH)
+  if (cookie === null || /[\r\n]/.test(cookie)) return null
+  return cookie
+}
+
 /** Analyze the page URL obtained by the background worker, never the DOM. */
-export function sendAnalyzeMedia(rawUrl) {
+export function sendAnalyzeMedia(rawUrl, rawCookie) {
   const normalized = normalizeSupportedUrl(rawUrl)
   if (!normalized.ok) {
     return Promise.resolve({
@@ -868,8 +875,22 @@ export function sendAnalyzeMedia(rawUrl) {
       error: { code: normalized.code, message: normalized.message }
     })
   }
+  const cookie = normalizeJobCookie(rawCookie)
+  if (cookie === null) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_MESSAGE',
+        message: 'The browser cookie header is not valid.'
+      }
+    })
+  }
 
-  return sendMediaMessage({ type: 'analyze-media', url: normalized.url }).then(
+  return sendMediaMessage({
+    type: 'analyze-media',
+    url: normalized.url,
+    ...(cookie === undefined ? {} : { cookie })
+  }).then(
     (result) => {
       if (result.ok === false) return result
       if (result.operation !== 'analyze-media') return invalidMediaResponse()
@@ -883,6 +904,16 @@ export function sendQueueMedia(input) {
   const analysisId = input && input.analysisId
   const optionId = input && input.optionId
   const outputFormat = input && input.outputFormat
+  const cookie = normalizeJobCookie(input && input.cookie)
+  if (cookie === null) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_MESSAGE',
+        message: 'The browser cookie header is not valid.'
+      }
+    })
+  }
   if (!isOpaqueMediaId(analysisId) || !isOpaqueMediaId(optionId)) {
     return Promise.resolve({
       ok: false,
@@ -906,7 +937,8 @@ export function sendQueueMedia(input) {
     type: 'queue-media',
     analysisId,
     optionId,
-    ...(outputFormat === undefined ? {} : { outputFormat })
+    ...(outputFormat === undefined ? {} : { outputFormat }),
+    ...(cookie === undefined ? {} : { cookie })
   }).then((result) => {
     if (result.ok === false) return result
     if (result.operation !== 'queue-media') return invalidMediaResponse()

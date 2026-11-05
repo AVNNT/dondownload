@@ -8,11 +8,9 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 
-const hostExecutable = path.join(
-  process.cwd(),
-  'native',
-  'dondownload-native-host.exe'
-)
+const hostExecutable =
+  process.env.DONDOWNLOAD_NATIVE_HOST_EXE?.trim() ||
+  path.join(process.cwd(), 'native', 'dondownload-native-host.exe')
 const hostAvailable = process.platform === 'win32' && existsSync(hostExecutable)
 const describeWindows = hostAvailable ? describe : describe.skip
 
@@ -630,6 +628,80 @@ describeWindows('Windows native messaging host', () => {
     })
   })
 
+  it('forwards one opted-in cookie on analyze and queue and rejects invalid ones', async () => {
+    const app = await startFakeApp((response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(
+        JSON.stringify(
+          response.req?.url === '/analyze-media'
+            ? { ok: true, operation: 'analyze-media', analysis: mediaAnalysis() }
+            : { ok: true, operation: 'queue-media', job: mediaJob() }
+        )
+      )
+    })
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(
+          JSON.stringify({
+            type: 'analyze-media',
+            url: 'https://example.com/watch?v=1',
+            cookie: 'session=abc; theme=dark'
+          })
+        ),
+        frame(
+          JSON.stringify({
+            type: 'queue-media',
+            analysisId: MEDIA_ANALYSIS_ID,
+            optionId: VIDEO_OPTION_ID,
+            cookie: 'session=abc; theme=dark'
+          })
+        ),
+        frame(
+          JSON.stringify({
+            type: 'analyze-media',
+            url: 'https://example.com/watch?v=2',
+            cookie: 'a=b\r\nInjected: 1'
+          })
+        ),
+        frame(
+          JSON.stringify({
+            type: 'analyze-media',
+            url: 'https://example.com/watch?v=3',
+            cookie: 'x'.repeat(8193)
+          })
+        )
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    const responses = parseFrames(run.stdout)
+    expect(responses[0]).toMatchObject({ ok: true, operation: 'analyze-media' })
+    expect(responses[1]).toMatchObject({ ok: true, operation: 'queue-media' })
+    expect(responses[2]).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_MESSAGE' }
+    })
+    expect(responses[3]).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_MESSAGE' }
+    })
+    expect(app.requests.map((request) => request.body)).toEqual([
+      {
+        url: 'https://example.com/watch?v=1',
+        cookie: 'session=abc; theme=dark'
+      },
+      {
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        cookie: 'session=abc; theme=dark'
+      }
+    ])
+  })
+
   it('accepts estimated media sizes and legacy options without estimate fields', async () => {
     const withEstimate = mediaAnalysis({
       options: [
@@ -813,7 +885,7 @@ describeWindows('Windows native messaging host', () => {
       JSON.stringify({
         type: 'analyze-media',
         url: 'https://example.com/a',
-        cookie: 'SID=1'
+        dir: 'C:\\'
       })
     ],
     [

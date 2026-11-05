@@ -80,6 +80,8 @@ export const MAX_MEDIA_LABEL_LENGTH = 240
 export const MAX_MEDIA_ERROR_LENGTH = 2000
 export const MAX_MEDIA_OPTIONS = 200
 export const MAX_MEDIA_JOBS = 10_000
+/** One-job Cookie header bound shared by IPC, bridge and native host. */
+export const MAX_MEDIA_COOKIE_LENGTH = 8192
 
 export interface MediaFormatOption {
   kind: MediaFormatKind
@@ -173,6 +175,11 @@ export interface MediaSnapshot {
 export interface AnalyzeMediaInput {
   /** Page URL. Normalized to http(s), without userinfo or fragment. */
   url: string
+  /**
+   * One-job Cookie header, present only when the user opted this exact origin
+   * into browser cookies. Never persisted, logged or echoed.
+   */
+  cookie?: string
 }
 
 export interface MediaQueueInput {
@@ -184,6 +191,8 @@ export interface MediaQueueInput {
   maxBytes?: number | null
   /** Requested output container; omitted means `auto`. */
   outputFormat?: MediaOutputFormat
+  /** Must match the analysis' cookie use; memory-only. */
+  cookie?: string
 }
 
 /**
@@ -718,10 +727,34 @@ export function parseMediaSnapshot(value: unknown): MediaSnapshot {
   }
 }
 
+/**
+ * Optional one-job Cookie header. The value is already flattened by the
+ * extension; reject CR/LF, control characters and oversized payloads so it can
+ * never become a second header or a persisted record.
+ */
+function optionalCookie(record: Record<string, unknown>): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'cookie')) return undefined
+  const value = record.cookie
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > MAX_MEDIA_COOKIE_LENGTH ||
+    CONTROL_CHARACTERS.test(value) ||
+    /[\r\n]/.test(value)
+  ) {
+    throw new ValidationError('The browser cookie header is invalid.')
+  }
+  return value
+}
+
 export function parseAnalyzeMediaInput(value: unknown): AnalyzeMediaInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'])
-  return { url: normalizeMediaSourceUrl(record.url) }
+  exactKeys(record, ['url'], ['cookie'])
+  const cookie = optionalCookie(record)
+  return {
+    url: normalizeMediaSourceUrl(record.url),
+    ...(cookie === undefined ? {} : { cookie })
+  }
 }
 
 export function parseMediaQueueInput(value: unknown): MediaQueueInput {
@@ -729,8 +762,10 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
   exactKeys(record, ['analysisId', 'optionId'], [
     'force',
     'maxBytes',
-    'outputFormat'
+    'outputFormat',
+    'cookie'
   ])
+  const cookie = optionalCookie(record)
 
   let force = false
   if (Object.prototype.hasOwnProperty.call(record, 'force')) {
@@ -759,6 +794,7 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     optionId: parseMediaOptionId(record.optionId),
     ...(force ? { force: true as const } : {}),
     ...(maxBytes === undefined ? {} : { maxBytes }),
-    ...(outputFormat === undefined ? {} : { outputFormat })
+    ...(outputFormat === undefined ? {} : { outputFormat }),
+    ...(cookie === undefined ? {} : { cookie })
   }
 }

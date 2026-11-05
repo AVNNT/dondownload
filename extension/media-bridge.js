@@ -10,6 +10,7 @@ import {
   sendQueueCapturedSource,
   sendQueueMedia
 } from './bridge.js'
+import { readOptInCookieHeader } from './capture-settings.js'
 import { isMediaOutputFormat, isOpaqueMediaId } from './media-contract.js'
 import { isOverlayTabTracked } from './overlay-controller.js'
 import {
@@ -143,7 +144,15 @@ export async function analyzeMediaForSender(chromeApi, message, sender) {
   const authorization = await authorizeMediaSender(chromeApi, sender)
   if (authorization.ok !== true) return authorization
 
-  const result = await sendAnalyzeMedia(authorization.url)
+  // Cookie use is opt-in per exact top-page origin and applies to this one
+  // analyze request. Without the opt-in or the optional permission this stays
+  // undefined and the request is byte-for-byte the previous one.
+  const cookie = await readOptInCookieHeader(
+    chromeApi,
+    authorization.url,
+    authorization.url
+  )
+  const result = await sendAnalyzeMedia(authorization.url, cookie)
   if (result.ok !== true) return result
   return { ok: true, analysis: result.analysis }
 }
@@ -171,7 +180,14 @@ export async function analyzeEmbeddedPageForSender(chromeApi, message, sender) {
   const authorization = await authorizeMediaSender(chromeApi, sender)
   if (authorization.ok !== true) return authorization
 
-  const result = await sendAnalyzeMedia(embedPage.url)
+  // The opt-in is for the top page's exact origin; cookies are read for the
+  // embed/player URL it embeds, never for an unrelated frame.
+  const cookie = await readOptInCookieHeader(
+    chromeApi,
+    authorization.url,
+    embedPage.url
+  )
+  const result = await sendAnalyzeMedia(embedPage.url, cookie)
   if (result.ok !== true) return result
   return { ok: true, analysis: result.analysis }
 }
@@ -265,12 +281,21 @@ export async function queueMediaForSender(chromeApi, message, sender) {
   const authorization = await authorizeMediaSender(chromeApi, sender)
   if (authorization.ok !== true) return authorization
 
+  // Re-read the same opt-in cookies at queue time. The desktop app rejects a
+  // cookie decision that does not match the analysis, so the two requests must
+  // agree; a revoked permission is an actionable "analyze again" outcome.
+  const cookie = await readOptInCookieHeader(
+    chromeApi,
+    authorization.url,
+    authorization.url
+  )
   const result = await sendQueueMedia({
     analysisId: message.analysisId,
     optionId: message.optionId,
     ...(message.outputFormat === undefined
       ? {}
-      : { outputFormat: message.outputFormat })
+      : { outputFormat: message.outputFormat }),
+    ...(cookie === undefined ? {} : { cookie })
   })
   if (result.ok !== true) return result
   return { ok: true, job: result.job }

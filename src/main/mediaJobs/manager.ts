@@ -52,6 +52,8 @@ export interface MediaDownloadRequest {
   dir: string
   maxBytes?: number | null
   outputFormat?: MediaOutputFormat
+  /** Analysis cookies for this one download; memory-only. */
+  cookie?: string
   /** Present only for a detected HLS/DASH job. Memory-only. */
   direct?: MediaDirectDownloadRequest
   /** Known total for progress; used with `direct` only. */
@@ -78,7 +80,7 @@ export interface MediaDownloadResult {
  */
 export interface MediaEnginePort {
   getToolState(): Promise<MediaToolState>
-  analyze(url: string): Promise<MediaAnalysis>
+  analyze(url: string, options?: { cookie?: string }): Promise<MediaAnalysis>
   download(
     request: MediaDownloadRequest,
     onProgress: (progress: MediaDownloadProgress) => void
@@ -146,6 +148,8 @@ interface ManagedMediaJob {
   speedBps: number
   /** Memory-only detected-stream headers; never persisted. */
   direct: MediaDirectDownloadRequest | null
+  /** Memory-only analysis cookie; never persisted. */
+  cookie: string | null
   /**
    * Transient duplicate-guard identity. It is derived from the normalized page
    * URL and visible format invariants, never from random analysis/option IDs.
@@ -162,6 +166,8 @@ interface ManagedMediaJob {
 interface CachedMediaAnalysis {
   /** Normalized http(s) page URL. Never persisted by this cache. */
   sourceUrl: string
+  /** Cookie decision belongs to the analysis identity. */
+  usedCookies: boolean
   analysis: MediaAnalysis
 }
 
@@ -315,7 +321,10 @@ export class MediaJobsManager {
 
     let raw: unknown
     try {
-      raw = await this.engine.analyze(input.url)
+      raw = await this.engine.analyze(
+        input.url,
+        input.cookie === undefined ? {} : { cookie: input.cookie }
+      )
     } catch (error) {
       if (
         this.onExtractorFailure !== null &&
@@ -361,6 +370,7 @@ export class MediaJobsManager {
 
     this.analyses.set(analysis.analysisId, {
       sourceUrl: input.url,
+      usedCookies: input.cookie !== undefined,
       analysis
     })
     this.pruneAnalyses()
@@ -378,6 +388,12 @@ export class MediaJobsManager {
     }
     const input = parseMediaQueueInput(rawInput)
     const cached = this.requireAnalysis(input.analysisId)
+    if (cached.usedCookies !== (input.cookie !== undefined)) {
+      throw new AppError(
+        'MEDIA_ANALYSIS_MISMATCH',
+        'The analysis no longer matches your cookie choice. Analyze the media page again.'
+      )
+    }
 
     const option = cached.analysis.options.find(
       (candidate) => candidate.optionId === input.optionId
@@ -457,6 +473,7 @@ export class MediaJobsManager {
       record,
       speedBps: 0,
       direct: null,
+      cookie: input.cookie ?? null,
       optionFingerprint,
       awaitingPolicy: !allowedNow
     }
@@ -559,6 +576,7 @@ export class MediaJobsManager {
         ...(input.cookie === undefined ? {} : { cookie: input.cookie }),
         title: input.title
       },
+      cookie: null,
       optionFingerprint: fingerprint,
       awaitingPolicy: !allowedNow
     }
@@ -795,6 +813,7 @@ export class MediaJobsManager {
           dir: job.record.dir,
           maxBytes: job.record.maxBytes ?? null,
           outputFormat: job.record.outputFormat ?? 'auto',
+          ...(job.cookie === null ? {} : { cookie: job.cookie }),
           ...(job.direct === null
             ? {}
             : {
@@ -1020,6 +1039,7 @@ export class MediaJobsManager {
         record,
         speedBps: 0,
         direct: null,
+        cookie: null,
         optionFingerprint: '',
         // Persisted queued jobs are not silently restarted after a relaunch.
         awaitingPolicy: false

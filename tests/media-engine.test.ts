@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { existsSync, readFileSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -380,6 +381,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     env,
     platform: 'win32',
     cwd: root,
+    userDataPath: root,
     spawn,
     lookup: options.lookup ?? publicLookup(),
     now: options.now,
@@ -1081,6 +1083,84 @@ describe('media engine Vimeo normalization and DRM handling', () => {
       )
     ).rejects.toMatchObject({ code: 'MEDIA_DRM_PROTECTED' })
     expect(await fs.readdir(downloadHarness.downloadDir)).toEqual([])
+  })
+})
+
+describe('media engine one-job cookie files', () => {
+  it('writes a Netscape file for analysis and removes it when yt-dlp exits', async () => {
+    let cookiePath = ''
+    let cookieBody = ''
+    const harness = await makeHarness({
+      analyze: (call) => {
+        const candidate = argValue(call.args, '--cookies') ?? ''
+        if (candidate.length > 0) {
+          cookiePath = candidate
+          cookieBody = readFileSync(candidate, 'utf8')
+        }
+        call.child.stdout.write(JSON.stringify(sampleInfo()))
+        call.child.close(0)
+      }
+    })
+
+    await harness.engine.analyze(SOURCE_URL, {
+      cookie: 'session=abc; theme=dark'
+    })
+
+    expect(cookiePath).toContain('media-cookies')
+    expect(cookieBody).toContain('# Netscape HTTP Cookie File')
+    expect(cookieBody).toContain('.example.com\tTRUE\t/\tTRUE\t0\tsession\tabc')
+    expect(cookieBody).toContain('.example.com\tTRUE\t/\tTRUE\t0\ttheme\tdark')
+    expect(existsSync(cookiePath)).toBe(false)
+  })
+
+  it('passes cookies only to a download whose analysis used the same choice', async () => {
+    let downloadCookiePath = ''
+    const harness = await makeHarness({
+      download: (call) => {
+        downloadCookiePath = argValue(call.args, '--cookies') ?? ''
+        const ext = downloadOutputExt(call)
+        void fs.writeFile(`${outputBase(call)}.${ext}`, Buffer.alloc(64, 1))
+        call.child.close(0)
+      }
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL, {
+      cookie: 'session=abc'
+    })
+    const result = await harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir,
+        { cookie: 'session=abc' }
+      ),
+      () => undefined
+    )
+    expect(result.filePath).toContain('Example video')
+    expect(downloadCookiePath).toContain('.dondownload-')
+    expect(existsSync(downloadCookiePath)).toBe(false)
+    expect(await fs.readdir(harness.downloadDir)).toEqual([
+      path.basename(result.filePath)
+    ])
+  })
+
+  it('rejects a cookie choice that does not match the analysis, before spawning', async () => {
+    const harness = await makeHarness()
+    const analysis = await harness.engine.analyze(SOURCE_URL, {
+      cookie: 'session=abc'
+    })
+    const callsBefore = harness.calls.length
+
+    await expect(
+      harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_ANALYSIS_MISMATCH' })
+    expect(harness.calls).toHaveLength(callsBefore)
   })
 })
 

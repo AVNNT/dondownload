@@ -60,6 +60,7 @@ class FakeEngine implements MediaEnginePort {
   analysis: MediaAnalysis = analysisFixture()
   analyzeError: Error | null = null
   analyzedUrls: string[] = []
+  analysisOptions: Array<{ cookie?: string } | undefined> = []
   downloads: PendingDownload[] = []
   cancelCalls: string[] = []
   cancelError: Error | null = null
@@ -72,8 +73,12 @@ class FakeEngine implements MediaEnginePort {
     return { ...this.toolState }
   }
 
-  async analyze(url: string): Promise<MediaAnalysis> {
+  async analyze(
+    url: string,
+    options?: { cookie?: string }
+  ): Promise<MediaAnalysis> {
     this.analyzedUrls.push(url)
+    this.analysisOptions.push(options)
     if (this.analyzeError) throw this.analyzeError
     return analysisFixture({
       ...this.analysis,
@@ -334,6 +339,38 @@ describe('MediaJobsManager analysis and opaque selection', () => {
     expect(typeof target.queueMedia).toBe('function')
     expect(typeof target.getMediaStatus).toBe('function')
     expect(typeof target.cancelMedia).toBe('function')
+  })
+
+  it('keeps the cookie decision in the analysis identity and forwards it to the download', async () => {
+    const harness = await createHarness()
+    const analysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1',
+      cookie: 'session=abc'
+    })
+    expect(harness.engine.analysisOptions).toEqual([{ cookie: 'session=abc' }])
+
+    await expect(
+      harness.manager.queueMedia({
+        analysisId: analysis.analysisId,
+        optionId: VIDEO_OPTION_ID
+      })
+    ).rejects.toMatchObject({ code: 'MEDIA_ANALYSIS_MISMATCH' })
+
+    const job = await harness.manager.queueMedia({
+      analysisId: analysis.analysisId,
+      optionId: VIDEO_OPTION_ID,
+      cookie: 'session=abc'
+    })
+    expect(job.status).toBe('queued')
+    await flushMicrotasks()
+    expect(harness.engine.pending.request.cookie).toBe('session=abc')
+
+    // The memory-only cookie must never appear in a persisted row.
+    const stored = [...harness.database.rows.values()].find(
+      (record) => record.id === job.id
+    )
+    expect(stored).toBeDefined()
+    expect(JSON.stringify(stored)).not.toContain('session=abc')
   })
 
   it('normalizes the page URL and returns a public job without URL, path or selector', async () => {

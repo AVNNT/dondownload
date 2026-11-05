@@ -15,6 +15,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { AppError } from '../errors'
 import {
@@ -64,6 +65,10 @@ import type {
   InternalMediaOption,
   InternalOutputChoice
 } from './formats'
+import {
+  COOKIE_FILE_PREFIX,
+  buildNetscapeCookieFile
+} from './cookies'
 import { isFile, locateMediaTool } from './locator'
 import { looksLikeExtractorFailure } from './updater'
 import {
@@ -137,6 +142,8 @@ export interface MediaDownloadRequest {
   optionId: string
   dir: string
   maxBytes?: number | null
+  /** One-job browser Cookie header; memory-only and never persisted. */
+  cookie?: string
   /** Requested output container; omitted means `auto`. */
   outputFormat?: MediaOutputFormat
   /**
@@ -168,7 +175,7 @@ export interface MediaCollectionTarget {
 
 export interface MediaEngine {
   getToolState(): Promise<MediaToolState>
-  analyze(url: string): Promise<MediaAnalysis>
+  analyze(url: string, options?: { cookie?: string }): Promise<MediaAnalysis>
   /**
    * Resolve an explicit playlist page into an ephemeral, renderer-safe
    * preview. Uses a flat metadata listing only; nothing is downloaded.
@@ -210,6 +217,8 @@ export interface MediaEngineOptions {
   cwd?: string
   /** `<userData>/tools/yt-dlp`; managed copies newer than bundled win. */
   managedToolsDir?: string | null
+  /** Per-user app data dir for short-lived analysis cookie files. */
+  userDataPath?: string | null
   spawn?: MediaSpawn
   lookup?: MediaLookup
   now?: () => number
@@ -226,6 +235,8 @@ interface StoredAnalysis {
   url: string
   /** yt-dlp target; differs only for a normalized Vimeo player URL. */
   targetUrl: string
+  /** Whether this analysis was produced with an opted-in cookie header. */
+  usedCookies: boolean
   title: string
   expiresAt: number
   options: Map<string, InternalMediaOption>
@@ -386,6 +397,22 @@ function parseDirectDownload(value: unknown): MediaDirectDownload | null {
     ...(cookie === undefined ? {} : { cookie }),
     title
   }
+}
+
+/** Optional one-job Cookie header on an analysis download request. */
+function readOptionalCookie(record: Record<string, unknown>): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, 'cookie')) return undefined
+  const value = record.cookie
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > MAX_DIRECT_HEADER_LENGTH ||
+    /[\r\n]/.test(value) ||
+    CONTROL_CHARACTERS.test(value)
+  ) {
+    throw new ValidationError('The browser cookie header is invalid.')
+  }
+  return value
 }
 
 function cleanDisplayText(
@@ -922,6 +949,63 @@ export function createMediaEngine(
   // verified updater may swap the executable, and an older build does not know
   // `--list-impersonate-targets` at all.
   const impersonationSupport = new Map<string, boolean>()
+  // Cookie files live only for the lifetime of one yt-dlp child. Analyses use
+  // an isolated temp directory under userData; downloads use the job's private
+  // staging directory, which is removed with the job.
+  const cookieTempDir =
+    options.userDataPath !== null && options.userDataPath !== undefined
+      ? path.join(options.userDataPath, 'media-cookies')
+      : path.join(os.tmpdir(), 'dondownload-media-cookies')
+  const activeCookieFiles = new Set<string>()
+
+  async function cleanStaleCookieFiles(directory: string): Promise<void> {
+    const entries = await fs
+      .readdir(directory, { withFileTypes: true })
+      .catch(() => [])
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.startsWith(COOKIE_FILE_PREFIX)) {
+        continue
+      }
+      const candidate = path.resolve(directory, entry.name)
+      if (activeCookieFiles.has(candidate)) continue
+      await fs.rm(candidate, { force: true }).catch(() => undefined)
+    }
+  }
+
+  async function writeCookieFile(
+    directory: string,
+    cookieHeader: string,
+    targetUrl: string
+  ): Promise<string> {
+    const hostname = new URL(targetUrl).hostname
+    const contents = buildNetscapeCookieFile(cookieHeader, hostname)
+    await fs.mkdir(directory, { recursive: true })
+    if (path.resolve(directory) === path.resolve(cookieTempDir)) {
+      await cleanStaleCookieFiles(cookieTempDir)
+    }
+    const file = path.join(
+      directory,
+      `${COOKIE_FILE_PREFIX}${randomBytes(12).toString('hex')}.txt`
+    )
+    await fs.writeFile(file, contents, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx'
+    })
+    activeCookieFiles.add(path.resolve(file))
+    return file
+  }
+
+  async function removeCookieFile(file: string): Promise<void> {
+    activeCookieFiles.delete(path.resolve(file))
+    await fs.rm(file, { force: true }).catch(() => undefined)
+  }
+
+  // A previous crash may have left an analysis cookie file behind. Remove any
+  // that this process does not own before the first cookie-using operation.
+  if (options.userDataPath) {
+    void cleanStaleCookieFiles(cookieTempDir).catch(() => undefined)
+  }
 
   function withOutputDirLock<T>(
     directory: string,
@@ -1303,7 +1387,10 @@ export function createMediaEngine(
     return { ...toolchain.state }
   }
 
-  async function analyze(url: string): Promise<MediaAnalysis> {
+  async function analyze(
+    url: string,
+    analyzeOptions: { cookie?: string } = {}
+  ): Promise<MediaAnalysis> {
     if (closing) {
       throw new AppError(
         'MEDIA_ANALYSIS_CANCELLED',
@@ -1320,11 +1407,33 @@ export function createMediaEngine(
       throw toolUnavailableError(toolchain.state)
     }
 
+    const cookie =
+      typeof analyzeOptions.cookie === 'string' &&
+      analyzeOptions.cookie.trim().length > 0
+        ? analyzeOptions.cookie
+        : null
+    let cookieFile: string | null = null
+    if (cookie !== null) {
+      try {
+        cookieFile = await writeCookieFile(cookieTempDir, cookie, targetUrl)
+      } catch {
+        throw new AppError(
+          'MEDIA_COOKIE_UNAVAILABLE',
+          'The browser cookie file could not be prepared for this analysis.'
+        )
+      }
+    }
+
     let result
     try {
       result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
-        buildAnalyzeArgs(targetUrl, toolchain.denoPath, toolchain.impersonate),
+        buildAnalyzeArgs(
+          targetUrl,
+          toolchain.denoPath,
+          toolchain.impersonate,
+          cookieFile
+        ),
         {
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
@@ -1360,6 +1469,8 @@ export function createMediaEngine(
         'MEDIA_ANALYSIS_FAILED',
         'yt-dlp could not analyze this page.'
       )
+    } finally {
+      if (cookieFile !== null) await removeCookieFile(cookieFile)
     }
 
     if (result.code !== 0) {
@@ -1453,6 +1564,7 @@ export function createMediaEngine(
       id: analysisId,
       url: normalized,
       targetUrl,
+      usedCookies: cookie !== null,
       title: built.title,
       expiresAt,
       options: storedOptions
@@ -1761,6 +1873,7 @@ export function createMediaEngine(
     const optionId = parseMediaOptionId(record.optionId)
 
     const direct = parseDirectDownload(record.direct)
+    const requestCookie = readOptionalCookie(record)
     const maxBytes = request.maxBytes ?? null
     let title: string
     let outputChoice: InternalOutputChoice
@@ -1834,6 +1947,14 @@ export function createMediaEngine(
         throw new AppError(
           'MEDIA_ANALYSIS_MISMATCH',
           'The analysis does not match this page. Analyze the page again.'
+        )
+      }
+      // The cookie decision is part of the analysis identity: a cookie-bearing
+      // analysis must not silently download anonymously, and vice versa.
+      if (analysis.usedCookies !== (requestCookie !== undefined)) {
+        throw new AppError(
+          'MEDIA_ANALYSIS_MISMATCH',
+          'The analysis no longer matches your cookie choice. Analyze the page again.'
         )
       }
 
@@ -1953,6 +2074,23 @@ export function createMediaEngine(
       throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
     }
 
+    let downloadCookieFile: string | null = null
+    if (direct === null && requestCookie !== undefined) {
+      try {
+        downloadCookieFile = await writeCookieFile(
+          stagingDir,
+          requestCookie,
+          downloadTargetUrl
+        )
+      } catch {
+        await discardStagingDir(stagingDir)
+        throw new AppError(
+          'MEDIA_COOKIE_UNAVAILABLE',
+          'The browser cookie file could not be prepared for this download.'
+        )
+      }
+    }
+
     const needsFfmpeg =
       outputChoice.mergeOutputFormat !== null ||
       outputChoice.remuxOutputFormat !== null
@@ -1966,6 +2104,7 @@ export function createMediaEngine(
       denoPath: toolchain.denoPath,
       impersonate: toolchain.impersonate,
       maxBytes,
+      cookiesPath: downloadCookieFile,
       ...directHeaders
     })
 
@@ -2074,6 +2213,10 @@ export function createMediaEngine(
         if (job.cancelTimer) {
           clearTimeout(job.cancelTimer)
           job.cancelTimer = null
+        }
+        if (downloadCookieFile !== null) {
+          await removeCookieFile(downloadCookieFile)
+          downloadCookieFile = null
         }
 
         if (outcome === 'success') {
@@ -2351,6 +2494,13 @@ export function createMediaEngine(
       ...captures.map((capture) => capture.done),
       waitForDownloads(cancellationGraceMs + DOWNLOAD_SETTLE_MARGIN_MS)
     ])
+
+    // No child can still need a cookie file after the bounded wait. This is
+    // best effort and must not delay shutdown resolution.
+    for (const file of [...activeCookieFiles]) {
+      void removeCookieFile(file)
+    }
+    void cleanStaleCookieFiles(cookieTempDir).catch(() => undefined)
   }
 
   return {

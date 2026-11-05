@@ -29,6 +29,10 @@ interface FakeChrome {
     tracked: Record<string, number[]>
     nativeMessages: Array<{ host: string; message: unknown }>
     calls: string[]
+    permissions: Set<string>
+    captureSettings: Record<string, unknown> | null
+    cookies: Array<{ name: string; value: string }>
+    cookieQueries: string[]
   }
   nativeResponse: unknown
   nativeError: string | null
@@ -42,7 +46,11 @@ function createFakeChrome(): FakeChrome {
       registered: true,
       tracked: { [ORIGIN]: [7] },
       nativeMessages: [],
-      calls: []
+      calls: [],
+      permissions: new Set<string>(),
+      captureSettings: null,
+      cookies: [],
+      cookieQueries: []
     },
     nativeResponse: null,
     nativeError: null
@@ -66,9 +74,25 @@ function createFakeChrome(): FakeChrome {
       }
     },
     permissions: {
-      async contains({ origins }: { origins: string[] }) {
+      async contains(permission: {
+        origins?: string[]
+        permissions?: string[]
+      }) {
         fake.state.calls.push('contains')
-        return origins.every((origin) => fake.state.granted.has(origin))
+        if (permission.origins) {
+          return permission.origins.every((origin) =>
+            fake.state.granted.has(origin)
+          )
+        }
+        return (permission.permissions ?? []).every((name) =>
+          fake.state.permissions.has(name)
+        )
+      }
+    },
+    cookies: {
+      async getAll({ url }: { url: string }) {
+        fake.state.cookieQueries.push(url)
+        return fake.state.cookies
       }
     },
     scripting: {
@@ -79,6 +103,14 @@ function createFakeChrome(): FakeChrome {
       }
     },
     storage: {
+      local: {
+        async get(key: string) {
+          return fake.state.captureSettings === null
+            ? {}
+            : { [key]: fake.state.captureSettings }
+        },
+        async set() {}
+      },
       session: {
         async get(key: string) {
           return { [key]: fake.state.tracked }
@@ -364,6 +396,93 @@ describe('authorized media operations', () => {
       }
     ])
     expect(fake.state.calls).toEqual(['contains', 'native'])
+  })
+
+  it('sends opted-in cookies for this exact origin on analyze and queue', async () => {
+    const fake = createFakeChrome()
+    fake.state.captureSettings = { cookieOptInOrigins: [ORIGIN] }
+    fake.state.permissions.add('cookies')
+    fake.state.cookies = [
+      { name: 'session', value: 'abc' },
+      { name: 'theme', value: 'dark' }
+    ]
+    fake.nativeResponse = {
+      ok: true,
+      operation: 'analyze-media',
+      analysis: analysis()
+    }
+    useChrome(fake)
+
+    await analyzeMediaForSender(
+      fake.api,
+      { type: MEDIA_MESSAGE_TYPES.ANALYZE },
+      validSender()
+    )
+    expect(fake.state.cookieQueries).toEqual([TAB_URL])
+    expect(fake.state.nativeMessages[0]?.message).toEqual({
+      type: 'analyze-media',
+      url: TAB_URL,
+      cookie: 'session=abc; theme=dark'
+    })
+
+    fake.nativeResponse = { ok: true, operation: 'queue-media', job: job() }
+    await queueMediaForSender(
+      fake.api,
+      {
+        type: MEDIA_MESSAGE_TYPES.QUEUE,
+        analysisId: ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID
+      },
+      validSender()
+    )
+    expect(fake.state.nativeMessages[1]?.message).toEqual({
+      type: 'queue-media',
+      analysisId: ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID,
+      cookie: 'session=abc; theme=dark'
+    })
+  })
+
+  it('never reads cookies without the exact-origin opt-in and permission', async () => {
+    const noOptIn = createFakeChrome()
+    noOptIn.state.permissions.add('cookies')
+    noOptIn.state.cookies = [{ name: 'session', value: 'abc' }]
+    noOptIn.nativeResponse = {
+      ok: true,
+      operation: 'analyze-media',
+      analysis: analysis()
+    }
+    useChrome(noOptIn)
+    await analyzeMediaForSender(
+      noOptIn.api,
+      { type: MEDIA_MESSAGE_TYPES.ANALYZE },
+      validSender()
+    )
+    expect(noOptIn.state.cookieQueries).toEqual([])
+    expect(noOptIn.state.nativeMessages[0]?.message).toEqual({
+      type: 'analyze-media',
+      url: TAB_URL
+    })
+
+    const noPermission = createFakeChrome()
+    noPermission.state.captureSettings = { cookieOptInOrigins: [ORIGIN] }
+    noPermission.state.cookies = [{ name: 'session', value: 'abc' }]
+    noPermission.nativeResponse = {
+      ok: true,
+      operation: 'analyze-media',
+      analysis: analysis()
+    }
+    useChrome(noPermission)
+    await analyzeMediaForSender(
+      noPermission.api,
+      { type: MEDIA_MESSAGE_TYPES.ANALYZE },
+      validSender()
+    )
+    expect(noPermission.state.cookieQueries).toEqual([])
+    expect(noPermission.state.nativeMessages[0]?.message).toEqual({
+      type: 'analyze-media',
+      url: TAB_URL
+    })
   })
 
   it('queues a detected progressive source only after the exact tab authorization', async () => {

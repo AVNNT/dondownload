@@ -554,6 +554,46 @@ describe('media bridge routes', () => {
     expect(manager.calls).toHaveLength(0)
   })
 
+  it('forwards one opted-in cookie on analyze and queue, within the bound', async () => {
+    const analyze = await post(
+      JSON.stringify({
+        url: 'https://example.com/watch?v=1',
+        cookie: 'session=abc; theme=dark'
+      }),
+      { path: '/analyze-media' }
+    )
+    expect(analyze.status).toBe(200)
+    expect(media?.calls.analyze).toEqual([
+      { url: 'https://example.com/watch?v=1', cookie: 'session=abc; theme=dark' }
+    ])
+
+    const queue = await post(
+      JSON.stringify({
+        analysisId: MEDIA_ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        cookie: 'session=abc; theme=dark'
+      }),
+      { path: '/queue-media' }
+    )
+    expect(queue.status).toBe(200)
+    expect(media?.calls.queue.at(-1)).toEqual({
+      analysisId: MEDIA_ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID,
+      cookie: 'session=abc; theme=dark'
+    })
+
+    for (const body of [
+      { url: 'https://example.com/a', cookie: 'x'.repeat(8193) },
+      { url: 'https://example.com/a', cookie: 'a=b\r\nInjected: 1' },
+      { url: 'https://example.com/a', cookie: 7 }
+    ]) {
+      const response = await post(JSON.stringify(body), {
+        path: '/analyze-media'
+      })
+      expect(response.status).toBe(400)
+    }
+  })
+
   it('serves queue-media with opaque IDs and the optional force opt-in', async () => {
     const plain = await post(
       JSON.stringify({

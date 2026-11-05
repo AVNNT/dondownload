@@ -17,8 +17,8 @@ using System.Web.Script.Serialization;
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
 //   { "type": "queue-captured-source", "url": "https://cdn.example/clip.mp4" }
 //   { "type": "handoff-download", "url": "https://example.com/files/report.zip" }
-//   { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
-//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv" }
+//   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
+//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
 //   { "type": "media-status", "jobId": "..." }
 //   { "type": "cancel-media", "jobId": "..." }
 //
@@ -271,11 +271,14 @@ internal static class NativeHost
     private static Dictionary<string, object> HandleAnalyzeMediaMessage(
         Dictionary<string, object> message)
     {
-        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[0]))
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "url" },
+            new string[] { "cookie" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only analyze-media messages containing exactly type and url are accepted.");
+                "Only analyze-media messages containing type, url and an optional cookie are accepted.");
         }
 
         string normalizedUrl;
@@ -285,8 +288,22 @@ internal static class NativeHost
             return Error("INVALID_URL", urlError);
         }
 
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
         Dictionary<string, object> body = new Dictionary<string, object>();
         body.Add("url", normalizedUrl);
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
+        }
         return ForwardMedia(AnalyzeMediaOperation, "/analyze-media", body);
     }
 
@@ -296,11 +313,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "analysisId", "optionId" },
-            new string[] { "force", "outputFormat" }))
+            new string[] { "force", "outputFormat", "cookie" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only queue-media messages containing type, analysisId, optionId, an optional force flag and an optional output format are accepted.");
+                "Only queue-media messages containing type, analysisId, optionId, optional force/outputFormat and an optional cookie are accepted.");
         }
 
         if (!IsOpaqueMediaId(message["analysisId"]))
@@ -338,6 +355,16 @@ internal static class NativeHost
             }
         }
 
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
         Dictionary<string, object> body = new Dictionary<string, object>();
         body.Add("analysisId", (string)message["analysisId"]);
         body.Add("optionId", (string)message["optionId"]);
@@ -348,6 +375,10 @@ internal static class NativeHost
         if (outputFormat != null)
         {
             body.Add("outputFormat", outputFormat);
+        }
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
         }
         return ForwardMedia(QueueMediaOperation, "/queue-media", body);
     }

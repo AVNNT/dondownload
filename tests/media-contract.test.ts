@@ -349,7 +349,11 @@ describe('media native bridge contract', () => {
       parseNativeMediaRequest({ type: 'queue-download', url: 'https://example.com' })
     ).toThrow(/Unsupported/)
     expect(() =>
-      parseNativeMediaRequest({ type: 'analyze-media', url: 'https://example.com', cookie: 'x' })
+      parseNativeMediaRequest({
+        type: 'analyze-media',
+        url: 'https://example.com',
+        dir: 'C:\\'
+      })
     ).toThrow(/unsupported fields/)
     expect(() =>
       parseNativeMediaRequest({ type: 'media-status', jobId: '../not-a-job' })
@@ -363,9 +367,21 @@ describe('media native bridge contract', () => {
   })
 
   it('parses loopback request bodies', () => {
-    expect(parseMediaAnalyzeRequest({ url: 'https://example.com/v' })).toEqual({
-      url: 'https://example.com/v'
+    expect(
+      parseMediaAnalyzeRequest({
+        url: 'https://example.com/v',
+        cookie: 'session=abc'
+      })
+    ).toEqual({
+      url: 'https://example.com/v',
+      cookie: 'session=abc'
     })
+    expect(() =>
+      parseMediaAnalyzeRequest({
+        url: 'https://example.com/v',
+        cookie: 'a=b\r\nInjected: 1'
+      })
+    ).toThrow()
     expect(
       parseMediaQueueRequest({ analysisId: ANALYSIS_ID, optionId: AUDIO_OPTION_ID })
     ).toEqual({ analysisId: ANALYSIS_ID, optionId: AUDIO_OPTION_ID })

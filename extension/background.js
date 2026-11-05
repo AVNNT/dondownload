@@ -1,8 +1,4 @@
-import {
-  MAX_COOKIE_HEADER_LENGTH,
-  sendQueueDownload,
-  sendQueueSniffedMedia
-} from './bridge.js'
+import { sendQueueDownload, sendQueueSniffedMedia } from './bridge.js'
 import {
   OVERLAY_MESSAGE_TYPES,
   OVERLAY_SCRIPT_PREFIX,
@@ -28,7 +24,11 @@ import {
   queueMediaForSender
 } from './media-bridge.js'
 import { handleCreatedDownload, installDownloadsListener } from './handoff.js'
-import { CAPTURE_SETTINGS_KEY, readCaptureSettings } from './capture-settings.js'
+import {
+  CAPTURE_SETTINGS_KEY,
+  readCaptureSettings,
+  readOptInCookieHeader
+} from './capture-settings.js'
 import {
   NETWORK_EVIDENCE_MESSAGE_TYPES,
   evidenceForMessage,
@@ -274,56 +274,6 @@ function querySniffedForSender(message, sender) {
   return { ok: true, media }
 }
 
-/**
- * Cookies are read only when the exact page origin is on the user's opt-in list
- * AND the optional cookies permission is granted. The header exists only in
- * this message for one job; nothing is written to extension storage.
- */
-async function readOptInCookieHeader(pageUrl, mediaUrl) {
-  const settings = await readSnifferSettings()
-  const origin = originFromUrl(pageUrl)
-  if (
-    settings === null ||
-    origin === null ||
-    !settings.cookieOptInOrigins.includes(origin)
-  ) {
-    return undefined
-  }
-  try {
-    if (
-      (await chrome.permissions.contains({ permissions: ['cookies'] })) !== true
-    ) {
-      return undefined
-    }
-    if (!chrome.cookies || typeof chrome.cookies.getAll !== 'function') {
-      return undefined
-    }
-    const cookies = await chrome.cookies.getAll({ url: mediaUrl })
-    if (!Array.isArray(cookies) || cookies.length === 0) return undefined
-    const parts = []
-    for (const cookie of cookies.slice(0, 100)) {
-      if (
-        !cookie ||
-        typeof cookie.name !== 'string' ||
-        cookie.name.length === 0 ||
-        typeof cookie.value !== 'string' ||
-        /[\r\n]/.test(cookie.name) ||
-        /[\r\n]/.test(cookie.value)
-      ) {
-        continue
-      }
-      parts.push(`${cookie.name}=${cookie.value}`)
-    }
-    if (parts.length === 0) return undefined
-    const header = parts.join('; ')
-    return header.length > 0 && header.length <= MAX_COOKIE_HEADER_LENGTH
-      ? header
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 async function queueSniffedForSender(message, sender) {
   const normalized = normalizeSniffedQueueMessage(message)
   if (normalized.ok !== true) return normalized
@@ -388,7 +338,7 @@ async function queueSniffedForSender(message, sender) {
 
   const mediaUrl = variant === null ? entry.url : variant.url
   const filename = sniffedFilename(entry, mediaUrl)
-  const cookie = await readOptInCookieHeader(pageUrl, mediaUrl)
+  const cookie = await readOptInCookieHeader(chrome, pageUrl, mediaUrl)
   const expectedBytes =
     variant === null && Number.isSafeInteger(entry.sizeBytes) && entry.sizeBytes > 0
       ? entry.sizeBytes

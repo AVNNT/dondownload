@@ -90,6 +90,35 @@ describe('build*Args impersonation', () => {
   })
 })
 
+describe('build*Args one-job cookie file', () => {
+  it('passes --cookies only when a validated temp file exists', () => {
+    const analyze = buildAnalyzeArgs(
+      sourceUrl,
+      null,
+      false,
+      'C:\\temp\\cookies.txt'
+    )
+    expect(analyze[analyze.indexOf('--cookies') + 1]).toBe(
+      'C:\\temp\\cookies.txt'
+    )
+    expect(analyze[analyze.indexOf('--cookies') + 2]).toBe('--')
+
+    const download = buildDownloadArgs({
+      sourceUrl,
+      formatSelector: '22',
+      outputTemplate: 'video.%(ext)s',
+      mergeOutputFormat: null,
+      remuxOutputFormat: null,
+      ffmpegLocation: null,
+      cookiesPath: 'C:\\temp\\cookies.txt'
+    })
+    expect(download[download.indexOf('--cookies') + 1]).toBe(
+      'C:\\temp\\cookies.txt'
+    )
+    expect(buildAnalyzeArgs(sourceUrl)).not.toContain('--cookies')
+  })
+})
+
 describe('buildDownloadArgs size cap', () => {
   it('passes the per-job byte cap to yt-dlp', () => {
     const download = buildDownloadArgs({

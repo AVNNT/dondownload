@@ -281,6 +281,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
         : undefined
     const mediaEngine = createMediaEngine({
       managedToolsDir,
+      userDataPath: app.getPath('userData'),
       ...(mediaFixtureLookup === undefined
         ? {}
         : { lookup: mediaFixtureLookup })

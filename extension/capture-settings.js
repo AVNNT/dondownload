@@ -9,6 +9,7 @@ export const HANDOFF_STATE_KEY = 'dondownloadHandoffState'
 export const OPTIONS_TARGET_KEY = 'dondownloadOptionsTarget'
 export const MAX_HANDOFF_IDS = 300
 export const MAX_EXCLUDED_ORIGINS = 100
+export const MAX_COOKIE_HEADER_LENGTH = 8192
 
 export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
   floatingTriggerEnabled: true,
@@ -63,6 +64,58 @@ export function normalizeCaptureSettings(value) {
     detectAllSites: source.detectAllSites === true,
     cookieOptInOrigins,
     excludedOrigins
+  }
+}
+
+/**
+ * Cookies are read only when the exact page origin is on the user's opt-in
+ * list AND the optional cookies permission is granted. The result lives only
+ * in the caller's message for one job; nothing is written to extension
+ * storage. The cookie URL may be an embed/player URL reached from an
+ * opted-in top page.
+ */
+export async function readOptInCookieHeader(chromeApi, pageUrl, cookieUrl) {
+  try {
+    const settings = await readCaptureSettings(chromeApi)
+    const origin = originFromPageUrl(pageUrl)
+    if (
+      origin === null ||
+      !settings.cookieOptInOrigins.includes(origin)
+    ) {
+      return undefined
+    }
+    if (
+      (await chromeApi.permissions.contains({ permissions: ['cookies'] })) !==
+      true
+    ) {
+      return undefined
+    }
+    if (!chromeApi.cookies || typeof chromeApi.cookies.getAll !== 'function') {
+      return undefined
+    }
+    const cookies = await chromeApi.cookies.getAll({ url: cookieUrl })
+    if (!Array.isArray(cookies) || cookies.length === 0) return undefined
+    const parts = []
+    for (const cookie of cookies.slice(0, 100)) {
+      if (
+        !cookie ||
+        typeof cookie.name !== 'string' ||
+        cookie.name.length === 0 ||
+        typeof cookie.value !== 'string' ||
+        /[\r\n]/.test(cookie.name) ||
+        /[\r\n]/.test(cookie.value)
+      ) {
+        continue
+      }
+      parts.push(`${cookie.name}=${cookie.value}`)
+    }
+    if (parts.length === 0) return undefined
+    const header = parts.join('; ')
+    return header.length > 0 && header.length <= MAX_COOKIE_HEADER_LENGTH
+      ? header
+      : undefined
+  } catch {
+    return undefined
   }
 }
 

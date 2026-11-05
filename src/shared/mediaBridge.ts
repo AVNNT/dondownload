@@ -50,13 +50,14 @@ export const MEDIA_BRIDGE_ROUTE_OPERATIONS: Readonly<
 
 /** A browser -> native-host message for one media operation. */
 export type NativeMediaRequest =
-  | { type: 'analyze-media'; url: string }
+  | { type: 'analyze-media'; url: string; cookie?: string }
   | {
       type: 'queue-media'
       analysisId: string
       optionId: string
       force?: true
       outputFormat?: MediaOutputFormat
+      cookie?: string
     }
   | { type: 'media-status'; jobId: string }
   | { type: 'cancel-media'; jobId: string }
@@ -64,6 +65,7 @@ export type NativeMediaRequest =
 /** The native host -> desktop loopback request body. */
 export interface MediaAnalyzeRequest {
   url: string
+  cookie?: string
 }
 
 export type MediaQueueRequest = MediaQueueInput
@@ -141,7 +143,10 @@ function readForce(record: Record<string, unknown>): boolean {
 }
 
 function analyzeFields(record: Record<string, unknown>): MediaAnalyzeRequest {
-  return parseAnalyzeMediaInput({ url: record.url })
+  return parseAnalyzeMediaInput({
+    url: record.url,
+    ...(record.cookie === undefined ? {} : { cookie: record.cookie })
+  })
 }
 
 function queueFields(record: Record<string, unknown>): MediaQueueRequest {
@@ -152,7 +157,8 @@ function queueFields(record: Record<string, unknown>): MediaQueueRequest {
     ...(force ? { force } : {}),
     ...(record.outputFormat === undefined
       ? {}
-      : { outputFormat: record.outputFormat })
+      : { outputFormat: record.outputFormat }),
+    ...(record.cookie === undefined ? {} : { cookie: record.cookie })
   })
 }
 
@@ -163,13 +169,17 @@ function statusFields(record: Record<string, unknown>): MediaStatusRequest {
 /** Strict parser for the native-host -> desktop loopback bodies. */
 export function parseMediaAnalyzeRequest(value: unknown): MediaAnalyzeRequest {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'])
+  exactKeys(record, ['url'], ['cookie'])
   return analyzeFields(record)
 }
 
 export function parseMediaQueueRequest(value: unknown): MediaQueueRequest {
   const record = asPlainObject(value)
-  exactKeys(record, ['analysisId', 'optionId'], ['force', 'outputFormat'])
+  exactKeys(record, ['analysisId', 'optionId'], [
+    'force',
+    'outputFormat',
+    'cookie'
+  ])
   return queueFields(record)
 }
 
@@ -192,12 +202,13 @@ export function parseNativeMediaRequest(value: unknown): NativeMediaRequest {
 
   switch (type) {
     case 'analyze-media':
-      exactKeys(record, ['type', 'url'])
+      exactKeys(record, ['type', 'url'], ['cookie'])
       return { type, ...analyzeFields(record) }
     case 'queue-media':
       exactKeys(record, ['type', 'analysisId', 'optionId'], [
         'force',
-        'outputFormat'
+        'outputFormat',
+        'cookie'
       ])
       return { type, ...queueFields(record) }
     case 'media-status':

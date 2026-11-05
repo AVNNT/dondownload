@@ -51,25 +51,22 @@ function withJsRuntime(args: string[], denoPath?: string | null): string[] {
 export function buildAnalyzeArgs(
   url: string,
   denoPath?: string | null,
-  impersonate = false
+  impersonate = false,
+  cookiesPath?: string | null
 ): string[] {
-  return withJsRuntime(
-    withImpersonation(
-      [
-        '--ignore-config',
-        '--no-plugin-dirs',
-        '--no-playlist',
-        '--no-warnings',
-        '--skip-download',
-        '--dump-single-json',
-        '--no-cache-dir',
-        '--',
-        url
-      ],
-      impersonate
-    ),
-    denoPath
-  )
+  const args = [
+    '--ignore-config',
+    '--no-plugin-dirs',
+    '--no-playlist',
+    '--no-warnings',
+    '--skip-download',
+    '--dump-single-json',
+    '--no-cache-dir',
+    ...(cookiesPath ? ['--cookies', cookiesPath] : []),
+    '--',
+    url
+  ]
+  return withJsRuntime(withImpersonation(args, impersonate), denoPath)
 }
 
 /**
@@ -128,6 +125,8 @@ export interface DownloadArgumentInput {
   impersonate?: boolean
   /** Per-job output cap; yt-dlp refuses a known larger file up front. */
   maxBytes?: number | null
+  /** Short-lived Netscape file for this one job; removed after the child exits. */
+  cookiesPath?: string | null
 }
 
 /**
@@ -161,7 +160,8 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
       '--format',
       input.formatSelector,
       '--output',
-      input.outputTemplate
+      input.outputTemplate,
+      ...(input.cookiesPath ? ['--cookies', input.cookiesPath] : [])
       ],
       input.impersonate === true
     ),

@@ -228,13 +228,20 @@ describe('extension wiring guardrails', () => {
       expect(background).not.toContain(forbidden)
     }
     // A cookie is read only after the exact origin is on the user's opt-in list
-    // and the optional cookies permission is present.
-    expect(background).toContain('cookieOptInOrigins.includes(origin)')
-    expect(background).toContain(
+    // and the optional cookies permission is present. The single helper now
+    // lives in capture-settings and both background and media-bridge call it.
+    const cookieHelper = readFileSync(
+      path.join(process.cwd(), 'extension', 'capture-settings.js'),
+      'utf8'
+    )
+    expect(cookieHelper).toContain('cookieOptInOrigins.includes(origin)')
+    expect(cookieHelper).toContain(
       "permissions.contains({ permissions: ['cookies'] })"
     )
-    expect(background.indexOf('cookieOptInOrigins.includes(origin)')).toBeLessThan(
-      background.indexOf('chrome.cookies.getAll')
+    expect(cookieHelper.indexOf('cookieOptInOrigins.includes(origin)')).toBeLessThan(
+      cookieHelper.indexOf('chromeApi.cookies.getAll')
     )
+    expect(background).toContain('readOptInCookieHeader')
+    expect(background).not.toContain('chrome.cookies.getAll')
   })
 })
