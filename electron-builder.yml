@@ -53,6 +53,14 @@ npmRebuild: false
 removePackageScripts: true
 publish: null
 
+# A second launch must always execute the application entry point. If the
+# launching shell exports ELECTRON_RUN_AS_NODE=1, an unfused executable runs the
+# bundled main script as plain Node instead, exits before
+# requestSingleInstanceLock(), and never reaches the existing hidden window.
+# Disabling that fuse makes the packaged executable ignore the variable.
+electronFuses:
+  runAsNode: false
+
 win:
   target:
     - target: nsis
