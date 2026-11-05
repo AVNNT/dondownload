@@ -41,6 +41,8 @@ interface MediaAnalyzerProps {
   ) => void
   onClear: () => void
   onUrlChange?: (rawUrl: string) => void
+  /** Prefills and auto-analyzes a URL, used by the Add dialog and drag & drop. */
+  initialUrl?: string
 }
 
 export function MediaAnalyzer({
@@ -54,9 +56,10 @@ export function MediaAnalyzer({
   onAnalyze,
   onQueue,
   onClear,
-  onUrlChange
+  onUrlChange,
+  initialUrl
 }: MediaAnalyzerProps): JSX.Element {
-  const [url, setUrl] = useState('')
+  const [url, setUrl] = useState(initialUrl ?? '')
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [outputFormat, setOutputFormat] = useState<MediaOutputFormat>('auto')
   const [maxMiB, setMaxMiB] = useState('')
@@ -73,11 +76,14 @@ export function MediaAnalyzer({
       analyze: onAnalyze
     })
     analyzerRef.current = analyzer
+    if (initialUrl && initialUrl.trim().length > 0) {
+      analyzer.update(initialUrl)
+    }
     return () => {
       analyzer.cancel()
       analyzerRef.current = null
     }
-  }, [onAnalyze])
+  }, [onAnalyze, initialUrl])
 
   const qualityChoices = analysis ? mediaQualityChoices(analysis) : []
   const defaultOptionId = analysis ? defaultMediaQualityOptionId(analysis) : null

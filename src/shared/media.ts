@@ -158,6 +158,12 @@ export interface MediaJob {
   createdAt: number
   updatedAt: number
   completedAt: number | null
+  /**
+   * Optional renderer hint only. The current backend does not persist a job
+   * thumbnail, so live rows normally fall back to a category icon. Preview
+   * fixtures use it to demonstrate the thumbnail treatment.
+   */
+  thumbnailUrl?: string | null
 }
 
 export interface MediaToolState {
@@ -644,22 +650,26 @@ export function parseMediaAnalysis(value: unknown): MediaAnalysis {
 
 export function parseMediaJob(value: unknown): MediaJob {
   const record = asPlainObject(value)
-  exactKeys(record, [
-    'id',
-    'analysisId',
-    'optionId',
-    'kind',
-    'title',
-    'label',
-    'status',
-    'completedBytes',
-    'totalBytes',
-    'speedBps',
-    'errorMessage',
-    'createdAt',
-    'updatedAt',
-    'completedAt'
-  ])
+  exactKeys(
+    record,
+    [
+      'id',
+      'analysisId',
+      'optionId',
+      'kind',
+      'title',
+      'label',
+      'status',
+      'completedBytes',
+      'totalBytes',
+      'speedBps',
+      'errorMessage',
+      'createdAt',
+      'updatedAt',
+      'completedAt'
+    ],
+    ['thumbnailUrl']
+  )
 
   const kind = record.kind
   if (kind !== 'video' && kind !== 'audio') {
@@ -687,7 +697,10 @@ export function parseMediaJob(value: unknown): MediaJob {
     ),
     createdAt: integerValue(record, 'createdAt', 1),
     updatedAt: integerValue(record, 'updatedAt', 1),
-    completedAt: nullableIntegerValue(record, 'completedAt', 1)
+    completedAt: nullableIntegerValue(record, 'completedAt', 1),
+    ...(record.thumbnailUrl === undefined
+      ? {}
+      : { thumbnailUrl: nullableHttpsUrl(record.thumbnailUrl) })
   }
 }
 

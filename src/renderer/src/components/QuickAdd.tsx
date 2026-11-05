@@ -6,6 +6,8 @@ import { normalizeHttpUrl, sanitizeFilename } from '@shared/validation'
 interface QuickAddProps {
   disabled: boolean
   onAdd: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
+  /** Prefills the URL field, used by the Add dialog and drag & drop. */
+  initialUrl?: string
 }
 
 const MAX_SPEED_MIB = 1024
@@ -63,8 +65,8 @@ function speedLimitPreview(speedMib: string): string | null {
   return `${Math.max(1, Math.round(value * BYTES_PER_MIB)).toLocaleString()} B/s`
 }
 
-export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
-  const [url, setUrl] = useState('')
+export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.Element {
+  const [url, setUrl] = useState(initialUrl ?? '')
   const [filename, setFilename] = useState('')
   const [startAt, setStartAt] = useState('')
   const [speedMib, setSpeedMib] = useState('')

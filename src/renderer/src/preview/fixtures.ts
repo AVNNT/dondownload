@@ -65,6 +65,15 @@ const PREVIEW_DUPLICATE_CODE = 'DUPLICATE_DOWNLOAD'
 const PREVIEW_NOT_FOUND_CODE = 'PREVIEW_NOT_FOUND'
 const PREVIEW_INVALID_INPUT_CODE = 'PREVIEW_INVALID_INPUT'
 
+/**
+ * Deterministic remote thumbnails for the preview. They exercise the same
+ * lazy/no-referrer HTTPS image path as a real analysis thumbnail; if the
+ * network is unavailable the renderer falls back to the category icon. Live
+ * media jobs do not persist thumbnails yet, so their rows use the icon path.
+ */
+const PREVIEW_THUMBNAIL_A = 'https://picsum.photos/seed/dondownload-focus/160/90'
+const PREVIEW_THUMBNAIL_B = 'https://picsum.photos/seed/dondownload-design/160/90'
+
 export interface PreviewClock {
   now?: () => number
 }
@@ -552,6 +561,15 @@ export function createPreviewApi(
         ? ok(null)
         : fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.'),
 
+    openFile: async (id: string) => {
+      const item = findDownload(id)
+      if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
+      if (item.status !== 'complete' || !item.filePath) {
+        return fail('FILE_NOT_READY', 'The file is not ready yet.')
+      }
+      return ok(null)
+    },
+
     restartAria2: async () => ok(emitDownloads()),
 
     onSnapshotChanged: (listener) => {
@@ -631,6 +649,15 @@ export function createPreviewApi(
       findMediaJob(jobId)
         ? ok(null)
         : fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.'),
+
+    openMediaFile: async (jobId: string) => {
+      const job = findMediaJob(jobId)
+      if (!job) return fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+      if (job.status !== 'complete') {
+        return fail('FILE_NOT_READY', 'The media file is not ready yet.')
+      }
+      return ok(null)
+    },
 
     onMediaSnapshotChanged: (listener) => {
       mediaListeners.add(listener)
@@ -920,6 +947,144 @@ function seedDownloads(anchor: number): DownloadItem[] {
       speedLimitBps: null,
       connections: 4,
       blockReason: null
+    },
+    {
+      id: 'preview-download-document',
+      gid: 'preview-gid-document',
+      url: 'https://files.example.org/reports/quarterly-report-2026.pdf',
+      filename: 'quarterly-report-2026.pdf',
+      dir: 'Downloads/DonDownload',
+      filePath: 'Downloads/DonDownload/quarterly-report-2026.pdf',
+      status: 'complete',
+      totalBytes: 6 * mib,
+      completedBytes: 6 * mib,
+      speedBps: 0,
+      etaSeconds: 0,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 5,
+      createdAt: anchor - 26 * minute,
+      updatedAt: anchor - 24 * minute,
+      completedAt: anchor - 24 * minute,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: 8,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-archive',
+      gid: 'preview-gid-archive',
+      url: 'https://cdn.example.net/brand/brand-assets-2026.7z',
+      filename: 'brand-assets-2026.7z',
+      dir: 'Downloads/DonDownload',
+      filePath: null,
+      status: 'queued',
+      totalBytes: 1_220 * mib,
+      completedBytes: 0,
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      attempts: 0,
+      maxAttempts: 5,
+      createdAt: anchor - 12 * minute,
+      updatedAt: anchor - 12 * minute,
+      completedAt: null,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: 4,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-program',
+      gid: 'preview-gid-program',
+      url: 'https://downloads.example.com/toolbox-setup-2.4.exe',
+      filename: 'toolbox-setup-2.4.exe',
+      dir: 'Downloads/DonDownload',
+      filePath: null,
+      status: 'queued',
+      totalBytes: 84 * mib,
+      completedBytes: 0,
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      attempts: 0,
+      maxAttempts: 5,
+      createdAt: anchor - 8 * minute,
+      updatedAt: anchor - 8 * minute,
+      completedAt: null,
+      scheduledAt: null,
+      speedLimitBps: 1 * mib,
+      connections: 2,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-video',
+      gid: 'preview-gid-video',
+      url: 'https://media.example.com/launch/launch-teaser.mp4',
+      filename: 'launch-teaser.mp4',
+      dir: 'Downloads/DonDownload',
+      filePath: 'Downloads/DonDownload/launch-teaser.mp4',
+      status: 'complete',
+      totalBytes: 148 * mib,
+      completedBytes: 148 * mib,
+      speedBps: 0,
+      etaSeconds: 0,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 5,
+      createdAt: anchor - 34 * minute,
+      updatedAt: anchor - 32 * minute,
+      completedAt: anchor - 32 * minute,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: 8,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-audio-active',
+      gid: 'preview-gid-audio-active',
+      url: 'https://audio.example.com/scores/documentary-score.flac',
+      filename: 'documentary-score.flac',
+      dir: 'Downloads/DonDownload',
+      filePath: null,
+      status: 'active',
+      totalBytes: 240 * mib,
+      completedBytes: 108 * mib,
+      speedBps: 1_150_000,
+      etaSeconds: 120,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 5,
+      createdAt: anchor - 14 * minute,
+      updatedAt: anchor - 1_000,
+      completedAt: null,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: 6,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-other',
+      gid: 'preview-gid-other',
+      url: 'https://mirror.example.org/releases/checksums',
+      filename: 'checksums',
+      dir: 'Downloads/DonDownload',
+      filePath: 'Downloads/DonDownload/checksums',
+      status: 'complete',
+      totalBytes: 12_400,
+      completedBytes: 12_400,
+      speedBps: 0,
+      etaSeconds: 0,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 5,
+      createdAt: anchor - 42 * minute,
+      updatedAt: anchor - 42 * minute,
+      completedAt: anchor - 42 * minute,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: null,
+      blockReason: null
     }
   ]
 }
@@ -943,7 +1108,8 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       errorMessage: null,
       createdAt: anchor - 24 * minute,
       updatedAt: anchor - 1_000,
-      completedAt: null
+      completedAt: null,
+      thumbnailUrl: PREVIEW_THUMBNAIL_A
     },
     {
       id: 'preview-media-merging',
@@ -959,7 +1125,8 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       errorMessage: null,
       createdAt: anchor - 45 * minute,
       updatedAt: anchor - 4_000,
-      completedAt: null
+      completedAt: null,
+      thumbnailUrl: PREVIEW_THUMBNAIL_B
     },
     {
       id: 'preview-media-complete',
@@ -991,6 +1158,55 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       errorMessage: 'The fixture media engine stopped before merging.',
       createdAt: anchor - 5 * 60 * minute,
       updatedAt: anchor - 4 * 60 * minute,
+      completedAt: null
+    },
+    {
+      id: 'preview-media-queued-video',
+      analysisId: 'preview-analysis-seed',
+      optionId: 'preview-option-1080',
+      kind: 'video',
+      title: 'Product launch keynote (preview)',
+      label: '1080p · MP4 · video + audio',
+      status: 'queued',
+      completedBytes: 0,
+      totalBytes: 640 * mib,
+      speedBps: 0,
+      errorMessage: null,
+      createdAt: anchor - 6 * minute,
+      updatedAt: anchor - 6 * minute,
+      completedAt: null,
+      thumbnailUrl: PREVIEW_THUMBNAIL_B
+    },
+    {
+      id: 'preview-media-starting',
+      analysisId: 'preview-analysis-seed',
+      optionId: 'preview-option-2160',
+      kind: 'video',
+      title: 'Aerial coastline in 4K (preview)',
+      label: '2160p · MKV · video + audio',
+      status: 'downloading',
+      completedBytes: 0,
+      totalBytes: null,
+      speedBps: 0,
+      errorMessage: null,
+      createdAt: anchor - 2 * minute,
+      updatedAt: anchor - 30_000,
+      completedAt: null
+    },
+    {
+      id: 'preview-media-queued-audio',
+      analysisId: 'preview-analysis-seed',
+      optionId: 'preview-option-audio',
+      kind: 'audio',
+      title: 'Weekly design notes, episode 12 (preview)',
+      label: 'Audio only · M4A',
+      status: 'queued',
+      completedBytes: 0,
+      totalBytes: 52 * mib,
+      speedBps: 0,
+      errorMessage: null,
+      createdAt: anchor - 9 * minute,
+      updatedAt: anchor - 9 * minute,
       completedAt: null
     }
   ]

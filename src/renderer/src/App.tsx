@@ -1,43 +1,91 @@
-import { useCallback, useEffect, useState, type JSX } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type JSX,
+  type KeyboardEvent,
+  type MouseEvent
+} from 'react'
 import type {
   AddDownloadInput,
   ApiResult,
   AppErrorInfo,
   AppSnapshot,
-  Aria2State,
-  DownloadItem,
-  DownloadStatus
+  Aria2State
 } from '@shared/types'
+import type {
+  MediaAnalysis,
+  MediaOutputFormat,
+  MediaSnapshot
+} from '@shared/media'
+import { formatSpeed } from '@shared/format'
 import { BatchSection } from './components/BatchSection'
-import { DownloadCard } from './components/DownloadCard'
-import { MediaSection } from './components/MediaSection'
-import { QuickAdd } from './components/QuickAdd'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { SettingsSection } from './components/SettingsSection'
+import { Sidebar, type SidebarPage } from './components/Sidebar'
+import { Toolbar } from './components/Toolbar'
+import { DownloadTable } from './components/DownloadTable'
+import { AddDialog, type AddDialogTab } from './components/AddDialog'
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
+import { ContextMenu } from './components/ContextMenu'
+import { DetailsPane } from './components/DetailsPane'
+import { Icon } from './components/Icon'
+import {
+  buildUnifiedRows,
+  categoryCounts as buildCategoryCounts,
+  filterRows,
+  runningCount,
+  sortRows,
+  statusCounts as buildStatusCounts,
+  totalSpeed,
+  type CategoryId,
+  type SortDirection,
+  type SortKey,
+  type StatusFilterId,
+  type UnifiedRow
+} from './lib/unified'
+import {
+  EMPTY_SELECTION,
+  jumpFocus,
+  moveFocus,
+  pruneSelection,
+  selectAllRows,
+  selectSingle,
+  selectedRows as pickSelectedRows,
+  updateSelection,
+  type SelectionMode,
+  type SelectionState
+} from './lib/selection'
+import {
+  buildContextActions,
+  canPauseRow,
+  canResumeRow,
+  canRetryRow,
+  clearCompletedConfirmation,
+  executeActionPlan,
+  planBulkAction,
+  planRowAction,
+  removeConfirmation,
+  type ActionPlanEntry,
+  type RowActionId
+} from './lib/actions'
+import { extractDroppedUrl, routeDroppedUrl } from './lib/dnd'
 import { applyRendererTheme } from './theme'
+import appLogo from './assets/logo.svg'
 
-type PageId = 'downloads' | 'media' | 'batches' | 'settings'
+interface AddRequest {
+  tab: AddDialogTab
+  url: string
+  nonce: number
+}
 
-const PAGES: ReadonlyArray<{ id: PageId; label: string }> = [
-  { id: 'downloads', label: 'Downloads' },
-  { id: 'media', label: 'Media' },
-  { id: 'batches', label: 'Batches' },
-  { id: 'settings', label: 'Settings' }
-]
-
-/**
- * Active work always sorts above finished work so the first screenful is the
- * part of the queue a user can actually act on. Completed items keep their
- * newest-first order at the bottom.
- */
-const DOWNLOAD_STATUS_ORDER: Record<DownloadStatus, number> = {
-  active: 0,
-  waiting: 1,
-  queued: 2,
-  paused: 3,
-  interrupted: 4,
-  error: 5,
-  complete: 6
+interface MenuState {
+  x: number
+  y: number
+  rows: UnifiedRow[]
 }
 
 function runtimeLabel(aria2: Aria2State | null): string {
@@ -56,32 +104,32 @@ function runtimeLabel(aria2: Aria2State | null): string {
   }
 }
 
-function runtimeShortLabel(aria2: Aria2State | null): string {
-  if (!aria2) return 'Connecting'
-  switch (aria2.status) {
-    case 'ready':
-      return 'Ready'
-    case 'starting':
-      return 'Starting'
-    case 'unavailable':
-    case 'error':
-    case 'stopped':
-      return 'Offline'
-  }
-}
-
 export default function App(): JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
+  const [mediaSnapshot, setMediaSnapshot] = useState<MediaSnapshot | null>(null)
   const [banner, setBanner] = useState<AppErrorInfo | null>(null)
-  const [adding, setAdding] = useState(false)
-  const [pendingId, setPendingId] = useState<string | null>(null)
+  const [page, setPage] = useState<SidebarPage>('library')
+  const [category, setCategory] = useState<CategoryId>('all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilterId>('all')
+  const [query, setQuery] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('date')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
+  const [focusedKey, setFocusedKey] = useState<string | null>(null)
+  const [detailsClosedFor, setDetailsClosedFor] = useState<string | null>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [addRequest, setAddRequest] = useState<AddRequest | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
   const [restarting, setRestarting] = useState(false)
-  const [page, setPage] = useState<PageId>('downloads')
+  const [adding, setAdding] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const dragDepth = useRef(0)
+  const addSequence = useRef(0)
 
   useEffect(() => {
     let cancelled = false
-    // Apply the persisted appearance as soon as the renderer can read it, so a
-    // relaunch restores the saved theme without a reload or navigation.
     void window.donDownload.getSettings().then((result) => {
       if (!cancelled && result.ok) applyRendererTheme(result.value.theme)
     })
@@ -90,22 +138,38 @@ export default function App(): JSX.Element {
     }
   }, [])
 
+  const refreshAll = useCallback(async (): Promise<void> => {
+    const [downloadResult, mediaResult] = await Promise.all([
+      window.donDownload.getSnapshot(),
+      window.donDownload.getMediaSnapshot()
+    ])
+    if (downloadResult.ok) setSnapshot(downloadResult.value)
+    else setBanner(downloadResult.error)
+    if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
+    else if (downloadResult.ok) setBanner(mediaResult.error)
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
     const refresh = async (): Promise<void> => {
-      const result = await window.donDownload.getSnapshot()
+      const [downloadResult, mediaResult] = await Promise.all([
+        window.donDownload.getSnapshot(),
+        window.donDownload.getMediaSnapshot()
+      ])
       if (cancelled) return
-      if (result.ok) {
-        setSnapshot(result.value)
-      } else {
-        setBanner(result.error)
-      }
+      if (downloadResult.ok) setSnapshot(downloadResult.value)
+      else setBanner(downloadResult.error)
+      if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
+      else setBanner((current) => current ?? mediaResult.error)
     }
 
     void refresh()
-    const unsubscribe = window.donDownload.onSnapshotChanged((next) => {
+    const unsubscribeDownloads = window.donDownload.onSnapshotChanged((next) => {
       if (!cancelled) setSnapshot(next)
+    })
+    const unsubscribeMedia = window.donDownload.onMediaSnapshotChanged((next) => {
+      if (!cancelled) setMediaSnapshot(next)
     })
     const timer = window.setInterval(() => {
       void refresh()
@@ -113,264 +177,766 @@ export default function App(): JSX.Element {
 
     return () => {
       cancelled = true
-      unsubscribe()
+      unsubscribeDownloads()
+      unsubscribeMedia()
       window.clearInterval(timer)
     }
   }, [])
 
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [page])
+    if (!toast) return
+    const timer = window.setTimeout(() => setToast(null), 2_000)
+    return () => window.clearTimeout(timer)
+  }, [toast])
 
-  const applyResult = useCallback((result: ApiResult<AppSnapshot>): boolean => {
-    if (!result.ok) {
-      setBanner(result.error)
-      return false
+  const downloads = snapshot?.downloads ?? []
+  const mediaJobs = mediaSnapshot?.jobs ?? []
+  const aria2 = snapshot?.aria2 ?? null
+  const isReady = aria2?.status === 'ready'
+
+  const allRows = useMemo(
+    () => buildUnifiedRows(downloads, mediaJobs),
+    [downloads, mediaJobs]
+  )
+  const categoryCounts = useMemo(() => buildCategoryCounts(allRows), [allRows])
+  const statusCounts = useMemo(
+    () => buildStatusCounts(allRows, category, query),
+    [allRows, category, query]
+  )
+  const filteredRows = useMemo(
+    () => filterRows(allRows, { category, status: statusFilter, query }),
+    [allRows, category, statusFilter, query]
+  )
+  const visibleRows = useMemo(
+    () => sortRows(filteredRows, sortKey, sortDirection),
+    [filteredRows, sortKey, sortDirection]
+  )
+  const visibleSelection = useMemo(
+    () =>
+      pickSelectedRows(visibleRows, selection).filter((row) =>
+        selection.selected.includes(row.key)
+      ),
+    [visibleRows, selection]
+  )
+  const singleSelected = useMemo(() => {
+    if (selection.selected.length !== 1) return null
+    return visibleRows.find((row) => row.key === selection.selected[0]) ?? null
+  }, [visibleRows, selection])
+
+  useEffect(() => {
+    if (visibleRows.length === 0) {
+      if (focusedKey !== null) setFocusedKey(null)
+      return
     }
-    setBanner(null)
-    setSnapshot(result.value)
-    return true
-  }, [])
+    if (!focusedKey || !visibleRows.some((row) => row.key === focusedKey)) {
+      setFocusedKey(visibleRows[0]?.key ?? null)
+    }
+  }, [visibleRows, focusedKey])
+
+  useEffect(() => {
+    setSelection((current) => pruneSelection(visibleRows, current))
+  }, [visibleRows])
+
+  useEffect(() => {
+    setMenu(null)
+  }, [page, category, statusFilter, query, sortKey, sortDirection])
+
+  useEffect(() => {
+    if (!focusedKey) return
+    const active = document.activeElement
+    if (!(active instanceof HTMLElement) || !active.closest('[role="grid"]')) {
+      return
+    }
+    const target = document.querySelector<HTMLElement>(
+      `[data-row-key="${focusedKey}"]`
+    )
+    if (target && target !== active) target.focus()
+  }, [focusedKey])
+
+  const showDetails =
+    singleSelected !== null && detailsClosedFor !== singleSelected.key
+
+  const applyDownloadResult = useCallback(
+    (result: ApiResult<AppSnapshot>): boolean => {
+      if (!result.ok) {
+        setBanner(result.error)
+        return false
+      }
+      setBanner(null)
+      setSnapshot(result.value)
+      return true
+    },
+    []
+  )
 
   const handleAdd = useCallback(
     async (input: AddDownloadInput): Promise<ApiResult<AppSnapshot>> => {
       setAdding(true)
       try {
         const result = await window.donDownload.addDownload(input)
-        applyResult(result)
+        applyDownloadResult(result)
         return result
       } finally {
         setAdding(false)
       }
     },
-    [applyResult]
+    [applyDownloadResult]
   )
 
-  const runItemAction = useCallback(
-    async (
-      id: string,
-      action: () => Promise<ApiResult<AppSnapshot>>
-    ): Promise<void> => {
-      setPendingId(id)
-      try {
-        applyResult(await action())
-      } finally {
-        setPendingId(null)
+  const handleAnalyzeMedia = useCallback(
+    (url: string): Promise<ApiResult<MediaAnalysis>> =>
+      window.donDownload.analyzeMedia({ url }),
+    []
+  )
+
+  const handleQueueMedia = useCallback(
+    async (input: {
+      analysisId: string
+      optionId: string
+      outputFormat: MediaOutputFormat
+      maxBytes: number | null
+    }): Promise<ApiResult<MediaSnapshot>> => {
+      const result = await window.donDownload.queueMedia({
+        analysisId: input.analysisId,
+        optionId: input.optionId,
+        outputFormat: input.outputFormat,
+        ...(input.maxBytes === null ? {} : { maxBytes: input.maxBytes })
+      })
+      if (result.ok) {
+        setMediaSnapshot(result.value)
+        setBanner(null)
       }
+      return result
     },
-    [applyResult]
+    []
   )
 
-  const handleShowInFolder = useCallback(async (id: string): Promise<void> => {
-    setPendingId(id)
+  const copyText = useCallback(async (text: string): Promise<void> => {
     try {
-      const result = await window.donDownload.showInFolder(id)
-      setBanner(result.ok ? null : result.error)
-    } finally {
-      setPendingId(null)
+      await navigator.clipboard.writeText(text)
+      setToast(text.includes('\n') ? 'Links copied' : 'Link copied')
+    } catch {
+      setToast('Could not copy the link')
     }
   }, [])
+
+  const runPlan = useCallback(
+    async (plan: readonly ActionPlanEntry[]): Promise<void> => {
+      if (plan.length === 0) return
+      const result = await executeActionPlan(plan, window.donDownload)
+      if (result.errors.length > 0) {
+        setBanner(result.errors[0] ?? null)
+      }
+      if (result.copyUrls.length > 0) {
+        await copyText(result.copyUrls.join('\n'))
+      }
+      if (result.analyzeAgain.length > 0) {
+        setAddRequest({
+          tab: 'media',
+          url: '',
+          nonce: ++addSequence.current
+        })
+      }
+      if (
+        plan.some(
+          (entry) =>
+            entry.action !== 'copy' && entry.action !== 'analyze-again'
+        )
+      ) {
+        await refreshAll()
+      }
+    },
+    [copyText, refreshAll]
+  )
+
+  const openAddDialog = useCallback((tab: AddDialogTab, url = ''): void => {
+    setAddRequest({ tab, url, nonce: ++addSequence.current })
+  }, [])
+
+  const openRow = useCallback(
+    (row: UnifiedRow): void => {
+      const plan = planRowAction('open', [row])
+      if (plan.length > 0) {
+        void runPlan(plan)
+      } else {
+        setDetailsClosedFor(null)
+      }
+    },
+    [runPlan]
+  )
+
+  const showRowInFolder = useCallback(
+    (row: UnifiedRow): void => {
+      void runPlan(planRowAction('show-in-folder', [row]))
+    },
+    [runPlan]
+  )
+
+  const requestRemove = useCallback(
+    (rows: readonly UnifiedRow[]): void => {
+      if (rows.length === 0) return
+      const plan = planRowAction('remove', rows)
+      if (rows.length > 1) {
+        const copy = removeConfirmation(rows.length)
+        setConfirm({
+          ...copy,
+          onConfirm: () => {
+            void runPlan(plan)
+          }
+        })
+      } else {
+        void runPlan(plan)
+      }
+    },
+    [runPlan]
+  )
+
+  const handleRowClick = useCallback(
+    (row: UnifiedRow, mode: SelectionMode): void => {
+      setMenu(null)
+      setSelection((current) =>
+        updateSelection(visibleRows, current, row.key, mode)
+      )
+      setFocusedKey(row.key)
+    },
+    [visibleRows]
+  )
+
+  const handleToggleRow = useCallback(
+    (row: UnifiedRow): void => {
+      setSelection((current) =>
+        updateSelection(visibleRows, current, row.key, 'toggle')
+      )
+      setFocusedKey(row.key)
+    },
+    [visibleRows]
+  )
+
+  const handleSelectAll = useCallback((): void => {
+    setSelection((current) => {
+      const allSelected =
+        visibleRows.length > 0 &&
+        visibleRows.every((row) => current.selected.includes(row.key))
+      return allSelected ? EMPTY_SELECTION : selectAllRows(visibleRows)
+    })
+  }, [visibleRows])
+
+  const handleContextMenu = useCallback(
+    (row: UnifiedRow, event: MouseEvent): void => {
+      event.preventDefault()
+      const alreadySelected = selection.selected.includes(row.key)
+      const rows = alreadySelected
+        ? visibleSelection.length > 0
+          ? visibleSelection
+          : [row]
+        : [row]
+      if (!alreadySelected) {
+        setSelection(selectSingle(row))
+        setDetailsClosedFor(null)
+      }
+      setFocusedKey(row.key)
+      setMenu({ x: event.clientX, y: event.clientY, rows })
+    },
+    [selection.selected, visibleSelection]
+  )
+
+  const handleContextAction = useCallback(
+    (action: RowActionId): void => {
+      const rows = menu?.rows ?? []
+      setMenu(null)
+      if (rows.length === 0) return
+      if (action === 'remove') {
+        requestRemove(rows)
+        return
+      }
+      if (action === 'analyze-again') {
+        setAddRequest({ tab: 'media', url: '', nonce: ++addSequence.current })
+        return
+      }
+      void runPlan(planRowAction(action, rows))
+    },
+    [menu, requestRemove, runPlan]
+  )
+
+  const handleTableKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>): void => {
+      const target = event.target as HTMLElement
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'SELECT' ||
+        target.tagName === 'TEXTAREA'
+      ) {
+        return
+      }
+
+      const focusedRow =
+        visibleRows.find((row) => row.key === focusedKey) ?? visibleRows[0]
+
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const moved = moveFocus(
+          visibleRows,
+          selection,
+          focusedKey,
+          event.key === 'ArrowDown' ? 1 : -1,
+          event.shiftKey
+        )
+        setFocusedKey(moved.focus)
+        setSelection(moved.selection)
+        return
+      }
+      if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault()
+        const moved = jumpFocus(
+          visibleRows,
+          selection,
+          event.key === 'Home' ? 'start' : 'end',
+          event.shiftKey
+        )
+        setFocusedKey(moved.focus)
+        setSelection(moved.selection)
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault()
+        setSelection(selectAllRows(visibleRows))
+        return
+      }
+      if (event.key === 'Enter') {
+        if (focusedRow) {
+          event.preventDefault()
+          openRow(focusedRow)
+        }
+        return
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        const rows =
+          visibleSelection.length > 0
+            ? visibleSelection
+            : focusedRow
+              ? [focusedRow]
+              : []
+        if (rows.length > 0) {
+          event.preventDefault()
+          requestRemove(rows)
+        }
+        return
+      }
+      if (event.key === ' ' && focusedRow) {
+        event.preventDefault()
+        handleToggleRow(focusedRow)
+        return
+      }
+      if (
+        (event.shiftKey && event.key === 'F10') ||
+        event.key === 'ContextMenu'
+      ) {
+        if (!focusedRow) return
+        event.preventDefault()
+        const element = document.querySelector<HTMLElement>(
+          `[data-row-key="${focusedRow.key}"]`
+        )
+        const rect = element?.getBoundingClientRect()
+        setMenu({
+          x: rect ? rect.left + 48 : 40,
+          y: rect ? rect.top + 24 : 80,
+          rows:
+            visibleSelection.length > 0 &&
+            selection.selected.includes(focusedRow.key)
+              ? visibleSelection
+              : [focusedRow]
+        })
+        return
+      }
+      if (event.key === 'Escape') {
+        setSelection(EMPTY_SELECTION)
+        setDetailsClosedFor(null)
+      }
+    },
+    [
+      focusedKey,
+      handleToggleRow,
+      openRow,
+      requestRemove,
+      selection,
+      visibleRows,
+      visibleSelection
+    ]
+  )
 
   const handleRestart = useCallback(async (): Promise<void> => {
     setRestarting(true)
     try {
-      applyResult(await window.donDownload.restartAria2())
+      applyDownloadResult(await window.donDownload.restartAria2())
     } finally {
       setRestarting(false)
     }
-  }, [applyResult])
+  }, [applyDownloadResult])
 
-  const downloads = snapshot
-    ? [...snapshot.downloads].sort((left, right) => {
-        const byStatus =
-          DOWNLOAD_STATUS_ORDER[left.status] -
-          DOWNLOAD_STATUS_ORDER[right.status]
-        return byStatus !== 0 ? byStatus : right.createdAt - left.createdAt
+  const pauseAll = useCallback((): void => {
+    void runPlan(planBulkAction('pause-all', allRows))
+  }, [allRows, runPlan])
+
+  const resumeAll = useCallback((): void => {
+    void runPlan(planBulkAction('resume-all', allRows))
+  }, [allRows, runPlan])
+
+  const clearCompleted = useCallback((): void => {
+    const plan = planBulkAction('clear-completed', allRows)
+    if (plan.length === 0) return
+    setConfirm({
+      ...clearCompletedConfirmation(plan.length),
+      onConfirm: () => {
+        void runPlan(plan)
+      }
+    })
+  }, [allRows, runPlan])
+
+  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>): void => {
+    if (!event.dataTransfer.types.includes('text/uri-list') &&
+        !event.dataTransfer.types.includes('text/plain')) {
+      return
+    }
+    event.preventDefault()
+    dragDepth.current += 1
+    setDragActive(true)
+  }, [])
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>): void => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const handleDragLeave = useCallback((): void => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragActive(false)
+  }, [])
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>): void => {
+      event.preventDefault()
+      dragDepth.current = 0
+      setDragActive(false)
+      const url = extractDroppedUrl({
+        uriList: event.dataTransfer.getData('text/uri-list'),
+        text: event.dataTransfer.getData('text/plain')
       })
-    : []
-  const aria2 = snapshot?.aria2 ?? null
-  const isReady = aria2?.status === 'ready'
-  const activeCount = downloads.filter(
-    (item) => item.status === 'active'
+      if (!url) return
+      const route = routeDroppedUrl(url)
+      if (!route) return
+      openAddDialog(route.target, route.url)
+    },
+    [openAddDialog]
+  )
+
+  const filtersActive =
+    query.trim().length > 0 || category !== 'all' || statusFilter !== 'all'
+  const completedCount = allRows.filter(
+    (row) => row.statusGroup === 'completed'
   ).length
+  const activeDownloadCount = runningCount(allRows)
+  const aggregateSpeed = totalSpeed(allRows)
+  const menuActions = menu ? buildContextActions(menu.rows) : []
 
   return (
-    <div className="surface-app min-h-screen text-zinc-100">
-      <header className="window-app-header surface-app border-b border-white/10">
-        <div aria-hidden="true" className="window-drag-region" />
-        <div className="window-app-header-content mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:flex-none">
-            <div
-              aria-hidden="true"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-base font-semibold text-emerald-300"
-            >
-              ↓
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold tracking-tight">
-                DonDownload
-              </h1>
-              <p className="truncate text-[11px] text-zinc-400">
-                Direct HTTP(S) downloads
-              </p>
-            </div>
+    <div
+      className="surface-app flex h-screen flex-col overflow-hidden text-zinc-100"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <header className="window-app-header relative shrink-0 border-b border-white/[0.07] surface-app">
+        <div aria-hidden="true" className="window-drag-region absolute left-0 top-0" />
+        <div className="window-app-header-content relative z-10 flex h-14 items-center gap-3 px-4">
+          <img
+            src={appLogo}
+            alt=""
+            aria-hidden="true"
+            className="h-9 w-9 shrink-0 rounded-[10px] border border-white/10"
+          />
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-50">
+              DonDownload
+            </h1>
+            <p className="truncate text-[10.5px] text-zinc-500">
+              Downloads &amp; media
+            </p>
           </div>
 
-          <nav
-            aria-label="Sections"
-            className="order-last grid w-full grid-cols-4 gap-0.5 rounded-xl border border-white/10 bg-white/[0.02] p-0.5 sm:order-none sm:mx-auto sm:flex sm:w-auto"
-          >
-            {PAGES.map((entry) => {
-              const active = entry.id === page
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => setPage(entry.id)}
-                  aria-current={active ? 'page' : undefined}
-                  className={`min-h-8 rounded-lg px-1.5 py-1.5 text-[11px] font-medium transition sm:px-3 sm:text-xs ${
-                    active
-                      ? 'bg-emerald-400/10 text-emerald-200 ring-1 ring-inset ring-emerald-400/25'
-                      : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
-                  }`}
-                >
-                  {entry.label}
-                </button>
-              )
-            })}
-          </nav>
-
-          <div
-            role="status"
-            title={runtimeLabel(aria2)}
-            className="flex shrink-0 items-center gap-2 text-[11px] text-zinc-400"
-          >
-            <span
-              aria-hidden="true"
-              className={`h-1.5 w-1.5 rounded-full ${
-                isReady
-                  ? 'bg-emerald-400'
-                  : aria2?.status === 'starting' || !aria2
-                    ? 'animate-pulse bg-amber-400'
-                    : 'bg-red-400'
-              }`}
-            />
-            <span className="hidden sm:inline">{runtimeLabel(aria2)}</span>
-            <span className="sm:hidden">{runtimeShortLabel(aria2)}</span>
+          <div className="ml-auto flex items-center gap-3">
+            <div
+              role="status"
+              title={runtimeLabel(aria2)}
+              className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-2.5 py-1 text-[10px] text-zinc-400"
+            >
+              <span
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 rounded-full ${
+                  isReady
+                    ? 'bg-emerald-400'
+                    : aria2?.status === 'starting' || !aria2
+                      ? 'animate-pulse bg-amber-400'
+                      : 'bg-red-400'
+                }`}
+              />
+              <span className="hidden sm:inline">{runtimeLabel(aria2)}</span>
+              <span className="sm:hidden">
+                {isReady ? 'Ready' : aria2 ? 'Offline' : 'Connecting'}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[720px] px-4 pb-10 pt-4 sm:px-5">
-        {banner ? (
-          <ErrorBanner banner={banner} onDismiss={() => setBanner(null)} />
-        ) : null}
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          page={page}
+          category={category}
+          status={statusFilter}
+          categoryCounts={categoryCounts}
+          statusCounts={statusCounts}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+          onSelectCategory={(next) => {
+            setPage('library')
+            setCategory(next)
+          }}
+          onSelectStatus={(next) => {
+            setPage('library')
+            setStatusFilter(next)
+          }}
+          onSelectPage={(next) => setPage(next)}
+        />
 
-        {page === 'downloads' ? (
-          <div className="space-y-3">
-            <QuickAdd disabled={adding || snapshot === null} onAdd={handleAdd} />
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col px-3 pb-0 pt-3 sm:px-4">
+          {banner ? (
+            <ErrorBanner banner={banner} onDismiss={() => setBanner(null)} />
+          ) : null}
 
-            {aria2 ? (
-              <RuntimeNotice
-                aria2={aria2}
-                restarting={restarting}
-                onRetry={() => {
-                  void handleRestart()
-                }}
+          {page === 'library' ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <Toolbar
+                query={query}
+                onQueryChange={setQuery}
+                sortKey={sortKey}
+                sortDirection={sortDirection}
+                onSortKeyChange={setSortKey}
+                onToggleSortDirection={() =>
+                  setSortDirection((direction) =>
+                    direction === 'asc' ? 'desc' : 'asc'
+                  )
+                }
+                runningCount={activeDownloadCount}
+                speedBps={aggregateSpeed}
+                completedCount={completedCount}
+                canPauseAll={allRows.some(canPauseRow)}
+                canResumeAll={allRows.some(canResumeRow)}
+                onAdd={() => openAddDialog('direct')}
+                onPauseAll={pauseAll}
+                onResumeAll={resumeAll}
+                onClearCompleted={clearCompleted}
               />
-            ) : null}
 
-            <section aria-labelledby="downloads-heading">
-              <div className="mb-2 flex items-baseline justify-between gap-3">
-                <h2
-                  id="downloads-heading"
-                  className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
-                >
-                  Downloads
-                </h2>
-                {downloads.length > 0 ? (
-                  <span className="text-[11px] tabular-nums text-zinc-500">
-                    {activeCount > 0 ? (
-                      <span className="text-emerald-300">
-                        {activeCount} active
-                      </span>
-                    ) : null}
-                    {activeCount > 0 ? ' · ' : null}
-                    {downloads.length}{' '}
-                    {downloads.length === 1 ? 'item' : 'items'}
+              {visibleSelection.length > 1 ? (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-2.5 py-1.5">
+                  <span className="mr-1 text-[11px] font-medium text-emerald-200">
+                    {visibleSelection.length} selected
                   </span>
-                ) : null}
-              </div>
+                  <BulkButton
+                    label="Pause"
+                    disabled={!visibleSelection.some(canPauseRow)}
+                    onClick={() =>
+                      void runPlan(planRowAction('pause', visibleSelection))
+                    }
+                  />
+                  <BulkButton
+                    label="Resume"
+                    disabled={!visibleSelection.some(canResumeRow)}
+                    onClick={() =>
+                      void runPlan(planRowAction('resume', visibleSelection))
+                    }
+                  />
+                  <BulkButton
+                    label="Retry"
+                    disabled={!visibleSelection.some(canRetryRow)}
+                    onClick={() =>
+                      void runPlan(planRowAction('retry', visibleSelection))
+                    }
+                  />
+                  <BulkButton
+                    label="Remove"
+                    danger
+                    disabled={false}
+                    onClick={() => requestRemove(visibleSelection)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSelection(EMPTY_SELECTION)}
+                    className="ml-auto text-[10px] text-emerald-200/70 transition hover:text-emerald-100"
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              ) : null}
 
-              {downloads.length === 0 ? (
-                <EmptyState />
-              ) : (
-                <div className="space-y-2">
-                  {downloads.map((item: DownloadItem) => (
-                    <DownloadCard
-                      key={item.id}
-                      item={item}
-                      busy={pendingId === item.id}
-                      onPause={() => {
-                        void runItemAction(item.id, () =>
-                          window.donDownload.pauseDownload(item.id)
-                        )
-                      }}
-                      onResume={() => {
-                        void runItemAction(item.id, () =>
-                          window.donDownload.resumeDownload(item.id)
-                        )
-                      }}
-                      onStartNow={() => {
-                        void runItemAction(item.id, () =>
-                          window.donDownload.startDownloadNow(item.id)
-                        )
-                      }}
+              {aria2 && !isReady ? (
+                <div className="pb-3">
+                  <RuntimeNotice
+                    aria2={aria2}
+                    restarting={restarting}
+                    onRetry={() => {
+                      void handleRestart()
+                    }}
+                  />
+                </div>
+              ) : null}
+
+              <DownloadTable
+                rows={visibleRows}
+                selection={selection}
+                focusedKey={focusedKey}
+                sortKey={sortKey}
+                sortDirection={sortDirection}
+                emptyState={
+                  <LibraryEmptyState
+                    filtersActive={filtersActive}
+                    onAdd={() => openAddDialog('direct')}
+                    onClearFilters={() => {
+                      setQuery('')
+                      setCategory('all')
+                      setStatusFilter('all')
+                    }}
+                  />
+                }
+                onSort={(key) => {
+                  if (key === sortKey) {
+                    setSortDirection((direction) =>
+                      direction === 'asc' ? 'desc' : 'asc'
+                    )
+                  } else {
+                    setSortKey(key)
+                    setSortDirection(key === 'name' ? 'asc' : 'desc')
+                  }
+                }}
+                onRowClick={handleRowClick}
+                onToggleRow={handleToggleRow}
+                onSelectAll={handleSelectAll}
+                onFocusRow={(row) => setFocusedKey(row.key)}
+                onOpenRow={openRow}
+                onContextMenu={handleContextMenu}
+                onKeyDown={handleTableKeyDown}
+              />
+
+              {showDetails && singleSelected ? (
+                <DetailsPane
+                  row={singleSelected}
+                  onClose={() => setDetailsClosedFor(singleSelected.key)}
+                  onOpen={openRow}
+                  onShowInFolder={showRowInFolder}
+                />
+              ) : null}
+
+              <div className="flex shrink-0 items-center justify-between gap-3 px-1 py-2 text-[10px] text-zinc-600">
+                <span className="truncate">
+                  Double-click to open · Right-click for actions · Ctrl/Shift-click
+                  to select
+                </span>
+                <span className="hidden shrink-0 sm:inline">
+                  {formatSpeed(aggregateSpeed)} total · history only, files stay on
+                  disk
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {page === 'batches' ? (
+            <div className="min-h-0 flex-1 overflow-y-auto pb-8">
+              <div className="mx-auto w-full max-w-3xl">
+                {aria2 ? (
+                  <div className="mb-3">
+                    <RuntimeNotice
+                      aria2={aria2}
+                      restarting={restarting}
                       onRetry={() => {
-                        void runItemAction(item.id, () =>
-                          window.donDownload.retryDownload(item.id)
-                        )
-                      }}
-                      onRemove={() => {
-                        void runItemAction(item.id, () =>
-                          window.donDownload.removeDownload(item.id)
-                        )
-                      }}
-                      onShowInFolder={() => {
-                        void handleShowInFolder(item.id)
+                        void handleRestart()
                       }}
                     />
-                  ))}
-                </div>
-              )}
-            </section>
+                  </div>
+                ) : null}
+                <BatchSection />
+              </div>
+            </div>
+          ) : null}
+
+          {page === 'settings' ? (
+            <div className="min-h-0 flex-1 overflow-y-auto pb-8">
+              <div className="mx-auto w-full max-w-3xl">
+                <SettingsSection />
+              </div>
+            </div>
+          ) : null}
+        </main>
+      </div>
+
+      {addRequest ? (
+        <AddDialog
+          key={addRequest.nonce}
+          tab={addRequest.tab}
+          initialUrl={addRequest.url}
+          busy={adding}
+          onTabChange={(tab) =>
+            setAddRequest((current) => (current ? { ...current, tab } : current))
+          }
+          onClose={() => setAddRequest(null)}
+          onAdd={handleAdd}
+          onAnalyze={handleAnalyzeMedia}
+          onQueue={handleQueueMedia}
+        />
+      ) : null}
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          actions={menuActions}
+          onSelect={handleContextAction}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {confirm ? (
+        <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      ) : null}
+
+      {dragActive ? (
+        <div className="pointer-events-none fixed inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-400/70 bg-emerald-400/[0.08] backdrop-blur-[1px]">
+          <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-center">
+            <p className="text-sm font-semibold text-emerald-200">
+              Drop a link to add
+            </p>
+            <p className="mt-0.5 text-[11px] text-emerald-200/70">
+              Media page URLs open the analyzer. Other links open Quick Add.
+            </p>
           </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        {page === 'media' ? <MediaSection /> : null}
+      {toast ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-white/10 bg-[var(--surface-card)] px-3 py-1.5 text-[11px] text-zinc-200 shadow-xl shadow-black/50"
+        >
+          {toast}
+        </div>
+      ) : null}
 
-        {page === 'batches' ? (
-          <div className="space-y-3">
-            {aria2 ? (
-              <RuntimeNotice
-                aria2={aria2}
-                restarting={restarting}
-                onRetry={() => {
-                  void handleRestart()
-                }}
-              />
-            ) : null}
-            <BatchSection />
-          </div>
-        ) : null}
-
-        {page === 'settings' ? <SettingsSection /> : null}
-
-        <footer className="mt-8 border-t border-white/5 pt-3 text-[10px] leading-5 text-zinc-400">
-          Files are saved to your Downloads folder under DonDownload. History
-          stays on this device until you remove it.
-        </footer>
-      </main>
+      {adding ? (
+        <span role="status" className="sr-only">
+          Adding download…
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -406,21 +972,77 @@ function ErrorBanner({
   )
 }
 
-function EmptyState(): JSX.Element {
+function BulkButton({
+  label,
+  disabled,
+  danger = false,
+  onClick
+}: {
+  label: string
+  disabled: boolean
+  danger?: boolean
+  onClick: () => void
+}): JSX.Element {
   return (
-    <div className="surface-inset rounded-xl border border-dashed border-white/10 px-6 py-7 text-center">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`h-7 rounded-md border px-2 text-[10.5px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+        danger
+          ? 'border-red-400/25 text-red-300 hover:bg-red-400/10'
+          : 'border-white/10 text-zinc-300 hover:bg-white/5 hover:text-zinc-100'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function LibraryEmptyState({
+  filtersActive,
+  onAdd,
+  onClearFilters
+}: {
+  filtersActive: boolean
+  onAdd: () => void
+  onClearFilters: () => void
+}): JSX.Element {
+  return (
+    <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-6 py-10 text-center">
       <div
         aria-hidden="true"
-        className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
+        className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-zinc-500"
       >
-        ↓
+        <Icon name={filtersActive ? 'search' : 'download'} size={22} />
       </div>
-      <p className="mt-2.5 text-sm font-medium text-zinc-300">
-        No downloads yet
+      <p className="mt-3 text-sm font-medium text-zinc-300">
+        {filtersActive ? 'No matching downloads' : 'No downloads yet'}
       </p>
-      <p className="mt-1 text-xs text-zinc-500">
-        Paste a direct HTTP(S) link above to start.
+      <p className="mt-1 max-w-sm text-xs leading-5 text-zinc-500">
+        {filtersActive
+          ? 'Try a different search, category or status filter.'
+          : 'Add a direct HTTP(S) link or analyze a media page to get started. You can also drop a link anywhere on this window.'}
       </p>
+      <div className="mt-4 flex items-center gap-2">
+        {filtersActive ? (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            className="h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-300 transition hover:bg-white/5"
+          >
+            Clear filters
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onAdd}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-400 px-3 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+        >
+          <Icon name="plus" size={13} strokeWidth={2.2} />
+          Add download
+        </button>
+      </div>
     </div>
   )
 }
