@@ -2245,7 +2245,7 @@ async function main() {
             const timer = setInterval(() => {
               const text = status ? status.textContent : ''
               const elapsed = performance.now() - started
-              if (text === 'Added to DonDownload') {
+              if (text && text.indexOf('Added to DonDownload') === 0) {
                 clearInterval(timer)
                 resolve({ ok: true, latencyMs: Math.round(elapsed), status: text })
               } else if (text && text.indexOf('Adding ') !== 0) {
