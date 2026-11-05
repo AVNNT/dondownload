@@ -1,7 +1,7 @@
 # DonDownload 10/10 mission checkpoint
 
-Updated: 2026-11-05. Latest feature commit: `4687306`; recovery fix is in
-progress. No push or release.
+Updated: 2026-11-05. Latest feature commit: `4687306`; recovery audit changes
+are ready for commit. No push or release.
 
 ## DONE
 
@@ -21,11 +21,12 @@ progress. No push or release.
 - Recovery no longer marks an in-flight GID interrupted unless a ready aria2
   client explicitly reports that GID missing. Service unavailability and
   transient status RPC errors preserve the record and partial progress.
+- A GID lost during runtime polling now becomes `interrupted`, not `error`; this
+  preserves the existing retry budget and partial-file recovery semantics.
 
 ## IN PROGRESS
 
-- Final integration audit: check all checkpoint docs/status and commit history;
-  confirm no uncommitted implementation remains and record any final gaps.
+- Commit the recovery audit and perform the final status/history audit.
 
 ## DEFERRED / UNSUPPORTED
 
@@ -44,6 +45,7 @@ progress. No push or release.
 
 ## NEXT ACTION
 
-Focused recovery verification: missing-GID records still become interrupted;
-service-unavailable and transient-RPC cases preserve active status, GID and
-progress. Final action: run status/diff audit and commit this recovery fix.
+Focused recovery verification: all five manager-recovery tests passed, covering
+runtime GID loss without retry consumption, confirmed startup GID loss, aria2
+unavailability and transient RPC failure preservation, and tracked GID recovery.
+Then check the committed tree and report remaining platform gaps.

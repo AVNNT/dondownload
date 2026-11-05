@@ -121,6 +121,25 @@ afterEach(async () => {
 })
 
 describe('DownloadManager startup recovery', () => {
+  it('marks a runtime-lost GID interrupted without consuming an attempt', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const record = sample({ filename: 'runtime-lost.bin', status: 'active', attempts: 2 })
+    database.save({ record, explicitFilename: null })
+    const manager = createManager(database)
+
+    await manager.refreshPolicy()
+
+    expect(manager.getSnapshot().downloads[0]).toMatchObject({
+      status: 'interrupted',
+      attempts: 2,
+      errorMessage: INTERRUPTED_MESSAGE,
+      completedBytes: record.completedBytes
+    })
+    expect(database.loadAll()[0]?.record.status).toBe('interrupted')
+    expect(database.loadAll()[0]?.record.attempts).toBe(2)
+  })
+
   it('preserves in-flight records when aria2 is unavailable or its status lookup fails transiently', async () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)

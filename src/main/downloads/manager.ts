@@ -1372,10 +1372,13 @@ export class DownloadManager {
               /not found/i.test(error.message)
             ) {
               this.updateRecord(record, {
-                status: 'error',
+                // A vanished aria2 GID is a stopped transfer, not a failed
+                // attempt. Keep the partial file/retry budget and expose the
+                // explicit interrupted recovery action to the user.
+                status: 'interrupted',
                 speedBps: 0,
                 etaSeconds: null,
-                errorMessage: 'aria2 is no longer tracking this download.'
+                errorMessage: INTERRUPTED_MESSAGE
               })
               this.setBlockReason(record, null)
               this.persistNow(record)
