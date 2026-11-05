@@ -136,6 +136,53 @@ describe('media public schema', () => {
     expect(unavailable.sizeIsEstimate).toBe(false)
   })
 
+  it('accepts only server-advertised output containers and queue choices', () => {
+    const option = parseMediaFormatOption(
+      videoOption({
+        outputFormats: ['auto', 'mp4', 'mkv'],
+        outputSizes: {
+          auto: { bytes: 1_000, isEstimate: true },
+          mp4: { bytes: 900, isEstimate: true }
+        },
+        formatIds: ['137', '140'],
+        hdr: true
+      })
+    )
+    expect(option.outputFormats).toEqual(['auto', 'mp4', 'mkv'])
+    expect(option.outputSizes?.mp4).toEqual({ bytes: 900, isEstimate: true })
+    expect(option.formatIds).toEqual(['137', '140'])
+    expect(option.hdr).toBe(true)
+
+    expect(() =>
+      parseMediaFormatOption(videoOption({ outputFormats: ['mp4', 'mp4'] }))
+    ).toThrow(/output formats/)
+    expect(() =>
+      parseMediaFormatOption(videoOption({ outputFormats: ['avi'] }))
+    ).toThrow(/output formats/)
+    expect(() =>
+      parseMediaFormatOption(videoOption({ outputFormats: [] }))
+    ).toThrow(/output formats/)
+
+    expect(
+      parseMediaQueueInput({
+        analysisId: ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        outputFormat: 'webm'
+      })
+    ).toEqual({
+      analysisId: ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID,
+      outputFormat: 'webm'
+    })
+    expect(() =>
+      parseMediaQueueInput({
+        analysisId: ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        outputFormat: 'avi'
+      })
+    ).toThrow(/output format/)
+  })
+
   it('parses an analysis and enforces opaque best-option references', () => {
     const parsed = parseMediaAnalysis(analysis())
 

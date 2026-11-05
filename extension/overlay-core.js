@@ -181,6 +181,7 @@
   }
 
   var OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
+  var MEDIA_OUTPUT_FORMATS = ['auto', 'mp4', 'mkv', 'webm']
 
   function isNonEmptyText(value, maximum) {
     return (
@@ -212,6 +213,55 @@
     }
     if (!isNonEmptyText(option.label, 240)) return null
     if (!isNonEmptyText(option.container, 32)) return null
+    var outputFormats
+    if (Array.isArray(option.outputFormats) && option.outputFormats.length > 0) {
+      outputFormats = []
+      for (var outputIndex = 0; outputIndex < option.outputFormats.length; outputIndex += 1) {
+        var outputFormat = option.outputFormats[outputIndex]
+        if (
+          MEDIA_OUTPUT_FORMATS.indexOf(outputFormat) === -1 ||
+          outputFormats.indexOf(outputFormat) !== -1
+        ) {
+          outputFormats = undefined
+          break
+        }
+        outputFormats.push(outputFormat)
+      }
+    }
+    var formatIds
+    if (Array.isArray(option.formatIds) && option.formatIds.length >= 1 && option.formatIds.length <= 2) {
+      formatIds = option.formatIds.slice()
+      for (var formatIdIndex = 0; formatIdIndex < formatIds.length; formatIdIndex += 1) {
+        if (typeof formatIds[formatIdIndex] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(formatIds[formatIdIndex])) {
+          formatIds = undefined
+          break
+        }
+      }
+    }
+    var outputSizes
+    if (option.outputSizes && typeof option.outputSizes === 'object' && !Array.isArray(option.outputSizes)) {
+      outputSizes = Object.create(null)
+      var sizeKeys = Object.keys(option.outputSizes)
+      if (sizeKeys.length > 4) outputSizes = undefined
+      for (var sizeIndex = 0; outputSizes && sizeIndex < sizeKeys.length; sizeIndex += 1) {
+        var formatKey = sizeKeys[sizeIndex]
+        var rawSize = option.outputSizes[formatKey]
+        if (
+          MEDIA_OUTPUT_FORMATS.indexOf(formatKey) === -1 ||
+          !rawSize ||
+          typeof rawSize !== 'object' ||
+          (rawSize.bytes !== null && nullableInteger(rawSize.bytes, 0, Number.MAX_SAFE_INTEGER) === null) ||
+          typeof rawSize.isEstimate !== 'boolean'
+        ) {
+          outputSizes = undefined
+          break
+        }
+        outputSizes[formatKey] = {
+          bytes: rawSize.bytes === null ? null : rawSize.bytes,
+          isEstimate: rawSize.isEstimate
+        }
+      }
+    }
     return {
       kind: option.kind,
       optionId: option.optionId,
@@ -224,6 +274,7 @@
       audioCodec: isNonEmptyText(option.audioCodec, 64) ? option.audioCodec : null,
       hasAudio: option.hasAudio === true,
       requiresMerge: option.requiresMerge === true,
+      hdr: option.hdr === true,
       filesizeBytes: nullableInteger(option.filesizeBytes, 0, Number.MAX_SAFE_INTEGER),
       // Display-only metadata already reported by yt-dlp. `estimatedBytes` is
       // the best available size (exact or approximate); it is never computed
@@ -233,7 +284,10 @@
         0,
         Number.MAX_SAFE_INTEGER
       ),
-      sizeIsEstimate: option.sizeIsEstimate === true
+      sizeIsEstimate: option.sizeIsEstimate === true,
+      outputFormats: outputFormats,
+      outputSizes: outputSizes,
+      formatIds: formatIds
     }
   }
 
@@ -292,6 +346,86 @@
     }
   }
 
+  function optionById(view, optionId) {
+    if (!view || typeof optionId !== 'string') return null
+    for (var index = 0; index < view.options.length; index += 1) {
+      if (view.options[index].optionId === optionId) return view.options[index]
+    }
+    return null
+  }
+
+  /**
+   * Same quality model as the desktop Media tab: every verified height,
+   * highest first, plus the best audio-only option. There is no 1080p ceiling.
+   */
+  function mediaQualityChoices(view) {
+    if (!view || !Array.isArray(view.videoOptions)) return []
+    var best = optionById(view, view.bestVideoOptionId)
+    var byHeight = Object.create(null)
+    var heights = []
+    for (var index = 0; index < view.videoOptions.length; index += 1) {
+      var option = view.videoOptions[index]
+      if (option.hasAudio !== true || typeof option.height !== 'number') continue
+      if (byHeight[option.height]) continue
+      byHeight[option.height] = option
+      heights.push(option.height)
+    }
+    if (
+      best &&
+      typeof best.height === 'number' &&
+      byHeight[best.height]
+    ) {
+      byHeight[best.height] = best
+    }
+    heights.sort(function (left, right) {
+      return right - left
+    })
+
+    var choices = []
+    for (var heightIndex = 0; heightIndex < heights.length; heightIndex += 1) {
+      var height = heights[heightIndex]
+      var heightOption = byHeight[height]
+      var isBest = best ? heightOption.optionId === best.optionId : false
+      choices.push({
+        option: heightOption,
+        label: (isBest ? 'Best available · ' : '') + height + 'p',
+        best: isBest
+      })
+    }
+    if (best && typeof best.height !== 'number') {
+      choices.unshift({ option: best, label: 'Best', best: true })
+    }
+    var audio = optionById(view, view.bestAudioOptionId)
+    if (audio && audio.kind === 'audio') {
+      choices.push({ option: audio, label: 'Audio only', best: false })
+    }
+    return choices
+  }
+
+  function outputFormatsForOption(option) {
+    if (
+      option &&
+      Array.isArray(option.outputFormats) &&
+      option.outputFormats.length > 0
+    ) {
+      return option.outputFormats.slice()
+    }
+    // Older payloads have no verified pairing/FFmpeg list; keep only Auto.
+    return ['auto']
+  }
+
+  function normalizeOutputFormat(option, requested) {
+    var formats = outputFormatsForOption(option)
+    return formats.indexOf(requested) === -1 ? 'auto' : requested
+  }
+
+  function mediaOutputFormatLabel(format) {
+    if (format === 'mp4') return 'MP4'
+    if (format === 'mkv') return 'MKV'
+    if (format === 'webm') return 'WebM'
+    return 'Auto (recommended)'
+  }
+
   function formatBytes(value) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
       return ''
@@ -317,21 +451,27 @@
   }
 
   /** Best available size: exact, approximate, or summed merged streams. */
-  function mediaSizeBytes(option) {
+  function mediaSize(option, outputFormat) {
     if (!option || typeof option !== 'object') return null
+    var outputSize =
+      outputFormat && option.outputSizes && option.outputSizes[outputFormat]
+    if (outputSize) {
+      return { bytes: outputSize.bytes, isEstimate: outputSize.isEstimate }
+    }
     if (typeof option.estimatedBytes === 'number' && option.estimatedBytes > 0) {
-      return option.estimatedBytes
+      return { bytes: option.estimatedBytes, isEstimate: option.sizeIsEstimate === true }
     }
     if (typeof option.filesizeBytes === 'number' && option.filesizeBytes > 0) {
-      return option.filesizeBytes
+      return { bytes: option.filesizeBytes, isEstimate: false }
     }
-    return null
+    return { bytes: null, isEstimate: false }
   }
 
   /** Visible size label for one verified option, including unknown sizes. */
-  function describeMediaSize(option) {
+  function describeMediaSize(option, outputFormat) {
     if (!option || typeof option !== 'object') return MEDIA_SIZE_UNKNOWN
-    return formatMediaSize(mediaSizeBytes(option), option.sizeIsEstimate === true)
+    var size = mediaSize(option, outputFormat)
+    return formatMediaSize(size.bytes, size.isEstimate)
   }
 
   /** Format details without the size, so the UI can show the size separately. */
@@ -346,8 +486,12 @@
     if (typeof option.fps === 'number' && option.fps > 0) {
       parts.push(Math.round(option.fps) + ' fps')
     }
+    if (option.hdr === true) parts.push('HDR')
     if (option.kind === 'video' && option.hasAudio === true) parts.push('with audio')
     if (option.requiresMerge === true) parts.push('merged')
+    if (Array.isArray(option.formatIds) && option.formatIds.length > 0) {
+      parts.push('yt-dlp ' + option.formatIds.join('+'))
+    }
     return parts.join(' · ')
   }
 
@@ -398,6 +542,8 @@
       MEDIA_ANALYSIS_NOT_FOUND: 'Analyze this page again, then pick an option.',
       MEDIA_ANALYSIS_MISMATCH: 'Analyze this page again, then pick an option.',
       MEDIA_OPTION_INVALID: 'Analyze this page again, then pick an option.',
+      MEDIA_OUTPUT_FORMAT_UNSUPPORTED:
+        'This stream cannot be remuxed to that container without transcoding. Choose Auto or another available format.',
       MEDIA_DUPLICATE_JOB: 'This option is already queued in DonDownload.',
       MEDIA_TOOL_UNAVAILABLE:
         'Open DonDownload and check that yt-dlp is available, then try again.',
@@ -446,7 +592,7 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'Choose Analyze to ask DonDownload about this page. Only the page address from the browser is used; the video source, cookies and player state are never read. Reported file sizes come from yt-dlp metadata and may be estimates or unknown.',
+        'Open this capture panel to ask DonDownload about the page. Only the page address from the browser is used; the video source, cookies and player state are never read. Reported file sizes come from yt-dlp metadata and may be estimates or unknown.',
       actionLabel: 'Analyze this page',
       analyzingLabel: 'Analyzing…',
       optionsHint:
@@ -489,6 +635,10 @@
     isOverlayShortcut: isOverlayShortcut,
     initialMediaState: initialMediaState,
     mediaView: mediaView,
+    mediaQualityChoices: mediaQualityChoices,
+    outputFormatsForOption: outputFormatsForOption,
+    normalizeOutputFormat: normalizeOutputFormat,
+    mediaOutputFormatLabel: mediaOutputFormatLabel,
     formatMediaSize: formatMediaSize,
     describeMediaDetails: describeMediaDetails,
     describeMediaSize: describeMediaSize,

@@ -631,6 +631,8 @@ interface Harness {
   qualityFieldset: FakeNode
   qualityList: FakeNode
   advancedQualityList: FakeNode
+  outputFormatControl: FakeNode
+  outputFormatSelect: FakeNode
   queueSelectedButton: FakeNode
   disableButton: FakeNode
   status: FakeNode
@@ -833,6 +835,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const qualityFieldset = findByClass('qualities')
   const qualityList = findByClass('quality-list')
   const advancedQualityList = findByClass('advanced-quality-list')
+  const outputFormatControl = findByClass('output-format')
+  const outputFormatSelect = findByClass('output-format-select')
   const queueSelectedButton = findByClass('action secondary queue-selected')
   const disableButton = findByClass('disable')
   const status = findByClass('status')
@@ -848,6 +852,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
     !qualityFieldset ||
     !qualityList ||
     !advancedQualityList ||
+    !outputFormatControl ||
+    !outputFormatSelect ||
     !queueSelectedButton ||
     !disableButton ||
     !status
@@ -880,6 +886,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
     qualityFieldset,
     qualityList,
     advancedQualityList,
+    outputFormatControl,
+    outputFormatSelect,
     queueSelectedButton,
     disableButton,
     status,
@@ -1059,13 +1067,14 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(panelText).toMatch(/page address/i)
     expect(panelText).not.toMatch(/1080p|720p|4K|HLS|DASH/)
 
-    // Opening the panel is not an analysis. Only the explicit Analyze button
-    // may ask the background worker for media information.
+    // Opening the capture panel is the explicit user action that triggers
+    // exactly one analysis. Hovering only showed the button and never asked
+    // the background worker for media information.
     expect(
       harness.sentMessages.filter((message) =>
         String(message.type).startsWith('dondownload:media-')
       )
-    ).toEqual([])
+    ).toEqual([{ type: 'dondownload:media-analyze' }])
 
     const escape = pointerEvent(harness.panel, [harness.panel, harness.host], {
       key: 'Escape'
@@ -1211,7 +1220,7 @@ function clickQualityLabel(label: FakeNode): any {
 }
 
 describe('overlay media flow', () => {
-  it('analyzes only on the explicit button and renders verified response options', () => {
+  it('analyzes once when the capture panel opens and renders verified response options', () => {
     harness = createHarness({
       analyzeResponse: { ok: true, analysis: fakeAnalysis() },
       deferMediaResponses: true
@@ -1222,20 +1231,23 @@ describe('overlay media flow', () => {
       harness.sentMessages.filter((message) =>
         String(message.type).startsWith('dondownload:media-')
       )
-    ).toEqual([])
-
-    harness.analyzeButton.dispatch(
-      'click',
-      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
-    )
-
-    expect(harness.sentMessages).toContainEqual({
-      type: 'dondownload:media-analyze'
-    })
+    ).toEqual([{ type: 'dondownload:media-analyze' }])
     expect(harness.analyzeButton.disabled).toBe(true)
     expect(harness.panel.getAttribute('aria-busy')).toBe('true')
     expect(harness.status.textContent).toMatch(/Analyzing this page/)
     expect(harness.mediaResults.hidden).toBe(true)
+
+    // Reopening/clicking while the same analysis is in flight must not create
+    // a second request.
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+    expect(
+      harness.sentMessages.filter(
+        (message) => message.type === 'dondownload:media-analyze'
+      )
+    ).toHaveLength(1)
 
     harness.flushMediaResponses()
 
@@ -1299,6 +1311,98 @@ describe('overlay media flow', () => {
     expect(estimatedText).toContain('~7.81 KB estimated')
     expect(collectByClass(harness.advancedQualityList, 'quality-option')).toHaveLength(3)
     expect(JSON.stringify(collectText(harness.advancedQualityList))).toContain('H.264')
+  })
+
+  it('offers every verified height and only compatible output formats', () => {
+    const analysis = fakeAnalysis()
+    analysis.options = [
+      {
+        kind: 'video',
+        optionId: 'option_video_2160',
+        label: '2160p MP4 - H.264 + AAC',
+        container: 'mp4',
+        width: 3840,
+        height: 2160,
+        fps: 30,
+        videoCodec: 'avc1',
+        audioCodec: 'mp4a',
+        hasAudio: true,
+        requiresMerge: true,
+        filesizeBytes: null,
+        estimatedBytes: 2_000,
+        sizeIsEstimate: true,
+        outputFormats: ['auto', 'mp4', 'mkv', 'webm']
+      },
+      {
+        kind: 'video',
+        optionId: 'option_video_1080',
+        label: '1080p MP4 - H.264 + AAC',
+        container: 'mp4',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        videoCodec: 'avc1',
+        audioCodec: 'mp4a',
+        hasAudio: true,
+        requiresMerge: true,
+        filesizeBytes: null,
+        estimatedBytes: 1_000,
+        sizeIsEstimate: true,
+        outputFormats: ['auto', 'mkv']
+      },
+      fakeAnalysis().options[2]
+    ]
+    analysis.bestVideoOptionId = 'option_video_2160'
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis },
+      queueResponse: {
+        ok: true,
+        job: fakeJob('option_video_2160', '2160p MP4 - H.264 + AAC')
+      }
+    })
+    openPanel(harness)
+
+    const labels = collectByClass(harness.qualityList, 'quality-option')
+    expect(labels).toHaveLength(3)
+    const rendered = labels.map((label) => JSON.stringify(collectText(label))).join(' ')
+    expect(rendered).toContain('2160p')
+    expect(rendered).toContain('1080p')
+    expect(rendered).toContain('Audio only')
+
+    // Best is the default selection and supports every advertised container.
+    expect(collectByClass(harness.qualityList, 'quality-input')[0]?.checked).toBe(true)
+    harness.outputFormatSelect.value = 'webm'
+    harness.outputFormatSelect.dispatch(
+      'change',
+      pointerEvent(harness.outputFormatSelect, [
+        harness.outputFormatSelect,
+        harness.panel
+      ])
+    )
+    harness.queueSelectedButton.dispatch(
+      'click',
+      pointerEvent(harness.queueSelectedButton, [
+        harness.queueSelectedButton,
+        harness.panel
+      ])
+    )
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-queue',
+      analysisId: ANALYSIS_ID,
+      optionId: 'option_video_2160',
+      outputFormat: 'webm'
+    })
+
+    // A lower height only supports Auto/MKV, so WebM must be disabled rather
+    // than silently substituted.
+    const second = labels[1]
+    if (!second) throw new Error('expected a second quality option')
+    clickQualityLabel(second)
+    expect(harness.outputFormatSelect.value).toBe('auto')
+    const webm = harness.outputFormatSelect.children.find(
+      (child) => child.value === 'webm'
+    )
+    expect(webm?.disabled).toBe(true)
   })
 
   it('states Size unknown for a video option without reported metadata', () => {
@@ -1382,7 +1486,8 @@ describe('overlay media flow', () => {
     expect(harness.sentMessages).toContainEqual({
       type: 'dondownload:media-queue',
       analysisId: ANALYSIS_ID,
-      optionId: BEST_VIDEO_ID
+      optionId: BEST_VIDEO_ID,
+      outputFormat: 'auto'
     })
     expect(harness.status.textContent).toBe('Queued: 1080p MP4 - H.264 + AAC')
     expect(harness.status.className).toBe('status success')
@@ -1410,7 +1515,8 @@ describe('overlay media flow', () => {
     expect(harness.sentMessages).toContainEqual({
       type: 'dondownload:media-queue',
       analysisId: ANALYSIS_ID,
-      optionId: BEST_AUDIO_ID
+      optionId: BEST_AUDIO_ID,
+      outputFormat: 'auto'
     })
     expect(harness.status.textContent).toBe('Queued: Audio only - Opus')
   })
@@ -1460,7 +1566,8 @@ describe('overlay media flow', () => {
     expect(harness.sentMessages).toContainEqual({
       type: 'dondownload:media-queue',
       analysisId: ANALYSIS_ID,
-      optionId: OTHER_VIDEO_ID
+      optionId: OTHER_VIDEO_ID,
+      outputFormat: 'auto'
     })
     expect(harness.status.textContent).toBe('Queued: 720p MP4 - H.264 + AAC')
   })

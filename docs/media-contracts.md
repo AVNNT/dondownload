@@ -22,20 +22,26 @@ unchanged.
 | `showMediaInFolder(jobId)` | `media:show-in-folder` | `ApiResult<null>` |
 | `onMediaSnapshotChanged(listener)` | `media:snapshot-changed` | unsubscribe function |
 
-`analyzeMedia` takes `{ url: string }`. `queueMedia` takes exactly
-`{ analysisId: string, optionId: string, force?: true }`; `force` is only for an
-explicit user "Download again" action.
+`analyzeMedia` takes `{ url: string }`. `queueMedia` takes
+`{ analysisId: string, optionId: string, force?: true, outputFormat?: "auto" | "mp4" | "mkv" | "webm" }`;
+`force` is only for an explicit user "Download again" action. Omitting
+`outputFormat` means `auto`, which uses the analysis's source-compatible
+pairing/container without transcoding.
 
 ### Public DTO guarantees
 
 - `MediaFormatOption`: `kind` (`video` | `audio`), opaque server-generated
   `optionId`, server-generated `label`, `container`, nullable `width`/`height`/
   `fps`, nullable `videoCodec`/`audioCodec`, `hasAudio`, `requiresMerge`, and
-  nullable `filesizeBytes`. Only a verified size is exposed; estimates stay
-  `null`.
+  nullable `filesizeBytes`; display estimates use `estimatedBytes` with
+  `sizeIsEstimate`. `outputFormats` advertises only containers producible
+  without transcoding, `outputSizes` provides a size per pairing when stream
+  selection changes, `formatIds` exposes the verified source IDs for advanced
+  display only, and `hdr` indicates source HDR metadata. The opaque `optionId`
+  remains the only identifier accepted for queueing.
 - `MediaAnalysis`: opaque `analysisId`, `title`, nullable `durationSeconds`,
-  verified `options`, nullable `bestVideoOptionId`, nullable
-  `bestAudioOptionId`, and `expiresAt` (Unix epoch ms). Best-option IDs must
+  nullable safe HTTPS `thumbnailUrl`, verified `options`, nullable
+  `bestVideoOptionId`, nullable `bestAudioOptionId`, and `expiresAt` (Unix epoch ms). Best-option IDs must
   reference an option of the correct kind.
 - `MediaJob`: `id` (server-generated opaque identifier; UUID v4 is the
   reference implementation), `analysisId`, `optionId`, `kind`, `label`,
@@ -63,7 +69,7 @@ Browser -> native-host envelopes (`type` is the operation):
 
 ```json
 { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
-{ "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true }
+{ "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv" }
 { "type": "media-status", "jobId": "f47ac10b-58cc-4372-a567-0e02b2c3d479" }
 { "type": "cancel-media", "jobId": "f47ac10b-58cc-4372-a567-0e02b2c3d479" }
 ```
@@ -73,7 +79,7 @@ Native host -> desktop loopback bodies and routes:
 | Route | Body | Success response |
 | --- | --- | --- |
 | `POST /analyze-media` | `{ "url": "https://..." }` | `{ "ok": true, "operation": "analyze-media", "analysis": MediaAnalysis }` |
-| `POST /queue-media` | `{ "analysisId": "...", "optionId": "...", "force": true? }` | `{ "ok": true, "operation": "queue-media", "job": MediaJob }` |
+| `POST /queue-media` | `{ "analysisId": "...", "optionId": "...", "force": true?, "outputFormat": "auto" \| "mp4" \| "mkv" \| "webm"? }` | `{ "ok": true, "operation": "queue-media", "job": MediaJob }` |
 | `POST /media-status` | `{ "jobId": "..." }` | `{ "ok": true, "operation": "media-status", "job": MediaJob }` |
 | `POST /cancel-media` | `{ "jobId": "..." }` | `{ "ok": true, "operation": "cancel-media", "job": MediaJob }` |
 
@@ -142,7 +148,10 @@ Exact statuses: `queued` | `analyzing` | `downloading` | `merging` | `complete` 
   DRM/CAPTCHA, accept arbitrary flags/commands, user-supplied format selectors,
   paths or output templates.
 - Format selection is by opaque `optionId` mapped server-side to a fresh
-  analysis, never by a raw yt-dlp format ID.
+  analysis. The display-only `formatIds` are never accepted as queue selectors.
+  `outputFormat` only selects among
+  the option's server-advertised containers; incompatible requests are rejected
+  and are never replaced by another container, quality or a transcode.
 - Error and log messages must not contain URLs, disk paths, tokens, cookies or
   request payloads.
 

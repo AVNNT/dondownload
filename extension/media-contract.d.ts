@@ -8,8 +8,10 @@ export const MAX_MEDIA_TITLE_LENGTH: number
 export const MAX_MEDIA_LABEL_LENGTH: number
 export const MAX_MEDIA_ERROR_LENGTH: number
 export const MAX_MEDIA_OPTIONS: number
+export const MEDIA_OUTPUT_FORMATS: ReadonlyArray<string>
 
 export function isOpaqueMediaId(value: unknown): boolean
+export function isMediaOutputFormat(value: unknown): boolean
 export function parseMediaFormatOption(value: unknown): MediaFormatOptionDto
 export function parseMediaAnalysis(value: unknown): MediaAnalysisDto
 export function parseMediaJob(value: unknown): MediaJobDto

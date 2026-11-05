@@ -740,6 +740,147 @@ describe('media engine format mapping', () => {
     expect(analysis.options.some((option) => option.height === 1080)).toBe(false)
   })
 
+  it('uses exact size, then approximation, then a safe bitrate-duration estimate', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        duration: 100,
+        formats: [
+          {
+            format_id: '4000',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 3840,
+            height: 2160,
+            vbr: 4_000
+          },
+          {
+            format_id: '2560',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 2560,
+            height: 1440,
+            tbr: 1_500
+          },
+          {
+            format_id: '137',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 1920,
+            height: 1080,
+            tbr: 800
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2',
+            abr: 128,
+            tbr: 128
+          },
+          {
+            format_id: '251',
+            ext: 'webm',
+            vcodec: 'none',
+            acodec: 'opus',
+            abr: 192,
+            filesize_approx: 2_400_000
+          },
+          {
+            format_id: '22',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a.40.2',
+            width: 1280,
+            height: 720,
+            tbr: 9_999_999,
+            filesize_approx: 900
+          },
+          {
+            format_id: '18',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a.40.2',
+            width: 640,
+            height: 360,
+            tbr: 9_999_999,
+            filesize: 500,
+            filesize_approx: 700
+          }
+        ]
+      })
+    })
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    expect(analysis.options.map((option) => option.height)).toEqual(
+      expect.arrayContaining([2160, 1440, 1080, 720, 360])
+    )
+    expect(analysis.options.find((option) => option.optionId === analysis.bestVideoOptionId)?.height).toBe(2160)
+
+    const fourK = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 2160
+    )
+    // vbr is kbps: 4,000 * 1,000 * 100 / 8, plus the reported audio estimate.
+    expect(fourK).toMatchObject({
+      estimatedBytes: 52_400_000,
+      sizeIsEstimate: true,
+      outputFormats: ['auto', 'mp4', 'mkv'],
+      formatIds: ['4000', '251'],
+      outputSizes: {
+        auto: { bytes: 52_400_000, isEstimate: true },
+        mp4: { bytes: 51_600_000, isEstimate: true }
+      }
+    })
+
+    const fourteenForty = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 1440
+    )
+    expect(fourteenForty?.estimatedBytes).toBe(21_150_000)
+    const merged = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 1080
+    )
+    // 1080 video: 800 kbps * 100 s / 8 = 10,000,000 bytes.
+    // Best audio: 192 kbps * 100 s / 8 = 2,400,000 bytes.
+    expect(merged).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 12_400_000,
+      outputSizes: {
+        mp4: { bytes: 11_600_000, isEstimate: true }
+      },
+      sizeIsEstimate: true,
+      requiresMerge: true
+    })
+
+    const approximate = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 720
+    )
+    expect(approximate).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 900,
+      sizeIsEstimate: true
+    })
+
+    const exact = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 360
+    )
+    expect(exact).toMatchObject({
+      filesizeBytes: 500,
+      estimatedBytes: 500,
+      sizeIsEstimate: false
+    })
+
+    const audio = analysis.options.find(
+      (option) => option.optionId === analysis.bestAudioOptionId
+    )
+    expect(audio).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 2_400_000,
+      sizeIsEstimate: true
+    })
+  })
+
   it('does not invent a merged display size when one stream size is missing', async () => {
     const harness = await makeHarness({
       analyzeJson: sampleInfo({
@@ -750,14 +891,17 @@ describe('media engine format mapping', () => {
             vcodec: 'avc1',
             acodec: 'none',
             width: 1920,
-            height: 1080
+            height: 1080,
+            tbr: 0,
+            vbr: 0
           },
           {
             format_id: '140',
             ext: 'm4a',
             vcodec: 'none',
             acodec: 'mp4a.40.2',
-            abr: 128,
+            abr: 0,
+            tbr: 0,
             filesize: 500
           }
         ]
@@ -1324,7 +1468,9 @@ describe('media engine subprocess arguments and progress', () => {
     const optionId = analysis.bestVideoOptionId as string
 
     const promise = harness.engine.download(
-      downloadRequest(analysis.analysisId, optionId, harness.downloadDir),
+      downloadRequest(analysis.analysisId, optionId, harness.downloadDir, {
+        outputFormat: 'mp4'
+      }),
       () => undefined
     )
     const failure = promise.then(
@@ -1518,7 +1664,28 @@ describe('media engine subprocess arguments and progress', () => {
   })
 
   it('aborts unknown-size transfers over the runtime cap and removes only the job output', async () => {
-    const harness = await makeHarness({ download: () => undefined })
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        duration: null,
+        formats: [
+          {
+            format_id: '137',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 1920,
+            height: 1080
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2'
+          }
+        ]
+      }),
+      download: () => undefined
+    })
     const analysis = await harness.engine.analyze(SOURCE_URL)
     const optionId = analysis.bestVideoOptionId as string
     const promise = harness.engine.download({
@@ -1539,7 +1706,28 @@ describe('media engine subprocess arguments and progress', () => {
   })
 
   it('refuses to mark an oversized merged final file complete', async () => {
-    const harness = await makeHarness({ download: () => undefined })
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        duration: null,
+        formats: [
+          {
+            format_id: '137',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 1920,
+            height: 1080
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2'
+          }
+        ]
+      }),
+      download: () => undefined
+    })
     const analysis = await harness.engine.analyze(SOURCE_URL)
     const optionId = analysis.bestVideoOptionId as string
     const promise = harness.engine.download({

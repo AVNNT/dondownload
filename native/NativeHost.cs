@@ -16,7 +16,7 @@ using System.Web.Script.Serialization;
 // Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
-//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true }
+//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv" }
 //   { "type": "media-status", "jobId": "..." }
 //   { "type": "cancel-media", "jobId": "..." }
 //
@@ -266,11 +266,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "analysisId", "optionId" },
-            new string[] { "force" }))
+            new string[] { "force", "outputFormat" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only queue-media messages containing type, analysisId, optionId and an optional force flag are accepted.");
+                "Only queue-media messages containing type, analysisId, optionId, an optional force flag and an optional output format are accepted.");
         }
 
         if (!IsOpaqueMediaId(message["analysisId"]))
@@ -293,12 +293,31 @@ internal static class NativeHost
             force = (bool)forceValue;
         }
 
+        string outputFormat = null;
+        if (message.ContainsKey("outputFormat"))
+        {
+            outputFormat = message["outputFormat"] as string;
+            if (outputFormat != "auto" &&
+                outputFormat != "mp4" &&
+                outputFormat != "mkv" &&
+                outputFormat != "webm")
+            {
+                return Error(
+                    "INVALID_MESSAGE",
+                    "The output format must be auto, mp4, mkv or webm.");
+            }
+        }
+
         Dictionary<string, object> body = new Dictionary<string, object>();
         body.Add("analysisId", (string)message["analysisId"]);
         body.Add("optionId", (string)message["optionId"]);
         if (force)
         {
             body.Add("force", true);
+        }
+        if (outputFormat != null)
+        {
+            body.Add("outputFormat", outputFormat);
         }
         return ForwardMedia(QueueMediaOperation, "/queue-media", body);
     }
@@ -703,7 +722,7 @@ internal static class NativeHost
                     "bestAudioOptionId",
                     "expiresAt"
                 },
-                new string[0]))
+                new string[] { "thumbnailUrl" }))
         {
             return false;
         }
@@ -712,6 +731,18 @@ internal static class NativeHost
             !IsSafeText(record["title"], 500))
         {
             return false;
+        }
+        if (record.ContainsKey("thumbnailUrl") && record["thumbnailUrl"] != null)
+        {
+            Uri thumbnail;
+            if (!Uri.TryCreate(record["thumbnailUrl"] as string, UriKind.Absolute, out thumbnail) ||
+                thumbnail.Scheme != Uri.UriSchemeHttps ||
+                !String.IsNullOrEmpty(thumbnail.UserInfo) ||
+                ((string)record["thumbnailUrl"]).Length > 2048 ||
+                String.IsNullOrEmpty(thumbnail.Host))
+            {
+                return false;
+            }
         }
 
         if (record["durationSeconds"] != null)
@@ -787,7 +818,7 @@ internal static class NativeHost
                     "requiresMerge",
                     "filesizeBytes"
                 },
-                new string[] { "estimatedBytes", "sizeIsEstimate" }))
+                new string[] { "estimatedBytes", "sizeIsEstimate", "outputFormats", "outputSizes", "formatIds", "hdr" }))
         {
             return false;
         }
@@ -824,6 +855,84 @@ internal static class NativeHost
             !(record["sizeIsEstimate"] is bool))
         {
             return false;
+        }
+        if (record.ContainsKey("hdr") && !(record["hdr"] is bool))
+        {
+            return false;
+        }
+        if (record.ContainsKey("outputFormats"))
+        {
+            object[] outputFormats = record["outputFormats"] as object[];
+            if (outputFormats == null ||
+                outputFormats.Length == 0 ||
+                outputFormats.Length > 4)
+            {
+                return false;
+            }
+            System.Collections.Generic.HashSet<string> seen =
+                new System.Collections.Generic.HashSet<string>();
+            foreach (object outputFormatValue in outputFormats)
+            {
+                string format = outputFormatValue as string;
+                if (format != "auto" &&
+                    format != "mp4" &&
+                    format != "mkv" &&
+                    format != "webm")
+                {
+                    return false;
+                }
+                if (!seen.Add(format))
+                {
+                    return false;
+                }
+            }
+        }
+        if (record.ContainsKey("formatIds"))
+        {
+            object[] formatIds = record["formatIds"] as object[];
+            if (formatIds == null || formatIds.Length < 1 || formatIds.Length > 2)
+            {
+                return false;
+            }
+            foreach (object formatIdValue in formatIds)
+            {
+                string formatId = formatIdValue as string;
+                if (formatId == null ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(
+                        formatId,
+                        "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"))
+                {
+                    return false;
+                }
+            }
+        }
+        if (record.ContainsKey("outputSizes"))
+        {
+            Dictionary<string, object> outputSizes =
+                record["outputSizes"] as Dictionary<string, object>;
+            if (outputSizes == null || outputSizes.Count > 4)
+            {
+                return false;
+            }
+            foreach (KeyValuePair<string, object> pair in outputSizes)
+            {
+                if (pair.Key != "auto" && pair.Key != "mp4" &&
+                    pair.Key != "mkv" && pair.Key != "webm")
+                {
+                    return false;
+                }
+                Dictionary<string, object> size =
+                    pair.Value as Dictionary<string, object>;
+                if (size == null ||
+                    !HasExactKeys(size,
+                        new string[] { "bytes", "isEstimate" },
+                        new string[0]) ||
+                    !ValidateNullableInteger(size["bytes"], 0, long.MaxValue) ||
+                    !(size["isEstimate"] is bool))
+                {
+                    return false;
+                }
+            }
         }
 
         if (record["fps"] != null)

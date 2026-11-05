@@ -27,11 +27,21 @@ function analysis(): Record<string, unknown> {
         audioCodec: 'mp4a',
         hasAudio: true,
         requiresMerge: true,
-        filesizeBytes: 10_000
+        filesizeBytes: 10_000,
+        estimatedBytes: 12_000,
+        sizeIsEstimate: true,
+        outputFormats: ['auto', 'mp4', 'mkv'],
+        outputSizes: {
+          auto: { bytes: 12_000, isEstimate: true },
+          mp4: { bytes: 11_000, isEstimate: true }
+        },
+        formatIds: ['137', '140'],
+        hdr: false
       }
     ],
     bestVideoOptionId: VIDEO_OPTION_ID,
     bestAudioOptionId: null,
+    thumbnailUrl: 'https://i.ytimg.com/vi/example/hqdefault.jpg',
     expiresAt: 1_800_000_000_000
   }
 }
@@ -142,7 +152,22 @@ describe('media native envelopes', () => {
 
     const result = await sendAnalyzeMedia('https://example.com/watch?v=1#x')
 
-    expect(result).toMatchObject({ ok: true, analysis: { title: 'Example media' } })
+    expect(result).toMatchObject({
+      ok: true,
+      analysis: {
+        title: 'Example media',
+        thumbnailUrl: 'https://i.ytimg.com/vi/example/hqdefault.jpg',
+        options: [
+          {
+            estimatedBytes: 12_000,
+            outputSizes: {
+              mp4: { bytes: 11_000, isEstimate: true }
+            },
+            formatIds: ['137', '140']
+          }
+        ]
+      }
+    })
     expect(fake.messages).toEqual([
       {
         host: NATIVE_HOST,

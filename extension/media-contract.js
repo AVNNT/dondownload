@@ -8,6 +8,12 @@ export const MAX_MEDIA_TITLE_LENGTH = 500
 export const MAX_MEDIA_LABEL_LENGTH = 240
 export const MAX_MEDIA_ERROR_LENGTH = 2000
 export const MAX_MEDIA_OPTIONS = 200
+export const MEDIA_OUTPUT_FORMATS = Object.freeze([
+  'auto',
+  'mp4',
+  'mkv',
+  'webm'
+])
 
 const OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
 const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
@@ -121,6 +127,12 @@ export function isOpaqueMediaId(value) {
   return typeof value === 'string' && OPAQUE_MEDIA_ID.test(value)
 }
 
+export function isMediaOutputFormat(value) {
+  return (
+    typeof value === 'string' && MEDIA_OUTPUT_FORMATS.indexOf(value) !== -1
+  )
+}
+
 export function parseMediaFormatOption(value) {
   const record = asPlainObject(value)
   exactKeys(
@@ -139,7 +151,14 @@ export function parseMediaFormatOption(value) {
       'requiresMerge',
       'filesizeBytes'
     ],
-    ['estimatedBytes', 'sizeIsEstimate']
+    [
+      'estimatedBytes',
+      'sizeIsEstimate',
+      'outputFormats',
+      'outputSizes',
+      'formatIds',
+      'hdr'
+    ]
   )
 
   const kind = record.kind
@@ -164,6 +183,7 @@ export function parseMediaFormatOption(value) {
     audioCodec: nullableTextValue(record, 'audioCodec', 64),
     hasAudio: booleanValue(record, 'hasAudio'),
     requiresMerge: booleanValue(record, 'requiresMerge'),
+    hdr: record.hdr === undefined ? false : booleanValue(record, 'hdr'),
     filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0),
     estimatedBytes:
       record.estimatedBytes === undefined
@@ -181,20 +201,92 @@ export function parseMediaFormatOption(value) {
   if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
     fail('An audio option must not contain video.')
   }
+
+  if (record.outputFormats !== undefined) {
+    if (
+      !Array.isArray(record.outputFormats) ||
+      record.outputFormats.length === 0 ||
+      record.outputFormats.length > MEDIA_OUTPUT_FORMATS.length
+    ) {
+      fail('Invalid media output formats.')
+    }
+    const outputFormats = []
+    for (const value of record.outputFormats) {
+      if (!isMediaOutputFormat(value) || outputFormats.indexOf(value) !== -1) {
+        fail('Invalid media output formats.')
+      }
+      outputFormats.push(value)
+    }
+    option.outputFormats = outputFormats
+  }
+  if (record.outputSizes !== undefined) {
+    const sizes = asPlainObject(record.outputSizes)
+    const outputSizes = {}
+    for (const [format, rawSize] of Object.entries(sizes)) {
+      if (!isMediaOutputFormat(format)) fail('Invalid per-format media size.')
+      const size = asPlainObject(rawSize)
+      exactKeys(size, ['bytes', 'isEstimate'])
+      outputSizes[format] = {
+        bytes: nullableIntegerValue(
+          size,
+          'bytes',
+          0,
+          Number.MAX_SAFE_INTEGER
+        ),
+        isEstimate: booleanValue(size, 'isEstimate')
+      }
+    }
+    option.outputSizes = outputSizes
+  }
+  if (record.formatIds !== undefined) {
+    if (
+      !Array.isArray(record.formatIds) ||
+      record.formatIds.length < 1 ||
+      record.formatIds.length > 2 ||
+      record.formatIds.some(
+        (id) =>
+          typeof id !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)
+      )
+    ) {
+      fail('Invalid source format identifiers.')
+    }
+    option.formatIds = [...record.formatIds]
+  }
   return option
 }
 
 export function parseMediaAnalysis(value) {
   const record = asPlainObject(value)
-  exactKeys(record, [
-    'analysisId',
-    'title',
-    'durationSeconds',
-    'options',
-    'bestVideoOptionId',
-    'bestAudioOptionId',
-    'expiresAt'
-  ])
+  exactKeys(
+    record,
+    [
+      'analysisId',
+      'title',
+      'durationSeconds',
+      'options',
+      'bestVideoOptionId',
+      'bestAudioOptionId',
+      'expiresAt'
+    ],
+    ['thumbnailUrl']
+  )
+  let thumbnailUrl = null
+  if (record.thumbnailUrl !== undefined && record.thumbnailUrl !== null) {
+    if (typeof record.thumbnailUrl !== 'string' || record.thumbnailUrl.length > 2048) {
+      fail('Invalid thumbnail URL.')
+    }
+    let parsed
+    try {
+      parsed = new URL(record.thumbnailUrl)
+    } catch {
+      fail('Invalid thumbnail URL.')
+    }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+      fail('Invalid thumbnail URL.')
+    }
+    thumbnailUrl = parsed.href
+  }
 
   if (!Array.isArray(record.options) || record.options.length > MAX_MEDIA_OPTIONS) {
     fail('The media bridge payload contains an invalid list.')
@@ -238,6 +330,7 @@ export function parseMediaAnalysis(value) {
   return {
     analysisId: opaqueId(record.analysisId, 'media analysis identifier'),
     title: textValue(record, 'title', MAX_MEDIA_TITLE_LENGTH),
+    thumbnailUrl,
     durationSeconds: nullableFiniteNumberValue(
       record,
       'durationSeconds',

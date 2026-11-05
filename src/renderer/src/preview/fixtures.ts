@@ -568,13 +568,17 @@ export function createPreviewApi(
         )
       }
 
+      const outputFormat = input.outputFormat ?? 'auto'
       const job: MediaJob = {
         id: nextId('preview-media'),
         analysisId: analysis.analysisId,
         optionId: option.optionId,
         kind: option.kind,
         title: analysis.title,
-        label: option.label,
+        label:
+          outputFormat === 'auto'
+            ? option.label
+            : `${option.label} · ${outputFormat.toUpperCase()}`,
         status: 'queued',
         completedBytes: 0,
         totalBytes: option.estimatedBytes ?? option.filesizeBytes ?? null,
@@ -968,6 +972,23 @@ function seedAnalysis(
   const options: MediaFormatOption[] = [
     {
       kind: 'video',
+      optionId: 'preview-option-2160',
+      label: '2160p · MP4 · video + audio',
+      container: 'mp4',
+      width: 3840,
+      height: 2160,
+      fps: 30,
+      videoCodec: 'avc1',
+      audioCodec: 'aac',
+      hasAudio: true,
+      requiresMerge: true,
+      filesizeBytes: null,
+      estimatedBytes: 1_450 * mib,
+      sizeIsEstimate: true,
+      outputFormats: ['auto', 'mp4', 'mkv']
+    },
+    {
+      kind: 'video',
       optionId: 'preview-option-1080',
       label: '1080p · MP4 · video + audio',
       container: 'mp4',
@@ -980,7 +1001,8 @@ function seedAnalysis(
       requiresMerge: true,
       filesizeBytes: null,
       estimatedBytes: 420 * mib,
-      sizeIsEstimate: true
+      sizeIsEstimate: true,
+      outputFormats: ['auto', 'mp4', 'mkv']
     },
     {
       kind: 'video',
@@ -996,7 +1018,8 @@ function seedAnalysis(
       requiresMerge: true,
       filesizeBytes: null,
       estimatedBytes: 268 * mib,
-      sizeIsEstimate: true
+      sizeIsEstimate: true,
+      outputFormats: ['auto', 'mp4', 'mkv']
     },
     {
       kind: 'video',
@@ -1012,7 +1035,8 @@ function seedAnalysis(
       requiresMerge: false,
       filesizeBytes: 180 * mib,
       estimatedBytes: 180 * mib,
-      sizeIsEstimate: false
+      sizeIsEstimate: false,
+      outputFormats: ['auto', 'mp4', 'mkv']
     },
     {
       kind: 'video',
@@ -1028,7 +1052,8 @@ function seedAnalysis(
       requiresMerge: false,
       filesizeBytes: 96 * mib,
       estimatedBytes: 96 * mib,
-      sizeIsEstimate: false
+      sizeIsEstimate: false,
+      outputFormats: ['auto', 'mp4', 'mkv']
     },
     {
       kind: 'audio',
@@ -1044,7 +1069,8 @@ function seedAnalysis(
       requiresMerge: false,
       filesizeBytes: 46 * mib,
       estimatedBytes: 46 * mib,
-      sizeIsEstimate: false
+      sizeIsEstimate: false,
+      outputFormats: ['auto', 'mp4', 'mkv']
     }
   ]
 
@@ -1053,7 +1079,7 @@ function seedAnalysis(
     title: `Fixture media · ${hostnameOf(url)}`,
     durationSeconds: 1_456,
     options,
-    bestVideoOptionId: 'preview-option-1080',
+    bestVideoOptionId: 'preview-option-2160',
     bestAudioOptionId: 'preview-option-audio',
     expiresAt: startedAt + PREVIEW_ANALYSIS_EXPIRY_MS
   }

@@ -32,13 +32,18 @@ import type {
   CollectionPreview
 } from '@shared/batches'
 import {
+  isMediaOutputFormat,
   normalizeMediaSourceUrl,
   parseMediaAnalysis,
   parseMediaAnalysisId,
   parseMediaJobId,
   parseMediaOptionId
 } from '@shared/media'
-import type { MediaAnalysis, MediaToolState } from '@shared/media'
+import type {
+  MediaAnalysis,
+  MediaOutputFormat,
+  MediaToolState
+} from '@shared/media'
 import { ValidationError, sanitizeFilename } from '@shared/validation'
 import {
   buildAnalyzeArgs,
@@ -51,7 +56,10 @@ import {
   MediaInfoError,
   buildMediaAnalysis
 } from './formats'
-import type { InternalMediaOption } from './formats'
+import type {
+  InternalMediaOption,
+  InternalOutputChoice
+} from './formats'
 import { isFile, locateMediaTool } from './locator'
 import {
   ProcessAbortedError,
@@ -109,6 +117,8 @@ export interface MediaDownloadRequest {
   optionId: string
   dir: string
   maxBytes?: number | null
+  /** Requested output container; omitted means `auto`. */
+  outputFormat?: MediaOutputFormat
 }
 
 export interface MediaDownloadResult {
@@ -1053,6 +1063,29 @@ export function createMediaEngine(
     }
   }
 
+  async function filterPublicThumbnail(rawInfo: unknown): Promise<string | null> {
+    if (
+      typeof rawInfo !== 'object' ||
+      rawInfo === null ||
+      Array.isArray(rawInfo)
+    ) {
+      return null
+    }
+    const thumbnail = (rawInfo as Record<string, unknown>).thumbnail
+    if (typeof thumbnail !== 'string' || thumbnail.length > 2048) return null
+    try {
+      const parsed = new URL(thumbnail)
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+        return null
+      }
+      const normalized = normalizeMediaSourceUrl(parsed.href)
+      await assertPublicTarget(normalized)
+      return normalized
+    } catch {
+      return null
+    }
+  }
+
   async function getToolState(): Promise<MediaToolState> {
     const toolchain = await resolveToolchain()
     return { ...toolchain.state }
@@ -1136,10 +1169,12 @@ export function createMediaEngine(
     let built
     try {
       const verifiedInfo = await filterPublicFormatTargets(rawInfo)
+      const thumbnailUrl = await filterPublicThumbnail(rawInfo)
       built = buildMediaAnalysis(verifiedInfo, {
         ffmpegAvailable: toolchain.ffmpegPath !== null,
         newOptionId: () => newOpaqueId('option')
       })
+      built.thumbnailUrl = thumbnailUrl
     } catch (error) {
       if (error instanceof MediaInfoError) {
         if (error.reason === 'playlist') {
@@ -1168,6 +1203,7 @@ export function createMediaEngine(
     const dto = parseMediaAnalysis({
       analysisId,
       title: built.title,
+      thumbnailUrl: built.thumbnailUrl,
       durationSeconds: built.durationSeconds,
       options: built.options.map((option) => option.dto),
       bestVideoOptionId: built.bestVideoOptionId,
@@ -1528,11 +1564,35 @@ export function createMediaEngine(
       )
     }
 
+    const rawOutputFormat = record.outputFormat
+    if (rawOutputFormat !== undefined && !isMediaOutputFormat(rawOutputFormat)) {
+      throw new AppError(
+        'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
+        'Choose a supported output format.'
+      )
+    }
+    const requestedOutputFormat: MediaOutputFormat =
+      rawOutputFormat === undefined ? 'auto' : rawOutputFormat
+    const outputChoice: InternalOutputChoice | undefined = option.choices.get(
+      requestedOutputFormat
+    )
+    if (!outputChoice) {
+      throw new AppError(
+        'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
+        'This option cannot produce the selected output format without transcoding. Choose Auto or another format.'
+      )
+    }
+
     const maxBytes = request.maxBytes ?? null
-    if (maxBytes !== null && option.dto.filesizeBytes !== null && option.dto.filesizeBytes > maxBytes) {
+    const selectedSize =
+      option.dto.outputSizes?.[requestedOutputFormat] ?? {
+        bytes: option.dto.estimatedBytes ?? option.dto.filesizeBytes,
+        isEstimate: option.dto.sizeIsEstimate === true
+      }
+    if (maxBytes !== null && selectedSize.bytes !== null && selectedSize.bytes > maxBytes) {
       throw new AppError(
         'MEDIA_SIZE_CAP_EXCEEDED',
-        'The verified media format exceeds the configured per-job size limit.'
+        'The reported or estimated media size exceeds the configured per-job size limit.'
       )
     }
 
@@ -1547,10 +1607,14 @@ export function createMediaEngine(
     if (toolchain.ytdlpPath === null) {
       throw toolUnavailableError(toolchain.state)
     }
-    if (option.mergeOutputFormat !== null && toolchain.ffmpegPath === null) {
+    if (
+      (outputChoice.mergeOutputFormat !== null ||
+        outputChoice.remuxOutputFormat !== null) &&
+      toolchain.ffmpegPath === null
+    ) {
       throw new AppError(
         'MEDIA_MERGE_UNAVAILABLE',
-        'FFmpeg is required to merge this format but is not available.',
+        'FFmpeg is required to merge or remux this format but is not available.',
         FFMPEG_HINT
       )
     }
@@ -1571,7 +1635,7 @@ export function createMediaEngine(
       )
     }
 
-    const formatSelector = option.formatIds.join('+')
+    const formatSelector = outputChoice.formatIds.join('+')
     if (!SAFE_SELECTOR.test(formatSelector)) {
       throw new AppError(
         'MEDIA_OPTION_INVALID',
@@ -1579,13 +1643,16 @@ export function createMediaEngine(
       )
     }
 
+    const needsFfmpeg =
+      outputChoice.mergeOutputFormat !== null ||
+      outputChoice.remuxOutputFormat !== null
     const args = buildDownloadArgs({
       sourceUrl,
       formatSelector,
       outputTemplate,
-      mergeOutputFormat: option.mergeOutputFormat,
-      ffmpegLocation:
-        option.mergeOutputFormat === null ? null : toolchain.ffmpegPath,
+      mergeOutputFormat: outputChoice.mergeOutputFormat,
+      remuxOutputFormat: outputChoice.remuxOutputFormat,
+      ffmpegLocation: needsFfmpeg ? toolchain.ffmpegPath : null,
       denoPath: toolchain.denoPath
     })
 
@@ -1684,7 +1751,7 @@ export function createMediaEngine(
             const finalPath = await findFinalFile(
               outputDir,
               base,
-              option.outputExt
+              outputChoice.outputExt
             )
             if (finalPath === null) throw new Error('missing output')
             const stat = await fs.stat(finalPath)
@@ -1844,7 +1911,7 @@ export function createMediaEngine(
       emit(
         'downloading',
         0,
-        option.dto.filesizeBytes,
+        option.dto.estimatedBytes ?? option.dto.filesizeBytes,
         0,
         null
       )

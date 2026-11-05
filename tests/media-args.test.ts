@@ -5,6 +5,7 @@ const sourceUrl = 'https://example.com/watch?v=1'
 
 function args(overrides: {
   mergeOutputFormat: string | null
+  remuxOutputFormat?: string | null
   ffmpegLocation?: string | null
 }): string[] {
   return buildDownloadArgs({
@@ -12,6 +13,7 @@ function args(overrides: {
     formatSelector: overrides.mergeOutputFormat === null ? '22' : '137+140',
     outputTemplate: 'video.%(ext)s',
     mergeOutputFormat: overrides.mergeOutputFormat,
+    remuxOutputFormat: overrides.remuxOutputFormat ?? null,
     ffmpegLocation: overrides.ffmpegLocation ?? null
   })
 }
@@ -32,12 +34,23 @@ describe('buildDownloadArgs HLS preference', () => {
     expect(merged[merged.length - 1]).toBe(sourceUrl)
   })
 
-  it('keeps non-merge download arguments unchanged', () => {
+  it('adds remux only for an explicit compatible container change', () => {
     const direct = args({ mergeOutputFormat: null })
 
     expect(direct).not.toContain('--merge-output-format')
     expect(direct).not.toContain('--hls-prefer-ffmpeg')
-    expect(direct[direct.length - 2]).toBe('--')
-    expect(direct[direct.length - 1]).toBe(sourceUrl)
+    expect(direct).not.toContain('--remux-video')
+
+    const remuxed = args({
+      mergeOutputFormat: null,
+      remuxOutputFormat: 'mkv',
+      ffmpegLocation: 'C:\\tools\\ffmpeg.exe'
+    })
+    expect(remuxed).toContain('--remux-video')
+    expect(remuxed[remuxed.indexOf('--remux-video') + 1]).toBe('mkv')
+    expect(remuxed).toContain('--ffmpeg-location')
+    expect(remuxed).not.toContain('--merge-output-format')
+    expect(remuxed[remuxed.length - 2]).toBe('--')
+    expect(remuxed[remuxed.length - 1]).toBe(sourceUrl)
   })
 })

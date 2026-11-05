@@ -15,9 +15,11 @@ import {
   type MediaJob,
   type MediaJobRecord,
   type MediaJobStatus,
+  type MediaOutputFormat,
   type MediaSnapshot,
   type MediaToolState
 } from '@shared/media'
+import { mediaOutputFormatsForOption } from '@shared/mediaOutput'
 import { AppError } from '../errors'
 
 /**
@@ -37,6 +39,7 @@ export interface MediaDownloadRequest {
   optionId: string
   dir: string
   maxBytes?: number | null
+  outputFormat?: MediaOutputFormat
 }
 
 export interface MediaDownloadProgress {
@@ -186,7 +189,8 @@ function copyAnalysis(analysis: MediaAnalysis): MediaAnalysis {
  */
 function mediaOptionFingerprint(
   sourceUrl: string,
-  option: MediaFormatOption
+  option: MediaFormatOption,
+  outputFormat: MediaOutputFormat
 ): string {
   const invariants = [
     normalizeMediaSourceUrl(sourceUrl),
@@ -199,7 +203,8 @@ function mediaOptionFingerprint(
     option.videoCodec,
     option.audioCodec,
     option.hasAudio,
-    option.requiresMerge
+    option.requiresMerge,
+    outputFormat
   ]
   return createHash('sha256').update(JSON.stringify(invariants)).digest('hex')
 }
@@ -330,9 +335,21 @@ export class MediaJobsManager {
       )
     }
 
+    const outputFormat: MediaOutputFormat = input.outputFormat ?? 'auto'
+    if (
+      outputFormat !== 'auto' &&
+      !mediaOutputFormatsForOption(option).includes(outputFormat)
+    ) {
+      throw new AppError(
+        'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
+        'This option cannot produce the selected output format without transcoding. Choose Auto or another format.'
+      )
+    }
+
     const optionFingerprint = mediaOptionFingerprint(
       cached.sourceUrl,
-      option
+      option,
+      outputFormat
     )
     if (input.force !== true) {
       for (const job of this.jobs.values()) {
@@ -351,6 +368,11 @@ export class MediaJobsManager {
     }
 
     const createdAt = this.now()
+    const formatSize = option.outputSizes?.[outputFormat]
+    const knownTotalBytes =
+      formatSize !== undefined
+        ? formatSize.bytes
+        : option.estimatedBytes ?? option.filesizeBytes
     const record: MediaJobRecord = {
       id: randomUUID(),
       sourceUrl: cached.sourceUrl,
@@ -358,17 +380,19 @@ export class MediaJobsManager {
       optionId: option.optionId,
       kind: option.kind,
       title: cached.analysis.title,
-      label: option.label,
+      label:
+        outputFormat === 'auto'
+          ? option.label
+          : `${option.label} · ${outputFormat.toUpperCase()}`,
       status: 'queued',
       completedBytes: 0,
       totalBytes:
-        option.filesizeBytes !== null && option.filesizeBytes > 0
-          ? option.filesizeBytes
-          : null,
+        knownTotalBytes !== null && knownTotalBytes > 0 ? knownTotalBytes : null,
       errorMessage: null,
       dir: this.mediaDir,
       filePath: null,
       maxBytes: input.maxBytes ?? null,
+      outputFormat,
       createdAt,
       updatedAt: createdAt,
       completedAt: null
@@ -594,7 +618,8 @@ export class MediaJobsManager {
           analysisId: job.record.analysisId,
           optionId: job.record.optionId,
           dir: job.record.dir,
-          maxBytes: job.record.maxBytes ?? null
+          maxBytes: job.record.maxBytes ?? null,
+          outputFormat: job.record.outputFormat ?? 'auto'
         },
         (progress) => {
           this.handleProgress(id, progress)

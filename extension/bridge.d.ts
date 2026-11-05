@@ -19,14 +19,19 @@ export interface MediaFormatOptionDto {
   audioCodec: string | null
   hasAudio: boolean
   requiresMerge: boolean
+  hdr?: boolean
   filesizeBytes: number | null
   estimatedBytes?: number | null
   sizeIsEstimate?: boolean
+  outputFormats?: string[]
+  outputSizes?: Record<string, { bytes: number | null; isEstimate: boolean }>
+  formatIds?: string[]
 }
 
 export interface MediaAnalysisDto {
   analysisId: string
   title: string
+  thumbnailUrl?: string | null
   durationSeconds: number | null
   options: MediaFormatOptionDto[]
   bestVideoOptionId: string | null

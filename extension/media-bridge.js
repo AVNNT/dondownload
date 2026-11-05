@@ -6,7 +6,7 @@
 // before every native call, and only then forwards opaque analysis/option IDs.
 
 import { sendAnalyzeMedia, sendQueueMedia } from './bridge.js'
-import { isOpaqueMediaId } from './media-contract.js'
+import { isMediaOutputFormat, isOpaqueMediaId } from './media-contract.js'
 import { isOverlayTabTracked } from './overlay-controller.js'
 import {
   originToMatchPattern,
@@ -147,7 +147,7 @@ export async function queueMediaForSender(chromeApi, message, sender) {
   if (
     !message ||
     message.type !== MEDIA_MESSAGE_TYPES.QUEUE ||
-    !hasExactKeys(message, ['type', 'analysisId', 'optionId'])
+    !hasExactKeys(message, ['type', 'analysisId', 'optionId'], ['outputFormat'])
   ) {
     return failure('INVALID_MESSAGE', 'The media queue request is not valid.')
   }
@@ -160,13 +160,25 @@ export async function queueMediaForSender(chromeApi, message, sender) {
       'The selected media option is not valid. Analyze the page again.'
     )
   }
+  if (
+    message.outputFormat !== undefined &&
+    !isMediaOutputFormat(message.outputFormat)
+  ) {
+    return failure(
+      'INVALID_MEDIA_OPTION',
+      'The selected output format is not valid.'
+    )
+  }
 
   const authorization = await authorizeMediaSender(chromeApi, sender)
   if (authorization.ok !== true) return authorization
 
   const result = await sendQueueMedia({
     analysisId: message.analysisId,
-    optionId: message.optionId
+    optionId: message.optionId,
+    ...(message.outputFormat === undefined
+      ? {}
+      : { outputFormat: message.outputFormat })
   })
   if (result.ok !== true) return result
   return { ok: true, job: result.job }

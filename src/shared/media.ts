@@ -12,6 +12,25 @@ import { ValidationError } from './validation'
 export const MEDIA_FORMAT_KINDS = ['video', 'audio'] as const
 export type MediaFormatKind = (typeof MEDIA_FORMAT_KINDS)[number]
 
+/**
+ * User-selectable output container. `auto` keeps yt-dlp's natural container;
+ * the others are remux/merge targets only and never imply transcoding.
+ */
+export const MEDIA_OUTPUT_FORMATS = ['auto', 'mp4', 'mkv', 'webm'] as const
+export type MediaOutputFormat = (typeof MEDIA_OUTPUT_FORMATS)[number]
+
+export interface MediaOutputSize {
+  bytes: number | null
+  isEstimate: boolean
+}
+
+export function isMediaOutputFormat(value: unknown): value is MediaOutputFormat {
+  return (
+    typeof value === 'string' &&
+    (MEDIA_OUTPUT_FORMATS as readonly string[]).includes(value)
+  )
+}
+
 export const MEDIA_JOB_STATUSES = [
   'queued',
   'analyzing',
@@ -64,7 +83,7 @@ export const MAX_MEDIA_JOBS = 10_000
 
 export interface MediaFormatOption {
   kind: MediaFormatKind
-  /** Opaque server-generated identifier; never a yt-dlp format selector. */
+  /** Opaque server-generated queue ID; the only accepted selection token. */
   optionId: string
   /** Server-generated, human-readable description for display only. */
   label: string
@@ -79,12 +98,14 @@ export interface MediaFormatOption {
   hasAudio: boolean
   /** True when yt-dlp/ffmpeg must combine separate streams. */
   requiresMerge: boolean
+  /** HDR transfer/range metadata is reported for the selected video stream. */
+  hdr?: boolean
   /** Only a verified size is exposed here; unverified estimates stay null. */
   filesizeBytes: number | null
   /**
    * Best available size for display: exact `filesize`, fallback
    * `filesize_approx`, or the sum of both streams for a merged output.
-   * Null when yt-dlp reported no usable size.
+   * Null when reported sizes are absent and no safe estimate is available.
    */
   estimatedBytes?: number | null
   /**
@@ -92,12 +113,23 @@ export interface MediaFormatOption {
    * rather than an exact single-file size.
    */
   sizeIsEstimate?: boolean
+  /**
+   * Containers this exact option can produce without transcoding, including
+   * `auto`. New analyses always send this; older payloads may omit it.
+   */
+  outputFormats?: MediaOutputFormat[]
+  /** Size for each container selection when its stream pairing differs. */
+  outputSizes?: Partial<Record<MediaOutputFormat, MediaOutputSize>>
+  /** Original yt-dlp IDs used by the default Auto stream selection. */
+  formatIds?: string[]
 }
 
 export interface MediaAnalysis {
   /** Opaque server-generated identifier tied to one fresh analysis. */
   analysisId: string
   title: string
+  /** Public HTTPS thumbnail URL, or null when no safe thumbnail is available. */
+  thumbnailUrl?: string | null
   durationSeconds: number | null
   options: MediaFormatOption[]
   /** Real video+audio output; may be a merge of separate streams. */
@@ -150,6 +182,8 @@ export interface MediaQueueInput {
   force?: true
   /** Optional hard maximum final output size in bytes; internal persistence only. */
   maxBytes?: number | null
+  /** Requested output container; omitted means `auto`. */
+  outputFormat?: MediaOutputFormat
 }
 
 /**
@@ -174,6 +208,8 @@ export interface MediaJobRecord {
   /** Final output path needed for recovery. Not exposed through MediaJob. */
   filePath: string | null
   maxBytes?: number | null
+  /** In-memory queue choice; persisted rows without it mean `auto`. */
+  outputFormat?: MediaOutputFormat
   createdAt: number
   updatedAt: number
   completedAt: number | null
@@ -232,6 +268,32 @@ function nullableTextValue(
   const value = record[key]
   if (value === null) return null
   return textValue(record, key, maximum)
+}
+
+function nullableHttpsUrl(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (
+    typeof value !== 'string' ||
+    value.length > 2048 ||
+    CONTROL_CHARACTERS.test(value)
+  ) {
+    throw new ValidationError('The media thumbnail URL is invalid.')
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new ValidationError('The media thumbnail URL is invalid.')
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.hostname.length === 0
+  ) {
+    throw new ValidationError('The media thumbnail URL is invalid.')
+  }
+  return parsed.href
 }
 
 function integerValue(
@@ -392,7 +454,14 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
       'requiresMerge',
       'filesizeBytes'
     ],
-    ['estimatedBytes', 'sizeIsEstimate']
+    [
+      'estimatedBytes',
+      'sizeIsEstimate',
+      'outputFormats',
+      'outputSizes',
+      'formatIds',
+      'hdr'
+    ]
   )
 
   const kind = record.kind
@@ -417,6 +486,7 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
     audioCodec: nullableTextValue(record, 'audioCodec', 64),
     hasAudio: booleanValue(record, 'hasAudio'),
     requiresMerge: booleanValue(record, 'requiresMerge'),
+    hdr: record.hdr === undefined ? false : booleanValue(record, 'hdr'),
     filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0),
     estimatedBytes:
       record.estimatedBytes === undefined
@@ -434,20 +504,76 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
   if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
     throw new ValidationError('An audio option must not contain video.')
   }
+
+  if (record.outputFormats !== undefined) {
+    if (
+      !Array.isArray(record.outputFormats) ||
+      record.outputFormats.length === 0 ||
+      record.outputFormats.length > MEDIA_OUTPUT_FORMATS.length
+    ) {
+      throw new ValidationError('Invalid media output formats.')
+    }
+    const outputFormats: MediaOutputFormat[] = []
+    for (const value of record.outputFormats) {
+      if (!isMediaOutputFormat(value) || outputFormats.includes(value)) {
+        throw new ValidationError('Invalid media output formats.')
+      }
+      outputFormats.push(value)
+    }
+    option.outputFormats = outputFormats
+  }
+
+  if (record.outputSizes !== undefined) {
+    const sizes = asPlainObject(record.outputSizes)
+    const outputSizes: Partial<Record<MediaOutputFormat, MediaOutputSize>> = {}
+    for (const [format, rawSize] of Object.entries(sizes)) {
+      if (!isMediaOutputFormat(format)) {
+        throw new ValidationError('Invalid per-format media size.')
+      }
+      const size = asPlainObject(rawSize)
+      exactKeys(size, ['bytes', 'isEstimate'])
+      outputSizes[format] = {
+        bytes: nullableIntegerValue(size, 'bytes', 0),
+        isEstimate: booleanValue(size, 'isEstimate')
+      }
+    }
+    option.outputSizes = outputSizes
+  }
+
+  if (record.formatIds !== undefined) {
+    if (
+      !Array.isArray(record.formatIds) ||
+      record.formatIds.length < 1 ||
+      record.formatIds.length > 2 ||
+      record.formatIds.some(
+        (id) =>
+          typeof id !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)
+      )
+    ) {
+      throw new ValidationError('Invalid source format identifiers.')
+    }
+    option.formatIds = [...record.formatIds] as string[]
+  }
+
   return option
 }
 
 export function parseMediaAnalysis(value: unknown): MediaAnalysis {
   const record = asPlainObject(value)
-  exactKeys(record, [
-    'analysisId',
-    'title',
-    'durationSeconds',
-    'options',
-    'bestVideoOptionId',
-    'bestAudioOptionId',
-    'expiresAt'
-  ])
+  exactKeys(
+    record,
+    [
+      'analysisId',
+      'title',
+      'durationSeconds',
+      'options',
+      'bestVideoOptionId',
+      'bestAudioOptionId',
+      'expiresAt'
+    ],
+    ['thumbnailUrl']
+  )
 
   const rawOptions = arrayValue(record, 'options', MAX_MEDIA_OPTIONS)
   const options = rawOptions.map(parseMediaFormatOption)
@@ -493,6 +619,7 @@ export function parseMediaAnalysis(value: unknown): MediaAnalysis {
   return {
     analysisId: parseMediaAnalysisId(record.analysisId),
     title: textValue(record, 'title', MAX_MEDIA_TITLE_LENGTH),
+    thumbnailUrl: nullableHttpsUrl(record.thumbnailUrl),
     durationSeconds: nullableFiniteNumberValue(
       record,
       'durationSeconds',
@@ -599,7 +726,11 @@ export function parseAnalyzeMediaInput(value: unknown): AnalyzeMediaInput {
 
 export function parseMediaQueueInput(value: unknown): MediaQueueInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['analysisId', 'optionId'], ['force', 'maxBytes'])
+  exactKeys(record, ['analysisId', 'optionId'], [
+    'force',
+    'maxBytes',
+    'outputFormat'
+  ])
 
   let force = false
   if (Object.prototype.hasOwnProperty.call(record, 'force')) {
@@ -615,10 +746,19 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     else maxBytes = integerValue(record, 'maxBytes', 1, 100 * 1024 ** 3)
   }
 
+  let outputFormat: MediaOutputFormat | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'outputFormat')) {
+    if (!isMediaOutputFormat(record.outputFormat)) {
+      throw new ValidationError('Choose a supported output format.')
+    }
+    outputFormat = record.outputFormat
+  }
+
   return {
     analysisId: parseMediaAnalysisId(record.analysisId),
     optionId: parseMediaOptionId(record.optionId),
     ...(force ? { force: true as const } : {}),
-    ...(maxBytes === undefined ? {} : { maxBytes })
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+    ...(outputFormat === undefined ? {} : { outputFormat })
   }
 }

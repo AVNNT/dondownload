@@ -1,11 +1,21 @@
 import type {
-  MediaFormatOption
+  MediaFormatOption,
+  MediaOutputFormat,
+  MediaOutputSize
 } from '@shared/media'
 import {
   MAX_MEDIA_LABEL_LENGTH,
   MAX_MEDIA_OPTIONS,
   MAX_MEDIA_TITLE_LENGTH
 } from '@shared/media'
+import {
+  isMp4AudioCodec,
+  isMp4Container,
+  isMp4VideoCodec,
+  isWebmAudioCodec,
+  isWebmContainer,
+  isWebmVideoCodec
+} from '@shared/mediaOutput'
 
 const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
 const SAFE_FORMAT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -18,19 +28,28 @@ const HTTP_STREAM_PROTOCOLS = new Set([
   'https_dash_segments'
 ])
 
-/** Internal side of an option. Raw format IDs never leave this object. */
-export interface InternalMediaOption {
-  dto: MediaFormatOption
-  /** Format IDs used to build the fixed `--format` selector. */
+/** One server-resolved output choice for an option. */
+export interface InternalOutputChoice {
+  outputFormat: MediaOutputFormat
+  /** Actual yt-dlp format IDs, also exposed in the advanced metadata details. */
   formatIds: string[]
   /** Non-null only when yt-dlp/FFmpeg must merge separate streams. */
   mergeOutputFormat: string | null
+  /** Non-null only for a single-stream remux target. */
+  remuxOutputFormat: string | null
   /** Expected final container/extension. */
   outputExt: string
 }
 
+/** Internal selection state; only the public advanced-detail IDs are exposed. */
+export interface InternalMediaOption {
+  dto: MediaFormatOption
+  choices: Map<MediaOutputFormat, InternalOutputChoice>
+}
+
 export interface BuiltMediaAnalysis {
   title: string
+  thumbnailUrl: string | null
   durationSeconds: number | null
   options: InternalMediaOption[]
   bestVideoOptionId: string | null
@@ -69,7 +88,9 @@ interface FormatDescriptor {
   filesize: number | null
   filesizeApprox: number | null
   tbr: number
+  vbr: number
   abr: number
+  hdr: boolean
   kind: 'muxed' | 'video' | 'audio'
 }
 
@@ -80,9 +101,7 @@ interface DisplaySize {
 
 interface VideoDraft {
   dto: Omit<MediaFormatOption, 'optionId'>
-  formatIds: string[]
-  mergeOutputFormat: string | null
-  outputExt: string
+  choices: Map<MediaOutputFormat, InternalOutputChoice>
   sortHeight: number
   sortWidth: number
   sortFps: number
@@ -93,8 +112,7 @@ interface VideoDraft {
 
 interface AudioDraft {
   dto: Omit<MediaFormatOption, 'optionId'>
-  formatIds: string[]
-  outputExt: string
+  choices: Map<MediaOutputFormat, InternalOutputChoice>
   sortBitrate: number
   sortFilesize: number
   dedupeKey: string
@@ -137,33 +155,89 @@ function cleanFormatId(value: unknown): string | null {
 }
 
 /**
- * Prefer yt-dlp's exact `filesize`; fall back to `filesize_approx`. Both are
- * already-reported metadata and are never calculated by downloading.
+ * Best available size, in descending confidence:
+ *   1. yt-dlp's exact `filesize`;
+ *   2. yt-dlp's `filesize_approx`;
+ *   3. a safe bitrate x duration estimate from the same metadata.
+ *
+ * The bitrate fallback is only used when both reported sizes are absent and
+ * both values are positive finite numbers. It is still labelled as an
+ * estimate and never exposed as `filesizeBytes`.
  */
-function displaySize(descriptor: FormatDescriptor): DisplaySize {
+function displaySize(
+  descriptor: FormatDescriptor,
+  durationSeconds: number | null
+): DisplaySize {
   if (descriptor.filesize !== null) {
     return { bytes: descriptor.filesize, isEstimate: false }
   }
   if (descriptor.filesizeApprox !== null) {
     return { bytes: descriptor.filesizeApprox, isEstimate: true }
   }
-  return { bytes: null, isEstimate: false }
+  if (durationSeconds === null || durationSeconds <= 0) {
+    return { bytes: null, isEstimate: false }
+  }
+
+  const bitrate =
+    descriptor.kind === 'audio'
+      ? descriptor.abr || descriptor.tbr
+      : descriptor.tbr || descriptor.vbr
+  if (!Number.isFinite(bitrate) || bitrate <= 0) {
+    return { bytes: null, isEstimate: false }
+  }
+
+  const bytes = Math.round((bitrate * 1000 * durationSeconds) / 8)
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+    return { bytes: null, isEstimate: false }
+  }
+  return { bytes, isEstimate: true }
 }
 
 /**
- * A merged output needs both streams. If either stream size is missing the
- * total is unknown; the two known/approximate stream sizes are only summed.
+ * A merged output needs both streams. If either stream has no usable size the
+ * merged total is unknown; never sum only the known half. Any sum is still an
+ * estimate because the container/merge overhead is not part of the stream
+ * metadata.
  */
 function mergedDisplaySize(
   video: FormatDescriptor,
-  audio: FormatDescriptor
+  audio: FormatDescriptor,
+  durationSeconds: number | null
 ): DisplaySize {
-  const videoSize = displaySize(video)
-  const audioSize = displaySize(audio)
+  const videoSize = displaySize(video, durationSeconds)
+  const audioSize = displaySize(audio, durationSeconds)
   if (videoSize.bytes === null || audioSize.bytes === null) {
     return { bytes: null, isEstimate: false }
   }
-  return { bytes: videoSize.bytes + audioSize.bytes, isEstimate: true }
+  const bytes = videoSize.bytes + audioSize.bytes
+  if (!Number.isSafeInteger(bytes)) {
+    return { bytes: null, isEstimate: false }
+  }
+  return { bytes, isEstimate: true }
+}
+
+function videoOutputSizes(
+  choices: Map<MediaOutputFormat, InternalOutputChoice>,
+  video: FormatDescriptor,
+  audioDescriptors: FormatDescriptor[],
+  durationSeconds: number | null
+): Partial<Record<MediaOutputFormat, MediaOutputSize>> {
+  const sizes: Partial<Record<MediaOutputFormat, MediaOutputSize>> = {}
+  for (const [format, choice] of choices) {
+    let size: DisplaySize
+    if (choice.formatIds.length > 1) {
+      const audio = audioDescriptors.find(
+        (candidate) => candidate.formatId === choice.formatIds[1]
+      )
+      size = audio
+        ? mergedDisplaySize(video, audio, durationSeconds)
+        : { bytes: null, isEstimate: false }
+    } else {
+      size = displaySize(video, durationSeconds)
+    }
+    sizes[format] = { bytes: size.bytes, isEstimate: size.isEstimate }
+  }
+  return sizes
 }
 
 function safeInteger(
@@ -251,7 +325,20 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   const filesize = safeInteger(record.filesize, 1)
   const filesizeApprox = safeInteger(record.filesize_approx, 1)
   const tbr = finiteNonNegative(record.tbr)
+  const vbr = finiteNonNegative(record.vbr)
   const abr = finiteNonNegative(record.abr)
+  const dynamicRange =
+    typeof record.dynamic_range === 'string'
+      ? record.dynamic_range.toLowerCase()
+      : ''
+  const colorTransfer =
+    typeof record.color_transfer === 'string'
+      ? record.color_transfer.toLowerCase()
+      : ''
+  const hdr =
+    (dynamicRange !== '' && dynamicRange !== 'sdr') ||
+    colorTransfer === 'smpte2084' ||
+    colorTransfer === 'arib-std-b67'
 
   const hasVideo = videoCodec !== null && (width !== null || height !== null)
   const hasAudio = audioCodec !== null
@@ -269,7 +356,9 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
     filesize,
     filesizeApprox,
     tbr,
+    vbr,
     abr,
+    hdr,
     kind: hasVideo ? (hasAudio ? 'muxed' : 'video') : 'audio'
   }
 }
@@ -281,11 +370,153 @@ function resolutionLabel(height: number | null, width: number | null, fps: numbe
 }
 
 function mergeContainer(videoExt: string, audioExt: string): string {
-  const mp4Family = new Set(['mp4', 'm4a', 'm4v', 'mov'])
-  const webmFamily = new Set(['webm', 'weba', 'opus'])
-  if (mp4Family.has(videoExt) && mp4Family.has(audioExt)) return 'mp4'
-  if (webmFamily.has(videoExt) && webmFamily.has(audioExt)) return 'webm'
+  if (isMp4Container(videoExt) && isMp4Container(audioExt)) return 'mp4'
+  if (isWebmContainer(videoExt) && isWebmContainer(audioExt)) return 'webm'
   return 'mkv'
+}
+
+function outputFormatsOf(
+  choices: Map<MediaOutputFormat, InternalOutputChoice>
+): MediaOutputFormat[] {
+  return (['auto', 'mp4', 'mkv', 'webm'] as const).filter((format) =>
+    choices.has(format)
+  )
+}
+
+function muxedOutputChoices(
+  descriptor: FormatDescriptor,
+  ffmpegAvailable: boolean
+): Map<MediaOutputFormat, InternalOutputChoice> {
+  const choices = new Map<MediaOutputFormat, InternalOutputChoice>()
+  const natural = descriptor.ext
+  choices.set('auto', {
+    outputFormat: 'auto',
+    formatIds: [descriptor.formatId],
+    mergeOutputFormat: null,
+    remuxOutputFormat: null,
+    outputExt: natural
+  })
+
+  if (
+    isMp4VideoCodec(descriptor.videoCodec) &&
+    isMp4AudioCodec(descriptor.audioCodec)
+  ) {
+    if (natural === 'mp4' || ffmpegAvailable) choices.set('mp4', {
+      outputFormat: 'mp4',
+      formatIds: [descriptor.formatId],
+      mergeOutputFormat: null,
+      remuxOutputFormat: natural === 'mp4' ? null : 'mp4',
+      outputExt: 'mp4'
+    })
+  }
+  if (
+    isWebmVideoCodec(descriptor.videoCodec) &&
+    isWebmAudioCodec(descriptor.audioCodec)
+  ) {
+    if (natural === 'webm' || ffmpegAvailable) choices.set('webm', {
+      outputFormat: 'webm',
+      formatIds: [descriptor.formatId],
+      mergeOutputFormat: null,
+      remuxOutputFormat: natural === 'webm' ? null : 'webm',
+      outputExt: 'webm'
+    })
+  }
+
+  if (natural === 'mkv' || ffmpegAvailable) choices.set('mkv', {
+    outputFormat: 'mkv',
+    formatIds: [descriptor.formatId],
+    mergeOutputFormat: null,
+    remuxOutputFormat: natural === 'mkv' ? null : 'mkv',
+    outputExt: 'mkv'
+  })
+  return choices
+}
+
+function bestAudioForOutput(
+  audioDescriptors: FormatDescriptor[],
+  format: MediaOutputFormat
+): FormatDescriptor | null {
+  if (format === 'auto' || format === 'mkv') {
+    return audioDescriptors[0] ?? null
+  }
+  if (format === 'mp4') {
+    return (
+      audioDescriptors.find((audio) => isMp4AudioCodec(audio.audioCodec)) ??
+      null
+    )
+  }
+  return (
+    audioDescriptors.find((audio) => isWebmAudioCodec(audio.audioCodec)) ?? null
+  )
+}
+
+/** Real video+audio pairs for every output container the streams support. */
+function mergedOutputChoices(
+  descriptor: FormatDescriptor,
+  audioDescriptors: FormatDescriptor[]
+): Map<MediaOutputFormat, InternalOutputChoice> {
+  const choices = new Map<MediaOutputFormat, InternalOutputChoice>()
+  const autoAudio = bestAudioForOutput(audioDescriptors, 'auto')
+  if (autoAudio === null) return choices
+
+  const add = (
+    format: MediaOutputFormat,
+    audio: FormatDescriptor | null,
+    container: string
+  ): void => {
+    if (audio === null) return
+    choices.set(format, {
+      outputFormat: format,
+      formatIds: [descriptor.formatId, audio.formatId],
+      mergeOutputFormat: container,
+      remuxOutputFormat: null,
+      outputExt: container
+    })
+  }
+
+  add('auto', autoAudio, mergeContainer(descriptor.ext, autoAudio.ext))
+  add('mkv', bestAudioForOutput(audioDescriptors, 'mkv'), 'mkv')
+  if (isMp4VideoCodec(descriptor.videoCodec)) {
+    add('mp4', bestAudioForOutput(audioDescriptors, 'mp4'), 'mp4')
+  }
+  if (isWebmVideoCodec(descriptor.videoCodec)) {
+    add('webm', bestAudioForOutput(audioDescriptors, 'webm'), 'webm')
+  }
+  return choices
+}
+
+function audioOutputChoices(
+  descriptor: FormatDescriptor
+): Map<MediaOutputFormat, InternalOutputChoice> {
+  const choices = new Map<MediaOutputFormat, InternalOutputChoice>()
+  const natural = descriptor.ext
+  choices.set('auto', {
+    outputFormat: 'auto',
+    formatIds: [descriptor.formatId],
+    mergeOutputFormat: null,
+    remuxOutputFormat: null,
+    outputExt: natural
+  })
+
+  const addNatural = (format: MediaOutputFormat, ext: string): void => {
+    if (natural !== ext) return
+    choices.set(format, {
+      outputFormat: format,
+      formatIds: [descriptor.formatId],
+      mergeOutputFormat: null,
+      remuxOutputFormat: null,
+      outputExt: ext
+    })
+  }
+
+  if (isMp4AudioCodec(descriptor.audioCodec)) {
+    addNatural('mp4', 'm4a')
+  }
+  addNatural('mkv', 'mka')
+  if (isWebmAudioCodec(descriptor.audioCodec)) {
+    addNatural('webm', 'webm')
+  }
+  return choices
 }
 
 function compareAudio(a: AudioDraft, b: AudioDraft): number {
@@ -314,10 +545,12 @@ function compareVideo(a: VideoDraft, b: VideoDraft): number {
 
 function buildVideoDrafts(
   descriptors: FormatDescriptor[],
-  bestAudio: FormatDescriptor | null,
+  audioDescriptors: FormatDescriptor[],
+  durationSeconds: number | null,
   ffmpegAvailable: boolean
 ): VideoDraft[] {
   const drafts: VideoDraft[] = []
+  const bestAudio = audioDescriptors[0] ?? null
 
   for (const descriptor of descriptors) {
     if (descriptor.kind === 'audio') continue
@@ -331,7 +564,8 @@ function buildVideoDrafts(
 
     if (descriptor.kind === 'muxed' && descriptor.audioCodec !== null) {
       const container = descriptor.ext
-      const size = displaySize(descriptor)
+      const size = displaySize(descriptor, durationSeconds)
+      const choices = muxedOutputChoices(descriptor, ffmpegAvailable)
       drafts.push({
         dto: {
           kind: 'video',
@@ -346,18 +580,20 @@ function buildVideoDrafts(
           audioCodec: descriptor.audioCodec,
           hasAudio: true,
           requiresMerge: false,
+          hdr: descriptor.hdr,
           filesizeBytes: descriptor.filesize,
           estimatedBytes: size.bytes,
-          sizeIsEstimate: size.isEstimate
+          sizeIsEstimate: size.isEstimate,
+          outputFormats: outputFormatsOf(choices),
+          outputSizes: videoOutputSizes(choices, descriptor, [], durationSeconds),
+          formatIds: choices.get('auto')?.formatIds
         },
-        formatIds: [descriptor.formatId],
-        mergeOutputFormat: null,
-        outputExt: container,
+        choices,
         sortHeight: descriptor.height ?? 0,
         sortWidth: descriptor.width ?? 0,
         sortFps: descriptor.fps ?? 0,
         sortBitrate: descriptor.tbr,
-        sortFilesize: descriptor.filesize ?? 0,
+        sortFilesize: size.bytes ?? 0,
         dedupeKey: [
           descriptor.height ?? 0,
           descriptor.width ?? 0,
@@ -375,44 +611,59 @@ function buildVideoDrafts(
       continue
     }
 
-    const container = mergeContainer(descriptor.ext, bestAudio.ext)
-    const size = mergedDisplaySize(descriptor, bestAudio)
+    const choices = mergedOutputChoices(descriptor, audioDescriptors)
+    const autoChoice = choices.get('auto')
+    if (autoChoice === undefined) continue
+
+    const autoAudio =
+      audioDescriptors.find(
+        (audio) => autoChoice.formatIds[1] === audio.formatId
+      ) ?? bestAudio
+    const container = autoChoice.outputExt
+    const size = mergedDisplaySize(descriptor, autoAudio, durationSeconds)
     drafts.push({
       dto: {
         kind: 'video',
         label: truncateLabel(
-          `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${bestAudio.audioCodec} (merged)`
+          `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${autoAudio.audioCodec} (merged)`
         ),
         container,
         width: descriptor.width,
         height: descriptor.height,
         fps: descriptor.fps,
         videoCodec,
-        audioCodec: bestAudio.audioCodec,
+        audioCodec: autoAudio.audioCodec,
         hasAudio: true,
         requiresMerge: true,
+        hdr: descriptor.hdr,
         // No exact merged file size is verified; estimatedBytes is only the
-        // sum of the two reported stream sizes.
+        // sum of the two stream sizes/estimates.
         filesizeBytes: null,
         estimatedBytes: size.bytes,
         // Any merged total is an estimate even when both streams are exact.
-        sizeIsEstimate: size.bytes !== null
+        sizeIsEstimate: size.bytes !== null,
+        outputFormats: outputFormatsOf(choices),
+        outputSizes: videoOutputSizes(
+          choices,
+          descriptor,
+          audioDescriptors,
+          durationSeconds
+        ),
+        formatIds: autoChoice.formatIds
       },
-      formatIds: [descriptor.formatId, bestAudio.formatId],
-      mergeOutputFormat: container,
-      outputExt: container,
+      choices,
       sortHeight: descriptor.height ?? 0,
       sortWidth: descriptor.width ?? 0,
       sortFps: descriptor.fps ?? 0,
       sortBitrate: descriptor.tbr,
-      sortFilesize: descriptor.filesize ?? 0,
+      sortFilesize: size.bytes ?? 0,
       dedupeKey: [
         descriptor.height ?? 0,
         descriptor.width ?? 0,
         Math.round(descriptor.fps ?? 0),
         container,
         videoCodec,
-        bestAudio.audioCodec
+        autoAudio.audioCodec
       ].join('|')
     })
   }
@@ -420,14 +671,18 @@ function buildVideoDrafts(
   return drafts
 }
 
-function buildAudioDrafts(descriptors: FormatDescriptor[]): AudioDraft[] {
+function buildAudioDrafts(
+  descriptors: FormatDescriptor[],
+  durationSeconds: number | null
+): AudioDraft[] {
   const drafts: AudioDraft[] = []
 
   for (const descriptor of descriptors) {
     if (descriptor.kind !== 'audio' || descriptor.audioCodec === null) continue
 
     const container = descriptor.ext
-    const size = displaySize(descriptor)
+    const size = displaySize(descriptor, durationSeconds)
+    const choices = audioOutputChoices(descriptor)
     drafts.push({
       dto: {
         kind: 'audio',
@@ -445,14 +700,19 @@ function buildAudioDrafts(descriptors: FormatDescriptor[]): AudioDraft[] {
         audioCodec: descriptor.audioCodec,
         hasAudio: true,
         requiresMerge: false,
+        hdr: false,
         filesizeBytes: descriptor.filesize,
         estimatedBytes: size.bytes,
-        sizeIsEstimate: size.isEstimate
+        sizeIsEstimate: size.isEstimate,
+        outputFormats: outputFormatsOf(choices),
+        outputSizes: Object.fromEntries(
+          [...choices.keys()].map((format) => [format, size])
+        ),
+        formatIds: choices.get('auto')?.formatIds
       },
-      formatIds: [descriptor.formatId],
-      outputExt: container,
+      choices,
       sortBitrate: descriptor.abr || descriptor.tbr,
-      sortFilesize: descriptor.filesize ?? 0,
+      sortFilesize: size.bytes ?? 0,
       dedupeKey: [
         descriptor.audioCodec,
         container,
@@ -508,6 +768,7 @@ export function buildMediaAnalysis(
     if (descriptor) descriptors.push(descriptor)
   }
 
+  const durationSeconds = formatDuration(info.duration)
   const audioDescriptors = descriptors.filter(
     (descriptor) => descriptor.kind === 'audio'
   )
@@ -518,15 +779,19 @@ export function buildMediaAnalysis(
       b.tbr - a.tbr ||
       (b.filesize ?? 0) - (a.filesize ?? 0)
   )
-  const bestAudio = audioDescriptors[0] ?? null
 
   const videoDrafts = dedupeAndSort(
-    buildVideoDrafts(descriptors, bestAudio, options.ffmpegAvailable),
+    buildVideoDrafts(
+      descriptors,
+      audioDescriptors,
+      durationSeconds,
+      options.ffmpegAvailable
+    ),
     compareVideo
   ).slice(0, 150)
 
   const audioDrafts = dedupeAndSort(
-    buildAudioDrafts(audioDescriptors),
+    buildAudioDrafts(audioDescriptors, durationSeconds),
     compareAudio
   ).slice(0, 49)
 
@@ -559,9 +824,7 @@ export function buildMediaAnalysis(
         : nextOptionId()
     internalOptions.push({
       dto: { ...draft.dto, optionId },
-      formatIds: draft.formatIds,
-      mergeOutputFormat: draft.mergeOutputFormat,
-      outputExt: draft.outputExt
+      choices: draft.choices
     })
   })
 
@@ -572,9 +835,7 @@ export function buildMediaAnalysis(
         : nextOptionId()
     internalOptions.push({
       dto: { ...draft.dto, optionId },
-      formatIds: draft.formatIds,
-      mergeOutputFormat: null,
-      outputExt: draft.outputExt
+      choices: draft.choices
     })
   })
 
@@ -584,6 +845,8 @@ export function buildMediaAnalysis(
 
   return {
     title: formatTitle(info.title),
+    thumbnailUrl:
+      typeof info.thumbnail === 'string' ? info.thumbnail : null,
     durationSeconds: formatDuration(info.duration),
     options: internalOptions,
     bestVideoOptionId,

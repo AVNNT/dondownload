@@ -15,16 +15,22 @@ under the updated boundary.
 
 ## Final UX polish checkpoint (2026-11-05)
 
-The media quality selector now defaults to a compact, quality-first view in both
-the extension overlay and desktop Media tab. It offers only available exact
-1080p/720p/480p/360p tiers, plus the best available audio-only option; each row
-shows the server-reported exact/estimated size or “Size unknown”. The separate
-Best quality action uses the verified best-video opaque option ID. Expandable
+The Media tab analyzes a valid media URL automatically after a short debounce;
+the Helium overlay analyzes only when its capture panel is explicitly opened.
+Neither flow queues a download. The media quality selector defaults to a
+compact, quality-first view in both the extension overlay and desktop Media tab.
+It offers every available verified
+height (no 1080p ceiling), plus the best available audio-only option; each row
+shows the server-reported exact/estimated size or “Size unknown”. The verified
+best-video opaque option is selected by default, and output format is
+Auto/MP4/MKV/WebM with incompatible containers disabled. Expandable
 Advanced format options retain every verified option and show codec, container,
-resolution, FPS, merge detail and size. Selections remain tied to the exact
+resolution, FPS, HDR, source format IDs, merge details and per-container size.
+Selections remain tied to the exact
 opaque option ID across the compact and advanced views; nothing is queued by
-analysis or selection alone. No download engine, security boundary, or aria2
-default was changed.
+analysis or selection alone. The download engine now applies only the verified
+stream pairing and remux/merge target selected by the user; it retains fixed
+shell-free arguments and does not alter security boundaries or aria2 defaults.
 
 The T3 built-in browser remained disconnected, so browser screenshots and visual
 checks for these controls and the three themes could not be produced. Theme
