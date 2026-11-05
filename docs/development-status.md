@@ -28,7 +28,9 @@ an estimated quality kept the status at “choose an option to queue”; the
 isolated app database remained at zero downloads and zero media jobs. No file
 was queued or written. The exact YouTube origin was granted in the disposable
 profile only, which was removed after verification. Popup and overlay captures
-are in `artifacts/test-runs/theme-visual-verification/`.
+are in `artifacts/test-runs/theme-visual-verification/`. The integrated fast
+suite passed **553/553**, the native-host suite passed **31/31**, and
+`npm run typecheck` plus `npm run build` passed.
 
 The aria2 performance workstream is measuring a local HTTP baseline before any
 tuning; no throughput improvement is claimed yet.
