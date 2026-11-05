@@ -43,6 +43,7 @@ internal static class NativeHost
     private const string MediaStatusOperation = "media-status";
     private const string CancelMediaOperation = "cancel-media";
     private const string QueueCapturedSourceOperation = "queue-captured-source";
+    private const string QueueSniffedMediaOperation = "queue-sniffed-media";
     private const string HandoffDownloadOperation = "handoff-download";
     private const string StateFileName = "native-bridge.json";
     // aria2 may need up to ~12 seconds to start on the first add. The host
@@ -223,6 +224,10 @@ internal static class NativeHost
         if (type == QueueCapturedSourceOperation)
         {
             return HandleQueueCapturedSourceMessage(message);
+        }
+        if (type == QueueSniffedMediaOperation)
+        {
+            return HandleQueueSniffedMediaMessage(message);
         }
         if (type == HandoffDownloadOperation)
         {
@@ -434,6 +439,187 @@ internal static class NativeHost
             body.Add("expectedBytes", expectedBytes);
         }
         return ForwardCapturedSource(body);
+    }
+
+    private static Dictionary<string, object> HandleQueueSniffedMediaMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[]
+            {
+                "type",
+                "url",
+                "pageUrl",
+                "referer",
+                "userAgent",
+                "kind",
+                "title"
+            },
+            new string[] { "filename", "variant", "cookie", "expectedBytes" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only queue-sniffed-media messages with type,url,pageUrl,referer,userAgent,kind,title and optional filename/variant/cookie/expectedBytes are accepted.");
+        }
+
+        string normalizedUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["url"] as string, out normalizedUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+        string pageUrl;
+        if (!TryNormalizeUrl(message["pageUrl"] as string, out pageUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+        string referer;
+        if (!TryNormalizeUrl(message["referer"] as string, out referer, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+        try
+        {
+            Uri pageUri = new Uri(pageUrl);
+            Uri refererUri = new Uri(referer);
+            if (pageUri.GetLeftPart(UriPartial.Authority) !=
+                refererUri.GetLeftPart(UriPartial.Authority))
+            {
+                return Error(
+                    "INVALID_MESSAGE",
+                    "The detected media referer must belong to the page origin.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error("INVALID_URL", "That does not look like a valid URL.");
+        }
+
+        string kind = message["kind"] as string;
+        if (kind != "file" && kind != "hls" && kind != "dash")
+        {
+            return Error("INVALID_MESSAGE", "The detected media kind is unsupported.");
+        }
+
+        string userAgent = message["userAgent"] as string;
+        if (!IsSafeHeaderValue(userAgent, 512))
+        {
+            return Error("INVALID_MESSAGE", "The detected media user agent is invalid.");
+        }
+        string title = message["title"] as string;
+        if (!IsSafeText(title, 500))
+        {
+            return Error("INVALID_MESSAGE", "The detected media title is invalid.");
+        }
+
+        string filename = null;
+        if (message.ContainsKey("filename"))
+        {
+            filename = message["filename"] as string;
+            if (!IsSafeCapturedFilename(filename))
+            {
+                return Error("INVALID_MESSAGE", "The detected media filename is invalid.");
+            }
+        }
+
+        Dictionary<string, object> variant = null;
+        if (message.ContainsKey("variant"))
+        {
+            variant = message["variant"] as Dictionary<string, object>;
+            if (variant == null ||
+                !HasExactKeys(
+                    variant,
+                    new string[] { "url" },
+                    new string[] { "label", "width", "height", "bandwidth" }))
+            {
+                return Error("INVALID_MESSAGE", "The detected HLS variant is invalid.");
+            }
+            string variantUrl;
+            if (!TryNormalizeUrl(variant["url"] as string, out variantUrl, out urlError))
+            {
+                return Error("INVALID_URL", urlError);
+            }
+            variant = new Dictionary<string, object>(variant);
+            variant["url"] = variantUrl;
+            if (variant.ContainsKey("label") &&
+                !IsSafeText(variant["label"] as string, 80))
+            {
+                return Error("INVALID_MESSAGE", "The detected HLS variant label is invalid.");
+            }
+            foreach (string key in new string[] { "width", "height", "bandwidth" })
+            {
+                long number;
+                if (variant.ContainsKey(key) &&
+                    !TryReadPositiveLong(variant[key], out number))
+                {
+                    return Error("INVALID_MESSAGE", "The detected HLS variant metadata is invalid.");
+                }
+            }
+            if (kind != "hls")
+            {
+                return Error("INVALID_MESSAGE", "Only an HLS entry may pin a variant.");
+            }
+        }
+
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
+        long expectedBytes = 0;
+        if (message.ContainsKey("expectedBytes") &&
+            !TryReadPositiveLong(message["expectedBytes"], out expectedBytes))
+        {
+            return Error("INVALID_MESSAGE", "The detected media size is invalid.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("url", normalizedUrl);
+        body.Add("pageUrl", pageUrl);
+        body.Add("referer", referer);
+        body.Add("userAgent", userAgent);
+        body.Add("kind", kind);
+        body.Add("title", title);
+        if (filename != null)
+        {
+            body.Add("filename", filename);
+        }
+        if (variant != null)
+        {
+            body.Add("variant", variant);
+        }
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
+        }
+        if (message.ContainsKey("expectedBytes"))
+        {
+            body.Add("expectedBytes", expectedBytes);
+        }
+        return ForwardSniffedMedia(body);
+    }
+
+    private static bool IsSafeHeaderValue(string value, int maximum)
+    {
+        if (value == null || value.Trim().Length == 0 || value.Length > maximum)
+        {
+            return false;
+        }
+        for (int index = 0; index < value.Length; index++)
+        {
+            char character = value[index];
+            if (character < 0x20 || character == 0x7f)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Dictionary<string, object> HandleHandoffDownloadMessage(
@@ -882,6 +1068,85 @@ internal static class NativeHost
             request = CreateBridgeRequest(
                 state,
                 "/queue-captured-source",
+                BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseAppResponse(responseText);
+        }
+    }
+
+    private static Dictionary<string, object> ForwardSniffedMedia(
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(
+                state,
+                "/queue-sniffed-media",
                 BridgeTimeoutMilliseconds);
             byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
             request.ContentLength = payload.Length;

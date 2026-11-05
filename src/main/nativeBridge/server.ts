@@ -31,6 +31,13 @@ import {
   type MediaBridgeTarget
 } from '@shared/mediaBridge'
 import {
+  SNIFFED_MEDIA_ROUTE,
+  parseSniffedMediaInput,
+  redactCookieHeader,
+  sniffedMediaFilename,
+  type SniffedMediaInput
+} from '@shared/sniffedMedia'
+import {
   parseMediaAnalysis,
   parseMediaJob,
   type AnalyzeMediaInput,
@@ -95,7 +102,9 @@ function mediaErrorStatus(code: string): number {
  * before the value reaches the native host.
  */
 function safeErrorMessage(message: string): string {
-  const text = message.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  const text = redactCookieHeader(message)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
   if (
     text.length === 0 ||
     text.length > 2000 ||
@@ -314,6 +323,7 @@ export async function startNativeBridge(
       route !== BRIDGE_ROUTE &&
       route !== CAPTURED_SOURCE_ROUTE &&
       route !== DURABLE_HANDOFF_ROUTE &&
+      route !== SNIFFED_MEDIA_ROUTE &&
       !isMediaRoute(route)
     ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -338,6 +348,7 @@ export async function startNativeBridge(
       route !== BRIDGE_ROUTE &&
       route !== CAPTURED_SOURCE_ROUTE &&
       route !== DURABLE_HANDOFF_ROUTE &&
+      route !== SNIFFED_MEDIA_ROUTE &&
       options.mediaBridge === undefined
     ) {
       request.resume()
@@ -396,6 +407,11 @@ export async function startNativeBridge(
 
     if (route === CAPTURED_SOURCE_ROUTE) {
       await handleCapturedSourceRequest(parsed, response)
+      return
+    }
+
+    if (route === SNIFFED_MEDIA_ROUTE) {
+      await handleSniffedMediaRequest(parsed, response)
       return
     }
 
@@ -544,6 +560,103 @@ export async function startNativeBridge(
       durable: true,
       receipt
     })
+  }
+
+  /**
+   * NDM-style detected media. A direct file becomes a normal aria2 download
+   * with the page Referer/User-Agent (and an opted-in Cookie header) for this
+   * one job. HLS/DASH is delegated to the media engine, which runs yt-dlp's
+   * generic extractor with the same headers and produces a normal media job.
+   *
+   * Public-target validation is applied to both the selected URL and (when
+   * present) the pinned HLS variant; nothing private or loopback is reachable.
+   */
+  async function handleSniffedMediaRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    let input: SniffedMediaInput
+    try {
+      input = parseSniffedMediaInput(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    try {
+      await assertPublicTarget(input.url, options.publicTargetLookup)
+      if (input.variant !== undefined) {
+        await assertPublicTarget(
+          input.variant.url,
+          options.publicTargetLookup
+        )
+      }
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Detected media target rejected (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    if (input.kind === 'file') {
+      try {
+        await options.manager.add({
+          url: input.url,
+          filename: sniffedMediaFilename(input),
+          requestHeaders: {
+            referer: input.referer,
+            userAgent: input.userAgent,
+            ...(input.cookie === undefined ? {} : { cookie: input.cookie })
+          }
+        })
+      } catch (error) {
+        const info = toErrorInfo(error)
+        logger(`Native bridge could not queue detected media (${info.code}).`)
+        const status =
+          info.code === 'DUPLICATE_DOWNLOAD' || info.code.endsWith('_DUPLICATE')
+            ? 409
+            : 503
+        sendError(response, status, info.code, safeErrorMessage(info.message))
+        return
+      }
+      sendJson(response, 200, { ok: true, accepted: true })
+      return
+    }
+
+    const target = options.mediaBridge
+    if (target === undefined || typeof target.queueSniffedMedia !== 'function') {
+      sendError(
+        response,
+        503,
+        'MEDIA_UNAVAILABLE',
+        'Stream downloads are not available in this DonDownload build.'
+      )
+      return
+    }
+
+    let job: unknown
+    try {
+      job = await target.queueSniffedMedia(input)
+    } catch (error) {
+      sendMediaFailure(response, SNIFFED_MEDIA_ROUTE, error)
+      return
+    }
+    try {
+      parseMediaJob(job)
+    } catch {
+      logger(`Native bridge detected media returned an invalid job.`)
+      sendError(
+        response,
+        500,
+        'MEDIA_RESPONSE_INVALID',
+        'The media operation returned an invalid response.'
+      )
+      return
+    }
+    sendJson(response, 200, { ok: true, accepted: true })
   }
 
   /**

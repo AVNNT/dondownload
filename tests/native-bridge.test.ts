@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+﻿import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -107,6 +107,7 @@ interface FakeMediaTarget extends MediaBridgeTarget {
   calls: {
     analyze: unknown[]
     queue: unknown[]
+    sniffed: unknown[]
     status: unknown[]
     cancel: unknown[]
   }
@@ -117,7 +118,7 @@ interface FakeMediaTarget extends MediaBridgeTarget {
 
 function createMediaTarget(): FakeMediaTarget {
   return {
-    calls: { analyze: [], queue: [], status: [], cancel: [] },
+    calls: { analyze: [], queue: [], sniffed: [], status: [], cancel: [] },
     failWith: null,
     invalidAnalysis: false,
     invalidJob: false,
@@ -130,6 +131,11 @@ function createMediaTarget(): FakeMediaTarget {
     },
     async queueMedia(input) {
       this.calls.queue.push(input)
+      if (this.failWith) throw this.failWith
+      return (this.invalidJob ? { ...mediaJob(), extra: true } : mediaJob()) as never
+    },
+    async queueSniffedMedia(input) {
+      this.calls.sniffed.push(input)
       if (this.failWith) throw this.failWith
       return (this.invalidJob ? { ...mediaJob(), extra: true } : mediaJob()) as never
     },
@@ -653,7 +659,7 @@ describe('media bridge routes', () => {
       ok: false,
       error: { code: 'UNAUTHORIZED' }
     })
-    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+    expect(media?.calls).toEqual({ analyze: [], queue: [], sniffed: [], status: [], cancel: [] })
   })
 
   it.each([
@@ -676,7 +682,7 @@ describe('media bridge routes', () => {
         error: { code: 'ORIGIN_REJECTED' }
       })
     }
-    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+    expect(media?.calls).toEqual({ analyze: [], queue: [], sniffed: [], status: [], cancel: [] })
   })
 
   it.each([
@@ -690,7 +696,7 @@ describe('media bridge routes', () => {
     const response = await post(JSON.stringify(body), { path: route })
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ ok: false })
-    expect(media?.calls).toEqual({ analyze: [], queue: [], status: [], cancel: [] })
+    expect(media?.calls).toEqual({ analyze: [], queue: [], sniffed: [], status: [], cancel: [] })
   })
 
   it('applies the existing content-type and body limits to media routes', async () => {
@@ -841,5 +847,95 @@ describe('shared native bridge schemas', () => {
     expect(() =>
       parseQueueDownloadRequest({ url: 'https://example.com/a', force: 'yes' })
     ).toThrow(ValidationError)
+  })
+})
+
+describe('detected media route', () => {
+  beforeEach(async () => {
+    await start({ media: true })
+  })
+
+  function body(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      url: 'https://cdn.example/media/clip.mp4',
+      pageUrl: 'https://site.example/watch/1',
+      referer: 'https://site.example/watch/1',
+      userAgent: 'Mozilla/5.0 Browser',
+      kind: 'file',
+      title: 'A clip',
+      ...overrides
+    })
+  }
+
+  it('queues a detected file with one-job referer/UA/cookie headers', async () => {
+    const response = await post(
+      body({ filename: 'A clip.mp4', cookie: 'auth=1' }),
+      { path: '/queue-sniffed-media' }
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, accepted: true })
+    expect(manager.calls).toEqual([
+      {
+        url: 'https://cdn.example/media/clip.mp4',
+        filename: 'A clip.mp4',
+        requestHeaders: {
+          referer: 'https://site.example/watch/1',
+          userAgent: 'Mozilla/5.0 Browser',
+          cookie: 'auth=1'
+        }
+      }
+    ])
+  })
+
+  it('rejects private targets, non-http URLs and oversized headers', async () => {
+    const privateResponse = await post(
+      body({ url: 'http://127.0.0.1/clip.mp4' }),
+      { path: '/queue-sniffed-media' }
+    )
+    expect(privateResponse.status).toBe(400)
+    expect(await privateResponse.json()).toMatchObject({
+      ok: false,
+      error: { code: 'MEDIA_TARGET_NOT_PUBLIC' }
+    })
+
+    const badScheme = await post(body({ url: 'ftp://cdn.example/clip.mp4' }), {
+      path: '/queue-sniffed-media'
+    })
+    expect(badScheme.status).toBe(400)
+
+    const oversized = await post(body({ userAgent: 'x'.repeat(513) }), {
+      path: '/queue-sniffed-media'
+    })
+    expect(oversized.status).toBe(400)
+    expect(manager.calls).toHaveLength(0)
+  })
+
+  it('delegates an HLS manifest to a normal media job and rejects cookie injection', async () => {
+    const response = await post(
+      body({
+        url: 'https://cdn.example/master.m3u8',
+        kind: 'hls',
+        variant: {
+          url: 'https://cdn.example/high.m3u8',
+          label: '720p',
+          width: 1280,
+          height: 720,
+          bandwidth: 2400000
+        }
+      }),
+      { path: '/queue-sniffed-media' }
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, accepted: true })
+    expect(media && media.calls.sniffed).toHaveLength(1)
+    expect(media && media.calls.sniffed[0]).toMatchObject({
+      kind: 'hls',
+      variant: { url: 'https://cdn.example/high.m3u8', height: 720 }
+    })
+
+    const injected = await post(body({ cookie: 'a=1\r\nX-Evil: yes' }), {
+      path: '/queue-sniffed-media'
+    })
+    expect(injected.status).toBe(400)
   })
 })

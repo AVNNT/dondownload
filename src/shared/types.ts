@@ -117,9 +117,20 @@ export interface CapturedSourceInput {
 
 export const MAX_CAPTURED_SOURCE_FILENAME_LENGTH = 180
 
+/**
+ * One-job request headers learned from an explicitly enabled browser page.
+ * These are in-memory only and are never written to the database or logs.
+ */
+export interface DownloadRequestHeaders {
+  referer?: string
+  userAgent?: string
+  cookie?: string
+}
+
 export interface AddDownloadInput {
   url: string
   filename?: string
+  requestHeaders?: DownloadRequestHeaders
   /**
    * Explicit user opt-in for a deliberate second copy of an unfinished URL.
    * Never set this automatically; it only comes from a Download again action.

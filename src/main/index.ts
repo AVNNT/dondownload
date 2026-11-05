@@ -253,7 +253,38 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       autoUpdateAllowed: smoke === null,
       isJobActive: () => mediaJobs?.hasActiveJobs() ?? false
     })
-    const mediaEngine = createMediaEngine({ managedToolsDir })
+    // An explicitly opted-in interactive smoke session may pin the isolated
+    // fixture host to its public placeholder so the normal public-target check
+    // still runs while yt-dlp can reach the local HLS fixture. No environment
+    // value means no change to production behaviour.
+    const mediaFixtureHost = process.env.DONDOWNLOAD_SMOKE_FIXTURE_HOST?.trim()
+    const mediaFixtureAddress =
+      process.env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS?.trim()
+    const mediaFixturePublicAddress =
+      process.env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS?.trim()
+    const mediaFixtureLookup =
+      process.env.DONDOWNLOAD_SMOKE_TEST === '1' &&
+      mediaFixtureHost !== undefined &&
+      mediaFixtureHost.length > 0 &&
+      mediaFixtureAddress !== undefined &&
+      mediaFixtureAddress.length > 0 &&
+      mediaFixturePublicAddress !== undefined &&
+      mediaFixturePublicAddress.length > 0
+        ? createSmokeFixtureLookup([
+            {
+              hostname: mediaFixtureHost,
+              address: mediaFixtureAddress,
+              publicAddress: mediaFixturePublicAddress,
+              family: 4
+            }
+          ])
+        : undefined
+    const mediaEngine = createMediaEngine({
+      managedToolsDir,
+      ...(mediaFixtureLookup === undefined
+        ? {}
+        : { lookup: mediaFixtureLookup })
+    })
     mediaJobs = new MediaJobsManager({
       engine: mediaEngine,
       mediaDir,

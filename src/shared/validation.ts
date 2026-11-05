@@ -1,9 +1,13 @@
-import type { AddDownloadInput } from './types'
+import type { AddDownloadInput, DownloadRequestHeaders } from './types'
 import { ValidationError } from './errors'
 import {
   defaultDownloadControls,
   parseDownloadControls
 } from './settings'
+
+const MAX_REFERER_LENGTH = 4096
+const MAX_USER_AGENT_LENGTH = 512
+const MAX_COOKIE_HEADER_LENGTH = 8192
 
 export { ValidationError } from './errors'
 
@@ -121,6 +125,71 @@ export function sanitizeFilename(value: unknown): string {
   return name
 }
 
+function readHeaderText(
+  record: Record<string, unknown>,
+  key: string,
+  maximum: number
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return undefined
+  const value = record[key]
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > maximum ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new ValidationError('The request header value is invalid.')
+  }
+  return value
+}
+
+/**
+ * Strict per-download header contract. Only the three browser-observed values
+ * are accepted; there is no arbitrary header list and no header can contain a
+ * newline.
+ */
+export function parseDownloadRequestHeaders(
+  value: unknown
+): DownloadRequestHeaders {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ValidationError('Invalid request header payload.')
+  }
+  const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!['referer', 'userAgent', 'cookie'].includes(key)) {
+      throw new ValidationError('The request header payload contains unsupported fields.')
+    }
+  }
+
+  let referer: string | undefined
+  if (record.referer !== undefined) {
+    referer = normalizeHttpUrl(record.referer)
+    if (referer.length > MAX_REFERER_LENGTH) {
+      throw new ValidationError('The request referer is too long.')
+    }
+  }
+
+  const userAgent = readHeaderText(
+    record,
+    'userAgent',
+    MAX_USER_AGENT_LENGTH
+  )
+  if (userAgent !== undefined && /[\r\n]/.test(userAgent)) {
+    throw new ValidationError('The request user agent is invalid.')
+  }
+
+  const cookie = readHeaderText(record, 'cookie', MAX_COOKIE_HEADER_LENGTH)
+  if (cookie !== undefined && /[\r\n]/.test(cookie)) {
+    throw new ValidationError('The request cookie header is invalid.')
+  }
+
+  return {
+    ...(referer === undefined ? {} : { referer }),
+    ...(userAgent === undefined ? {} : { userAgent }),
+    ...(cookie === undefined ? {} : { cookie })
+  }
+}
+
 export function parseAddDownloadInput(value: unknown): AddDownloadInput {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ValidationError('Invalid download request.')
@@ -154,13 +223,19 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     controls = parseDownloadControls(record.controls)
   }
 
+  let requestHeaders: DownloadRequestHeaders | undefined
+  if (record.requestHeaders !== undefined && record.requestHeaders !== null) {
+    requestHeaders = parseDownloadRequestHeaders(record.requestHeaders)
+  }
+
   return {
     url,
     ...(filename === undefined ? {} : { filename }),
     ...(force ? { force: true } : {}),
     ...(record.controls === undefined || record.controls === null
       ? {}
-      : { controls })
+      : { controls }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders })
   }
 }
 

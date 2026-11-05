@@ -97,6 +97,14 @@ export interface DownloadArgumentInput {
   ffmpegLocation: string | null
   /** Optional explicitly located Deno runtime for yt-dlp's JS challenges. */
   denoPath?: string | null
+  /**
+   * One-job page headers from an explicitly enabled browser page. Values are
+   * already length/control-character validated by the bridge; this builder only
+   * emits them as separate arguments (never through a shell).
+   */
+  referer?: string
+  userAgent?: string
+  cookie?: string
 }
 
 /**
@@ -152,6 +160,18 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
     input.ffmpegLocation !== null
   ) {
     args.push('--ffmpeg-location', input.ffmpegLocation)
+  }
+
+  if (input.referer !== undefined) {
+    args.push('--referer', input.referer)
+  }
+  if (input.userAgent !== undefined) {
+    args.push('--user-agent', input.userAgent)
+  }
+  if (input.cookie !== undefined) {
+    // A single fixed Cookie header, only for a job the user explicitly opted
+    // into for that exact origin. `--` below still terminates option parsing.
+    args.push('--add-header', `Cookie: ${input.cookie}`)
   }
 
   args.push('--', input.sourceUrl)

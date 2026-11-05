@@ -7,6 +7,7 @@ import {
   type Aria2State,
   type DownloadBlockReason,
   type DownloadItem,
+  type DownloadRequestHeaders,
   type DownloadStatus
 } from '@shared/types'
 import { MAX_DOWNLOAD_ATTEMPTS, canRetry } from '@shared/policy'
@@ -102,6 +103,11 @@ export interface DurableHandoffAcceptance {
 export class DownloadManager {
   private readonly records = new Map<string, DownloadItem>()
   private readonly explicitFilenames = new Map<string, string>()
+  /**
+   * One-job Referer/User-Agent/Cookie values. Deliberately memory-only: a
+   * restart cannot recover them, so cookies never touch disk.
+   */
+  private readonly requestHeaders = new Map<string, DownloadRequestHeaders>()
   private readonly controls = new Map<string, DownloadControls>()
   private readonly blockReasons = new Map<string, DownloadBlockReason | null>()
   /**
@@ -349,7 +355,13 @@ export class DownloadManager {
         // timer later, so aria2 cannot start them outside the window.
         client = await this.aria2.getClient()
         await this.ensureDownloadDirectory()
-        gid = await this.addUri(client, input.url, input.filename, controls)
+        gid = await this.addUri(
+          client,
+          input.url,
+          input.filename,
+          controls,
+          input.requestHeaders
+        )
       }
 
       const record: DownloadItem = {
@@ -377,6 +389,9 @@ export class DownloadManager {
       this.blockReasons.set(id, decision.reason)
       if (input.filename) {
         this.explicitFilenames.set(id, input.filename)
+      }
+      if (input.requestHeaders) {
+        this.requestHeaders.set(id, input.requestHeaders)
       }
 
       if (durable) {
@@ -427,6 +442,7 @@ export class DownloadManager {
     }
     this.records.delete(id)
     this.explicitFilenames.delete(id)
+    this.requestHeaders.delete(id)
     this.controls.delete(id)
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
@@ -594,7 +610,8 @@ export class DownloadManager {
       client,
       record.url,
       explicitFilename,
-      this.controls.get(record.id) ?? defaultDownloadControls()
+      this.controls.get(record.id) ?? defaultDownloadControls(),
+      this.requestHeaders.get(record.id)
     )
 
     this.updateRecord(record, {
@@ -626,6 +643,7 @@ export class DownloadManager {
 
     this.records.delete(record.id)
     this.explicitFilenames.delete(record.id)
+    this.requestHeaders.delete(record.id)
     this.controls.delete(record.id)
     this.blockReasons.delete(record.id)
     this.startNowIds.delete(record.id)
@@ -751,7 +769,8 @@ export class DownloadManager {
         client,
         record.url,
         this.explicitFilenames.get(record.id),
-        this.controlsOf(record)
+        this.controlsOf(record),
+        this.requestHeaders.get(record.id)
       )
       this.updateRecord(record, {
         gid,
@@ -1028,7 +1047,8 @@ export class DownloadManager {
       client,
       record.url,
       explicitFilename,
-      this.controls.get(record.id) ?? defaultDownloadControls()
+      this.controls.get(record.id) ?? defaultDownloadControls(),
+      this.requestHeaders.get(record.id)
     )
 
     this.updateRecord(record, {
@@ -1046,9 +1066,10 @@ export class DownloadManager {
     client: Aria2Client,
     rawUrl: string,
     explicitFilename: string | undefined,
-    controls: DownloadControls
+    controls: DownloadControls,
+    headers?: DownloadRequestHeaders
   ): Promise<string> {
-    const options: Record<string, string> = {
+    const options: Record<string, string | string[]> = {
       dir: this.downloadDir,
       'max-tries': '3',
       'retry-wait': '2',
@@ -1062,6 +1083,18 @@ export class DownloadManager {
     }
     if (explicitFilename) {
       options.out = sanitizeFilename(explicitFilename)
+    }
+    if (headers) {
+      // Referer is a first-class aria2 option; the browser UA replaces the
+      // generic DonDownload UA for this one job. A Cookie header, when the user
+      // opted in, is passed only in the request and never persisted.
+      if (headers.referer !== undefined) options.referer = headers.referer
+      if (headers.userAgent !== undefined) {
+        options['user-agent'] = headers.userAgent
+      }
+      if (headers.cookie !== undefined) {
+        options.header = [`Cookie: ${headers.cookie}`]
+      }
     }
 
     // Per-download aria2 options. When `connections` is null aria2 inherits the

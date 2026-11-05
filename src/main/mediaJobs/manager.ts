@@ -20,6 +20,10 @@ import {
   type MediaToolState
 } from '@shared/media'
 import { mediaOutputFormatsForOption } from '@shared/mediaOutput'
+import {
+  parseSniffedMediaInput,
+  type SniffedMediaInput
+} from '@shared/sniffedMedia'
 import { AppError } from '../errors'
 
 /**
@@ -32,6 +36,14 @@ import { AppError } from '../errors'
  * `MediaSnapshot` are sanitized copies that cross IPC/native boundaries.
  */
 
+export interface MediaDirectDownloadRequest {
+  kind: 'hls' | 'dash'
+  referer: string
+  userAgent: string
+  cookie?: string
+  title: string
+}
+
 export interface MediaDownloadRequest {
   jobId: string
   sourceUrl: string
@@ -40,6 +52,10 @@ export interface MediaDownloadRequest {
   dir: string
   maxBytes?: number | null
   outputFormat?: MediaOutputFormat
+  /** Present only for a detected HLS/DASH job. Memory-only. */
+  direct?: MediaDirectDownloadRequest
+  /** Known total for progress; used with `direct` only. */
+  expectedBytes?: number | null
 }
 
 export interface MediaDownloadProgress {
@@ -126,6 +142,8 @@ interface ManagedMediaJob {
   record: MediaJobRecord
   /** Transient progress speed; not persisted by the database schema. */
   speedBps: number
+  /** Memory-only detected-stream headers; never persisted. */
+  direct: MediaDirectDownloadRequest | null
   /**
    * Transient duplicate-guard identity. It is derived from the normalized page
    * URL and visible format invariants, never from random analysis/option IDs.
@@ -430,7 +448,110 @@ export class MediaJobsManager {
     const job: ManagedMediaJob = {
       record,
       speedBps: 0,
+      direct: null,
       optionFingerprint,
+      awaitingPolicy: !allowedNow
+    }
+    this.jobs.set(record.id, job)
+    this.persistNow(job)
+    this.publish(true)
+
+    const queued = this.toMediaJob(job)
+    if (allowedNow) {
+      queueMicrotask(() => {
+        void this.runJob(record.id)
+      })
+    }
+    return queued
+  }
+
+  /**
+   * Create a normal media job for a detected HLS/DASH stream. The selected
+   * manifest (or pinned HLS variant) is downloaded by yt-dlp's generic
+   * extractor, so progress/status/cancel all use the existing media UI.
+   *
+   * Referer/User-Agent/Cookie stay in memory on this process only. A persisted
+   * row never contains them, and a relaunch marks active jobs interrupted.
+   */
+  async queueSniffedMedia(rawInput: SniffedMediaInput): Promise<MediaJob> {
+    if (this.closed) {
+      throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
+    }
+    const input = parseSniffedMediaInput(rawInput)
+    if (input.kind === 'file') {
+      throw new AppError(
+        'MEDIA_OPTION_INVALID',
+        'A direct detected file is queued through aria2, not the media engine.'
+      )
+    }
+    const sourceUrl = input.variant?.url ?? input.url
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify([
+          normalizeMediaSourceUrl(sourceUrl),
+          input.kind,
+          input.variant?.url ?? null
+        ])
+      )
+      .digest('hex')
+
+    for (const job of this.jobs.values()) {
+      if (
+        job.optionFingerprint === fingerprint &&
+        job.record.sourceUrl === sourceUrl &&
+        isActiveMediaJobStatus(job.record.status)
+      ) {
+        throw new AppError(
+          'MEDIA_DUPLICATE_JOB',
+          'This detected stream is already queued or downloading.',
+          'Use Download again only if you deliberately want a second copy.'
+        )
+      }
+    }
+
+    const createdAt = this.now()
+    const label =
+      input.kind === 'hls'
+        ? input.variant?.label
+          ? `HLS · ${input.variant.label}`
+          : 'HLS stream'
+        : 'DASH stream'
+    const record: MediaJobRecord = {
+      id: randomUUID(),
+      sourceUrl,
+      analysisId: 'sniffed',
+      optionId: 'auto',
+      kind: 'video',
+      title: input.title,
+      label,
+      status: 'queued',
+      completedBytes: 0,
+      totalBytes:
+        input.expectedBytes !== undefined && input.expectedBytes > 0
+          ? input.expectedBytes
+          : null,
+      errorMessage: null,
+      dir: this.mediaDir,
+      filePath: null,
+      maxBytes: null,
+      outputFormat: 'auto',
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null
+    }
+
+    const allowedNow = this.startAllowed(createdAt)
+    const job: ManagedMediaJob = {
+      record,
+      speedBps: 0,
+      direct: {
+        kind: input.kind,
+        referer: input.referer,
+        userAgent: input.userAgent,
+        ...(input.cookie === undefined ? {} : { cookie: input.cookie }),
+        title: input.title
+      },
+      optionFingerprint: fingerprint,
       awaitingPolicy: !allowedNow
     }
     this.jobs.set(record.id, job)
@@ -665,7 +786,13 @@ export class MediaJobsManager {
           optionId: job.record.optionId,
           dir: job.record.dir,
           maxBytes: job.record.maxBytes ?? null,
-          outputFormat: job.record.outputFormat ?? 'auto'
+          outputFormat: job.record.outputFormat ?? 'auto',
+          ...(job.direct === null
+            ? {}
+            : {
+                direct: job.direct,
+                expectedBytes: job.record.totalBytes
+              })
         },
         (progress) => {
           this.handleProgress(id, progress)
@@ -882,6 +1009,7 @@ export class MediaJobsManager {
       this.jobs.set(record.id, {
         record,
         speedBps: 0,
+        direct: null,
         optionFingerprint: '',
         // Persisted queued jobs are not silently restarted after a relaunch.
         awaitingPolicy: false

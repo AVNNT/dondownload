@@ -100,6 +100,13 @@ const UNSAFE_DISPLAY_TEXT =
   /(?:\b[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
 const SAFE_SELECTOR =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:\+[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/
+/**
+ * Application-generated selector for a detected HLS/DASH manifest. `bestvideo*`
+ * includes combined streams, `bestaudio` fills the audio track, and `best` is
+ * the single-file fallback. This value never comes from the page or the user.
+ */
+const DIRECT_FORMAT_SELECTOR = 'bestvideo*+bestaudio/best'
+const MAX_DIRECT_HEADER_LENGTH = 8192
 
 const YTDLP_HINT =
   'Install yt-dlp (for example: winget install yt-dlp.yt-dlp or pip install -U yt-dlp), place yt-dlp.exe in vendor/yt-dlp/, or set DONDOWNLOAD_YTDLP_PATH. yt-dlp is not bundled or downloaded by DonDownload.'
@@ -115,6 +122,14 @@ export interface MediaDownloadProgress {
   filePath: string | null
 }
 
+export interface MediaDirectDownload {
+  kind: 'hls' | 'dash'
+  referer: string
+  userAgent: string
+  cookie?: string
+  title: string
+}
+
 export interface MediaDownloadRequest {
   jobId: string
   sourceUrl: string
@@ -124,6 +139,13 @@ export interface MediaDownloadRequest {
   maxBytes?: number | null
   /** Requested output container; omitted means `auto`. */
   outputFormat?: MediaOutputFormat
+  /**
+   * NDM-style stream download. When present there is no opaque analysis; the
+   * source URL is already the detected manifest or pinned HLS variant.
+   */
+  direct?: MediaDirectDownload
+  /** Known total for progress/validation; used with `direct` only. */
+  expectedBytes?: number | null
 }
 
 export interface MediaDownloadResult {
@@ -303,6 +325,64 @@ function asPlainRecord(value: unknown): Record<string, unknown> | null {
  * Produce bounded display text that cannot smuggle a URL or filesystem path
  * through a renderer-safe title field.
  */
+function parseDirectDownload(value: unknown): MediaDirectDownload | null {
+  if (value === undefined) return null
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ValidationError('Invalid detected media download request.')
+  }
+  const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!['kind', 'referer', 'userAgent', 'cookie', 'title'].includes(key)) {
+      throw new ValidationError(
+        'The detected media download request contains unsupported fields.'
+      )
+    }
+  }
+  if (record.kind !== 'hls' && record.kind !== 'dash') {
+    throw new ValidationError('The detected stream kind is unsupported.')
+  }
+  const referer = normalizeMediaSourceUrl(record.referer)
+  if (referer.length > 4096) {
+    throw new ValidationError('The detected media referer is too long.')
+  }
+  const readHeader = (
+    key: 'userAgent' | 'cookie',
+    maximum: number
+  ): string | undefined => {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) return undefined
+    const candidate = record[key]
+    if (
+      typeof candidate !== 'string' ||
+      candidate.trim().length === 0 ||
+      candidate.length > maximum ||
+      CONTROL_CHARACTERS.test(candidate) ||
+      /[\r\n]/.test(candidate)
+    ) {
+      throw new ValidationError(`The detected media ${key} is invalid.`)
+    }
+    return candidate
+  }
+  const userAgent = readHeader('userAgent', 512)
+  if (userAgent === undefined) {
+    throw new ValidationError('The detected media user agent is missing.')
+  }
+  const cookie = readHeader('cookie', MAX_DIRECT_HEADER_LENGTH)
+  const title =
+    typeof record.title === 'string' &&
+    record.title.trim().length > 0 &&
+    record.title.length <= 500 &&
+    !CONTROL_CHARACTERS.test(record.title)
+      ? record.title
+      : 'Detected media'
+  return {
+    kind: record.kind,
+    referer,
+    userAgent,
+    ...(cookie === undefined ? {} : { cookie }),
+    title
+  }
+}
+
 function cleanDisplayText(
   value: unknown,
   maximum: number,
@@ -1556,74 +1636,127 @@ export function createMediaEngine(
     const analysisId = parseMediaAnalysisId(record.analysisId)
     const optionId = parseMediaOptionId(record.optionId)
 
-    const current = Math.floor(now())
-
-    const analysis = analyses.get(analysisId)
-    if (!analysis) {
-      removeExpired(current)
-      throw new AppError(
-        'MEDIA_ANALYSIS_NOT_FOUND',
-        'Analyze the page again before downloading.'
-      )
-    }
-    if (analysis.expiresAt <= current) {
-      analyses.delete(analysisId)
-      removeExpired(current)
-      throw new AppError(
-        'MEDIA_ANALYSIS_EXPIRED',
-        'This analysis has expired. Analyze the page again.'
-      )
-    }
-    removeExpired(current)
-    if (analysis.url !== sourceUrl) {
-      throw new AppError(
-        'MEDIA_ANALYSIS_MISMATCH',
-        'The analysis does not match this page. Analyze the page again.'
-      )
-    }
-
-    // Re-resolve the page target immediately before starting a download. The
-    // URL came from an earlier analysis and DNS may have changed since then.
-    await assertPublicTarget(sourceUrl)
-
-    const option = analysis.options.get(optionId)
-    if (!option) {
-      throw new AppError(
-        'MEDIA_OPTION_INVALID',
-        'Choose one of the formats from a fresh analysis.'
-      )
-    }
-
-    const rawOutputFormat = record.outputFormat
-    if (rawOutputFormat !== undefined && !isMediaOutputFormat(rawOutputFormat)) {
-      throw new AppError(
-        'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
-        'Choose a supported output format.'
-      )
-    }
-    const requestedOutputFormat: MediaOutputFormat =
-      rawOutputFormat === undefined ? 'auto' : rawOutputFormat
-    const outputChoice: InternalOutputChoice | undefined = option.choices.get(
-      requestedOutputFormat
-    )
-    if (!outputChoice) {
-      throw new AppError(
-        'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
-        'This option cannot produce the selected output format without transcoding. Choose Auto or another format.'
-      )
-    }
-
+    const direct = parseDirectDownload(record.direct)
     const maxBytes = request.maxBytes ?? null
-    const selectedSize =
-      option.dto.outputSizes?.[requestedOutputFormat] ?? {
-        bytes: option.dto.estimatedBytes ?? option.dto.filesizeBytes,
-        isEstimate: option.dto.sizeIsEstimate === true
+    let title: string
+    let outputChoice: InternalOutputChoice
+    let selectedSize: { bytes: number | null; isEstimate: boolean }
+    let directHeaders: {
+      referer?: string
+      userAgent?: string
+      cookie?: string
+    } = {}
+
+    if (direct !== null) {
+      // Detected manifest download: no analysis cache, no opaque option. The
+      // extension/bridge already validated the URL; re-resolve it immediately
+      // before yt-dlp starts.
+      title = cleanDisplayText(direct.title, 180, 'Detected media')
+      await assertPublicTarget(sourceUrl)
+      if (direct.kind === 'dash' || direct.kind === 'hls') {
+        // A merge/remux needs FFmpeg; fail before staging a huge partial file.
       }
-    if (maxBytes !== null && selectedSize.bytes !== null && selectedSize.bytes > maxBytes) {
-      throw new AppError(
-        'MEDIA_SIZE_CAP_EXCEEDED',
-        'The reported or estimated media size exceeds the configured per-job size limit.'
-      )
+      const expectedBytes =
+        typeof record.expectedBytes === 'number' &&
+        Number.isSafeInteger(record.expectedBytes) &&
+        record.expectedBytes > 0
+          ? record.expectedBytes
+          : null
+      if (
+        maxBytes !== null &&
+        expectedBytes !== null &&
+        expectedBytes > maxBytes
+      ) {
+        throw new AppError(
+          'MEDIA_SIZE_CAP_EXCEEDED',
+          'The reported media size exceeds the configured per-job size limit.'
+        )
+      }
+      selectedSize = { bytes: expectedBytes, isEstimate: false }
+      outputChoice = {
+        outputFormat: 'mp4',
+        formatIds: [DIRECT_FORMAT_SELECTOR],
+        mergeOutputFormat: 'mp4',
+        remuxOutputFormat: 'mp4',
+        outputExt: 'mp4'
+      }
+      directHeaders = {
+        referer: direct.referer,
+        userAgent: direct.userAgent,
+        ...(direct.cookie === undefined ? {} : { cookie: direct.cookie })
+      }
+    } else {
+      const current = Math.floor(now())
+
+      const analysis = analyses.get(analysisId)
+      if (!analysis) {
+        removeExpired(current)
+        throw new AppError(
+          'MEDIA_ANALYSIS_NOT_FOUND',
+          'Analyze the page again before downloading.'
+        )
+      }
+      if (analysis.expiresAt <= current) {
+        analyses.delete(analysisId)
+        removeExpired(current)
+        throw new AppError(
+          'MEDIA_ANALYSIS_EXPIRED',
+          'This analysis has expired. Analyze the page again.'
+        )
+      }
+      removeExpired(current)
+      if (analysis.url !== sourceUrl) {
+        throw new AppError(
+          'MEDIA_ANALYSIS_MISMATCH',
+          'The analysis does not match this page. Analyze the page again.'
+        )
+      }
+
+      // Re-resolve the page target immediately before starting a download. The
+      // URL came from an earlier analysis and DNS may have changed since then.
+      await assertPublicTarget(sourceUrl)
+
+      const option = analysis.options.get(optionId)
+      if (!option) {
+        throw new AppError(
+          'MEDIA_OPTION_INVALID',
+          'Choose one of the formats from a fresh analysis.'
+        )
+      }
+
+      const rawOutputFormat = record.outputFormat
+      if (rawOutputFormat !== undefined && !isMediaOutputFormat(rawOutputFormat)) {
+        throw new AppError(
+          'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
+          'Choose a supported output format.'
+        )
+      }
+      const requestedOutputFormat: MediaOutputFormat =
+        rawOutputFormat === undefined ? 'auto' : rawOutputFormat
+      const chosen = option.choices.get(requestedOutputFormat)
+      if (!chosen) {
+        throw new AppError(
+          'MEDIA_OUTPUT_FORMAT_UNSUPPORTED',
+          'This option cannot produce the selected output format without transcoding. Choose Auto or another format.'
+        )
+      }
+      outputChoice = chosen
+      title = analysis.title
+      selectedSize =
+        option.dto.outputSizes?.[requestedOutputFormat] ?? {
+          bytes: option.dto.estimatedBytes ?? option.dto.filesizeBytes,
+          isEstimate: option.dto.sizeIsEstimate === true
+        }
+      if (
+        maxBytes !== null &&
+        selectedSize.bytes !== null &&
+        selectedSize.bytes > maxBytes
+      ) {
+        throw new AppError(
+          'MEDIA_SIZE_CAP_EXCEEDED',
+          'The reported or estimated media size exceeds the configured per-job size limit.'
+        )
+      }
     }
 
     if (pending.cancelRequested) {
@@ -1655,14 +1788,17 @@ export function createMediaEngine(
     }
 
     const formatSelector = outputChoice.formatIds.join('+')
-    if (!SAFE_SELECTOR.test(formatSelector)) {
+    if (
+      (direct === null && !SAFE_SELECTOR.test(formatSelector)) ||
+      (direct !== null && formatSelector !== DIRECT_FORMAT_SELECTOR)
+    ) {
       throw new AppError(
         'MEDIA_OPTION_INVALID',
         'The selected format is no longer valid. Analyze the page again.'
       )
     }
 
-    const base = buildOutputBase(analysis.title)
+    const base = buildOutputBase(title)
     const stagingDir = path.join(outputDir, stagingDirName(jobId))
     if (!isInsideDirectory(outputDir, stagingDir)) {
       throw new AppError(
@@ -1670,7 +1806,7 @@ export function createMediaEngine(
         'The download path is not inside the selected folder.'
       )
     }
-    const stagingBase = buildStagingBase(analysis.title, stagingDir)
+    const stagingBase = buildStagingBase(title, stagingDir)
     const outputTemplate = path.join(
       stagingDir,
       `${escapeOutputTemplate(stagingBase)}.%(ext)s`
@@ -1698,7 +1834,8 @@ export function createMediaEngine(
       mergeOutputFormat: outputChoice.mergeOutputFormat,
       remuxOutputFormat: outputChoice.remuxOutputFormat,
       ffmpegLocation: needsFfmpeg ? toolchain.ffmpegPath : null,
-      denoPath: toolchain.denoPath
+      denoPath: toolchain.denoPath,
+      ...directHeaders
     })
 
     const safeProgress: (update: MediaDownloadProgress) => void =
@@ -1994,13 +2131,7 @@ export function createMediaEngine(
         }
       })
 
-      emit(
-        'downloading',
-        0,
-        option.dto.estimatedBytes ?? option.dto.filesizeBytes,
-        0,
-        null
-      )
+      emit('downloading', 0, selectedSize.bytes, 0, null)
 
       if (job.cancelRequested) {
         terminateProcessTree(child, platform, spawn, env)

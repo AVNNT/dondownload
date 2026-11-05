@@ -10,6 +10,7 @@ import {
   type MediaOutputFormat,
   type MediaQueueInput
 } from './media'
+import type { SniffedMediaInput } from './sniffedMedia'
 import { ValidationError } from './validation'
 
 /**
@@ -96,6 +97,12 @@ export interface MediaBridgeTarget {
   queueMedia(input: MediaQueueInput): Promise<MediaJob>
   getMediaStatus(jobId: string): Promise<MediaJob>
   cancelMedia(jobId: string): Promise<MediaJob>
+  /**
+   * Additive NDM-style stream download. The input has already been validated
+   * by `parseSniffedMediaInput` in the bridge; the manager creates a normal
+   * media job so progress/status use the existing media UI.
+   */
+  queueSniffedMedia?(input: SniffedMediaInput): Promise<MediaJob>
 }
 
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
