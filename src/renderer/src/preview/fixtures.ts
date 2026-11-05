@@ -65,9 +65,16 @@ export interface PreviewClock {
   now?: () => number
 }
 
+/** Controls only the in-memory preview fixtures; never part of the preload API. */
+export interface PreviewFixtureControls {
+  advanceDownloadFixture: () => string
+}
+
 type Listener<T> = (value: T) => void
 
-export function createPreviewApi(options: PreviewClock = {}): DonDownloadApi {
+export function createPreviewApi(
+  options: PreviewClock = {}
+): DonDownloadApi & PreviewFixtureControls {
   const now = options.now ?? (() => Date.now())
   const anchor = now()
 
@@ -373,6 +380,39 @@ export function createPreviewApi(options: PreviewClock = {}): DonDownloadApi {
   }
 
   return {
+    advanceDownloadFixture: () => {
+      const item = downloads.find(
+        (download) => download.status === 'active' || download.status === 'queued'
+      )
+      if (!item) return 'No active or queued fixture download is available.'
+
+      if (item.status === 'queued') {
+        item.status = 'active'
+        item.blockReason = null
+        item.completedBytes = Math.min(
+          Math.max(item.totalBytes, 1),
+          Math.max(item.completedBytes, Math.floor(item.totalBytes * 0.6))
+        )
+        item.speedBps = 2_400_000
+        item.etaSeconds = item.totalBytes > 0
+          ? Math.ceil((item.totalBytes - item.completedBytes) / item.speedBps)
+          : null
+        item.updatedAt = now()
+        emitDownloads()
+        return `Simulated progress: ${item.filename} is active.`
+      }
+
+      item.status = 'complete'
+      item.completedBytes = item.totalBytes
+      item.speedBps = 0
+      item.etaSeconds = null
+      item.completedAt = now()
+      item.filePath ??= `Downloads/DonDownload/${item.filename}`
+      item.updatedAt = now()
+      emitDownloads()
+      return `Simulated completion: ${item.filename} is complete.`
+    },
+
     getSnapshot: async () => ok(downloadSnapshot()),
 
     addDownload: async (input: AddDownloadInput) => {
