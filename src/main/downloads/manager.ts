@@ -349,16 +349,20 @@ export class DownloadManager {
       )
 
       id = randomUUID()
+      let finalFilename = input.filename
       if (decision.allowed) {
         // Only a job that may start now is handed to aria2. Blocked jobs stay
         // in DonDownload as `waiting` and are submitted by the same policy
         // timer later, so aria2 cannot start them outside the window.
         client = await this.aria2.getClient()
         await this.ensureDownloadDirectory()
+        if (finalFilename !== undefined) {
+          finalFilename = await this.uniqueDownloadFilename(finalFilename)
+        }
         gid = await this.addUri(
           client,
           input.url,
-          input.filename,
+          finalFilename,
           controls,
           input.requestHeaders
         )
@@ -368,7 +372,7 @@ export class DownloadManager {
         id,
         gid,
         url: input.url,
-        filename: input.filename ?? guessFilenameFromUrl(input.url),
+        filename: finalFilename ?? guessFilenameFromUrl(input.url),
         dir: this.downloadDir,
         filePath: null,
         status: decision.allowed ? 'queued' : 'waiting',
@@ -387,8 +391,8 @@ export class DownloadManager {
       this.records.set(id, record)
       this.controls.set(id, controls)
       this.blockReasons.set(id, decision.reason)
-      if (input.filename) {
-        this.explicitFilenames.set(id, input.filename)
+      if (finalFilename) {
+        this.explicitFilenames.set(id, finalFilename)
       }
       if (input.requestHeaders) {
         this.requestHeaders.set(id, input.requestHeaders)
@@ -1060,6 +1064,44 @@ export class DownloadManager {
       completedAt: null
     })
     this.setBlockReason(record, null)
+  }
+
+  /**
+   * Explicit filenames (including detected media) use the same " (2)" collision
+   * convention as the media engine instead of aria2's ".1" suffix. Both a file
+   * on disk and another unfinished record with the same name are considered.
+   */
+  private async uniqueDownloadFilename(value: string): Promise<string> {
+    const sanitized = sanitizeFilename(value)
+    const extension = path.extname(sanitized)
+    const base =
+      extension.length > 0
+        ? sanitized.slice(0, -extension.length)
+        : sanitized
+    for (let index = 1; index <= 1_000; index += 1) {
+      const candidate =
+        index === 1 ? sanitized : `${base} (${index})${extension}`
+      let exists = false
+      try {
+        await fs.access(path.join(this.downloadDir, candidate))
+        exists = true
+      } catch {
+        exists = false
+      }
+      if (exists) continue
+      let active = false
+      for (const record of this.records.values()) {
+        if (
+          record.filename === candidate &&
+          UNFINISHED_STATUSES.has(record.status)
+        ) {
+          active = true
+          break
+        }
+      }
+      if (!active) return candidate
+    }
+    return sanitized
   }
 
   private async addUri(

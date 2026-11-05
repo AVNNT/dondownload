@@ -243,5 +243,11 @@ describe('aria2 per-download headers', () => {
     expect(calls[0]?.options['user-agent']).toBe('Browser UA')
     expect(calls[0]?.options.header).toEqual(['Cookie: auth=1'])
     expect(calls[0]?.options.out).toBe('My clip.mp4')
+
+    await manager.add({
+      url: 'https://cdn.example/other.mp4',
+      filename: 'My clip.mp4'
+    })
+    expect(calls[1]?.options.out).toBe('My clip (2).mp4')
   })
 })
