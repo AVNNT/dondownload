@@ -630,6 +630,7 @@ interface Harness {
   bestAudioButton: FakeNode
   qualityFieldset: FakeNode
   qualityList: FakeNode
+  advancedQualityList: FakeNode
   queueSelectedButton: FakeNode
   disableButton: FakeNode
   status: FakeNode
@@ -831,6 +832,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const bestAudioButton = findByClass('action secondary best-audio')
   const qualityFieldset = findByClass('qualities')
   const qualityList = findByClass('quality-list')
+  const advancedQualityList = findByClass('advanced-quality-list')
   const queueSelectedButton = findByClass('action secondary queue-selected')
   const disableButton = findByClass('disable')
   const status = findByClass('status')
@@ -845,6 +847,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     !bestAudioButton ||
     !qualityFieldset ||
     !qualityList ||
+    !advancedQualityList ||
     !queueSelectedButton ||
     !disableButton ||
     !status
@@ -876,6 +879,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     bestAudioButton,
     qualityFieldset,
     qualityList,
+    advancedQualityList,
     queueSelectedButton,
     disableButton,
     status,
@@ -1275,13 +1279,17 @@ describe('overlay media flow', () => {
 
     const labels = collectByClass(harness.qualityList, 'quality-option')
     const inputs = collectByClass(harness.qualityList, 'quality-input')
-    expect(labels).toHaveLength(2)
+    expect(labels).toHaveLength(3)
+    expect(labels.map((label) => JSON.stringify(collectText(label))).join(' ')).toContain('1080p')
+    expect(labels.map((label) => JSON.stringify(collectText(label))).join(' ')).toContain('720p')
+    expect(labels.map((label) => JSON.stringify(collectText(label))).join(' ')).toContain('Audio only')
     expect(inputs.map((input) => input.name)).toEqual([
-      'dondownload-quality',
-      'dondownload-quality'
+      'dondownload-simple-quality',
+      'dondownload-simple-quality',
+      'dondownload-simple-quality'
     ])
     expect(harness.qualityFieldset.children[0]?.textContent).toMatch(
-      /Choose a video quality/
+      /Choose a quality/
     )
 
     const exactText = JSON.stringify(collectText(labels[0]!))
@@ -1289,6 +1297,8 @@ describe('overlay media flow', () => {
     expect(exactText).toContain('9.77 KB')
     expect(exactText).not.toContain('estimated')
     expect(estimatedText).toContain('~7.81 KB estimated')
+    expect(collectByClass(harness.advancedQualityList, 'quality-option')).toHaveLength(3)
+    expect(JSON.stringify(collectText(harness.advancedQualityList))).toContain('H.264')
   })
 
   it('states Size unknown for a video option without reported metadata', () => {
@@ -1309,6 +1319,23 @@ describe('overlay media flow', () => {
     const rendered = JSON.stringify(collectText(harness.mediaResults))
     expect(rendered).toContain('Size unknown')
     expect(harness.bestVideoButton.textContent).toContain('Size unknown')
+  })
+
+  it('keeps the simple audio-only choice available when no video is offered', () => {
+    const analysis = fakeAnalysis()
+    analysis.options = analysis.options.filter((option: any) => option.kind === 'audio')
+    analysis.bestVideoOptionId = null
+    harness = createHarness({ analyzeResponse: { ok: true, analysis } })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    expect(harness.bestVideoButton.hidden).toBe(true)
+    expect(harness.qualityFieldset.hidden).toBe(false)
+    expect(collectByClass(harness.qualityList, 'quality-option')).toHaveLength(1)
+    expect(JSON.stringify(collectText(harness.qualityList))).toContain('Audio only')
   })
 
   it('turns a native media tool failure into an actionable next step', () => {
@@ -1403,7 +1430,7 @@ describe('overlay media flow', () => {
     )
 
     const labels = collectByClass(harness.qualityList, 'quality-option')
-    expect(labels).toHaveLength(2)
+    expect(labels).toHaveLength(3)
     const inputs = collectByClass(harness.qualityList, 'quality-input')
     expect(inputs[0]?.checked).toBe(true)
 
@@ -1417,6 +1444,10 @@ describe('overlay media flow', () => {
     expect(click.propagationStopped).toBe(true)
     expect(inputs[0]?.checked).toBe(false)
     expect(inputs[1]?.checked).toBe(true)
+    const advancedInputs = collectByClass(harness.advancedQualityList, 'quality-input')
+    expect(
+      advancedInputs.find((input) => (input as any).mediaOptionId === OTHER_VIDEO_ID)?.checked
+    ).toBe(true)
 
     harness.queueSelectedButton.dispatch(
       'click',

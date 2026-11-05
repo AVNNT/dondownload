@@ -36,6 +36,8 @@
     bestAudioButton: null,
     qualityFieldset: null,
     qualityList: null,
+    simpleFieldset: null,
+    advancedQualityList: null,
     queueSelectedButton: null,
     disableButton: null,
     status: null,
@@ -153,7 +155,7 @@
     '.media-actions { display: grid; gap: 6px; }',
     '.qualities { border: 0; margin: 10px 0 0; padding: 0; }',
     '.qualities legend { color: #d4d4d8; font-size: 11.5px; font-weight: 650; padding: 0; }',
-    '.quality-list { display: grid; gap: 4px; margin: 6px 0; }',
+    '.quality-list, .advanced-quality-list { display: grid; gap: 4px; margin: 6px 0; }',
     '.quality-option {',
     '  align-items: flex-start;',
     '  background: #0b0b0c;',
@@ -174,6 +176,8 @@
     '.quality-detail { color: #8b8b93; display: block; font-size: 10.5px; margin-top: 1px; }',
     '.quality-size { color: #d4d4d8; display: block; font-size: 10.5px; font-variant-numeric: tabular-nums; margin-top: 1px; }',
     '.quality-size.unknown { color: #8b8b93; }',
+    '.advanced-qualities { border-top: 1px solid #1f1f23; margin-top: 10px; padding-top: 8px; }',
+    '.advanced-qualities summary { color: #d4d4d8; cursor: pointer; font-size: 11px; font-weight: 600; }',
     '.options { border-top: 1px solid #1f1f23; margin-top: 12px; padding-top: 10px; }',
     '.options summary { color: #d4d4d8; cursor: pointer; font-size: 11.5px; font-weight: 650; }',
     '.options-hint { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 8px 0; }',
@@ -328,23 +332,34 @@
     mediaActions.appendChild(bestVideoButton)
     mediaActions.appendChild(bestAudioButton)
 
-    var qualityFieldset = createElement('fieldset', 'qualities')
-    qualityFieldset.hidden = true
-    qualityFieldset.appendChild(createElement('legend', '', 'Choose a video quality'))
+    var simpleFieldset = createElement('fieldset', 'qualities')
+    simpleFieldset.hidden = true
+    simpleFieldset.appendChild(createElement('legend', '', 'Choose a quality'))
     var qualityList = createElement('div', 'quality-list')
-    qualityFieldset.appendChild(qualityList)
+    simpleFieldset.appendChild(qualityList)
+
+    var advancedDetails = document.createElement('details')
+    advancedDetails.className = 'advanced-qualities'
+    advancedDetails.appendChild(createElement('summary', '', 'Advanced format options'))
+    var qualityFieldset = createElement('fieldset', 'advanced-quality-fieldset')
+    qualityFieldset.hidden = true
+    qualityFieldset.appendChild(createElement('legend', '', 'All verified formats'))
+    var advancedQualityList = createElement('div', 'advanced-quality-list')
+    qualityFieldset.appendChild(advancedQualityList)
     var queueSelectedButton = createElement(
       'button',
       'action secondary queue-selected',
       'Download selected quality'
     )
     queueSelectedButton.type = 'button'
-    qualityFieldset.appendChild(queueSelectedButton)
+    advancedDetails.appendChild(qualityFieldset)
 
     mediaResults.appendChild(mediaTitle)
     mediaResults.appendChild(mediaMeta)
     mediaResults.appendChild(mediaActions)
-    mediaResults.appendChild(qualityFieldset)
+    mediaResults.appendChild(simpleFieldset)
+    mediaResults.appendChild(advancedDetails)
+    mediaResults.appendChild(queueSelectedButton)
 
     var options = document.createElement('details')
     options.className = 'options'
@@ -388,6 +403,8 @@
     state.bestAudioButton = bestAudioButton
     state.qualityFieldset = qualityFieldset
     state.qualityList = qualityList
+    state.simpleFieldset = simpleFieldset
+    state.advancedQualityList = advancedQualityList
     state.queueSelectedButton = queueSelectedButton
     state.disableButton = disableButton
     state.status = status
@@ -476,10 +493,10 @@
   }
 
   function clearQualityList() {
-    if (!state.qualityList) return
-    while (state.qualityList.children.length > 0) {
-      state.qualityList.removeChild(state.qualityList.children[0])
-    }
+    ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
+      if (!list) return
+      while (list.children.length > 0) list.removeChild(list.children[0])
+    })
   }
 
   function resetMediaResults() {
@@ -497,6 +514,7 @@
       state.bestAudioButton.disabled = false
     }
     if (state.qualityFieldset) state.qualityFieldset.hidden = true
+    if (state.simpleFieldset) state.simpleFieldset.hidden = true
     if (state.queueSelectedButton) state.queueSelectedButton.disabled = true
     clearQualityList()
   }
@@ -509,42 +527,50 @@
     if (state.queueSelectedButton) {
       state.queueSelectedButton.disabled = busy || !state.media.selectedOptionId
     }
-    if (state.qualityList) {
-      for (var index = 0; index < state.qualityList.children.length; index += 1) {
-        state.qualityList.children[index].disabled = busy
+    ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
+      if (!list) return
+      for (var index = 0; index < list.children.length; index += 1) {
+        var input = list.children[index].children[0]
+        if (input) input.disabled = busy
       }
-    }
+    })
   }
 
   function renderQualityOptions(view) {
     clearQualityList()
-    if (!state.qualityFieldset || !state.qualityList) return
+    if (!state.qualityFieldset || !state.qualityList || !state.advancedQualityList) return
 
-    if (view.videoOptions.length === 0) {
+    if (view.options.length === 0) {
       state.qualityFieldset.hidden = true
+      if (state.simpleFieldset) state.simpleFieldset.hidden = true
       return
     }
     state.qualityFieldset.hidden = false
+    if (state.simpleFieldset) {
+      state.simpleFieldset.hidden = view.videoOptions.length === 0 && view.audioOptions.length === 0
+    }
 
     var initialId =
       view.bestVideoOptionId !== null
         ? view.bestVideoOptionId
-        : view.videoOptions[0].optionId
+        : view.bestAudioOptionId !== null
+          ? view.bestAudioOptionId
+          : view.options[0].optionId
     state.media.selectedOptionId = initialId
 
-    for (var index = 0; index < view.videoOptions.length; index += 1) {
-      var option = view.videoOptions[index]
+    function appendOption(list, option, displayLabel, includeDetails, radioName) {
       var label = createElement('label', 'quality-option')
       var input = createElement('input', 'quality-input')
       input.type = 'radio'
-      input.name = 'dondownload-quality'
-      input.value = String(index)
+      input.name = radioName
+      input.value = option.optionId
+      input.mediaOptionId = option.optionId
       input.checked = option.optionId === initialId
       label.appendChild(input)
 
       var copyNode = createElement('span', 'quality-copy')
-      copyNode.appendChild(createElement('span', '', option.label))
-      var detail = core.describeMediaDetails(option)
+      copyNode.appendChild(createElement('span', '', displayLabel || option.label))
+      var detail = includeDetails ? core.describeMediaDetails(option) : ''
       if (detail) copyNode.appendChild(createElement('span', 'quality-detail', detail))
       var sizeLabel = core.describeMediaSize(option)
       var sizeNode = createElement(
@@ -554,10 +580,30 @@
       )
       copyNode.appendChild(sizeNode)
       label.appendChild(copyNode)
-      state.qualityList.appendChild(label)
-
+      list.appendChild(label)
       bindQualityOption(input, option)
     }
+
+    ;[1080, 720, 480, 360].forEach(function (height) {
+      var option = view.videoOptions.find(function (candidate) {
+        return candidate.hasAudio && candidate.height === height
+      })
+      if (option) {
+        appendOption(
+          state.qualityList,
+          option,
+          height + 'p',
+          false,
+          'dondownload-simple-quality'
+        )
+      }
+    })
+    var audioOption = optionById(view, view.bestAudioOptionId)
+    if (audioOption) appendOption(state.qualityList, audioOption, 'Audio only', false, 'dondownload-simple-quality')
+
+    view.options.forEach(function (option) {
+      appendOption(state.advancedQualityList, option, null, true, 'dondownload-advanced-quality')
+    })
 
     if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
   }
@@ -566,6 +612,15 @@
     on(input, 'change', function () {
       if (!input.checked) return
       state.media.selectedOptionId = option.optionId
+      ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
+        if (!list) return
+        for (var index = 0; index < list.children.length; index += 1) {
+          var other = list.children[index].children[0]
+          if (other && other !== input && other.mediaOptionId) {
+            other.checked = other.mediaOptionId === option.optionId
+          }
+        }
+      })
       if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
     })
   }
@@ -595,8 +650,9 @@
       var bestVideoOption = optionById(view, view.bestVideoOptionId)
       state.bestVideoButton.hidden = view.bestVideoOptionId === null
       state.bestVideoButton.textContent = bestVideoOption
-        ? 'Download best video + audio · ' + core.describeMediaSize(bestVideoOption)
-        : 'Download best video + audio'
+        ? 'Best quality · ' + core.describeMediaSize(bestVideoOption)
+        : 'Best quality'
+      state.bestVideoButton.title = bestVideoOption ? bestVideoOption.label : 'Best quality'
     }
     if (state.bestAudioButton) {
       state.bestAudioButton.hidden = view.bestAudioOptionId === null
@@ -981,6 +1037,8 @@
     state.bestAudioButton = null
     state.qualityFieldset = null
     state.qualityList = null
+    state.simpleFieldset = null
+    state.advancedQualityList = null
     state.queueSelectedButton = null
     state.disableButton = null
     state.status = null

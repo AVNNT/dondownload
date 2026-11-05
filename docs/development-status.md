@@ -13,6 +13,29 @@ only, not screenshots produced inside the currently disconnected T3 browser.
 Browser visual checks and live Electron/Helium interactions remain unverified
 under the updated boundary.
 
+## Final UX polish checkpoint (2026-11-05)
+
+The media quality selector now defaults to a compact, quality-first view in both
+the extension overlay and desktop Media tab. It offers only available exact
+1080p/720p/480p/360p tiers, plus the best available audio-only option; each row
+shows the server-reported exact/estimated size or “Size unknown”. The separate
+Best quality action uses the verified best-video opaque option ID. Expandable
+Advanced format options retain every verified option and show codec, container,
+resolution, FPS, merge detail and size. Selections remain tied to the exact
+opaque option ID across the compact and advanced views; nothing is queued by
+analysis or selection alone. No download engine, security boundary, or aria2
+default was changed.
+
+The T3 built-in browser remained disconnected, so browser screenshots and visual
+checks for these controls and the three themes could not be produced. Theme
+contrast, input/selection/progress/error presentation and popup consistency are
+not newly visually verified. Existing Electron and Helium evidence predates the
+current testing restriction; it is not claimed as a current live integration
+check. Focused overlay/bridge/media-engine tests passed (95/95), `npm run
+test:fast` passed (555/555), and `npm run build` including typecheck passed.
+The measured aria2 2.08× improvement applies to the tested 128 MiB local fixture
+at a configured 16-connection cap only, not to arbitrary real servers.
+
 The media-size implementation is integrated at `93f0e54`; the extension video
 overlay handoff is integrated at `f1c622c`; and the persistent OLED/Dark/Light
 theme system is integrated at `fef76df`. `2484b37` updates the native-bridge

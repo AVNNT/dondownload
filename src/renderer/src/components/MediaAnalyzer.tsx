@@ -52,6 +52,17 @@ export function MediaAnalyzer({
   const audioOptions = analysis
     ? analysis.options.filter((option) => option.kind === 'audio')
     : []
+  const simpleOptions = [
+    ...[1080, 720, 480, 360].flatMap((height) => {
+      const option = videoOptions.find((candidate) => candidate.height === height)
+      return option ? [{ option, label: `${height}p` }] : []
+    }),
+    ...(analysis && analysis.bestAudioOptionId
+      ? analysis.options
+          .filter((option) => option.optionId === analysis.bestAudioOptionId && option.kind === 'audio')
+          .map((option) => ({ option, label: 'Audio only' }))
+      : [])
+  ]
 
   const bestVideo = analysis
     ? (analysis.options.find(
@@ -113,7 +124,12 @@ export function MediaAnalyzer({
     }
   }
 
-  function optionRow(option: MediaFormatOption): JSX.Element {
+  function optionRow(
+    option: MediaFormatOption,
+    displayLabel = option.label,
+    includeDetails = true,
+    radioName = 'media-advanced-option'
+  ): JSX.Element {
     const checked = option.optionId === selectedOptionId
     const isBestVideo = option.optionId === bestVideo?.optionId
     const isBestAudio = option.optionId === bestAudio?.optionId
@@ -133,7 +149,7 @@ export function MediaAnalyzer({
       >
         <input
           type="radio"
-          name="media-option"
+          name={radioName}
           value={option.optionId}
           checked={checked}
           disabled={controlsDisabled || busy}
@@ -143,7 +159,7 @@ export function MediaAnalyzer({
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-xs font-medium text-zinc-200">
-              {option.label}
+              {displayLabel}
             </span>
             {isBestVideo || isBestAudio ? (
               <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
@@ -158,9 +174,11 @@ export function MediaAnalyzer({
               {sizeLabel}
             </span>
           </span>
-          <span className="mt-0.5 block text-[11px] leading-5 text-zinc-400">
-            {describeOption(option)}
-          </span>
+          {includeDetails ? (
+            <span className="mt-0.5 block text-[11px] leading-5 text-zinc-400">
+              {describeOption(option)}
+            </span>
+          ) : null}
         </span>
       </label>
     )
@@ -288,7 +306,7 @@ export function MediaAnalyzer({
               >
                 {queuingOptionId === bestVideo.optionId
                   ? 'Queueing…'
-                  : 'Download best quality'}
+                  : 'Best quality · download'}
               </button>
               <p className="mt-2 text-[11px] leading-5 text-zinc-400">
                 {bestVideo.label}
@@ -312,26 +330,33 @@ export function MediaAnalyzer({
             </p>
           )}
 
-          {videoOptions.length > 0 ? (
+          {simpleOptions.length > 0 ? (
             <fieldset className="mt-4">
               <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-                Video quality
+                Simple quality
               </legend>
               <div className="mt-2 space-y-1.5">
-                {videoOptions.map(optionRow)}
+                  {simpleOptions.map(({ option, label }) =>
+                    optionRow(option, label, false, 'media-simple-option')
+                  )}
               </div>
             </fieldset>
           ) : null}
 
-          {audioOptions.length > 0 ? (
-            <fieldset className="mt-4">
-              <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-                Audio only
-              </legend>
-              <div className="mt-2 space-y-1.5">
-                {audioOptions.map(optionRow)}
-              </div>
-            </fieldset>
+          {analysis.options.length > 0 ? (
+            <details className="mt-4 border-t border-white/10 pt-3">
+              <summary className="cursor-pointer text-[11px] font-medium text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+                Advanced format options ({analysis.options.length})
+              </summary>
+              <fieldset className="mt-3">
+                <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
+                  Verified formats
+                </legend>
+                <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto pr-1">
+                  {analysis.options.map((option) => optionRow(option))}
+                </div>
+              </fieldset>
+            </details>
           ) : null}
 
           <label className="mt-4 block max-w-xs text-[10px] font-medium text-zinc-400">
