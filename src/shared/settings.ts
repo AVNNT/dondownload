@@ -14,6 +14,15 @@ import { ValidationError } from './errors'
  * no restriction at all, which preserves the previous all-day behavior.
  */
 
+/**
+ * Shared desktop appearance themes. `oled` is the default and keeps the
+ * existing pure-black surfaces; `dark` is a softer near-black palette and
+ * `light` is a readable light palette.
+ */
+export const APP_THEMES = ['oled', 'dark', 'light'] as const
+export type AppTheme = (typeof APP_THEMES)[number]
+export const DEFAULT_THEME: AppTheme = 'oled'
+
 export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 3
 export const MIN_MAX_CONCURRENT_DOWNLOADS = 1
 export const MAX_MAX_CONCURRENT_DOWNLOADS = 16
@@ -57,6 +66,8 @@ export interface DownloadSettings {
   /** Bytes per second; `0` means unlimited. */
   globalSpeedLimitBps: number
   allowedHours: AllowedHours
+  /** Desktop appearance. Defaults to the existing OLED/black look. */
+  theme: AppTheme
 }
 
 /**
@@ -93,7 +104,8 @@ export function defaultDownloadSettings(): DownloadSettings {
       enabled: DEFAULT_ALLOWED_HOURS_ENABLED,
       start: DEFAULT_ALLOWED_HOURS_START,
       end: DEFAULT_ALLOWED_HOURS_END
-    }
+    },
+    theme: DEFAULT_THEME
   }
 }
 
@@ -163,6 +175,22 @@ function booleanValue(
   return value
 }
 
+/** True only for one of the supported desktop themes. */
+export function isAppTheme(value: unknown): value is AppTheme {
+  return (
+    typeof value === 'string' &&
+    (APP_THEMES as readonly string[]).includes(value)
+  )
+}
+
+/** Parse the desktop appearance theme. */
+export function parseAppTheme(value: unknown): AppTheme {
+  if (!isAppTheme(value)) {
+    throw new ValidationError('Invalid theme.')
+  }
+  return value
+}
+
 /** True only for an exact, zero-padded 24-hour `HH:mm` string. */
 export function isClockTime(value: unknown): value is string {
   return typeof value === 'string' && CLOCK_TIME.test(value)
@@ -196,7 +224,8 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       'maxConcurrentDownloads',
       'perHostConnections',
       'globalSpeedLimitBps',
-      'allowedHours'
+      'allowedHours',
+      'theme'
     ],
     'download settings'
   )
@@ -223,7 +252,8 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       MAX_SPEED_LIMIT_BPS,
       'download settings'
     ),
-    allowedHours: parseAllowedHours(record.allowedHours)
+    allowedHours: parseAllowedHours(record.allowedHours),
+    theme: parseAppTheme(record.theme)
   }
 }
 

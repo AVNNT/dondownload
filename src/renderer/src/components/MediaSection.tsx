@@ -225,7 +225,7 @@ export function MediaSection(): JSX.Element {
       />
 
       {jobs.length === 0 ? (
-        <div className="mt-2 rounded-xl border border-dashed border-white/10 bg-[#050505] px-6 py-8 text-center">
+        <div className="mt-2 rounded-xl border border-dashed border-white/10 surface-inset px-6 py-8 text-center">
           <div
             aria-hidden="true"
             className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"

@@ -145,9 +145,15 @@ export class SettingsManager {
 
     const previous = this.current
     const client = this.aria2?.getReadyClient() ?? null
+    // An appearance-only update must never touch aria2. Download settings
+    // still take the existing live apply/rollback path below.
+    const downloadOptionsChanged =
+      previous.maxConcurrentDownloads !== next.maxConcurrentDownloads ||
+      previous.perHostConnections !== next.perHostConnections ||
+      previous.globalSpeedLimitBps !== next.globalSpeedLimitBps
     let appliedLive = false
 
-    if (client) {
+    if (client && downloadOptionsChanged) {
       try {
         await applyGlobalDownloadOptions(client, next)
         appliedLive = true

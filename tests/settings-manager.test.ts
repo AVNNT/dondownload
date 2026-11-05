@@ -214,6 +214,21 @@ describe('SettingsManager', () => {
     expect(manager.getSettings()).toEqual(previous)
   })
 
+  it('persists an appearance-only change without touching aria2', async () => {
+    const store = createStore()
+    const client = createClient()
+    const manager = new SettingsManager({
+      store,
+      aria2: createAria2(client) as SettingsAria2Gateway
+    })
+    const next = settings({ theme: 'light' })
+
+    await expect(manager.update(next)).resolves.toEqual(next)
+    expect(store.saveSettings).toHaveBeenCalledWith(next)
+    expect(client.call).not.toHaveBeenCalled()
+    expect(manager.getSettings().theme).toBe('light')
+  })
+
   it('applies the loaded snapshot before aria2 reports ready', async () => {
     const persisted = settings({
       maxConcurrentDownloads: 11,

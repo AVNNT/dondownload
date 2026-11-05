@@ -99,7 +99,7 @@ export function DownloadCard({
   return (
     <article
       aria-busy={busy}
-      className="overflow-hidden rounded-xl border border-white/10 bg-[#080808] transition-colors hover:border-white/20"
+      className="overflow-hidden rounded-xl border border-white/10 surface-card transition-colors hover:border-white/20"
     >
       <div className="flex items-start gap-2.5 p-3">
         <div className="min-w-0 flex-1">
@@ -232,7 +232,7 @@ export function DownloadCard({
       {expanded ? (
         <dl
           id={detailsId}
-          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-white/5 bg-black/40 px-3 py-2 text-[11px] leading-5"
+          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-white/5 surface-soft px-3 py-2 text-[11px] leading-5"
         >
           <dt className="text-zinc-400">Source</dt>
           <dd

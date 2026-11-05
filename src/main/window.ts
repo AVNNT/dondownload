@@ -1,5 +1,7 @@
 import { join } from 'node:path'
 import { BrowserWindow, session } from 'electron'
+import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
+import { themeWindowColors } from './settings/theme'
 
 export interface CreateMainWindowOptions {
   /**
@@ -9,6 +11,8 @@ export interface CreateMainWindowOptions {
   show?: boolean
   /** Render a real BrowserWindow offscreen for isolated CDP verification. */
   offscreen?: boolean
+  /** Persisted appearance, applied to the native title bar before first paint. */
+  theme?: AppTheme
 }
 
 export function createMainWindow(
@@ -16,20 +20,17 @@ export function createMainWindow(
 ): BrowserWindow {
   const show = options.show ?? true
   const offscreen = options.offscreen ?? false
+  const colors = themeWindowColors(options.theme ?? DEFAULT_THEME)
   const window = new BrowserWindow({
     width: 980,
     height: 760,
     minWidth: 560,
     minHeight: 520,
     show: false,
-    backgroundColor: '#000000',
+    backgroundColor: colors.backgroundColor,
     accentColor: false,
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#000000',
-      symbolColor: '#f4f4f5',
-      height: 40
-    },
+    titleBarOverlay: colors.titleBarOverlay,
     title: 'DonDownload',
     autoHideMenuBar: true,
     webPreferences: {

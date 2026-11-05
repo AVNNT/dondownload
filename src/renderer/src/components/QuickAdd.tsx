@@ -138,7 +138,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
       onSubmit={(event) => {
         void handleSubmit(event)
       }}
-      className="rounded-xl border border-white/10 bg-[#080808] p-3"
+      className="rounded-xl border border-white/10 surface-card p-3"
     >
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2
@@ -167,7 +167,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
           }}
           placeholder="https://example.com/file.zip"
           disabled={disabled}
-          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
         />
         <label className="sr-only" htmlFor="download-filename">
           Custom file name (optional)
@@ -184,18 +184,18 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
           }}
           placeholder="File name (optional)"
           disabled={disabled}
-          className="h-10 min-w-0 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50 sm:w-40 lg:w-48"
+          className="h-10 min-w-0 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50 sm:w-40 lg:w-48"
         />
         <button
           type="submit"
           disabled={disabled || url.trim().length === 0}
-          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {disabled ? 'Adding…' : 'Add download'}
         </button>
       </div>
 
-      <details className="mt-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2">
+      <details className="mt-2 rounded-lg border border-white/10 surface-soft px-3 py-2">
         <summary className="cursor-pointer text-[11px] font-medium text-zinc-400 transition hover:text-zinc-200">
           Schedule &amp; limits (optional)
         </summary>
@@ -211,7 +211,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -230,7 +230,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
             <span
               id="download-speed-help"
@@ -256,7 +256,7 @@ export function QuickAdd({ disabled, onAdd }: QuickAddProps): JSX.Element {
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 bg-black px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
             <span className="mt-1 block min-h-4 text-[10px] leading-4 text-zinc-400">
               Blank uses the global setting.

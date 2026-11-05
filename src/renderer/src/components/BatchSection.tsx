@@ -456,7 +456,7 @@ export function BatchSection(): JSX.Element {
         onSubmit={(event) => {
           void handleSubmit(event)
         }}
-        className="rounded-xl border border-white/10 bg-[#080808] p-3"
+        className="rounded-xl border border-white/10 surface-card p-3"
       >
         <div className="flex flex-col gap-2">
           <div className="flex items-baseline justify-between gap-3 px-1">
@@ -489,7 +489,7 @@ export function BatchSection(): JSX.Element {
             }
             disabled={submitting}
             aria-describedby="batch-urls-help"
-            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 bg-black px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
           />
           <p
             id="batch-urls-help"
@@ -519,7 +519,7 @@ export function BatchSection(): JSX.Element {
             <button
               type="submit"
               disabled={submitting || parsedUrlCount === 0}
-              className="h-10 rounded-xl bg-emerald-400 px-5 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="h-10 rounded-xl bg-emerald-400 px-5 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               {submitting ? 'Submitting…' : 'Submit batch'}
             </button>
@@ -663,7 +663,7 @@ function SubmitOutcomes({
   onOpenSource: (batchId: string, itemId: string) => void
 }): JSX.Element {
   return (
-    <div className="mt-3 rounded-xl border border-white/10 bg-[#080808] p-3">
+    <div className="mt-3 rounded-xl border border-white/10 surface-card p-3">
       <h3 className="px-1 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
         Submit results
       </h3>
@@ -808,7 +808,7 @@ function PreviewCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-xl border border-white/10 bg-[#080808] p-3"
+      className="rounded-xl border border-white/10 surface-card p-3"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -891,7 +891,7 @@ function PreviewCard({
               <div
                 className={`flex items-start gap-2.5 rounded-lg border px-2.5 py-2 ${
                   available
-                    ? 'border-white/5 bg-black/30'
+                    ? 'border-white/5 surface-soft'
                     : 'border-white/5 bg-white/[0.015] opacity-70'
                 }`}
               >
@@ -902,7 +902,7 @@ function PreviewCard({
                   disabled={disabled}
                   onChange={() => onToggleEntry(entry.id)}
                   aria-describedby={reasonId}
-                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 bg-black accent-emerald-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed"
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 surface-input accent-emerald-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed"
                 />
                 <label
                   htmlFor={checkboxId}
@@ -954,7 +954,7 @@ function PreviewCard({
         </p>
       ) : null}
 
-      {preview.kind === 'playlist' ? <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-3">
+      {preview.kind === 'playlist' ? <div className="mt-3 rounded-lg border border-white/5 surface-soft p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[11px] font-medium text-zinc-200">Playlist quality</p>
@@ -967,7 +967,7 @@ function PreviewCard({
         {availability ? (
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="text-[10px] font-medium text-zinc-400">Quality
-              <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100">
+              <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100">
                 {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => {
                   const summary = qualitySizes.get(option)
                   return (
@@ -980,7 +980,7 @@ function PreviewCard({
               </select>
             </label>
             <label className="text-[10px] font-medium text-zinc-400">Optional max per-job size (MiB)
-              <input type="number" min="0.01" max="102400" step="0.01" value={maxMiB} onChange={event => setMaxMiB(event.target.value)} placeholder="No limit" className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100 placeholder:text-zinc-600" />
+              <input type="number" min="0.01" max="102400" step="0.01" value={maxMiB} onChange={event => setMaxMiB(event.target.value)} placeholder="No limit" className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600" />
             </label>
             <p className="text-[10px] leading-4 text-zinc-500 sm:col-span-2">
               {matchingCount < selectedCount ? `${selectedCount - matchingCount} selected ${selectedCount - matchingCount === 1 ? 'entry has' : 'entries have'} no ${qualityLabel(quality)} option and will be marked Skipped.` : `${matchingCount} selected ${matchingCount === 1 ? 'entry has' : 'entries have'} this verified quality.`}
@@ -1015,7 +1015,7 @@ function PreviewCard({
           type="button"
           onClick={() => onQueue(quality, maxBytes)}
           disabled={busy || selectedCount === 0 || (preview.kind === 'playlist' && (!availability || matchingCount === 0 || !validMaxBytes))}
-          className="h-10 shrink-0 rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {queueing
             ? 'Queueing…'
@@ -1058,7 +1058,7 @@ function BatchCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-xl border border-white/10 bg-[#080808] p-3 transition-colors hover:border-white/20"
+      className="rounded-xl border border-white/10 surface-card p-3 transition-colors hover:border-white/20"
     >
       <div className="flex items-start justify-between gap-3">
         <button
@@ -1179,7 +1179,7 @@ function BatchCard({
       {expanded ? (
         <div id={itemsId} className="mt-3 border-t border-white/5 pt-3">
           {batch.items.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-white/10 bg-black/30 px-3 py-4 text-center text-[11px] text-zinc-500">
+            <p className="rounded-lg border border-dashed border-white/10 surface-soft px-3 py-4 text-center text-[11px] text-zinc-500">
               No child items.
             </p>
           ) : (
@@ -1226,7 +1226,7 @@ function BatchItemRow({
     item.label === 'Browser required'
 
   return (
-    <li className="rounded-xl border border-white/5 bg-black/40 px-3 py-2.5">
+    <li className="rounded-xl border border-white/5 surface-soft px-3 py-2.5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-zinc-200">
@@ -1384,7 +1384,7 @@ function LoadingState(): JSX.Element {
   return (
     <div
       role="status"
-      className="mt-3 rounded-xl border border-white/10 bg-[#050505] px-6 py-8 text-center"
+      className="mt-3 rounded-xl border border-white/10 surface-inset px-6 py-8 text-center"
     >
       <div
         aria-hidden="true"
@@ -1433,7 +1433,7 @@ function SnapshotErrorState({
 
 function BatchEmptyState(): JSX.Element {
   return (
-    <div className="mt-3 rounded-xl border border-dashed border-white/10 bg-[#050505] px-6 py-8 text-center">
+    <div className="mt-3 rounded-xl border border-dashed border-white/10 surface-inset px-6 py-8 text-center">
       <div
         aria-hidden="true"
         className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
