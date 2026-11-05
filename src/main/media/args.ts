@@ -9,14 +9,23 @@
 export const PROGRESS_MARKER = 'DONDOWNLOAD_PROGRESS'
 
 /**
+ * Bounded parallelism for native HLS/DASH fragment downloads. yt-dlp's native
+ * fragment downloader reports progress through the template below, unlike the
+ * FFmpeg downloader that `--hls-prefer-ffmpeg` used to select.
+ */
+export const CONCURRENT_FRAGMENTS = 4
+
+/**
  * Machine-readable progress. `info.format_id` lets the engine add the bytes of
  * the separate video and audio streams instead of reporting only the stream
- * that is currently downloading.
+ * that is currently downloading. Fragment fields cover HLS/DASH downloads
+ * where yt-dlp knows the fragment count but not a byte total.
  */
 export const PROGRESS_TEMPLATE =
   `download:${PROGRESS_MARKER}|%(progress.downloaded_bytes)s|` +
   '%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|' +
-  '%(progress.speed)s|%(info.format_id)s'
+  '%(progress.speed)s|%(info.format_id)s|' +
+  '%(progress.fragment_index)s|%(progress.fragment_count)s'
 
 /** Add the app-located Deno runtime without accepting caller-controlled flags. */
 function withJsRuntime(args: string[], denoPath?: string | null): string[] {
@@ -112,6 +121,11 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
       '--no-cache-dir',
       '--progress-template',
       PROGRESS_TEMPLATE,
+      // Use yt-dlp's native HLS/DASH downloader and fetch fragments in
+      // parallel. It emits the progress template per fragment; FFmpeg's
+      // downloader emits nothing, which left the UI at 0 B for whole jobs.
+      '--concurrent-fragments',
+      String(CONCURRENT_FRAGMENTS),
       '--format',
       input.formatSelector,
       '--output',
@@ -121,14 +135,9 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
   )
 
   if (input.mergeOutputFormat !== null) {
+    // FFmpeg is still used for the merge itself; HLS stays on yt-dlp's native
+    // downloader so fragment progress reaches the UI.
     args.push('--merge-output-format', input.mergeOutputFormat)
-    // Some HLS video streams (for example YouTube format 231) contain packets
-    // without PTS/DTS. yt-dlp's native HLS downloader copies them into MPEG-TS,
-    // which the FFmpeg muxer then rejects with "Can't write packet with unknown
-    // timestamp". Routing HLS through FFmpeg during download remuxes those
-    // timestamps before the merge step. Only merge jobs need this: a download
-    // without post-processing has no muxer step that can fail this way.
-    args.push('--hls-prefer-ffmpeg')
   }
   if (input.remuxOutputFormat !== undefined && input.remuxOutputFormat !== null) {
     // `--remux-video` changes the container only. yt-dlp reports a normal
@@ -168,6 +177,10 @@ export interface ParsedProgressLine {
   totalBytes: number | null
   speedBps: number
   streamId: string
+  /** HLS/DASH fragment position, when yt-dlp reports one. */
+  fragmentIndex: number | null
+  /** Total fragment count, when yt-dlp reports one. */
+  fragmentCount: number | null
 }
 
 /** Parse one line produced by `PROGRESS_TEMPLATE`. */
@@ -188,8 +201,19 @@ export function parseProgressLine(line: string): ParsedProgressLine | null {
     rawStreamId.length > 0 && rawStreamId !== 'NA' && rawStreamId !== 'None'
       ? rawStreamId
       : 'stream'
+  // Fragment fields were appended after the original six columns; tolerate
+  // both shapes so a stale child or a test fixture cannot break progress.
+  const fragmentIndex = parseCount(parts[6])
+  const fragmentCount = parseCount(parts[7])
 
-  return { completedBytes, totalBytes, speedBps, streamId }
+  return {
+    completedBytes,
+    totalBytes,
+    speedBps,
+    streamId,
+    fragmentIndex,
+    fragmentCount
+  }
 }
 
 const MERGING_MARKERS = /\[(?:Merger|Muxer|VideoRemuxer|ExtractAudio)\]/i

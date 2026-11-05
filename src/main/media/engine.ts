@@ -1530,6 +1530,10 @@ export function createMediaEngine(
       let stderrRemainder = ''
       let mergingSeen = false
       let sizeCapExceeded = false
+      // The analysis estimate keeps combined video+audio progress from
+      // reaching 100% while only the first stream has reported a total.
+      const expectedTotal = selectedSize.bytes
+      const expectedStreamCount = outputChoice.formatIds.length
       const streams = new Map<
         string,
         { completed: number; total: number | null; speed: number }
@@ -1579,9 +1583,21 @@ export function createMediaEngine(
           if (stream.total === null) totalKnown = false
           else total += stream.total
         }
+        let resolvedTotal =
+          streams.size > 0 && totalKnown ? total : null
+        if (expectedTotal !== null && expectedTotal > 0) {
+          if (resolvedTotal === null) {
+            resolvedTotal = expectedTotal
+          } else if (
+            streams.size < expectedStreamCount &&
+            resolvedTotal < expectedTotal
+          ) {
+            resolvedTotal = expectedTotal
+          }
+        }
         return {
           completed,
-          total: streams.size > 0 && totalKnown ? total : null,
+          total: resolvedTotal,
           speed
         }
       }
@@ -1687,9 +1703,27 @@ export function createMediaEngine(
         const progress = parseProgressLine(line)
         if (progress !== null) {
           const previous = streams.get(progress.streamId)
+          // HLS/DASH fragment downloads often have no byte total. Estimate one
+          // from the fragment position so the bar still advances, and replace
+          // it as soon as yt-dlp reports a real total.
+          const fragmentTotal =
+            progress.totalBytes === null &&
+            progress.fragmentIndex !== null &&
+            progress.fragmentCount !== null &&
+            progress.fragmentIndex > 0 &&
+            progress.fragmentCount > 0
+              ? Math.round(
+                  (progress.completedBytes * progress.fragmentCount) /
+                    progress.fragmentIndex
+                )
+              : null
           streams.set(progress.streamId, {
             completed: progress.completedBytes,
-            total: progress.totalBytes ?? previous?.total ?? null,
+            total:
+              progress.totalBytes ??
+              (fragmentTotal !== null && Number.isSafeInteger(fragmentTotal)
+                ? fragmentTotal
+                : previous?.total ?? null),
             speed: progress.speedBps
           })
           emitSnapshot(mergingSeen ? 'merging' : 'downloading', null)

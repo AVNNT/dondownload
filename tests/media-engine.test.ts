@@ -1550,13 +1550,14 @@ describe('media engine subprocess arguments and progress', () => {
       '--no-cache-dir',
       '--progress-template',
       PROGRESS_TEMPLATE,
+      '--concurrent-fragments',
+      '4',
       '--format',
       '137+140',
       '--output',
       outputTemplate,
       '--merge-output-format',
       'mp4',
-      '--hls-prefer-ffmpeg',
       '--ffmpeg-location',
       harness.ffmpegFile,
       '--',
@@ -1592,6 +1593,7 @@ describe('media engine subprocess arguments and progress', () => {
     expect(argValue(download.args, '--format')).toBe('22')
     expect(download.args).not.toContain('--merge-output-format')
     expect(download.args).not.toContain('--hls-prefer-ffmpeg')
+    expect(argValue(download.args, '--concurrent-fragments')).toBe('4')
     expect(download.args[download.args.length - 1]).toBe(SOURCE_URL)
   })
 
@@ -1758,7 +1760,9 @@ describe('media engine subprocess arguments and progress', () => {
     expect(updates.at(-1)).toMatchObject({
       status: 'merging',
       completedBytes: 100,
-      totalBytes: 1_000
+      // The analysis estimate covers both streams, so a first-stream-only
+      // report cannot make the merged job look finished.
+      totalBytes: 1_500
     })
 
     await fs.writeFile(finalPath, Buffer.from('merged'))
@@ -1809,21 +1813,95 @@ describe('media engine subprocess arguments and progress', () => {
     }
   })
 
-  it('parses total estimates and rejects malformed progress records', () => {
-    expect(parseProgressLine('DONDOWNLOAD_PROGRESS|10|NA|800|12.5|137')).toEqual({
+  it('parses total estimates, fragment records and rejects malformed progress', () => {
+    expect(
+      parseProgressLine('DONDOWNLOAD_PROGRESS|10|NA|800|12.5|137|3|10')
+    ).toEqual({
       completedBytes: 10,
       totalBytes: 800,
       speedBps: 12,
-      streamId: '137'
+      streamId: '137',
+      fragmentIndex: 3,
+      fragmentCount: 10
     })
-    expect(parseProgressLine('DONDOWNLOAD_PROGRESS|10|NA|NA|NA|NA')).toEqual({
+    expect(
+      parseProgressLine('DONDOWNLOAD_PROGRESS|10|NA|NA|NA|NA|NA|NA')
+    ).toEqual({
       completedBytes: 10,
       totalBytes: null,
       speedBps: 0,
-      streamId: 'stream'
+      streamId: 'stream',
+      fragmentIndex: null,
+      fragmentCount: null
     })
     expect(parseProgressLine('DONDOWNLOAD_PROGRESS|NA|1|1|1|1')).toBeNull()
     expect(parseProgressLine('not progress')).toBeNull()
+  })
+
+  it('derives a byte total from fragment position when yt-dlp reports none', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        duration: null,
+        formats: [
+          {
+            format_id: '628',
+            ext: 'mp4',
+            vcodec: 'vp09.00.50.08',
+            acodec: 'none',
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            protocol: 'm3u8_native'
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2',
+            protocol: 'https'
+          }
+        ]
+      }),
+      download: () => undefined
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const optionId = analysis.bestVideoOptionId as string
+    const updates: MediaDownloadProgress[] = []
+    const promise = harness.engine.download(
+      downloadRequest(analysis.analysisId, optionId, harness.downloadDir),
+      (update) => updates.push(update)
+    )
+    const settlement = promise.then(
+      () => null,
+      (error: unknown) => error
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const call = downloadCall(harness.calls)
+    const base = outputBase(call)
+
+    call.child.stdout.write('DONDOWNLOAD_PROGRESS|500|NA|NA|100|628|5|20\n')
+    await tick()
+
+    expect(updates.at(-1)).toMatchObject({
+      status: 'downloading',
+      completedBytes: 500,
+      totalBytes: 2_000,
+      speedBps: 100
+    })
+
+    // A later real total always replaces the fragment estimate.
+    call.child.stdout.write('DONDOWNLOAD_PROGRESS|900|900|NA|100|628|20|20\n')
+    await tick()
+    expect(updates.at(-1)).toMatchObject({
+      completedBytes: 900,
+      totalBytes: 900
+    })
+
+    await fs.writeFile(`${base}.${downloadOutputExt(call)}`, Buffer.from('x'))
+    call.child.close(0)
+    expect(await settlement).not.toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
   })
 
   it('sanitizes the title into a filename component under the trusted directory', async () => {

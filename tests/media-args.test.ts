@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildDownloadArgs } from '../src/main/media/args'
+import {
+  CONCURRENT_FRAGMENTS,
+  PROGRESS_TEMPLATE,
+  buildDownloadArgs,
+  parseProgressLine
+} from '../src/main/media/args'
 
 const sourceUrl = 'https://example.com/watch?v=1'
 
@@ -18,17 +23,18 @@ function args(overrides: {
   })
 }
 
-describe('buildDownloadArgs HLS preference', () => {
-  it('prefers FFmpeg for HLS only when a merge output format is selected', () => {
+describe('buildDownloadArgs HLS and fragment downloads', () => {
+  it('keeps FFmpeg for merging but uses the native fragment downloader', () => {
     const merged = args({
       mergeOutputFormat: 'mkv',
       ffmpegLocation: 'C:\\tools\\ffmpeg.exe'
     })
 
     expect(merged).toContain('--merge-output-format')
-    expect(merged).toContain('--hls-prefer-ffmpeg')
-    expect(merged.indexOf('--hls-prefer-ffmpeg')).toBeLessThan(
-      merged.indexOf('--ffmpeg-location')
+    expect(merged).toContain('--ffmpeg-location')
+    expect(merged).not.toContain('--hls-prefer-ffmpeg')
+    expect(merged[merged.indexOf('--concurrent-fragments') + 1]).toBe(
+      String(CONCURRENT_FRAGMENTS)
     )
     expect(merged[merged.length - 2]).toBe('--')
     expect(merged[merged.length - 1]).toBe(sourceUrl)
@@ -40,6 +46,9 @@ describe('buildDownloadArgs HLS preference', () => {
     expect(direct).not.toContain('--merge-output-format')
     expect(direct).not.toContain('--hls-prefer-ffmpeg')
     expect(direct).not.toContain('--remux-video')
+    expect(direct[direct.indexOf('--concurrent-fragments') + 1]).toBe(
+      String(CONCURRENT_FRAGMENTS)
+    )
 
     const remuxed = args({
       mergeOutputFormat: null,
@@ -52,5 +61,56 @@ describe('buildDownloadArgs HLS preference', () => {
     expect(remuxed).not.toContain('--merge-output-format')
     expect(remuxed[remuxed.length - 2]).toBe('--')
     expect(remuxed[remuxed.length - 1]).toBe(sourceUrl)
+  })
+})
+
+describe('parseProgressLine', () => {
+  it('parses byte totals, estimates and fragment position', () => {
+    expect(
+      parseProgressLine(
+        'DONDOWNLOAD_PROGRESS|10|NA|800|12.5|137|3|10'
+      )
+    ).toEqual({
+      completedBytes: 10,
+      totalBytes: 800,
+      speedBps: 12,
+      streamId: '137',
+      fragmentIndex: 3,
+      fragmentCount: 10
+    })
+  })
+
+  it('parses fragment-only records without any byte total', () => {
+    expect(
+      parseProgressLine('DONDOWNLOAD_PROGRESS|5000|NA|NA|1000|628|5|20')
+    ).toEqual({
+      completedBytes: 5000,
+      totalBytes: null,
+      speedBps: 1000,
+      streamId: '628',
+      fragmentIndex: 5,
+      fragmentCount: 20
+    })
+  })
+
+  it('accepts the original six-column shape for compatibility', () => {
+    expect(parseProgressLine('DONDOWNLOAD_PROGRESS|10|NA|NA|NA|NA')).toEqual({
+      completedBytes: 10,
+      totalBytes: null,
+      speedBps: 0,
+      streamId: 'stream',
+      fragmentIndex: null,
+      fragmentCount: null
+    })
+  })
+
+  it('rejects malformed progress records', () => {
+    expect(parseProgressLine('DONDOWNLOAD_PROGRESS|NA|1|1|1|1')).toBeNull()
+    expect(parseProgressLine('not progress')).toBeNull()
+  })
+
+  it('includes fragment fields in the template', () => {
+    expect(PROGRESS_TEMPLATE).toContain('%(progress.fragment_index)s')
+    expect(PROGRESS_TEMPLATE).toContain('%(progress.fragment_count)s')
   })
 })

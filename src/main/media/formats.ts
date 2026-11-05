@@ -28,6 +28,15 @@ const HTTP_STREAM_PROTOCOLS = new Set([
   'https_dash_segments'
 ])
 
+/**
+ * HLS playlist protocols are downloaded through yt-dlp's fragment path or,
+ * historically, FFmpeg. Direct HTTP/DASH streams are a single connection per
+ * format and report progress reliably, so equally good formats prefer them.
+ */
+function protocolPreference(protocol: string): number {
+  return protocol === 'm3u8' || protocol === 'm3u8_native' ? 1 : 0
+}
+
 /** One server-resolved output choice for an option. */
 export interface InternalOutputChoice {
   outputFormat: MediaOutputFormat
@@ -80,6 +89,8 @@ export interface BuildMediaAnalysisOptions {
 interface FormatDescriptor {
   formatId: string
   ext: string
+  /** yt-dlp transport protocol, for example `https` or `m3u8_native`. */
+  protocol: string
   videoCodec: string | null
   audioCodec: string | null
   width: number | null
@@ -107,6 +118,8 @@ interface VideoDraft {
   sortFps: number
   sortBitrate: number
   sortFilesize: number
+  /** Lower is preferred: 0 for https/DASH segments, 1 for HLS playlists. */
+  sortProtocol: number
   dedupeKey: string
 }
 
@@ -115,6 +128,7 @@ interface AudioDraft {
   choices: Map<MediaOutputFormat, InternalOutputChoice>
   sortBitrate: number
   sortFilesize: number
+  sortProtocol: number
   dedupeKey: string
 }
 
@@ -348,6 +362,7 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   return {
     formatId,
     ext,
+    protocol,
     videoCodec,
     audioCodec,
     width,
@@ -522,6 +537,7 @@ function audioOutputChoices(
 function compareAudio(a: AudioDraft, b: AudioDraft): number {
   return (
     b.sortBitrate - a.sortBitrate ||
+    a.sortProtocol - b.sortProtocol ||
     b.sortFilesize - a.sortFilesize ||
     a.dto.container.localeCompare(b.dto.container)
   )
@@ -532,6 +548,9 @@ function compareVideo(a: VideoDraft, b: VideoDraft): number {
     b.sortHeight - a.sortHeight ||
     b.sortWidth - a.sortWidth ||
     b.sortFps - a.sortFps ||
+    // Same resolution/fps: prefer the direct HTTP/DASH transport before
+    // bitrate and size, so deduplication keeps the progress-reporting format.
+    a.sortProtocol - b.sortProtocol ||
     b.sortBitrate - a.sortBitrate ||
     b.sortFilesize - a.sortFilesize ||
     (a.dto.requiresMerge === b.dto.requiresMerge
@@ -594,6 +613,7 @@ function buildVideoDrafts(
         sortFps: descriptor.fps ?? 0,
         sortBitrate: descriptor.tbr,
         sortFilesize: size.bytes ?? 0,
+        sortProtocol: protocolPreference(descriptor.protocol),
         dedupeKey: [
           descriptor.height ?? 0,
           descriptor.width ?? 0,
@@ -657,6 +677,7 @@ function buildVideoDrafts(
       sortFps: descriptor.fps ?? 0,
       sortBitrate: descriptor.tbr,
       sortFilesize: size.bytes ?? 0,
+      sortProtocol: protocolPreference(descriptor.protocol),
       dedupeKey: [
         descriptor.height ?? 0,
         descriptor.width ?? 0,
@@ -713,6 +734,7 @@ function buildAudioDrafts(
       choices,
       sortBitrate: descriptor.abr || descriptor.tbr,
       sortFilesize: size.bytes ?? 0,
+      sortProtocol: protocolPreference(descriptor.protocol),
       dedupeKey: [
         descriptor.audioCodec,
         container,

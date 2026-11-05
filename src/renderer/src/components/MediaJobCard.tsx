@@ -4,7 +4,7 @@ import {
   type MediaJob,
   type MediaJobStatus
 } from '@shared/media'
-import { formatBytes, formatPercent, formatSpeed } from '@shared/format'
+import { formatBytes, formatSpeed } from '@shared/format'
 
 interface MediaJobCardProps {
   job: MediaJob
@@ -59,11 +59,47 @@ export function MediaJobCard({
   onShowInFolder
 }: MediaJobCardProps): JSX.Element {
   const active = isActiveMediaJobStatus(job.status)
-  const indeterminate = job.status === 'analyzing' || job.status === 'merging'
-  const percent =
-    job.status === 'complete'
-      ? 100
-      : formatPercent(job.completedBytes, job.totalBytes ?? 0)
+  const complete = job.status === 'complete'
+  const queued = job.status === 'queued'
+  const analyzing = job.status === 'analyzing'
+  const merging = job.status === 'merging'
+  const totalKnown = job.totalBytes !== null && job.totalBytes > 0
+  const hasProgress = job.completedBytes > 0 || job.speedBps > 0
+  // Before the first progress record arrives yt-dlp is still extracting and
+  // resolving formats. Showing a static "0 B / 1.32 GB 0%" there made a 4K
+  // download look frozen.
+  const starting = job.status === 'downloading' && !hasProgress
+  const sizeUnknown = job.status === 'downloading' && !totalKnown
+  const indeterminate = queued || analyzing || merging || starting || sizeUnknown
+  const percent = complete
+    ? 100
+    : totalKnown
+      ? Math.min(
+          100,
+          Math.max(0, (job.completedBytes / (job.totalBytes ?? 1)) * 100)
+        )
+      : 0
+  const roundedPercent = Math.round(percent)
+  const phaseText = queued
+    ? 'Queued'
+    : analyzing
+      ? 'Analyzing…'
+      : merging
+        ? 'Merging…'
+        : starting
+          ? 'Starting…'
+          : sizeUnknown
+            ? job.completedBytes > 0
+              ? `Downloading (size unknown) · ${formatBytes(job.completedBytes)}`
+              : 'Downloading (size unknown)'
+            : `${roundedPercent}%`
+  const statusLabel = queued
+    ? 'Queued'
+    : starting
+      ? 'Starting…'
+      : merging
+        ? 'Merging…'
+        : STATUS_LABEL[job.status]
   const titleId = `media-job-${job.id}-title`
   const kindLabel = job.kind === 'video' ? 'Video' : 'Audio'
 
@@ -93,7 +129,7 @@ export function MediaJobCard({
         <span
           className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[job.status]}`}
         >
-          {STATUS_LABEL[job.status]}
+          {statusLabel}
         </span>
       </div>
 
@@ -103,15 +139,11 @@ export function MediaJobCard({
           aria-label={`Media download progress for ${job.title}`}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={indeterminate ? undefined : Math.round(percent)}
-          aria-valuetext={
-            indeterminate
-              ? `${STATUS_LABEL[job.status]}…`
-              : `${Math.round(percent)}%`
-          }
+          aria-valuenow={indeterminate ? undefined : roundedPercent}
+          aria-valuetext={indeterminate ? phaseText : `${roundedPercent}%`}
           className={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${
             indeterminate ? 'media-progress-indeterminate' : ''
-          } ${job.status === 'merging' ? 'media-progress-merging' : ''}`}
+          } ${merging ? 'media-progress-merging' : ''}`}
         >
           {indeterminate ? null : (
             <div
@@ -124,23 +156,27 @@ export function MediaJobCard({
         </div>
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-zinc-400">
-          <span>
-            <span className="tabular-nums text-zinc-300">
-              {formatBytes(job.completedBytes)}
-            </span>{' '}
-            /{' '}
-            {job.totalBytes !== null && job.totalBytes > 0
-              ? formatBytes(job.totalBytes)
-              : 'unknown'}
-            <span className="ml-2 tabular-nums text-zinc-500">
-              {indeterminate ? STATUS_LABEL[job.status] : `${Math.round(percent)}%`}
+          {indeterminate ? (
+            <span className="truncate text-zinc-400" title={phaseText}>
+              {phaseText}
             </span>
-          </span>
+          ) : (
+            <span>
+              <span className="tabular-nums text-zinc-300">
+                {formatBytes(job.completedBytes)}
+              </span>{' '}
+              /{' '}
+              {totalKnown ? formatBytes(job.totalBytes ?? 0) : 'unknown'}
+              <span className="ml-2 tabular-nums text-zinc-500">
+                {`${roundedPercent}%`}
+              </span>
+            </span>
+          )}
           <span className="flex items-center gap-3 tabular-nums">
-            {job.status === 'downloading' ? (
+            {job.status === 'downloading' && !starting ? (
               <span>{formatSpeed(job.speedBps)}</span>
             ) : null}
-            {job.status === 'complete' && job.totalBytes !== null ? (
+            {complete && job.totalBytes !== null ? (
               <span>{formatBytes(job.totalBytes)}</span>
             ) : null}
           </span>
