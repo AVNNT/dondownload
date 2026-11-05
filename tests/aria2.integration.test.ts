@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import {
   createServer as createHttpServer,
@@ -33,6 +34,7 @@ import { openDownloadDatabase } from '../src/main/db/database'
 import { DownloadManager } from '../src/main/downloads/manager'
 import { INTERRUPTED_MESSAGE } from '../src/main/downloads/recovery'
 import { defaultDownloadSettings } from '../src/shared/settings'
+import { parseCapturedSourceInput } from '../src/shared/capturedSource'
 import type { DownloadItem } from '../src/shared/types'
 
 /**
@@ -509,6 +511,58 @@ runIntegration('aria2 HTTP integration', () => {
     )
     expect(downloaded.length).toBe(payload.length)
     expect(downloaded.equals(payload)).toBe(true)
+  }, 30_000)
+
+  it('queues a captured progressive source through the exact contract and verifies bytes', async () => {
+    if (!httpServer) throw new Error('HTTP test server is not ready.')
+
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'dondownload-captured-source-integration-')
+    )
+    tempDirs.push(root)
+    const capturedDir = path.join(root, 'downloads')
+    const filename = 'captured-sample.mp4'
+    const filePath = path.join(capturedDir, filename)
+    const service = new Aria2Service(() => capturedDir)
+    const manager = new DownloadManager(service, capturedDir, () => undefined)
+    services.push(service)
+    managers.push(manager)
+
+    await service.start()
+
+    // The fixture origin is loopback, so this focused integrity check uses the
+    // same shared input contract and the same DownloadManager.add route that the
+    // native bridge calls after its public-target check. Public/private target
+    // rejection is covered separately with an injected DNS lookup; no target
+    // validation is weakened here or in production.
+    const captured = parseCapturedSourceInput({ url, filename })
+    const observedAt = Date.now()
+    const added = await manager.add(captured)
+    const acceptedMs = Date.now() - observedAt
+    const id = added.downloads[0]?.id
+    if (!id) throw new Error('The captured source has no download id.')
+
+    const accepted = getDownload(manager, id)
+    expect(accepted.filename).toBe(filename)
+    const completed = await waitForDownload(
+      manager,
+      id,
+      (download) => download.status === 'complete',
+      'the captured progressive fixture to complete',
+      20_000
+    )
+    const completedMs = Date.now() - observedAt
+    expect(completed.completedBytes).toBe(payload.length)
+
+    const downloaded = await fs.readFile(filePath)
+    const expectedHash = createHash('sha256').update(payload).digest('hex')
+    const actualHash = createHash('sha256').update(downloaded).digest('hex')
+    expect(downloaded.length).toBe(payload.length)
+    expect(actualHash).toBe(expectedHash)
+
+    console.info(
+      `[captured-source fixture] bytes=${payload.length} accepted=${acceptedMs}ms complete=${completedMs}ms`
+    )
   }, 30_000)
 
   it('pauses and resumes a real HTTP Range download to completion', async () => {

@@ -325,6 +325,76 @@ describeWindows('Windows native messaging host', () => {
     })
   })
 
+  it('forwards one captured progressive source with its authenticated route and filename', async () => {
+    const app = await startFakeApp()
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(
+          JSON.stringify({
+            type: 'queue-captured-source',
+            url: 'https://cdn.example/video/clip.mp4?sig=abc',
+            filename: 'clip.mp4'
+          })
+        )
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([{ ok: true, accepted: true }])
+    expect(app.requests).toHaveLength(1)
+    expect(app.requests[0]).toMatchObject({
+      method: 'POST',
+      url: '/queue-captured-source',
+      contentType: 'application/json; charset=utf-8',
+      body: {
+        url: 'https://cdn.example/video/clip.mp4?sig=abc',
+        filename: 'clip.mp4'
+      }
+    })
+    expect(app.requests[0]?.authorization).toBe(`Bearer ${app.token}`)
+  })
+
+  it('rejects path-like or non-progressive captured sources before the app', async () => {
+    const app = await startFakeApp()
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(
+          JSON.stringify({
+            type: 'queue-captured-source',
+            url: 'https://cdn.example/video/clip.mp4',
+            filename: '../clip.mp4'
+          })
+        ),
+        frame(
+          JSON.stringify({
+            type: 'queue-captured-source',
+            url: 'https://cdn.example/live/index.m3u8'
+          })
+        )
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    const responses = parseFrames(run.stdout) as Array<{
+      ok: boolean
+      error?: { code: string }
+    }>
+    expect(responses[0]).toMatchObject({ ok: false })
+    expect(responses[1]).toMatchObject({
+      ok: false,
+      error: { code: 'CAPTURED_SOURCE_UNSUPPORTED' }
+    })
+    expect(app.requests).toHaveLength(0)
+  })
+
   it('forwards repeated frames to the app, which owns duplicate policy', async () => {
     const app = await startFakeApp()
     const dir = await makeTempDir()

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   NATIVE_HOST,
+  normalizeCapturedSource,
   sendAnalyzeMedia,
+  sendQueueCapturedSource,
   sendQueueDownload,
   sendQueueMedia
 } from '../extension/bridge'
@@ -138,6 +140,71 @@ describe('manual capture is preserved', () => {
       ok: false,
       error: { code: 'DUPLICATE_DOWNLOAD' }
     })
+  })
+})
+
+describe('captured progressive source envelope', () => {
+  it('sends a verified progressive URL and sanitized filename through the same native host', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, accepted: true, operation: 'queue-captured-source' }
+
+    const result = await sendQueueCapturedSource(
+      'https://cdn.example/video/clip.mp4?sig=abc#t=2',
+      'clip.mp4'
+    )
+
+    expect(result).toEqual({ ok: true })
+    expect(fake.messages).toEqual([
+      {
+        host: NATIVE_HOST,
+        message: {
+          type: 'queue-captured-source',
+          url: 'https://cdn.example/video/clip.mp4?sig=abc',
+          filename: 'clip.mp4'
+        }
+      }
+    ])
+  })
+
+  it('rejects blob, manifest and unrecognized sources before native messaging', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, accepted: true }
+
+    for (const [url, code] of [
+      ['blob:https://example.com/abc', 'UNSUPPORTED_URL'],
+      ['https://cdn.example/index.m3u8', 'CAPTURED_SOURCE_UNSUPPORTED'],
+      ['https://cdn.example/manifest.mpd', 'CAPTURED_SOURCE_UNSUPPORTED'],
+      ['https://cdn.example/stream', 'CAPTURED_SOURCE_UNSUPPORTED'],
+      ['https://cdn.example/video.mp4', 'INVALID_FILENAME']
+    ] as const) {
+      const result = await sendQueueCapturedSource(
+        url,
+        code === 'INVALID_FILENAME' ? '../escape.mp4' : undefined
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok) continue
+      expect(result.error.code).toBe(code)
+    }
+    expect(fake.messages).toHaveLength(0)
+  })
+
+  it('accepts an extensionless CDN URL only when the observed filename supplies a progressive container', () => {
+    expect(normalizeCapturedSource('https://cdn.example/stream?id=1', 'clip.webm')).toEqual({
+      ok: true,
+      url: 'https://cdn.example/stream?id=1',
+      filename: 'clip.webm'
+    })
+  })
+
+  it('does not claim success when the desktop bridge rejects the source', async () => {
+    const fake = installFakeNative()
+    fake.response = {
+      ok: false,
+      error: { code: 'DUPLICATE_DOWNLOAD', message: 'Already queued.' }
+    }
+
+    const result = await sendQueueCapturedSource('https://cdn.example/clip.mp4')
+    expect(result).toMatchObject({ ok: false, error: { code: 'DUPLICATE_DOWNLOAD' } })
   })
 })
 

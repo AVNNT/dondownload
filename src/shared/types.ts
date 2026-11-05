@@ -98,6 +98,14 @@ export interface DownloadItem {
   blockReason?: DownloadBlockReason | null
 }
 
+/** A progressive media file observed during real page playback. */
+export interface CapturedSourceInput {
+  url: string
+  filename?: string
+}
+
+export const MAX_CAPTURED_SOURCE_FILENAME_LENGTH = 180
+
 export interface AddDownloadInput {
   url: string
   filename?: string

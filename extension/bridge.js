@@ -11,7 +11,12 @@ import {
 
 export const NATIVE_HOST = 'com.dondownload.bridge'
 export const QUEUE_MESSAGE_TYPE = 'queue-download'
+export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
 export const MAX_URL_LENGTH = 4096
+export const MAX_CAPTURED_FILENAME_LENGTH = 180
+
+const PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 /**
  * Validate a page/link URL before it leaves the browser. The native host and
@@ -76,6 +81,162 @@ export function normalizeSupportedUrl(value) {
   }
 
   return { ok: true, url: url.href }
+}
+
+function progressiveExtension(value) {
+  if (typeof value !== 'string') return null
+  const match = /\.([a-z0-9]{2,5})$/i.exec(value.trim())
+  if (!match) return null
+  const extension = match[1].toLowerCase()
+  return PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1 ? null : extension
+}
+
+function normalizeCapturedFilename(value) {
+  if (typeof value !== 'string') return undefined
+  const raw = value.trim()
+  if (
+    raw.length === 0 ||
+    raw.length > MAX_CAPTURED_FILENAME_LENGTH * 2 ||
+    CONTROL_CHARACTERS.test(raw) ||
+    /[\\/]/.test(raw)
+  ) {
+    return undefined
+  }
+  const cleaned = raw
+    .replace(/[<>:"|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[. ]+|[. ]+$/g, '')
+  if (cleaned.length === 0 || cleaned === '.' || cleaned === '..') {
+    return undefined
+  }
+  const name =
+    cleaned.length > MAX_CAPTURED_FILENAME_LENGTH
+      ? cleaned.slice(0, MAX_CAPTURED_FILENAME_LENGTH)
+      : cleaned
+  return progressiveExtension(name) === null ? undefined : name
+}
+
+/**
+ * Validate one observed progressive playback source before it leaves the
+ * browser. A blob: or manifest URL is explicitly unsupported: the extension
+ * cannot prove a single downloadable representation from an MSE segment or an
+ * HLS/DASH manifest without a resolver.
+ */
+export function normalizeCapturedSource(rawUrl, rawFilename) {
+  const normalized = normalizeSupportedUrl(rawUrl)
+  if (!normalized.ok) {
+    return { ok: false, code: normalized.code, message: normalized.message }
+  }
+
+  let path = ''
+  try {
+    path = new URL(normalized.url).pathname
+  } catch {
+    return {
+      ok: false,
+      code: 'MALFORMED_URL',
+      message: 'That does not look like a valid URL.'
+    }
+  }
+  if (/\.(m3u8|mpd)$/i.test(path)) {
+    return {
+      ok: false,
+      code: 'CAPTURED_SOURCE_UNSUPPORTED',
+      message:
+        'This player uses an HLS or DASH manifest. DonDownload cannot map it to one verified file without an explicit resolver.'
+    }
+  }
+
+  let filename
+  if (rawFilename !== undefined) {
+    filename = normalizeCapturedFilename(rawFilename)
+    if (filename === undefined) {
+      return {
+        ok: false,
+        code: 'INVALID_FILENAME',
+        message: 'The captured media filename is not valid.'
+      }
+    }
+  }
+
+  if (
+    progressiveExtension(path) === null &&
+    progressiveExtension(filename || '') === null
+  ) {
+    return {
+      ok: false,
+      code: 'CAPTURED_SOURCE_UNSUPPORTED',
+      message:
+        'This playback source is not a recognized progressive MP4 or WebM file.'
+    }
+  }
+
+  return {
+    ok: true,
+    url: normalized.url,
+    ...(filename === undefined ? {} : { filename })
+  }
+}
+
+/**
+ * Queue one verified progressive source through the same native host and
+ * authenticated loopback bridge as the manual capture path. Resolves only
+ * after the desktop manager has persisted the download.
+ */
+export function sendQueueCapturedSource(rawUrl, rawFilename) {
+  const normalized = normalizeCapturedSource(rawUrl, rawFilename)
+  if (!normalized.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: normalized.code, message: normalized.message }
+    })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST,
+        {
+          type: CAPTURED_SOURCE_MESSAGE_TYPE,
+          url: normalized.url,
+          ...(normalized.filename === undefined
+            ? {}
+            : { filename: normalized.filename })
+        },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          if (runtimeError) {
+            finish({ ok: false, error: describeNativeError(runtimeError.message) })
+            return
+          }
+          if (!response || response.ok !== true) {
+            finish({ ok: false, error: describeResponseError(response) })
+            return
+          }
+          finish({ ok: true })
+        }
+      )
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
 }
 
 function describeNativeError(message) {

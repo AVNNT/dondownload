@@ -5,7 +5,11 @@
 // on the exact registered/opted-in origin, re-checks the grant immediately
 // before every native call, and only then forwards opaque analysis/option IDs.
 
-import { sendAnalyzeMedia, sendQueueMedia } from './bridge.js'
+import {
+  sendAnalyzeMedia,
+  sendQueueCapturedSource,
+  sendQueueMedia
+} from './bridge.js'
 import { isMediaOutputFormat, isOpaqueMediaId } from './media-contract.js'
 import { isOverlayTabTracked } from './overlay-controller.js'
 import {
@@ -17,7 +21,8 @@ import {
 
 export const MEDIA_MESSAGE_TYPES = Object.freeze({
   ANALYZE: 'dondownload:media-analyze',
-  QUEUE: 'dondownload:media-queue'
+  QUEUE: 'dondownload:media-queue',
+  CAPTURE_QUEUE: 'dondownload:capture-queue'
 })
 
 function failure(code, message) {
@@ -140,6 +145,41 @@ export async function analyzeMediaForSender(chromeApi, message, sender) {
   const result = await sendAnalyzeMedia(authorization.url)
   if (result.ok !== true) return result
   return { ok: true, analysis: result.analysis }
+}
+
+/**
+ * Queue one progressive source observed during real playback in the trusted
+ * sender tab. The content script supplies the observed URL/filename; the
+ * service worker still re-checks the exact-origin grant, tab association and
+ * frame before the native call, and bridge.js validates the URL/extension
+ * again. Blob/MSE and manifest URLs are rejected rather than guessed.
+ */
+export async function queueCapturedSourceForSender(chromeApi, message, sender) {
+  if (
+    !message ||
+    message.type !== MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE ||
+    !hasExactKeys(message, ['type', 'url'], ['filename'])
+  ) {
+    return failure('INVALID_MESSAGE', 'The captured source request is not valid.')
+  }
+  if (typeof message.url !== 'string' || message.url.length === 0) {
+    return failure('INVALID_MESSAGE', 'The captured source URL is not valid.')
+  }
+  if (
+    message.filename !== undefined &&
+    (typeof message.filename !== 'string' ||
+      message.filename.length === 0 ||
+      message.filename.length > 360)
+  ) {
+    return failure('INVALID_MESSAGE', 'The captured source filename is not valid.')
+  }
+
+  const authorization = await authorizeMediaSender(chromeApi, sender)
+  if (authorization.ok !== true) return authorization
+
+  const result = await sendQueueCapturedSource(message.url, message.filename)
+  if (result.ok !== true) return result
+  return { ok: true }
 }
 
 /** Queue one opaque analysis/option pair for the trusted sender tab. */

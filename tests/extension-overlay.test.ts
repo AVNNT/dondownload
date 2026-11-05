@@ -223,8 +223,8 @@ describe('video detection and placement policy', () => {
   it('starts with truthful media copy and never fabricates an option', () => {
     const copy = core.initialMediaState()
     expect(copy.title).toMatch(/video options/i)
-    expect(copy.detail).toMatch(/page address/i)
-    expect(copy.detail).toMatch(/never read/i)
+    expect(copy.detail).toMatch(/actually played/i)
+    expect(copy.detail).toMatch(/never reads/i)
     expect(copy.actionLabel).toMatch(/analyze/i)
 
     const serialized = JSON.stringify(copy)
@@ -468,6 +468,11 @@ class FakeNode {
   type = ''
   tabIndex = 0
   isContentEditable = false
+  currentSrc = ''
+  paused = true
+  readyState = 0
+  ended = false
+  error: unknown = null
   shadowRoot: FakeShadowRoot | null = null
   rect: FakeRect = { left: 0, top: 0, width: 0, height: 0 }
   computed: { display?: string; visibility?: string; opacity?: string } = {
@@ -619,9 +624,13 @@ class FakeResizeObserver {
 interface Harness {
   document: any
   window: any
+  location: any
   host: FakeNode
   trigger: FakeNode
   panel: FakeNode
+  sourceSection: FakeNode
+  sourceList: FakeNode
+  sourceEmpty: FakeNode
   analyzeButton: FakeNode
   mediaResults: FakeNode
   mediaTitle: FakeNode
@@ -652,6 +661,7 @@ interface Harness {
 interface HarnessOptions {
   analyzeResponse?: any
   queueResponse?: any
+  captureResponse?: any
   deferMediaResponses?: boolean
 }
 
@@ -756,6 +766,15 @@ function createHarness(options: HarnessOptions = {}): Harness {
           }
           return
         }
+        if (message.type === 'dondownload:capture-queue') {
+          const response = options.captureResponse ?? { ok: true }
+          if (options.deferMediaResponses) {
+            pendingMediaResponses.push(() => callback(response))
+          } else {
+            callback(response)
+          }
+          return
+        }
         callback({ ok: true })
       },
       onMessage: {
@@ -777,7 +796,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
     console,
     document,
     window,
-    location: { origin: 'https://example.com' },
+    location: { origin: 'https://example.com', href: 'https://example.com/watch?v=1' },
+    URL,
     chrome,
     getComputedStyle(node: FakeNode) {
       return node.computed
@@ -826,6 +846,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     findByClassIn(host, className)
   const trigger = findByClass('trigger')
   const panel = findByClass('panel')
+  const sourceSection = findByClass('sources')
+  const sourceList = findByClass('source-list')
+  const sourceEmpty = findByClass('source-empty')
   const analyzeButton = findByClass('action')
   const mediaResults = findByClass('media-results')
   const mediaTitle = findByClass('media-title')
@@ -843,6 +866,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
   if (
     !trigger ||
     !panel ||
+    !sourceSection ||
+    !sourceList ||
+    !sourceEmpty ||
     !analyzeButton ||
     !mediaResults ||
     !mediaTitle ||
@@ -874,9 +900,13 @@ function createHarness(options: HarnessOptions = {}): Harness {
   return {
     document,
     window,
+    location: sandbox.location,
     host,
     trigger,
     panel,
+    sourceSection,
+    sourceList,
+    sourceEmpty,
     analyzeButton,
     mediaResults,
     mediaTitle,
@@ -941,6 +971,19 @@ function pointerOver(video: FakeNode): any {
   const event = pointerEvent(video, [video, harness.document.body, harness.document.documentElement])
   harness.dispatchDocument('pointerover', event)
   return event
+}
+
+function playVideo(
+  video: FakeNode,
+  currentSrc: string,
+  overrides: { paused?: boolean; readyState?: number; ended?: boolean; error?: unknown } = {}
+): void {
+  video.currentSrc = currentSrc
+  video.paused = overrides.paused ?? false
+  video.readyState = overrides.readyState ?? 4
+  video.ended = overrides.ended ?? false
+  video.error = overrides.error ?? null
+  video.dispatch('playing', pointerEvent(video, [video]))
 }
 
 const ANALYSIS_ID = 'analysis_0123456789abcdef'
@@ -1063,18 +1106,18 @@ describe('overlay interaction in a minimal DOM', () => {
 
     const panelText = JSON.stringify(collectText(harness.panel))
     expect(panelText).toMatch(/video options for this page/i)
-    expect(panelText).toMatch(/analyze this page/i)
-    expect(panelText).toMatch(/page address/i)
+    expect(panelText).toMatch(/analyze page with yt-dlp/i)
+    expect(panelText).toMatch(/detected from playback/i)
+    expect(panelText).toMatch(/no progressive playback detected yet/i)
     expect(panelText).not.toMatch(/1080p|720p|4K|HLS|DASH/)
 
-    // Opening the capture panel is the explicit user action that triggers
-    // exactly one analysis. Hovering only showed the button and never asked
-    // the background worker for media information.
+    // Opening the panel never invokes yt-dlp or any native call; it only shows
+    // already observed playback sources for this exact player.
     expect(
       harness.sentMessages.filter((message) =>
         String(message.type).startsWith('dondownload:media-')
       )
-    ).toEqual([{ type: 'dondownload:media-analyze' }])
+    ).toEqual([])
 
     const escape = pointerEvent(harness.panel, [harness.panel, harness.host], {
       key: 'Escape'
@@ -1084,9 +1127,15 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(harness.document.activeElement).toBe(harness.trigger)
     expect(escape.defaultPrevented).toBe(true)
 
-    // No source, playback or network API was touched.
+    // Only passive playback events are observed; playback is never controlled
+    // and the video element itself is not modified.
     expect(Object.keys(harness.video.style)).toHaveLength(0)
-    expect(harness.video.listeners).toEqual({})
+    expect(Object.keys(harness.video.listeners).sort()).toEqual([
+      'emptied',
+      'loadeddata',
+      'playing',
+      'timeupdate'
+    ])
   })
 
   it('handles dynamically removed videos through the mutation observer', () => {
@@ -1220,13 +1269,24 @@ function clickQualityLabel(label: FakeNode): any {
 }
 
 describe('overlay media flow', () => {
-  it('analyzes once when the capture panel opens and renders verified response options', () => {
+  it('runs the explicit analyzer fallback once and renders verified response options', () => {
     harness = createHarness({
       analyzeResponse: { ok: true, analysis: fakeAnalysis() },
       deferMediaResponses: true
     })
     openPanel(harness)
 
+    // The capture panel is detected-source-first and does not start yt-dlp.
+    expect(
+      harness.sentMessages.filter((message) =>
+        String(message.type).startsWith('dondownload:media-')
+      )
+    ).toEqual([])
+
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
     expect(
       harness.sentMessages.filter((message) =>
         String(message.type).startsWith('dondownload:media-')
@@ -1272,6 +1332,114 @@ describe('overlay media flow', () => {
     expect(harness.bestAudioButton.textContent).toContain('Size unknown')
     expect(harness.status.textContent).toMatch(/Analysis ready/)
     expect(harness.status.textContent).toMatch(/reported by yt-dlp/i)
+  })
+
+  it('accumulates exact-player sources, deduplicates quality switches and resets on navigation', () => {
+    harness = createHarness()
+    openPanel(harness)
+
+    playVideo(
+      harness.video,
+      'https://cdn.example/media/movie-1080.mp4?token=one'
+    )
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(1)
+    expect(JSON.stringify(collectText(harness.sourceList))).toContain('movie-1080.mp4')
+
+    playVideo(
+      harness.video,
+      'https://cdn.example/media/movie-720.mp4?token=two'
+    )
+    let rows = collectByClass(harness.sourceList, 'source')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.getAttribute('data-current')).toBe('true')
+    expect(JSON.stringify(collectText(rows[0]!))).toContain('movie-720.mp4')
+
+    // 1080p -> 720p -> 1080p keeps one row per exact URL and moves the current
+    // source back to the top instead of adding a duplicate.
+    playVideo(
+      harness.video,
+      'https://cdn.example/media/movie-1080.mp4?token=one'
+    )
+    rows = collectByClass(harness.sourceList, 'source')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.getAttribute('data-current')).toBe('true')
+    expect(JSON.stringify(collectText(rows[0]!))).toContain('movie-1080.mp4')
+
+    // A second player's source is never mixed into the active player's list.
+    const secondVideo = new FakeNode('video')
+    secondVideo.rect = { left: 700, top: 100, width: 400, height: 220 }
+    harness.document.body.appendChild(secondVideo)
+    harness.mutationObserver.trigger()
+    playVideo(secondVideo, 'https://cdn.example/media/other.webm')
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(2)
+    expect(JSON.stringify(collectText(harness.sourceList))).not.toContain('other.webm')
+
+    pointerOver(secondVideo)
+    harness.trigger.dispatch(
+      'click',
+      pointerEvent(harness.trigger, [harness.trigger, harness.host])
+    )
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(1)
+    expect(JSON.stringify(collectText(harness.sourceList))).toContain('other.webm')
+
+    // SPA navigation invalidates every source from the previous page.
+    harness.location.href = 'https://example.com/next'
+    harness.dispatchWindow('popstate', {})
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(0)
+    expect(harness.sourceEmpty.hidden).toBe(false)
+  })
+
+  it('marks blob/MSE and manifest playback unsupported and never guesses a file', () => {
+    harness = createHarness()
+    openPanel(harness)
+
+    playVideo(harness.video, 'blob:https://example.com/4a2c')
+    let rows = collectByClass(harness.sourceList, 'source')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.getAttribute('data-unsupported')).toBe('true')
+    expect(JSON.stringify(collectText(rows[0]!))).toMatch(/segmented|Media Source/i)
+    expect(collectByClass(harness.sourceList, 'source-action')).toHaveLength(0)
+
+    playVideo(harness.video, 'https://cdn.example/live/index.m3u8')
+    rows = collectByClass(harness.sourceList, 'source')
+    expect(rows[0]?.getAttribute('data-unsupported')).toBe('true')
+    expect(JSON.stringify(collectText(rows[0]!))).toMatch(/HLS or DASH/i)
+
+    // A later real progressive source replaces the unsupported notice.
+    playVideo(harness.video, 'https://cdn.example/video/clip.webm')
+    rows = collectByClass(harness.sourceList, 'source')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.getAttribute('data-unsupported')).toBeNull()
+    expect(collectByClass(harness.sourceList, 'source-action')).toHaveLength(1)
+  })
+
+  it('queues one detected source with its exact filename and closes with subtle feedback', () => {
+    harness = createHarness({ captureResponse: { ok: true } })
+    openPanel(harness)
+    playVideo(
+      harness.video,
+      'https://cdn.example/media/clip.mp4?sig=abc'
+    )
+
+    const buttons = collectByClass(harness.sourceList, 'source-action')
+    expect(buttons).toHaveLength(1)
+    buttons[0]?.dispatch(
+      'click',
+      pointerEvent(buttons[0]!, [buttons[0]!, harness.sourceList, harness.panel])
+    )
+
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:capture-queue',
+      url: 'https://cdn.example/media/clip.mp4?sig=abc',
+      filename: 'clip.mp4'
+    })
+    expect(harness.panel.hidden).toBe(true)
+    expect(harness.trigger.textContent).toBe('OK')
+    expect(
+      harness.sentMessages.filter((message) =>
+        String(message.type).startsWith('dondownload:media-')
+      )
+    ).toEqual([])
   })
 
   it('keeps each quality size visible and does not queue from analysis alone', () => {
@@ -1361,6 +1529,10 @@ describe('overlay media flow', () => {
       }
     })
     openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
 
     const labels = collectByClass(harness.qualityList, 'quality-option')
     expect(labels).toHaveLength(3)
@@ -1637,7 +1809,7 @@ describe('overlay source guardrails', () => {
     expect(uiSource).toContain('pointer-events: auto')
   })
 
-  it('never reads media sources, sniffs network traffic or controls playback', () => {
+  it('observes only the playing element currentSrc and never sniffs network traffic or controls playback', () => {
     const bridgeSource = readFileSync(path.join(extensionDir, 'bridge.js'), 'utf8')
     const mediaBridgeSource = readFileSync(
       path.join(extensionDir, 'media-bridge.js'),
@@ -1657,7 +1829,6 @@ describe('overlay source guardrails', () => {
     ]) {
       expect(source).not.toMatch(/\.play\s*\(/)
       expect(source).not.toMatch(/\.pause\s*\(/)
-      expect(source).not.toMatch(/\.currentSrc\b/)
       expect(source).not.toMatch(/\.srcObject\b/)
       expect(source).not.toMatch(/\bvideo\.src\b/)
       expect(source).not.toMatch(/captureStream/)
@@ -1666,6 +1837,13 @@ describe('overlay source guardrails', () => {
       expect(source).not.toMatch(/\bfetch\s*\(/)
       expect(source).not.toMatch(/document\.cookie/)
       expect(source).not.toMatch(/\.innerHTML\b/)
+      expect(source).not.toMatch(/performance\.getEntries/)
+      expect(source).not.toMatch(/Authorization|Cookie:/)
     }
+
+    // The only source read is currentSrc, and only on real playback events.
+    expect(uiSource).toContain('currentSrc')
+    expect(uiSource).toContain("'playing'")
+    expect(uiSource).toContain("'timeupdate'")
   })
 })

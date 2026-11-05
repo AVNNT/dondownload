@@ -1,6 +1,8 @@
 export const NATIVE_HOST: string
 export const QUEUE_MESSAGE_TYPE: string
+export const CAPTURED_SOURCE_MESSAGE_TYPE: string
 export const MAX_URL_LENGTH: number
+export const MAX_CAPTURED_FILENAME_LENGTH: number
 
 export interface BridgeFailure {
   ok: false
@@ -60,6 +62,10 @@ export type UrlResult =
   | { ok: true; url: string }
   | { ok: false; code: string; message: string }
 
+export type NormalizedCapturedSource =
+  | { ok: true; url: string; filename?: string }
+  | { ok: false; code: string; message: string }
+
 export type AnalyzeMediaResult =
   | { ok: true; analysis: MediaAnalysisDto }
   | BridgeFailure
@@ -67,6 +73,14 @@ export type AnalyzeMediaResult =
 export type QueueMediaResult = { ok: true; job: MediaJobDto } | BridgeFailure
 
 export function normalizeSupportedUrl(value: unknown): UrlResult
+export function normalizeCapturedSource(
+  rawUrl: unknown,
+  rawFilename?: unknown
+): NormalizedCapturedSource
+export function sendQueueCapturedSource(
+  rawUrl: unknown,
+  rawFilename?: unknown
+): Promise<{ ok: true } | BridgeFailure>
 export function sendQueueDownload(
   rawUrl: unknown,
   options?: { force?: boolean }

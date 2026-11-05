@@ -7,6 +7,7 @@ import type {
 export const MEDIA_MESSAGE_TYPES: Readonly<{
   ANALYZE: string
   QUEUE: string
+  CAPTURE_QUEUE: string
 }>
 
 export type MediaAuthorization =
@@ -27,3 +28,8 @@ export function queueMediaForSender(
   message: unknown,
   sender: unknown
 ): Promise<QueueMediaResult>
+export function queueCapturedSourceForSender(
+  chromeApi: unknown,
+  message: unknown,
+  sender: unknown
+): Promise<{ ok: true } | BridgeFailure>

@@ -3,6 +3,12 @@
 Status: implementation note for the focused media workflow change. No installer
 was rebuilt, nothing was pushed, and no Electron/Helium window was launched.
 
+> Superseded for the browser overlay only: the progressive-playback checkpoint
+> in [media-capture-progressive.md](media-capture-progressive.md) stopped
+> automatic yt-dlp analysis on panel open. The desktop Media tab still analyzes
+> complete URLs automatically, and the overlay keeps an explicit
+> `Analyze page with yt-dlp (fallback)` action.
+
 ## Root causes found in the existing code
 
 - **Manual analysis in both UIs.** `MediaAnalyzer.tsx` was a submit form with a

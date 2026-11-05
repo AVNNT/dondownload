@@ -3,6 +3,7 @@ import {
   MEDIA_MESSAGE_TYPES,
   analyzeMediaForSender,
   authorizeMediaSender,
+  queueCapturedSourceForSender,
   queueMediaForSender
 } from '../extension/media-bridge'
 import {
@@ -312,6 +313,67 @@ describe('authorized media operations', () => {
       }
     ])
     expect(fake.state.calls).toEqual(['contains', 'native'])
+  })
+
+  it('queues a detected progressive source only after the exact tab authorization', async () => {
+    const fake = createFakeChrome()
+    fake.nativeResponse = { ok: true, accepted: true }
+    useChrome(fake)
+
+    const result = await queueCapturedSourceForSender(
+      fake.api,
+      {
+        type: MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE,
+        url: 'https://cdn.example/clip.mp4?sig=abc',
+        filename: 'clip.mp4'
+      },
+      validSender()
+    )
+
+    expect(result).toEqual({ ok: true })
+    expect(fake.state.nativeMessages).toEqual([
+      {
+        host: 'com.dondownload.bridge',
+        message: {
+          type: 'queue-captured-source',
+          url: 'https://cdn.example/clip.mp4?sig=abc',
+          filename: 'clip.mp4'
+        }
+      }
+    ])
+    expect(fake.state.calls).toEqual(['contains', 'native'])
+  })
+
+  it('rejects a captured source from an untracked tab or with extra fields', async () => {
+    const fake = createFakeChrome()
+    fake.state.tracked = { [ORIGIN]: [99] }
+    useChrome(fake)
+
+    const untracked = await queueCapturedSourceForSender(
+      fake.api,
+      {
+        type: MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE,
+        url: 'https://cdn.example/clip.mp4'
+      },
+      validSender()
+    )
+    expect(untracked).toMatchObject({
+      ok: false,
+      error: { code: 'TAB_NOT_ASSOCIATED' }
+    })
+
+    fake.state.tracked = { [ORIGIN]: [7] }
+    const extra = await queueCapturedSourceForSender(
+      fake.api,
+      {
+        type: MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE,
+        url: 'https://cdn.example/clip.mp4',
+        pageUrl: 'https://attacker.example/'
+      },
+      validSender()
+    )
+    expect(extra).toMatchObject({ ok: false, error: { code: 'INVALID_MESSAGE' } })
+    expect(fake.state.nativeMessages).toHaveLength(0)
   })
 
   it('rejects a raw selector or an extra field before any native call', async () => {

@@ -10,6 +10,10 @@ import {
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import {
+  CAPTURED_SOURCE_CHANNEL,
+  parseCapturedSourceInput
+} from '@shared/capturedSource'
+import {
   MEDIA_BRIDGE_ROUTES,
   MEDIA_BRIDGE_ROUTE_OPERATIONS,
   parseMediaAnalyzeRequest,
@@ -38,8 +42,13 @@ import {
 } from '@shared/nativeBridge'
 import { ValidationError } from '@shared/validation'
 import { AppError, toErrorInfo } from '../errors'
+import {
+  assertPublicTarget,
+  type PublicTargetLookup
+} from '../net/publicTarget'
 
 const BRIDGE_ROUTE = '/queue-download'
+const CAPTURED_SOURCE_ROUTE = '/queue-captured-source'
 const LOOPBACK_ADDRESS = '127.0.0.1'
 
 function isMediaRoute(value: string | undefined): value is MediaBridgeRoute {
@@ -101,6 +110,8 @@ export interface NativeBridgeOptions {
    * media routes stay authenticated but report a safe unavailable error.
    */
   mediaBridge?: MediaBridgeTarget
+  /** Injectable DNS lookup for focused tests; production uses node:dns. */
+  publicTargetLookup?: PublicTargetLookup
 }
 
 export interface NativeBridge {
@@ -265,7 +276,11 @@ export async function startNativeBridge(
       return
     }
     const route = request.url
-    if (route !== BRIDGE_ROUTE && !isMediaRoute(route)) {
+    if (
+      route !== BRIDGE_ROUTE &&
+      route !== CAPTURED_SOURCE_ROUTE &&
+      !isMediaRoute(route)
+    ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
       return
     }
@@ -284,7 +299,11 @@ export async function startNativeBridge(
       return
     }
 
-    if (route !== BRIDGE_ROUTE && options.mediaBridge === undefined) {
+    if (
+      route !== BRIDGE_ROUTE &&
+      route !== CAPTURED_SOURCE_ROUTE &&
+      options.mediaBridge === undefined
+    ) {
       request.resume()
       sendError(response, 503, 'MEDIA_UNAVAILABLE', 'Media operations are not available.')
       return
@@ -334,6 +353,11 @@ export async function startNativeBridge(
       return
     }
 
+    if (route === CAPTURED_SOURCE_ROUTE) {
+      await handleCapturedSourceRequest(parsed, response)
+      return
+    }
+
     if (route !== BRIDGE_ROUTE) {
       if (!isMediaRoute(route)) {
         sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -371,6 +395,55 @@ export async function startNativeBridge(
 
     // Success is reported only after add() resolved.
     sendJson(response, 200, { ok: true, accepted: true })
+  }
+
+  /**
+   * Queue one progressive source observed during real playback. The extension
+   * already observed the exact media element and URL; this route re-validates
+   * the public target and hands it to the same DownloadManager/aria2 path as a
+   * manual Quick Add. It never opens or focuses the desktop window.
+   */
+  async function handleCapturedSourceRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    let input
+    try {
+      input = parseCapturedSourceInput(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    try {
+      await assertPublicTarget(input.url, options.publicTargetLookup)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Captured source target rejected (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
+      // DownloadManager.add validates the URL/filename again, persists the new
+      // row before resolving, and only then reports success to the extension.
+      await options.manager.add(input)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not queue a captured source (${info.code}).`)
+      const status = info.code === 'DUPLICATE_DOWNLOAD' ? 409 : 503
+      sendError(response, status, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: CAPTURED_SOURCE_CHANNEL
+    })
   }
 
   function sendMediaFailure(

@@ -16,6 +16,11 @@ import {
   type BridgeDownloadManager,
   type NativeBridge
 } from '../src/main/nativeBridge/server'
+import type { PublicTargetLookup } from '../src/main/net/publicTarget'
+
+const publicLookup: PublicTargetLookup = async () => [
+  { address: '93.184.216.34', family: 4 }
+]
 
 const MEDIA_ANALYSIS_ID = 'analysis_0123456789abcdef'
 const VIDEO_OPTION_ID = 'option_video_0123456789'
@@ -35,6 +40,7 @@ function videoOption(overrides: Record<string, unknown> = {}): Record<string, un
     audioCodec: 'mp4a',
     hasAudio: true,
     requiresMerge: true,
+    hdr: false,
     filesizeBytes: 10_000,
     estimatedBytes: null,
     sizeIsEstimate: false,
@@ -55,6 +61,7 @@ function audioOption(overrides: Record<string, unknown> = {}): Record<string, un
     audioCodec: 'opus',
     hasAudio: true,
     requiresMerge: false,
+    hdr: false,
     filesizeBytes: null,
     estimatedBytes: null,
     sizeIsEstimate: false,
@@ -66,6 +73,7 @@ function mediaAnalysis(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     analysisId: MEDIA_ANALYSIS_ID,
     title: 'Example media',
+    thumbnailUrl: null,
     durationSeconds: 91.5,
     options: [videoOption(), audioOption()],
     bestVideoOptionId: VIDEO_OPTION_ID,
@@ -184,6 +192,7 @@ async function start(options: { media?: boolean } = {}): Promise<void> {
     manager,
     userDataPath: tempDir,
     logger: () => undefined,
+    publicTargetLookup: publicLookup,
     ...(media ? { mediaBridge: media } : {})
   })
   const state = parseNativeBridgeEndpoint(
@@ -428,6 +437,78 @@ describe('native bridge request handling', () => {
       path: '/other'
     })
     expect(unknown.status).toBe(404)
+    expect(manager.calls).toHaveLength(0)
+  })
+})
+
+describe('captured source bridge route', () => {
+  beforeEach(start)
+
+  it('queues one verified progressive source through DownloadManager.add with its filename', async () => {
+    const response = await post(
+      JSON.stringify({
+        url: 'https://cdn.example/video/clip.mp4?sig=abc',
+        filename: 'clip.mp4'
+      }),
+      { path: '/queue-captured-source' }
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      accepted: true,
+      operation: 'queue-captured-source'
+    })
+    expect(manager.calls).toEqual([
+      {
+        url: 'https://cdn.example/video/clip.mp4?sig=abc',
+        filename: 'clip.mp4'
+      }
+    ])
+  })
+
+  it('rejects private targets, manifests and unsupported filenames before the manager', async () => {
+    for (const body of [
+      { url: 'http://127.0.0.1/video.mp4' },
+      { url: 'https://cdn.example/live/index.m3u8' },
+      { url: 'https://cdn.example/stream', filename: 'clip.m3u8' },
+      { url: 'https://cdn.example/video.mp4', filename: '../clip.mp4' }
+    ]) {
+      const response = await post(JSON.stringify(body), {
+        path: '/queue-captured-source'
+      })
+      expect(response.status).toBe(400)
+    }
+    expect(manager.calls).toHaveLength(0)
+  })
+
+  it('reports a duplicate captured source as non-success', async () => {
+    const body = JSON.stringify({
+      url: 'https://cdn.example/video/clip.mp4',
+      filename: 'clip.mp4'
+    })
+    await post(body, { path: '/queue-captured-source' })
+    const duplicate = await post(body, { path: '/queue-captured-source' })
+
+    expect(duplicate.status).toBe(409)
+    await expect(duplicate.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'DUPLICATE_DOWNLOAD' }
+    })
+  })
+
+  it('keeps authentication and body limits on the captured route', async () => {
+    const unauthorized = await post(
+      JSON.stringify({ url: 'https://cdn.example/video/clip.mp4' }),
+      { path: '/queue-captured-source', authorization: null }
+    )
+    expect(unauthorized.status).toBe(401)
+
+    const browser = await post(
+      JSON.stringify({ url: 'https://cdn.example/video/clip.mp4' }),
+      { path: '/queue-captured-source', origin: 'https://example.com' }
+    )
+    expect(browser.status).toBe(403)
     expect(manager.calls).toHaveLength(0)
   })
 })

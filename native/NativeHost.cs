@@ -40,6 +40,7 @@ internal static class NativeHost
     private const string QueueMediaOperation = "queue-media";
     private const string MediaStatusOperation = "media-status";
     private const string CancelMediaOperation = "cancel-media";
+    private const string QueueCapturedSourceOperation = "queue-captured-source";
     private const string StateFileName = "native-bridge.json";
     // aria2 may need up to ~12 seconds to start on the first add. The host
     // still fails promptly when the loopback port is closed.
@@ -59,6 +60,8 @@ internal static class NativeHost
         new Regex("^[a-z0-9][a-z0-9._+-]{0,31}$", RegexOptions.CultureInvariant);
     private static readonly Regex ErrorCodePattern =
         new Regex("^[A-Z][A-Z0-9_]{1,63}$", RegexOptions.CultureInvariant);
+    private static readonly Regex ProgressiveExtensionPattern =
+        new Regex("\\.(mp4|webm|m4v|mov|ogv|mkv)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly string[] MediaJobStatuses = new string[]
     {
@@ -203,6 +206,10 @@ internal static class NativeHost
         {
             return HandleMediaJobMessage(message, type);
         }
+        if (type == QueueCapturedSourceOperation)
+        {
+            return HandleQueueCapturedSourceMessage(message);
+        }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
     }
@@ -320,6 +327,90 @@ internal static class NativeHost
             body.Add("outputFormat", outputFormat);
         }
         return ForwardMedia(QueueMediaOperation, "/queue-media", body);
+    }
+
+    private static Dictionary<string, object> HandleQueueCapturedSourceMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[] { "filename" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only queue-captured-source messages containing type, url and an optional filename are accepted.");
+        }
+
+        string normalizedUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["url"] as string, out normalizedUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        string filename = null;
+        if (message.ContainsKey("filename"))
+        {
+            filename = message["filename"] as string;
+            if (!IsSafeCapturedFilename(filename))
+            {
+                return Error("INVALID_MESSAGE", "The captured source filename is invalid.");
+            }
+        }
+
+        bool progressive = false;
+        try
+        {
+            progressive = ProgressiveExtensionPattern.IsMatch(
+                new Uri(normalizedUrl).AbsolutePath);
+        }
+        catch (Exception)
+        {
+            return Error("INVALID_URL", "That does not look like a valid URL.");
+        }
+        if (!progressive && filename != null)
+        {
+            progressive = ProgressiveExtensionPattern.IsMatch(filename);
+        }
+        if (!progressive)
+        {
+            return Error(
+                "CAPTURED_SOURCE_UNSUPPORTED",
+                "The captured source is not a supported progressive media file.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("url", normalizedUrl);
+        if (filename != null)
+        {
+            body.Add("filename", filename);
+        }
+        return ForwardCapturedSource(body);
+    }
+
+    private static bool IsSafeCapturedFilename(string filename)
+    {
+        if (filename == null)
+        {
+            return false;
+        }
+        string trimmed = filename.Trim();
+        if (trimmed.Length == 0 || filename.Length > 180)
+        {
+            return false;
+        }
+        if (trimmed == "." || trimmed == "..")
+        {
+            return false;
+        }
+        for (int index = 0; index < filename.Length; index++)
+        {
+            char character = filename[index];
+            if (character < 0x20 || character == 0x7f ||
+                character == '/' || character == '\\')
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Dictionary<string, object> HandleMediaJobMessage(
@@ -605,6 +696,85 @@ internal static class NativeHost
             }
 
             return ParseMediaAppResponse(responseText, operation);
+        }
+    }
+
+    private static Dictionary<string, object> ForwardCapturedSource(
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(
+                state,
+                "/queue-captured-source",
+                BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseAppResponse(responseText);
         }
     }
 

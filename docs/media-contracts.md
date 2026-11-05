@@ -129,6 +129,26 @@ Exact statuses: `queued` | `analyzing` | `downloading` | `merging` | `complete` 
   cookies/credentials, arbitrary format selectors, arbitrary output paths or
   templates, and Milestone 3B features.
 
+## Progressive playback capture route (additive)
+
+The optional overlay can send one source observed from actual playback to a
+separate authenticated route, `/queue-captured-source`, using the native
+message `queue-captured-source` with exactly `{ type, url, filename? }`.
+
+- Only progressive containers are accepted (MP4, WebM, M4V, MOV, OGV, MKV).
+  Blob/MSE, HLS/DASH and unknown containers are rejected; they are never queued
+  as guessed files.
+- The browser validates the URL and filename first; the native host repeats
+  strict shape/extension checks; the desktop route revalidates the public
+  network target and calls the existing `DownloadManager.add`/aria2 path.
+- Success is returned only after the manager resolves (queue row persisted).
+  The route does not open, focus or otherwise interact with the desktop window.
+- No cookies, request headers, DRM data, segment URLs or page dimensions are
+  read or sent. No new host permission is required beyond the user's existing
+  exact-origin overlay grant.
+- See [media-capture-progressive.md](media-capture-progressive.md) for the
+  UI/source-observation behavior and measured fixture latency.
+
 ## Security constraints
 
 - The existing direct `/queue-download` route, native `queue-download`

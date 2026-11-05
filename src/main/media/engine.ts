@@ -14,11 +14,15 @@
  * requirements. Subprocess output is never logged or surfaced verbatim.
  */
 import { randomBytes } from 'node:crypto'
-import { lookup as nodeLookup } from 'node:dns/promises'
 import { promises as fs } from 'node:fs'
-import { isIP } from 'node:net'
 import path from 'node:path'
 import { AppError } from '../errors'
+import {
+  assertPublicTarget as assertPublicTargetWithLookup,
+  defaultPublicTargetLookup,
+  type PublicLookupAddress,
+  type PublicTargetLookup
+} from '../net/publicTarget'
 import {
   MAX_COLLECTION_ENTRIES,
   MAX_COLLECTION_ENTRY_TITLE_LENGTH,
@@ -169,15 +173,8 @@ export interface MediaEngine {
   cancelAll(): Promise<void>
 }
 
-export interface MediaLookupAddress {
-  address: string
-  family: number
-}
-
-export type MediaLookup = (
-  hostname: string,
-  options: { all: true; verbatim: true }
-) => Promise<readonly MediaLookupAddress[]>
+export type MediaLookupAddress = PublicLookupAddress
+export type MediaLookup = PublicTargetLookup
 
 /**
  * Production callers only pass `env` and `platform`. The other fields exist so
@@ -247,13 +244,6 @@ interface PendingDownload {
   cancelRequested: boolean
 }
 
-function defaultLookup(
-  hostname: string,
-  options: { all: true; verbatim: true }
-): Promise<readonly MediaLookupAddress[]> {
-  return nodeLookup(hostname, options)
-}
-
 function defaultCreateId(prefix: string): string {
   return `${prefix}_${randomBytes(18).toString('base64url')}`
 }
@@ -281,71 +271,6 @@ function toolUnavailableError(state: MediaToolState): AppError {
     state.message ?? 'yt-dlp is not available.',
     state.hint ?? YTDLP_HINT
   )
-}
-
-function ipv4IsPublic(address: string): boolean {
-  const parts = address.split('.').map((entry) => Number(entry))
-  const [a, b, c] = parts
-  if (
-    a === undefined ||
-    b === undefined ||
-    c === undefined ||
-    !parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
-  ) {
-    return false
-  }
-
-  if (a === 0 || a === 10 || a === 127) return false
-  if (a === 100 && b >= 64 && b <= 127) return false
-  if (a === 169 && b === 254) return false
-  if (a === 172 && b >= 16 && b <= 31) return false
-  if (a === 192 && b === 168) return false
-  if (a === 192 && b === 0) return false
-  if (a === 192 && b === 31 && c === 196) return false
-  if (a === 192 && b === 52 && c === 193) return false
-  if (a === 192 && b === 88 && c === 99) return false
-  if (a === 192 && b === 175 && c === 48) return false
-  if (a === 198 && (b === 18 || b === 19)) return false
-  if (a === 198 && b === 51 && c === 100) return false
-  if (a === 203 && b === 0 && c === 113) return false
-  if (a >= 224) return false
-  return true
-}
-
-function ipv6IsPublic(address: string): boolean {
-  const withoutZone = address.split('%')[0] ?? ''
-  const normalized = withoutZone.toLowerCase()
-  if (normalized.length === 0 || normalized === '::' || normalized === '::1') {
-    return false
-  }
-
-  // Allow only global unicast 2000::/3. This excludes loopback, link-local,
-  // unique-local, multicast, IPv4-mapped addresses and transition mechanisms.
-  const first = normalized.split(':')[0]
-  if (!first) return false
-  const value = Number.parseInt(first, 16)
-  if (!Number.isInteger(value)) return false
-  if (value < 0x2000 || value > 0x3fff) return false
-  if (value === 0x2002) return false
-  if (value === 0x2001 && normalized.startsWith('2001:0:')) return false
-  if (value === 0x2001) {
-    const groups = normalized.split(':')
-    const second = Number.parseInt(groups[1] || '0', 16)
-    const third = Number.parseInt(groups[2] || '0', 16)
-    if (second === 0x0db8) return false
-    if (second === 0x0002 && third === 0) return false
-    if ((second & 0xfff0) === 0x0010 || (second & 0xfff0) === 0x0020) {
-      return false
-    }
-  }
-  return true
-}
-
-function isPublicAddress(address: string): boolean {
-  const family = isIP(address)
-  if (family === 4) return ipv4IsPublic(address)
-  if (family === 6) return ipv6IsPublic(address)
-  return false
 }
 
 function isInsideDirectory(directory: string, candidate: string): boolean {
@@ -702,7 +627,7 @@ export function createMediaEngine(
   const platform = options.platform ?? process.platform
   const cwd = options.cwd ?? process.cwd()
   const spawn = options.spawn ?? defaultMediaSpawn
-  const lookup = options.lookup ?? defaultLookup
+  const lookup = options.lookup ?? defaultPublicTargetLookup
   const now = options.now ?? Date.now
   const createId = options.createId ?? defaultCreateId
   const analysisTtlMs =
@@ -944,68 +869,8 @@ export function createMediaEngine(
     }
   }
 
-  async function assertPublicTarget(url: string): Promise<void> {
-    // DNS is checked once immediately before yt-dlp starts. yt-dlp resolves the
-    // host again through its own network stack, so DNS rebinding between these
-    // two steps is a residual risk. Pinning would require replacing yt-dlp's
-    // resolver or forcing every connection through a controlled proxy.
-    const parsed = new URL(url)
-    let host = parsed.hostname
-    if (host.startsWith('[') && host.endsWith(']')) {
-      host = host.slice(1, -1)
-    }
-    host = host.replace(/\.$/, '').toLowerCase()
-
-    if (host === 'localhost' || host.endsWith('.localhost')) {
-      throw new AppError(
-        'MEDIA_TARGET_NOT_PUBLIC',
-        'Local and private network addresses are not supported.'
-      )
-    }
-
-    if (host.includes('%')) {
-      throw new AppError(
-        'MEDIA_TARGET_NOT_PUBLIC',
-        'Local and private network addresses are not supported.'
-      )
-    }
-
-    const literalFamily = isIP(host)
-    if (literalFamily !== 0) {
-      if (!isPublicAddress(host)) {
-        throw new AppError(
-          'MEDIA_TARGET_NOT_PUBLIC',
-          'Local and private network addresses are not supported.'
-        )
-      }
-      return
-    }
-
-    let addresses: readonly MediaLookupAddress[]
-    try {
-      addresses = await lookup(host, { all: true, verbatim: true })
-    } catch {
-      throw new AppError(
-        'MEDIA_TARGET_UNRESOLVED',
-        'The site address could not be resolved.'
-      )
-    }
-
-    if (addresses.length === 0) {
-      throw new AppError(
-        'MEDIA_TARGET_UNRESOLVED',
-        'The site address could not be resolved.'
-      )
-    }
-
-    for (const entry of addresses) {
-      if (!isPublicAddress(entry.address)) {
-        throw new AppError(
-          'MEDIA_TARGET_NOT_PUBLIC',
-          'Local and private network addresses are not supported.'
-        )
-      }
-    }
+  function assertPublicTarget(url: string): Promise<void> {
+    return assertPublicTargetWithLookup(url, lookup)
   }
 
   async function filterPublicFormatTargets(rawInfo: unknown): Promise<unknown> {

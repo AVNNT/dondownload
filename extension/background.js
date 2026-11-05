@@ -18,6 +18,7 @@ import {
 import {
   MEDIA_MESSAGE_TYPES,
   analyzeMediaForSender,
+  queueCapturedSourceForSender,
   queueMediaForSender
 } from './media-bridge.js'
 
@@ -218,6 +219,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() =>
         sendResponse(
           overlayFailure('MEDIA_REQUEST_FAILED', 'The media request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === MEDIA_MESSAGE_TYPES.CAPTURE_QUEUE) {
+    void queueCapturedSourceForSender(chrome, message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'CAPTURE_REQUEST_FAILED',
+            'The captured source request could not be completed.'
+          )
         )
       )
     return true

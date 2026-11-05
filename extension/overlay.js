@@ -19,6 +19,7 @@
 
   var MEDIA_ANALYZE = 'dondownload:media-analyze'
   var MEDIA_QUEUE = 'dondownload:media-queue'
+  var CAPTURE_QUEUE = 'dondownload:capture-queue'
 
   var state = {
     active: true,
@@ -29,6 +30,9 @@
     trigger: null,
     panel: null,
     analyzeButton: null,
+    sourceSection: null,
+    sourceList: null,
+    sourceEmpty: null,
     mediaResults: null,
     mediaTitle: null,
     mediaMeta: null,
@@ -58,10 +62,22 @@
       analysis: null,
       selectedOptionId: null,
       outputFormat: 'auto'
+    },
+    capture: {
+      navigationUrl: location.href,
+      players: [],
+      buttons: [],
+      queueing: false,
+      queueToken: 0
     }
   }
 
   globalThis.__dondownloadOverlayRuntime = state
+
+  // Keep at most one passive listener set per media element across SPA
+  // navigations; resetting the source list must not stack duplicate listeners.
+  var observedVideos =
+    typeof WeakSet === 'function' ? new WeakSet() : null
 
   var STYLES = [
     ':host { all: initial; }',
@@ -152,6 +168,21 @@
     '  margin-top: 6px;',
     '}',
     '.action.secondary:hover:not(:disabled) { background: #18181b; }',
+    '.sources { border-top: 1px solid #1f1f23; margin-top: 10px; padding-top: 9px; }',
+    '.sources-title { color: #d4d4d8; font-size: 11px; font-weight: 650; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.06em; }',
+    '.source-list { display: grid; gap: 5px; }',
+    '.source { align-items: center; background: #0b0b0c; border: 1px solid #2c2c2c; border-radius: 7px; display: flex; gap: 8px; padding: 6px 7px; }',
+    '.source[data-current="true"] { border-color: #52525b; }',
+    '.source-copy { min-width: 0; flex: 1; }',
+    '.source-title { color: #f4f4f5; display: block; font-size: 11.5px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.source-detail { color: #8b8b93; display: block; font-size: 10px; margin-top: 1px; }',
+    '.source-action { background: #f4f4f5; border: 1px solid #f4f4f5; border-radius: 6px; color: #09090b; cursor: pointer; flex: none; font: inherit; font-size: 10.5px; font-weight: 650; padding: 5px 8px; }',
+    '.source-action:hover:not(:disabled) { background: #fff; }',
+    '.source-action:disabled { cursor: not-allowed; opacity: 0.55; }',
+    '.source-empty { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 0; }',
+    '.source[data-unsupported="true"] { border-color: #52525b; }',
+    '.source[data-unsupported="true"] .source-title { color: #fca5a5; }',
+    '.source[data-unsupported="true"] .source-detail { color: #a1a1aa; white-space: normal; }',
     '.media-results { margin-top: 10px; }',
     '.media-title { color: #fff; font-size: 12.5px; font-weight: 650; line-height: 1.4; margin: 0 0 3px; overflow-wrap: anywhere; }',
     '.media-meta { color: #a1a1aa; font-size: 11px; line-height: 1.45; margin: 0 0 8px; }',
@@ -323,6 +354,17 @@
     var analyzeButton = createElement('button', 'action', copy.actionLabel)
     analyzeButton.type = 'button'
 
+    var sourceSection = createElement('section', 'sources')
+    sourceSection.appendChild(createElement('p', 'sources-title', 'Detected from playback'))
+    var sourceList = createElement('div', 'source-list')
+    var sourceEmpty = createElement(
+      'p',
+      'source-empty',
+      'No progressive playback detected yet. Start playing this video.'
+    )
+    sourceSection.appendChild(sourceList)
+    sourceSection.appendChild(sourceEmpty)
+
     var mediaResults = createElement('div', 'media-results')
     mediaResults.hidden = true
 
@@ -405,6 +447,7 @@
     panel.appendChild(head)
     panel.appendChild(createElement('p', 'panel-notice', copy.title))
     panel.appendChild(createElement('p', 'panel-detail', copy.detail))
+    panel.appendChild(sourceSection)
     panel.appendChild(analyzeButton)
     panel.appendChild(mediaResults)
     panel.appendChild(options)
@@ -423,6 +466,9 @@
     state.shadow = shadow
     state.trigger = trigger
     state.panel = panel
+    state.sourceSection = sourceSection
+    state.sourceList = sourceList
+    state.sourceEmpty = sourceEmpty
     state.analyzeButton = analyzeButton
     state.mediaResults = mediaResults
     state.mediaTitle = mediaTitle
@@ -525,6 +571,238 @@
     } catch (error) {
       callback(null, error)
     }
+  }
+
+  function playerFor(video) {
+    if (!video) return null
+    for (var index = 0; index < state.capture.players.length; index += 1) {
+      if (state.capture.players[index].video === video) return state.capture.players[index]
+    }
+    return null
+  }
+
+  function resetCaptureForNavigation() {
+    state.capture.queueToken += 1
+    state.capture.navigationUrl = location.href
+    state.capture.players = []
+    state.capture.buttons = []
+    state.capture.queueing = false
+    // A fallback analysis also belongs to the previous document/page. Clear it
+    // so its opaque option IDs can never be applied to a new SPA page.
+    state.media.token += 1
+    state.media.queueToken += 1
+    state.media.status = 'idle'
+    resetMediaResults()
+    if (state.analyzeButton) {
+      state.analyzeButton.hidden = false
+      state.analyzeButton.textContent = copy.actionLabel
+      state.analyzeButton.disabled = false
+    }
+    setMediaStatus('', '')
+    renderCapturedSources()
+    installSourceObservers()
+  }
+
+  function maybeResetCaptureForNavigation() {
+    if (state.capture.navigationUrl !== location.href) {
+      resetCaptureForNavigation()
+      return true
+    }
+    return false
+  }
+
+  function observePlayer(video) {
+    if (!video || playerFor(video)) return
+    var player = {
+      video: video,
+      sources: [],
+      unsupported: null,
+      lastSrc: '',
+      listening: false
+    }
+    state.capture.players.push(player)
+    if (observedVideos && observedVideos.has(video)) return
+    if (observedVideos) observedVideos.add(video)
+    player.listening = true
+    var check = function () {
+      observePlayback(video)
+    }
+    on(video, 'playing', check)
+    on(video, 'timeupdate', check)
+    on(video, 'loadeddata', check)
+    on(video, 'emptied', function () {
+      var current = playerFor(video)
+      if (!current) return
+      current.lastSrc = ''
+    })
+  }
+
+  function installSourceObservers() {
+    if (typeof document.querySelectorAll !== 'function') return
+    var videos = document.querySelectorAll('video')
+    for (var index = 0; index < videos.length; index += 1) {
+      observePlayer(videos[index])
+    }
+  }
+
+  /**
+   * Observe only the exact player's currentSrc after real playback. No
+   * dimensions, segment URLs, headers or network entries are consulted.
+   */
+  function observePlayback(video) {
+    if (state.disabled || !video || maybeResetCaptureForNavigation()) return
+    var player = playerFor(video)
+    if (!player) return
+
+    var currentSrc = typeof video.currentSrc === 'string' ? video.currentSrc : ''
+    if (currentSrc.length === 0) return
+    if (currentSrc === player.lastSrc && player.sources.length > 0) return
+    player.lastSrc = currentSrc
+
+    var result = core.evaluatePlaybackSource({
+      currentSrc: currentSrc,
+      paused: video.paused,
+      readyState: video.readyState,
+      ended: video.ended,
+      error: video.error || null
+    })
+
+    if (result.kind === 'verified') {
+      player.sources = core.addCapturedSource(player.sources, result)
+      player.unsupported = null
+    } else if (result.kind === 'unsupported') {
+      player.sources = player.sources.map(function (source) {
+        return Object.assign({}, source, { current: false })
+      })
+      player.unsupported = result
+    } else {
+      return
+    }
+
+    if (video === state.activeVideo && state.panelOpen) renderCapturedSources()
+  }
+
+  function clearSourceList() {
+    if (!state.sourceList) return
+    while (state.sourceList.children.length > 0) {
+      state.sourceList.removeChild(state.sourceList.children[0])
+    }
+  }
+
+  function renderCapturedSources() {
+    if (!state.sourceSection || !state.sourceList) return
+    clearSourceList()
+    state.capture.buttons = []
+
+    var player = playerFor(state.activeVideo)
+    var sources = player ? player.sources : []
+    var unsupported = player ? player.unsupported : null
+
+    for (var index = 0; index < sources.length; index += 1) {
+      appendCapturedSourceRow(sources[index])
+    }
+
+    if (unsupported) {
+      var unsupportedRow = createElement('div', 'source')
+      unsupportedRow.setAttribute('data-unsupported', 'true')
+      var unsupportedCopy = createElement('span', 'source-copy')
+      unsupportedCopy.appendChild(
+        createElement('span', 'source-title', 'Unsupported playback source')
+      )
+      unsupportedCopy.appendChild(
+        createElement('span', 'source-detail', unsupported.message)
+      )
+      unsupportedRow.appendChild(unsupportedCopy)
+      state.sourceList.appendChild(unsupportedRow)
+    }
+
+    if (state.sourceEmpty) {
+      state.sourceEmpty.hidden = sources.length > 0 || unsupported !== null
+    }
+    setCaptureBusy(state.capture.queueing)
+  }
+
+  function appendCapturedSourceRow(source) {
+    var row = createElement('div', 'source')
+    if (source.current) row.setAttribute('data-current', 'true')
+    var copyNode = createElement('span', 'source-copy')
+    copyNode.appendChild(
+      createElement('span', 'source-title', source.filename)
+    )
+    copyNode.appendChild(
+      createElement(
+        'span',
+        'source-detail',
+        String(source.container || '').toUpperCase() +
+          (source.current ? ' - current playback' : '')
+      )
+    )
+    row.appendChild(copyNode)
+
+    var button = createElement('button', 'source-action', 'Download')
+    button.type = 'button'
+    button.disabled = state.capture.queueing
+    on(button, 'click', function (event) {
+      stopPlayerEvent(event)
+      queueCapturedSource(source)
+    })
+    row.appendChild(button)
+    state.capture.buttons.push(button)
+    state.sourceList.appendChild(row)
+  }
+
+  function setCaptureBusy(busy) {
+    for (var index = 0; index < state.capture.buttons.length; index += 1) {
+      state.capture.buttons[index].disabled = busy
+    }
+  }
+
+  function queueCapturedSource(source) {
+    if (state.disabled || state.capture.queueing || !source) return
+    var token = ++state.capture.queueToken
+    state.capture.queueing = true
+    setCaptureBusy(true)
+    setMediaStatus('Adding ' + source.filename + '...', 'info')
+
+    sendRuntimeMessage(
+      {
+        type: CAPTURE_QUEUE,
+        url: source.url,
+        filename: source.filename
+      },
+      function (response, runtimeError) {
+        if (token !== state.capture.queueToken || state.disabled) return
+        state.capture.queueing = false
+        setCaptureBusy(false)
+
+        if (runtimeError) {
+          setMediaStatus('The DonDownload background worker did not respond.', 'error')
+          return
+        }
+        if (!response || response.ok !== true) {
+          setMediaStatus(
+            core.describeMediaError(
+              response && response.error,
+              'The captured source could not be queued.'
+            ),
+            'error'
+          )
+          return
+        }
+
+        setMediaStatus('Added to DonDownload', 'success')
+        closePanel(false)
+        showAcceptedFeedback()
+      }
+    )
+  }
+
+  function showAcceptedFeedback() {
+    if (!state.trigger) return
+    state.trigger.textContent = 'OK'
+    window.setTimeout(function () {
+      if (state.trigger) state.trigger.textContent = 'DD'
+    }, 1200)
   }
 
   function clearQualityList() {
@@ -905,7 +1183,9 @@
 
     if (state.activeVideo && state.activeVideo !== video) closePanel(false)
     state.activeVideo = video
+    observePlayer(video)
     observeVideoSize(video)
+    renderCapturedSources()
     cancelHide()
     state.host.hidden = false
     state.trigger.hidden = false
@@ -935,10 +1215,11 @@
     state.panel.hidden = false
     state.panelOpen = true
     state.trigger.setAttribute('aria-expanded', 'true')
+    renderCapturedSources()
     position()
-    // The capture UI has been explicitly opened, so this is the first and only
-    // automatic analysis. Hovering, injection and page load never analyze.
-    analyzePage()
+    // Opening the panel never invokes yt-dlp. It shows only playback sources
+    // already observed for this exact player. The explicit fallback button
+    // below still offers the existing page analyzer.
     if (typeof state.panel.focus === 'function') {
       try {
         state.panel.focus({ preventScroll: true })
@@ -1021,6 +1302,8 @@
   function observeMutations() {
     if (typeof MutationObserver !== 'function' || !document.documentElement) return
     state.mutationObserver = new MutationObserver(function () {
+      maybeResetCaptureForNavigation()
+      installSourceObservers()
       if (!state.activeVideo) return
       var next = core.nextActiveVideo(state.activeVideo)
       if (!next) {
@@ -1119,6 +1402,10 @@
     state.cleanup = []
     state.activeVideo = null
     state.panelOpen = false
+    state.capture.players = []
+    state.capture.buttons = []
+    state.capture.queueing = false
+    state.capture.queueToken += 1
     state.media.token += 1
     state.media.queueToken += 1
     if (state.host && state.host.parentNode) state.host.parentNode.removeChild(state.host)
@@ -1126,6 +1413,9 @@
     state.shadow = null
     state.trigger = null
     state.panel = null
+    state.sourceSection = null
+    state.sourceList = null
+    state.sourceEmpty = null
     state.analyzeButton = null
     state.mediaResults = null
     state.mediaTitle = null
@@ -1203,6 +1493,15 @@
     on(document, 'pointerdown', handleDocumentPointerDown, true)
     on(document, 'fullscreenchange', handleFullscreenChange, true)
     on(document, 'keydown', handleKeydown, true)
+    on(window, 'popstate', function () {
+      maybeResetCaptureForNavigation()
+    })
+    on(window, 'hashchange', function () {
+      maybeResetCaptureForNavigation()
+    })
+    on(window, 'pageshow', function () {
+      maybeResetCaptureForNavigation()
+    })
     on(window, 'scroll', scheduleReposition, { capture: true, passive: true })
     on(window, 'resize', scheduleReposition, { passive: true })
     if (window.visualViewport) {
@@ -1252,6 +1551,7 @@
     ensureUi()
     installListeners()
     observeMutations()
+    installSourceObservers()
     installRuntimeListener()
     announceReady()
   } catch {

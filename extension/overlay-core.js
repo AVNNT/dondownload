@@ -180,6 +180,172 @@
     return code === 'KeyD' || key === 'd'
   }
 
+  // Progressive capture: only an actual playing media element's currentSrc is
+  // observed. Request headers, cookies, DRM data and MSE segment requests are
+  // never read. A blob:/manifest source is reported as explicitly unsupported
+  // because the exact downloadable representation cannot be proven.
+  var PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
+  var MANIFEST_EXTENSIONS = ['m3u8', 'mpd']
+
+  function pathExtension(value) {
+    var match = /\.([a-z0-9]{2,5})$/i.exec(String(value || '').trim())
+    return match ? match[1].toLowerCase() : null
+  }
+
+  /** Validate a captured source URL. Returns null when it is not http(s). */
+  function normalizeCapturedSourceUrl(value) {
+    if (typeof value !== 'string') return null
+    var raw = value.trim()
+    if (raw.length === 0 || raw.length > 4096) return null
+    if (/[\u0000-\u001f\u007f]/.test(raw)) return null
+
+    var parsed
+    try {
+      parsed = new URL(raw)
+    } catch {
+      return null
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    if (!parsed.hostname || parsed.username || parsed.password) return null
+    parsed.hash = ''
+    return parsed.href
+  }
+
+  function decodedBasename(pathname) {
+    try {
+      var segment = String(pathname || '').split('/').filter(Boolean).pop() || ''
+      return decodeURIComponent(segment)
+    } catch {
+      return ''
+    }
+  }
+
+  function capturedSourceFilename(url, container) {
+    var parsed
+    try {
+      parsed = new URL(url)
+    } catch {
+      return 'video.' + container
+    }
+    var base = decodedBasename(parsed.pathname)
+      .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^[. ]+|[. ]+$/g, '')
+    if (base.length === 0) return 'video.' + container
+    if (pathExtension(base) !== null) return base.slice(0, 180)
+    var suffix = '.' + container
+    return (base.slice(0, Math.max(1, 180 - suffix.length)) + suffix)
+  }
+
+  /**
+   * Classify one media element's current playback source. Dimensions, segment
+   * URLs and resource timing are deliberately not used as proof.
+   *
+   * input: { currentSrc, paused, readyState, ended, error }
+   * result: { kind: 'none' | 'not-playing' | 'unsupported' | 'verified', ... }
+   */
+  function evaluatePlaybackSource(input) {
+    if (!input || typeof input !== 'object') return { kind: 'none' }
+    var raw = typeof input.currentSrc === 'string' ? input.currentSrc.trim() : ''
+    if (raw.length === 0) return { kind: 'none' }
+
+    if (/^blob:/i.test(raw)) {
+      return {
+        kind: 'unsupported',
+        code: 'SEGMENTED_MEDIA',
+        message:
+          'This player uses segmented or encrypted Media Source playback. DonDownload cannot map it to one exact file.'
+      }
+    }
+
+    var url = normalizeCapturedSourceUrl(raw)
+    if (url === null) {
+      return {
+        kind: 'unsupported',
+        code: 'UNSUPPORTED_URL',
+        message: 'This playback source is not a public HTTP(S) media URL.'
+      }
+    }
+
+    var extension = pathExtension(new URL(url).pathname)
+    if (extension !== null && MANIFEST_EXTENSIONS.indexOf(extension) !== -1) {
+      return {
+        kind: 'unsupported',
+        code: 'MANIFEST_STREAM',
+        message:
+          'This HLS or DASH stream needs an explicit resolver. It is not queued as a guessed file.'
+      }
+    }
+    if (extension === null || PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1) {
+      return {
+        kind: 'unsupported',
+        code: 'NOT_PROGRESSIVE',
+        message:
+          'This source is not a recognized progressive MP4 or WebM file, so no download was guessed.'
+      }
+    }
+
+    if (input.error) {
+      return {
+        kind: 'unsupported',
+        code: 'PLAYBACK_ERROR',
+        message: 'The player reported an error for this source.'
+      }
+    }
+    if (input.paused !== false || typeof input.readyState !== 'number' || input.readyState < 2) {
+      return { kind: 'not-playing' }
+    }
+
+    return {
+      kind: 'verified',
+      url: url,
+      container: extension,
+      filename: capturedSourceFilename(url, extension),
+      currentSrc: raw
+    }
+  }
+
+  /**
+   * Accumulate per-player sources without duplicates. Replaying an earlier
+   * source moves it back to the current position (for example 1080p -> 720p ->
+   * 1080p) and keeps a single row for that exact URL.
+   */
+  function addCapturedSource(sources, candidate, maximum) {
+    var limit = typeof maximum === 'number' && maximum > 0 ? maximum : 5
+    if (!candidate || candidate.kind !== 'verified') return Array.isArray(sources) ? sources.slice() : []
+    if (typeof candidate.url !== 'string') return Array.isArray(sources) ? sources.slice() : []
+
+    var next = []
+    var previous = Array.isArray(sources) ? sources : []
+    next.push({
+      url: candidate.url,
+      filename: candidate.filename,
+      container: candidate.container,
+      current: true
+    })
+    for (var index = 0; index < previous.length; index += 1) {
+      var entry = previous[index]
+      if (!entry || entry.url === candidate.url) continue
+      next.push({
+        url: entry.url,
+        filename: entry.filename,
+        container: entry.container,
+        current: false
+      })
+      if (next.length >= limit) break
+    }
+    return next
+  }
+
+  function currentCapturedSource(sources) {
+    if (!Array.isArray(sources) || sources.length === 0) return null
+    for (var index = 0; index < sources.length; index += 1) {
+      if (sources[index] && sources[index].current === true) return sources[index]
+    }
+    return sources[0] || null
+  }
+
   var OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
   var MEDIA_OUTPUT_FORMATS = ['auto', 'mp4', 'mkv', 'webm']
 
@@ -592,11 +758,11 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'Open this capture panel to ask DonDownload about the page. Only the page address from the browser is used; the video source, cookies and player state are never read. Reported file sizes come from yt-dlp metadata and may be estimates or unknown.',
-      actionLabel: 'Analyze this page',
+        'This panel shows only a progressive file that this exact player actually played. It never reads cookies, request headers or DRM data, and segmented Media Source or manifest playback is shown as unsupported rather than guessed. The explicit page analyzer remains available as a fallback.',
+      actionLabel: 'Analyze page with yt-dlp (fallback)',
       analyzingLabel: 'Analyzing…',
       optionsHint:
-        'Options and reported sizes come from a verified analysis. Nothing is captured or downloaded until you choose one.',
+        'Nothing is downloaded until you choose a detected source or a verified analyzer option.',
       disableLabel: 'Turn off overlay on this site',
       shortcutLabel: SHORTCUT_LABEL
     })
@@ -634,6 +800,11 @@
     isTypingTarget: isTypingTarget,
     isOverlayShortcut: isOverlayShortcut,
     initialMediaState: initialMediaState,
+    normalizeCapturedSourceUrl: normalizeCapturedSourceUrl,
+    capturedSourceFilename: capturedSourceFilename,
+    evaluatePlaybackSource: evaluatePlaybackSource,
+    addCapturedSource: addCapturedSource,
+    currentCapturedSource: currentCapturedSource,
     mediaView: mediaView,
     mediaQualityChoices: mediaQualityChoices,
     outputFormatsForOption: outputFormatsForOption,
