@@ -183,9 +183,9 @@ export default function App(): JSX.Element {
 
   return (
     <div className="min-h-screen bg-black text-zinc-100">
-      <header className="border-b border-white/10 bg-black">
+      <header className="window-app-header border-b border-white/10 bg-black">
         <div aria-hidden="true" className="window-drag-region" />
-        <div className="mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
+        <div className="window-app-header-content mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:flex-none">
             <div
               aria-hidden="true"
