@@ -12,7 +12,11 @@ interface ExtensionManifest {
   host_permissions?: string[]
   optional_host_permissions?: string[]
   background?: { service_worker?: string; type?: string }
-  action?: { default_popup?: string }
+  icons?: Record<string, string>
+  action?: {
+    default_popup?: string
+    default_icon?: Record<string, string>
+  }
   options_ui?: { page?: string; open_in_tab?: boolean }
   commands?: Record<string, { description?: string; suggested_key?: unknown }>
   content_scripts?: unknown[]
@@ -78,6 +82,28 @@ describe('browser extension manifest', () => {
     expect(manifest.permissions ?? []).not.toContain('downloads')
     expect(manifest.permissions ?? []).not.toContain('webRequest')
     expect(manifest.permissions ?? []).not.toContain('notifications')
+  })
+
+  it('ships declared extension and toolbar icons at every size', async () => {
+    const manifest = await readManifest()
+    const icons = manifest.icons ?? {}
+    expect(Object.keys(icons).sort()).toEqual(['128', '16', '32', '48'])
+
+    for (const [size, file] of Object.entries(icons)) {
+      const absolute = path.join(extensionDir, file)
+      expect(existsSync(absolute), `${file} exists`).toBe(true)
+      const png = await readFile(absolute)
+      expect(png.subarray(1, 4).toString('ascii')).toBe('PNG')
+      expect(png.readUInt32BE(16), `${file} width`).toBe(Number(size))
+      expect(png.readUInt32BE(20), `${file} height`).toBe(Number(size))
+    }
+
+    const actionIcons = manifest.action?.default_icon ?? {}
+    expect(actionIcons).toMatchObject({
+      '16': icons['16'],
+      '32': icons['32'],
+      '48': icons['48']
+    })
   })
 
   it('ships the popup, background worker, native client and overlay files', () => {

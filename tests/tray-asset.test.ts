@@ -45,6 +45,10 @@ describe('Windows tray icon asset', () => {
       expect(entry.width).toBe(entry.height)
       expect(entry.bytes).toBeGreaterThan(40)
       expect(entry.offset + entry.bytes).toBeLessThanOrEqual(icon.length)
+      // Generated entries are PNG-compressed images, not BMP payloads.
+      expect(icon.subarray(entry.offset, entry.offset + 8).toString('hex')).toBe(
+        '89504e470d0a1a0a'
+      )
     }
   })
 })

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>DonDownload tray</title>
+  <!-- Tray variant: fills the frame and adds a light rim so the dark tile
+       stays visible on a dark Windows taskbar, while the tile itself keeps
+       the green arrow readable on a light taskbar. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16221e"/>
+      <stop offset="1" stop-color="#050807"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="250" height="250" rx="54" fill="url(#tile)"/>
+  <rect x="7" y="7" width="242" height="242" rx="50" fill="none" stroke="#d9fbea" stroke-opacity="0.5" stroke-width="8"/>
+  <path d="M98 30h60v88h42L128 180 56 118h42z" fill="#34d399" stroke="#34d399" stroke-width="14" stroke-linejoin="round"/>
+  <rect x="58" y="202" width="140" height="24" rx="12" fill="#34d399"/>
+</svg>

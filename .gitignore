@@ -9,7 +9,12 @@ artifacts/packaged-verification/
 vendor/
 
 # Installer staging output: staged executables, manifest and packaging temp files.
-build/
+# Authored icon sources and their generated outputs are the exceptions.
+build/*
+!build/icon.svg
+!build/icon-tray.svg
+!build/icon.png
+!build/icon.ico
 
 # Built locally from native/NativeHost.cs with the Windows .NET compiler.
 native/*.exe

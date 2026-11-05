@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { BrowserWindow, session } from 'electron'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import { themeWindowColors } from './settings/theme'
+import windowIconPath from './assets/icon.ico?asset'
 
 export interface CreateMainWindowOptions {
   /**
@@ -32,6 +33,9 @@ export function createMainWindow(
     titleBarStyle: 'hidden',
     titleBarOverlay: colors.titleBarOverlay,
     title: 'DonDownload',
+    // electron-vite copies the ?asset import beside the main bundle in both
+    // dev and packaged builds, so the window/taskbar icon resolves from asar.
+    icon: windowIconPath,
     autoHideMenuBar: true,
     webPreferences: {
       offscreen,

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>DonDownload</title>
+  <!-- Rounded dark tile with a bold emerald download arrow over a tray line.
+       Geometry is tuned to stay legible at 16x16: a 3.5px shaft, an 8.5px
+       arrowhead and a 1.4px baseline in the smallest size. The glyph is a flat
+       accent colour so downsampling never turns it muddy. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#121b18"/>
+      <stop offset="1" stop-color="#050807"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+  <path d="M100 36h56v82h40L128 176 60 118h40z" fill="#34d399" stroke="#34d399" stroke-width="14" stroke-linejoin="round"/>
+  <rect x="64" y="198" width="128" height="22" rx="11" fill="#34d399"/>
+</svg>

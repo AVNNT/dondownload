@@ -62,6 +62,9 @@ electronFuses:
   runAsNode: false
 
 win:
+  # Authored application icon (SVG source in build/icon.svg, regenerated with
+  # scripts/generate-icons.mjs). Used for the executable and shortcuts.
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -70,6 +73,10 @@ win:
   requestedExecutionLevel: asInvoker
 
 nsis:
+  # Match the app icon in the installer, uninstaller and header surfaces.
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
   # Assisted installer with an explicit install directory. It is not a
   # one-click silent install and it does not require elevation.
   oneClick: false
