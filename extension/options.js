@@ -183,7 +183,7 @@ function setSiteState() {
   } else if (siteReady) {
     siteState.textContent = 'Overlay on'
     siteHint.textContent =
-      'The overlay is registered and active in that tab. The floating button follows the active playing video.'
+      'The overlay is registered and active in that tab. The floating button appears as soon as a visible video is attached or starts, and background analysis is limited to this exact enabled origin.'
   } else {
     siteState.textContent = 'Access granted, overlay not verified'
     siteHint.textContent =

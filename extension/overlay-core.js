@@ -239,6 +239,128 @@
     return { left: left, top: top, width: width, placement: placement }
   }
 
+  /**
+   * The floating trigger should appear as soon as a real player is attached and
+   * visible, not only after the first rendered frame. `paused === false` means
+   * play() was requested; readyState >= HAVE_METADATA means metadata arrived.
+   * Neither value is ever used as proof of a downloadable source.
+   */
+  function isTriggerReady(input) {
+    if (!input || typeof input !== 'object') return false
+    if (input.error) return false
+    if (input.isConnected === false) return false
+    if (input.paused === false) return true
+    return typeof input.readyState === 'number' && input.readyState >= 1
+  }
+
+  /**
+   * Pick the largest ready candidate from plain descriptions. The overlay passes
+   * one entry per usable VIDEO element; keeping the choice here makes the
+   * timing/state rule testable without a DOM.
+   */
+  function largestTriggerCandidate(candidates) {
+    if (!Array.isArray(candidates)) return null
+    var best = null
+    var bestArea = 0
+    for (var index = 0; index < candidates.length; index += 1) {
+      var candidate = candidates[index]
+      if (!candidate || candidate.ready !== true || candidate.usable === false) {
+        continue
+      }
+      var rect = candidate.rect
+      if (!rect || typeof rect !== 'object') continue
+      if (!isFiniteNumber(rect.width) || !isFiniteNumber(rect.height)) continue
+      var area = rect.width * rect.height
+      if (area <= 0 || area <= bestArea) continue
+      bestArea = area
+      best = candidate
+    }
+    return best
+  }
+
+  var PREFETCH_DEBOUNCE_MS = 500
+  var PREFETCH_MAX_AGE_MS = 10 * 60 * 1000
+
+  /**
+   * Decide what the background page-analysis prefetch should do for one exact
+   * page URL. Only the opted-in overlay calls this. A cached analysis is reused
+   * until its reported expiry; a failed analysis is never retried
+   * automatically (the manual action remains the retry).
+   *
+   * previous: { url, status, expiresAt, token, startedAt } or null
+   * input: { url, now, eligible }
+   */
+  function prefetchDecision(previous, input) {
+    if (!input || input.eligible !== true) {
+      return { action: 'none', reason: 'not-eligible' }
+    }
+    if (typeof input.url !== 'string' || input.url.length === 0) {
+      return { action: 'none', reason: 'no-url' }
+    }
+    var now = isFiniteNumber(input.now) ? input.now : Date.now()
+    if (!previous || typeof previous !== 'object') {
+      return { action: 'debounce', reason: 'new' }
+    }
+    if (previous.url !== input.url) {
+      return { action: 'debounce', reason: 'url-changed' }
+    }
+    if (previous.status === 'analyzing' || previous.status === 'debouncing') {
+      return { action: 'none', reason: 'in-flight' }
+    }
+    if (previous.status === 'ready') {
+      if (isFiniteNumber(previous.expiresAt) && previous.expiresAt > now) {
+        return { action: 'reuse', reason: 'cached' }
+      }
+      return { action: 'analyze', reason: 'expired' }
+    }
+    if (previous.status === 'error') {
+      return { action: 'none', reason: 'failed' }
+    }
+    return { action: 'debounce', reason: 'idle' }
+  }
+
+  /**
+   * Ignore a response from an older request, a different URL, or after the
+   * overlay/SPA navigation already advanced the token.
+   */
+  function prefetchResultApplies(previous, input) {
+    if (!previous || !input) return false
+    if (previous.status !== 'analyzing') return false
+    if (typeof previous.url !== 'string' || previous.url !== input.url) return false
+    if (previous.token !== input.token) return false
+    if (
+      isFiniteNumber(input.now) &&
+      isFiniteNumber(previous.startedAt) &&
+      input.now - previous.startedAt > PREFETCH_MAX_AGE_MS
+    ) {
+      return false
+    }
+    return true
+  }
+
+  /** True for the playback kinds that only page analysis can resolve. */
+  function isStreamingUnsupported(unsupported) {
+    if (!unsupported || typeof unsupported !== 'object') return false
+    return (
+      unsupported.code === 'SEGMENTED_MEDIA' ||
+      unsupported.code === 'MANIFEST_STREAM' ||
+      unsupported.code === 'NOT_PROGRESSIVE'
+    )
+  }
+
+  /** Queue feedback: one exact option per analysis may be queued once. */
+  function isOptionQueued(queuedOptionIds, optionId) {
+    if (!Array.isArray(queuedOptionIds) || typeof optionId !== 'string') return false
+    return queuedOptionIds.indexOf(optionId) !== -1
+  }
+
+  function markOptionQueued(queuedOptionIds, optionId) {
+    var clean = Array.isArray(queuedOptionIds) ? queuedOptionIds.slice() : []
+    if (typeof optionId !== 'string' || optionId.length === 0) return clean
+    if (clean.indexOf(optionId) === -1) clean.push(optionId)
+    return clean.slice(-100)
+  }
+
   /** Observer helper: drop an active video once it is disconnected. */
   function nextActiveVideo(activeVideo) {
     if (!activeVideo) return null
@@ -978,9 +1100,9 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'Progressive files this exact player actually played appear first. When a player uses HLS, DASH or Media Source, DonDownload analyzes the page with yt-dlp and shows verified qualities; it never reads request headers, cookies or DRM data.',
+        'Progressive files this exact player actually played appear first. On sites where you enabled the overlay, DonDownload may analyze this page in the background when a player uses HLS, DASH or Media Source, so verified qualities are ready when you open this panel. It never reads request headers, cookies or DRM data.',
       actionLabel: 'Find qualities with DonDownload',
-      analyzingLabel: 'Analyzing…',
+      analyzingLabel: 'Finding qualities…',
       embedActionLabel: 'Find qualities for embedded video',
       optionsHint:
         'Nothing is downloaded until you choose a source or a verified option.',
@@ -1022,6 +1144,15 @@
     placeTrigger: placeTrigger,
     placePanel: placePanel,
     nextActiveVideo: nextActiveVideo,
+    isTriggerReady: isTriggerReady,
+    largestTriggerCandidate: largestTriggerCandidate,
+    prefetchDecision: prefetchDecision,
+    prefetchResultApplies: prefetchResultApplies,
+    isStreamingUnsupported: isStreamingUnsupported,
+    isOptionQueued: isOptionQueued,
+    markOptionQueued: markOptionQueued,
+    PREFETCH_DEBOUNCE_MS: PREFETCH_DEBOUNCE_MS,
+    PREFETCH_MAX_AGE_MS: PREFETCH_MAX_AGE_MS,
     isTypingTarget: isTypingTarget,
     isOverlayShortcut: isOverlayShortcut,
     initialMediaState: initialMediaState,

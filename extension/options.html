@@ -22,13 +22,24 @@
       <section aria-labelledby="capture-heading">
         <h2 id="capture-heading">Overlay and capture</h2>
 
+        <p class="hint">
+          On a site where you enable the overlay, DonDownload may analyze the
+          page with yt-dlp in the background when its player uses HLS, DASH or
+          Media Source, so verified qualities are already there when you open
+          the panel. It runs only on that exact enabled origin, at most once per
+          settled page URL, and reuses the result until it expires. It never
+          reads cookies, request headers or DRM data. Progressive files the
+          player actually played stay one-click downloads.
+        </p>
+
         <label class="toggle-row">
           <input id="floating-trigger" type="checkbox" checked />
           <span>
             <strong>Floating video button</strong>
             <span class="hint">
-              Show a small draggable DonDownload button on the active playing
-              video. On by default; it never appears outside an enabled site.
+              Show a small draggable DonDownload button as soon as a visible
+              video is attached or starts playing. On by default; it never
+              appears outside an enabled site.
             </span>
           </span>
         </label>

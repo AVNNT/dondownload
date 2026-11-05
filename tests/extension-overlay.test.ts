@@ -1239,10 +1239,15 @@ describe('overlay interaction in a minimal DOM', () => {
     // and the video element itself is not modified.
     expect(Object.keys(harness.video.style)).toHaveLength(0)
     expect(Object.keys(harness.video.listeners).sort()).toEqual([
+      'canplay',
+      'durationchange',
       'emptied',
       'ended',
+      'error',
       'loadeddata',
+      'loadedmetadata',
       'pause',
+      'play',
       'playing',
       'timeupdate'
     ])
@@ -1339,6 +1344,68 @@ describe('overlay interaction in a minimal DOM', () => {
       origin: 'https://example.com'
     })
     expect(harness.host.parentNode).toBeNull()
+  })
+
+  it('prefetches blob/MSE once after the debounce and reuses the cached analysis', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      deferMediaResponses: true
+    })
+    openPanel(harness)
+    playVideo(harness.video, 'blob:https://example.com/4a2c')
+
+    // Detection debounces; no analysis request during the settle window.
+    expect(harness.analyzeButton.textContent).toBe('Finding qualities…')
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-analyze')
+    ).toEqual([])
+
+    harness.runTimers()
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-analyze')
+    ).toEqual([{ type: 'dondownload:media-analyze' }])
+
+    // The manual action cannot start a second in-flight analysis.
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-analyze')
+    ).toHaveLength(1)
+
+    harness.flushMediaResponses()
+    expect(harness.mediaResults.hidden).toBe(false)
+    expect(harness.analyzeButton.hidden).toBe(true)
+
+    // Closing and reopening the panel adopts the cached result instead of
+    // running yt-dlp again for the same page URL.
+    harness.trigger.dispatch('click', pointerEvent(harness.trigger, [harness.trigger, harness.host]))
+    harness.trigger.dispatch('click', pointerEvent(harness.trigger, [harness.trigger, harness.host]))
+    expect(harness.mediaResults.hidden).toBe(false)
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-analyze')
+    ).toHaveLength(1)
+  })
+
+  it('ignores a prefetch response that arrives after SPA navigation', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      deferMediaResponses: true
+    })
+    openPanel(harness)
+    playVideo(harness.video, 'blob:https://example.com/old-page')
+    harness.runTimers()
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-analyze')
+    ).toHaveLength(1)
+
+    harness.location.href = 'https://example.com/next'
+    harness.dispatchWindow('popstate', {})
+    harness.flushMediaResponses()
+
+    expect(harness.mediaResults.hidden).toBe(true)
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(0)
   })
 
   it('toggles from the command and answers trusted popup source queries without page tab ids', () => {
@@ -1533,13 +1600,25 @@ describe('overlay media flow', () => {
     expect(rows[0]?.getAttribute('data-current')).toBe('true')
     expect(JSON.stringify(collectText(rows[0]!))).toContain('movie-1080.mp4')
 
+    // A metadata-only check while the new source is still paused must not
+    // prevent the later playing event from adding that same URL.
+    harness.video.currentSrc = 'https://cdn.example/media/movie-480.mp4'
+    harness.video.paused = true
+    harness.video.readyState = 4
+    harness.video.dispatch('emptied', pointerEvent(harness.video, [harness.video]))
+    harness.video.dispatch('loadeddata', pointerEvent(harness.video, [harness.video]))
+    playVideo(harness.video, 'https://cdn.example/media/movie-480.mp4')
+    rows = collectByClass(harness.sourceList, 'source')
+    expect(rows).toHaveLength(3)
+    expect(JSON.stringify(collectText(rows[0]!))).toContain('movie-480.mp4')
+
     // A second player's source is never mixed into the active player's list.
     const secondVideo = new FakeNode('video')
     secondVideo.rect = { left: 700, top: 100, width: 400, height: 220 }
     harness.document.body.appendChild(secondVideo)
     harness.mutationObserver.trigger()
     playVideo(secondVideo, 'https://cdn.example/media/other.webm')
-    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(2)
+    expect(collectByClass(harness.sourceList, 'source')).toHaveLength(3)
     expect(JSON.stringify(collectText(harness.sourceList))).not.toContain('other.webm')
 
     pointerOver(secondVideo)
@@ -1829,8 +1908,23 @@ describe('overlay media flow', () => {
       optionId: BEST_VIDEO_ID,
       outputFormat: 'auto'
     })
-    expect(harness.status.textContent).toBe('Queued: 1080p MP4 - H.264 + AAC')
+    expect(harness.status.textContent).toBe(
+      'Added to DonDownload ✓ — downloading in the app'
+    )
     expect(harness.status.className).toBe('status success')
+    // The exact row records the confirmation and cannot queue twice.
+    expect(harness.bestVideoButton.disabled).toBe(true)
+    const queuedRows = collectByClass(harness.qualityList, 'source-action quality-queue').filter(
+      (button) => button.textContent === 'Added ✓'
+    )
+    expect(queuedRows.length).toBeGreaterThan(0)
+    harness.bestVideoButton.dispatch(
+      'click',
+      pointerEvent(harness.bestVideoButton, [harness.bestVideoButton, harness.panel])
+    )
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-queue')
+    ).toHaveLength(1)
   })
 
   it('queues an explicit audio-only option', () => {
@@ -1858,7 +1952,9 @@ describe('overlay media flow', () => {
       optionId: BEST_AUDIO_ID,
       outputFormat: 'auto'
     })
-    expect(harness.status.textContent).toBe('Queued: Audio only - Opus')
+    expect(harness.status.textContent).toBe(
+      'Added to DonDownload ✓ — downloading in the app'
+    )
   })
 
   it('queues a selectable quality chosen from the response only', () => {
@@ -1909,7 +2005,9 @@ describe('overlay media flow', () => {
       optionId: OTHER_VIDEO_ID,
       outputFormat: 'auto'
     })
-    expect(harness.status.textContent).toBe('Queued: 720p MP4 - H.264 + AAC')
+    expect(harness.status.textContent).toBe(
+      'Added to DonDownload ✓ — downloading in the app'
+    )
   })
 
   it('shows safe analysis and queue failures without inventing options', () => {
@@ -1979,10 +2077,11 @@ describe('overlay media flow', () => {
 
     playVideo(harness.video, 'blob:https://example.com/4a2c')
     expect(harness.analyzeButton.hidden).toBe(false)
-    expect(harness.analyzeButton.textContent).toBe('Find qualities with DonDownload')
+    expect(harness.analyzeButton.textContent).toBe('Finding qualities…')
 
     playVideo(harness.video, 'https://cdn.example/live/index.m3u8')
     expect(harness.analyzeButton.hidden).toBe(false)
+    expect(harness.analyzeButton.textContent).toBe('Finding qualities…')
 
     harness.analyzeButton.dispatch(
       'click',

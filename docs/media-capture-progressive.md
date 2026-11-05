@@ -39,9 +39,37 @@ was performed for this note.
   script is injected into the sub-frame, no new permission is requested, and
   the desktop app still applies its public-target validation.
 - The panel is detected-source-first and compact: one row per verified source
-  with one Download action. It closes after a successful queue and the player
-  button briefly shows `OK`. Opening the panel no longer runs yt-dlp; only the
-  explicit analysis action does.
+  with one Download action. It closes after a successful captured-source queue
+  and the player button briefly shows `OK`; queued quality rows stay visible
+  with an `Added ✓` state.
+- The floating icon no longer waits for a captured progressive source or even
+  the first rendered frame. It appears as soon as a large visible `<video>` is
+  attached and either `play()` was requested (`paused === false`) or metadata
+  is available (`readyState >= 1`). `play`, `loadedmetadata`, `loadeddata` and
+  `canplay` are observed in addition to `playing`/`timeupdate`, and an
+  already-playing element is checked immediately when the script is injected.
+  YouTube-style SPA navigation (`yt-navigate-finish`, `yt-page-data-updated`,
+  `popstate`, `hashchange`, `pageshow` and a cheap URL-change check) resets the
+  icon, captured sources and cached analysis for the new video without a
+  reload, even when the player element is reused.
+- Background analysis is now allowed **only on an origin where the user
+  explicitly enabled the overlay**. When that exact player is blob/MSE, an
+  HLS/DASH manifest, or has started with no progressive source, the content
+  script debounces 500 ms after the URL settles and starts the existing
+  `dondownload:media-analyze` request for the top page URL. At most one
+  analysis is in flight per tab; the result is cached per page URL until the
+  analysis `expiresAt`, and stale responses are ignored by token and URL after
+  SPA navigation. Opening the panel or the toolbar popup shows cached options
+  immediately, or a clear `Finding qualities…` state while it runs. The manual
+  `Find qualities` action remains the explicit retry. A selected option stays
+  pinned by `analysisId` + `optionId`; it is never substituted.
+- The toolbar popup now reflects streaming players. If the overlay reports a
+  blob/MSE/HLS/DASH player it shows `Streaming video detected` with the same
+  cached quality options (one-click queue) or `Finding qualities…`, while
+  progressive sources remain listed as before. When nothing is detected it
+  shows `Nothing detected` and still offers `Find qualities for this page`.
+  After a successful queue both the overlay row and the popup row show
+  `Added ✓` and the same option is not queued twice for that page.
 - A detected source is queued through the existing native messaging host and
   the authenticated loopback bridge. The new
   `/queue-captured-source` route revalidates the public target and calls the
@@ -57,10 +85,14 @@ was performed for this note.
 
 - DRM-protected media remains unsupported. Analysis only reports what yt-dlp
   can verify; it is never used to bypass DRM, access restrictions or a paywall.
-- Analysis is an explicit user action and is pinned to the returned opaque
-  option identifiers. If the analysis expires or the option no longer
-  validates, the overlay shows the existing `Analyze this page again` message
-  and never substitutes another quality.
+- Automatic analysis is not a general background crawler. It runs only inside
+  the exact-origin content script the user explicitly enabled, only after a
+  real player is detected on that page, at most once per settled page URL, and
+  the cached result is reused until `expiresAt`. A failure is never retried
+  automatically; the visible `Find qualities` action is the retry. Everything
+  remains pinned to the returned opaque option identifiers: if the analysis
+  expires or the option no longer validates, the overlay shows the existing
+  `Analyze this page again` message and never substitutes another quality.
 - No permission opt-in UI was added. Observation runs only inside the already
   user-approved exact-origin content script; no new host permission,
   `webRequest`, `tabs`, cookies, downloads API or broad grant was added. Embed
@@ -81,6 +113,10 @@ Focused tests:
 | Scenario | Result |
 | --- | --- |
 | Source identity accumulation, quality switch/dedupe/current, per-player isolation, navigation reset | extension overlay harness passed |
+| Icon readiness after play()/metadata, largest ready candidate, 500 ms prefetch debounce, cache reuse/expiry, in-flight/stale-response rules | `extension-overlay-timing` passed |
+| Automatic prefetch starts once after the debounce, reuses the cache on reopen, and ignores a response after SPA navigation | extension overlay harness passed |
+| Popup view distinguishes streaming/embedded/progressive/nothing and shows verified options or retry | `extension-overlay-timing` capture-view tests passed |
+| Quality rows show Added ✓ and refuse a second queue for the same exact option | extension overlay harness passed |
 | Blob/MSE and manifest states offer explicit analysis with no invented download action | extension overlay harness passed |
 | Verified analysis options show resolution/container/size/merge and queue the exact pinned option | extension overlay harness passed |
 | Expired pinned analysis surfaces Analyze this page again without substitution | extension overlay harness passed |
@@ -115,9 +151,11 @@ rejection for a test.
 ```text
 npm run typecheck
 npm run build:native-host
-npx vitest run tests/extension-overlay.test.ts tests/extension-bridge.test.ts \
+npx vitest run tests/extension-overlay.test.ts tests/extension-overlay-timing.test.ts \
+  tests/extension-bridge.test.ts \
   tests/extension-media-bridge.test.ts tests/extension-manifest.test.ts \
   tests/native-bridge.test.ts tests/media-engine.test.ts
+npm run test:extension:chromium
 npx vitest run tests/native-host.test.ts -t "captured"
 $env:ARIA2_TEST_BINARY = '<local aria2c>'
 npx vitest run tests/aria2.integration.test.ts -t "captured progressive"

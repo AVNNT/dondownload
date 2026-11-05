@@ -19,6 +19,8 @@
   var MEDIA_ANALYZE = 'dondownload:media-analyze'
   var MEDIA_ANALYZE_EMBED = 'dondownload:media-analyze-embed'
   var MEDIA_QUEUE = 'dondownload:media-queue'
+  var MEDIA_PAGE_ANALYZE = 'dondownload:media-page-analyze'
+  var MEDIA_PAGE_QUEUE = 'dondownload:media-page-queue'
   var CAPTURE_QUEUE = 'dondownload:capture-queue'
   var NETWORK_EVIDENCE_REQUEST = 'dondownload:network-evidence-request'
   var NETWORK_EVIDENCE = 'dondownload:network-evidence'
@@ -55,6 +57,7 @@
     panelOpen: false,
     hideTimer: 0,
     repositionPending: false,
+    triggerBurst: false,
     floatingEnabled: true,
     settingsListener: null,
     triggerOffset: null,
@@ -63,6 +66,7 @@
     mutationObserver: null,
     resizeObserver: null,
     runtimeListener: null,
+    navigationTimer: 0,
     cleanup: [],
     media: {
       token: 0,
@@ -70,13 +74,25 @@
       status: 'idle',
       analysis: null,
       selectedOptionId: null,
-      outputFormat: 'auto'
+      outputFormat: 'auto',
+      queuedOptionIds: []
+    },
+    prefetch: {
+      url: '',
+      status: 'idle',
+      token: 0,
+      timer: 0,
+      startedAt: 0,
+      expiresAt: 0,
+      analysis: null,
+      error: null
     },
     capture: {
       navigationUrl: location.href,
       players: [],
       buttons: [],
       rowCleanups: [],
+      queuedUrls: [],
       queueing: false,
       queueToken: 0
     }
@@ -88,6 +104,11 @@
   // navigations; resetting the source list must not stack duplicate listeners.
   var observedVideos =
     typeof WeakSet === 'function' ? new WeakSet() : null
+  // After an SPA URL change, a reused <video> can still report the previous
+  // page's currentSrc for one tick. Suppress exactly that value once so it is
+  // never re-added as if it belonged to the new page.
+  var suppressedSources =
+    typeof WeakMap === 'function' ? new WeakMap() : null
 
   var STYLES = [
     ':host { all: initial; }',
@@ -799,15 +820,59 @@
     return best
   }
 
+  function triggerInput(video) {
+    return {
+      paused: video.paused,
+      readyState: video.readyState,
+      error: video.error || null,
+      isConnected: video.isConnected
+    }
+  }
+
+  /** Attached + large enough + (play requested or metadata loaded). */
+  function isTriggerReady(video) {
+    return Boolean(video && core.isTriggerReady(triggerInput(video)))
+  }
+
   /**
-   * A persistent floating icon follows the largest usable playing player, even
-   * when the pointer is not hovering. Hover remains useful before playback.
+   * Choose the largest video that is ready for the floating icon. This is much
+   * earlier than "actually playing": `paused === false` already means play()
+   * was requested, and readyState >= 1 means metadata is available.
+   */
+  function largestTriggerVideo() {
+    if (typeof document.querySelectorAll !== 'function') return null
+    var videos = document.querySelectorAll('video')
+    var candidates = []
+    for (var index = 0; index < videos.length; index += 1) {
+      var video = videos[index]
+      if (!isTriggerReady(video)) continue
+      var result = usable(video)
+      if (!result.usable) continue
+      var rect = video.getBoundingClientRect()
+      candidates.push({
+        video: video,
+        ready: true,
+        usable: true,
+        rect: { width: rect.width, height: rect.height }
+      })
+    }
+    var best = core.largestTriggerCandidate(candidates)
+    return best && best.video ? best.video : null
+  }
+
+  /**
+   * A persistent floating icon follows the largest usable ready player, even
+   * when the pointer is not hovering and even while the player is buffering or
+   * paused. It never waits for a captured source.
    */
   function syncFloatingTrigger() {
     if (state.disabled || !state.floatingEnabled || state.panelOpen) return
-    var video = largestPlayingVideo()
+    var video = largestTriggerVideo()
     if (!video) {
-      if (state.activeVideo && !isPlayingVideo(state.activeVideo)) hideNow()
+      // Do not hide a hover-shown player merely because it is paused or still
+      // buffering; pointerleave already owns that case. Only a detached or
+      // no-longer-usable element must disappear immediately.
+      if (state.activeVideo && !usable(state.activeVideo).usable) hideNow()
       return
     }
     if (video !== state.activeVideo) showFor(video)
@@ -817,7 +882,33 @@
   function shouldKeepVisible() {
     if (state.panelOpen) return true
     if (!state.activeVideo) return false
-    return state.floatingEnabled && isPlayingVideo(state.activeVideo)
+    return state.floatingEnabled && isTriggerReady(state.activeVideo)
+  }
+
+  /**
+   * An event can arrive before the player has its final layout rectangle
+   * (common on SPA players). A short best-effort burst re-checks the same
+   * visible element without polling the media source or waiting for the next
+   * `timeupdate`.
+   */
+  function scheduleTriggerBurst() {
+    if (state.triggerBurst || state.disabled) return
+    state.triggerBurst = true
+    var attempts = 0
+    var tick = function () {
+      if (state.disabled) {
+        state.triggerBurst = false
+        return
+      }
+      attempts += 1
+      syncFloatingTrigger()
+      if (attempts >= 12 || state.panelOpen) {
+        state.triggerBurst = false
+        return
+      }
+      window.setTimeout(tick, 60)
+    }
+    window.setTimeout(tick, 60)
   }
 
   function setMediaStatus(text, kind) {
@@ -852,10 +943,20 @@
   function resetCaptureForNavigation() {
     state.capture.queueToken += 1
     state.capture.navigationUrl = location.href
+    if (suppressedSources) {
+      for (var playerIndex = 0; playerIndex < state.capture.players.length; playerIndex += 1) {
+        var previous = state.capture.players[playerIndex]
+        if (!previous || !previous.video) continue
+        var previousSrc =
+          typeof previous.video.currentSrc === 'string' ? previous.video.currentSrc : ''
+        if (previousSrc.length > 0) suppressedSources.set(previous.video, previousSrc)
+      }
+    }
     releaseCapturePlayers()
     state.capture.players = []
     state.capture.buttons = []
     state.capture.rowCleanups = []
+    state.capture.queuedUrls = []
     state.capture.queueing = false
     state.triggerOffset = null
     state.activeEmbed = null
@@ -864,6 +965,8 @@
     state.media.token += 1
     state.media.queueToken += 1
     state.media.status = 'idle'
+    state.media.queuedOptionIds = []
+    resetPrefetchForNavigation()
     resetMediaResults()
     if (state.analyzeButton) {
       state.analyzeButton.hidden = true
@@ -879,6 +982,10 @@
     renderCapturedSources()
     restoreTriggerOffsets()
     installSourceObservers()
+    // The reused player may already be playing for the new page. Show the icon
+    // immediately and let the debounced prefetch start for the new URL.
+    syncFloatingTrigger()
+    schedulePrefetch()
   }
 
   function releaseCapturePlayers() {
@@ -938,6 +1045,7 @@
       video: video,
       sources: [],
       unsupported: null,
+      playbackKind: 'none',
       lastSrc: '',
       listening: false,
       evidenceRequested: Object.create(null),
@@ -960,13 +1068,27 @@
 
     var check = function () {
       observePlayback(video)
-      if (state.floatingEnabled) syncFloatingTrigger()
+      if (state.floatingEnabled) {
+        syncFloatingTrigger()
+        if (!state.activeVideo || (state.trigger && state.trigger.hidden)) {
+          scheduleTriggerBurst()
+        }
+      }
+      schedulePrefetch()
     }
+    // `play` and `loadedmetadata` arrive before the first rendered frame, so
+    // the icon no longer waits for `playing`/`timeupdate`. The rest keep the
+    // state accurate without polling the player.
+    listen('play', check)
     listen('playing', check)
-    listen('timeupdate', check)
+    listen('loadedmetadata', check)
     listen('loadeddata', check)
+    listen('canplay', check)
+    listen('timeupdate', check)
     listen('pause', check)
     listen('ended', check)
+    listen('error', check)
+    listen('durationchange', check)
     listen('emptied', function () {
       var current = playerFor(video)
       if (!current) return
@@ -978,8 +1100,12 @@
         return Object.assign({}, source, { current: false })
       })
       current.unsupported = null
+      current.playbackKind = 'none'
       if (video === state.activeVideo) renderCapturedSources()
     })
+    // The player may already be attached, ready or playing when this script is
+    // injected, and no future media event may fire soon enough. Check now.
+    check()
   }
 
   function installSourceObservers() {
@@ -1078,10 +1204,25 @@
 
     var currentSrc = typeof video.currentSrc === 'string' ? video.currentSrc : ''
     if (currentSrc.length === 0) return
-    if (currentSrc === player.lastSrc && player.sources.length > 0) return
+    if (suppressedSources && suppressedSources.has(video)) {
+      var suppressed = suppressedSources.get(video)
+      suppressedSources.delete(video)
+      if (currentSrc === suppressed) {
+        player.lastSrc = currentSrc
+        return
+      }
+    }
+    if (currentSrc === player.lastSrc && player.sources.length > 0) {
+      // Only skip a repeated URL when it was already classified from an
+      // attached/playing state. A `loadeddata`/`durationchange` check can see
+      // the new URL while the player is still paused; the later `playing`
+      // event must re-evaluate and add it.
+      if (player.playbackKind !== 'not-playing') return
+    }
     player.lastSrc = currentSrc
 
     var result = core.evaluatePlaybackSource(playbackInput(video))
+    player.playbackKind = result.kind
 
     if (result.kind === 'verified') {
       player.sources = core.addCapturedSource(player.sources, result)
@@ -1104,6 +1245,324 @@
     }
 
     if (video === state.activeVideo && state.panelOpen) renderCapturedSources()
+    if (video === state.activeVideo) schedulePrefetch()
+  }
+
+  function pageUrlKey() {
+    var href = typeof location.href === 'string' ? location.href : ''
+    return href.split('#')[0]
+  }
+
+  function clearPrefetchTimer() {
+    if (!state.prefetch.timer) return
+    try {
+      window.clearTimeout(state.prefetch.timer)
+    } catch {
+      // Timer cleanup is best effort.
+    }
+    state.prefetch.timer = 0
+  }
+
+  /**
+   * Automatic page analysis is allowed only here: the content script itself is
+   * injected only after the user enabled the overlay for this exact origin.
+   * It never runs for an ordinary page the user did not opt in to.
+   */
+  function canAutoPrefetch() {
+    if (state.disabled || state.activeEmbed) return false
+    var video = state.activeVideo || largestTriggerVideo()
+    if (!video) return false
+    var player = playerFor(video)
+    if (!player) return false
+    if (core.isStreamingUnsupported(player.unsupported)) return true
+    if (player.sources.length > 0) return false
+    // An extensionless URL is waiting for exact response evidence, not for
+    // yt-dlp; a verified progressive URL already has a one-click row.
+    if (player.playbackKind === 'needs-evidence') return false
+    if (player.playbackKind === 'verified') return false
+    if (!isTriggerReady(video)) return false
+    return (
+      (typeof video.currentTime === 'number' && video.currentTime > 0) ||
+      video.paused === false
+    )
+  }
+
+  function resetPrefetchForNavigation() {
+    clearPrefetchTimer()
+    state.prefetch.token += 1
+    state.prefetch.url = ''
+    state.prefetch.status = 'idle'
+    state.prefetch.startedAt = 0
+    state.prefetch.expiresAt = 0
+    state.prefetch.analysis = null
+    state.prefetch.error = null
+  }
+
+  function prefetchView() {
+    if (state.prefetch.status !== 'ready' || !state.prefetch.analysis) return null
+    if (state.prefetch.expiresAt > 0 && state.prefetch.expiresAt <= Date.now()) {
+      return null
+    }
+    return core.mediaView(state.prefetch.analysis)
+  }
+
+  /** The current verified view, reusing the cached prefetch instead of calling
+   * yt-dlp again when the user opens the panel or the popup. */
+  function currentAnalysisView() {
+    if (state.media.analysis) return state.media.analysis
+    var view = prefetchView()
+    if (!view) return null
+    state.media.analysis = view
+    state.media.status = 'analyzed'
+    return view
+  }
+
+  function adoptPrefetchResult() {
+    var view = currentAnalysisView()
+    if (!view) return false
+    if (state.panelOpen) renderAnalysis(view)
+    return true
+  }
+
+  function prefetchInFlight() {
+    return (
+      state.prefetch.status === 'analyzing' ||
+      state.prefetch.status === 'debouncing'
+    )
+  }
+
+  /** Debounce ~500 ms after the page URL settles, then analyze once. */
+  function schedulePrefetch(delay) {
+    if (!canAutoPrefetch()) {
+      if (state.prefetch.status === 'debouncing') {
+        clearPrefetchTimer()
+        state.prefetch.url = ''
+        state.prefetch.status = 'idle'
+        state.prefetch.startedAt = 0
+        if (state.panelOpen) renderCapturedSources()
+      }
+      return
+    }
+    var url = pageUrlKey()
+    if (!url) return
+    var decision = core.prefetchDecision(state.prefetch, {
+      url: url,
+      now: Date.now(),
+      eligible: true
+    })
+    if (decision.action === 'reuse') {
+      adoptPrefetchResult()
+      return
+    }
+    if (decision.action === 'none') return
+    if (decision.action === 'analyze') {
+      startPrefetch(url, {})
+      return
+    }
+    if (state.prefetch.status === 'debouncing' && state.prefetch.url === url) {
+      return
+    }
+
+    clearPrefetchTimer()
+    state.prefetch.url = url
+    state.prefetch.status = 'debouncing'
+    state.prefetch.startedAt = Date.now()
+    state.prefetch.expiresAt = 0
+    state.prefetch.analysis = null
+    state.prefetch.error = null
+    var wait =
+      typeof delay === 'number' && delay >= 0
+        ? delay
+        : core.PREFETCH_DEBOUNCE_MS
+    state.prefetch.timer = window.setTimeout(function () {
+      state.prefetch.timer = 0
+      if (
+        state.disabled ||
+        state.prefetch.status !== 'debouncing' ||
+        state.prefetch.url !== url ||
+        pageUrlKey() !== url
+      ) {
+        return
+      }
+      startPrefetch(url, {})
+    }, wait)
+    if (state.panelOpen) {
+      setMediaStatus(copy.analyzingLabel, 'info')
+      renderCapturedSources()
+    }
+  }
+
+  /**
+   * One in-flight analysis per tab, keyed by the settled page URL. The worker
+   * still derives that URL from the trusted sender tab; this content script
+   * only decides when to ask. Stale responses are dropped by token + URL.
+   */
+  function startPrefetch(url, options) {
+    options = options || {}
+    if (state.disabled) return false
+    var targetUrl = url || pageUrlKey()
+    if (!targetUrl) return false
+    if (
+      state.prefetch.status === 'analyzing' &&
+      state.prefetch.url === targetUrl
+    ) {
+      return false
+    }
+    if (
+      options.force !== true &&
+      state.prefetch.status === 'ready' &&
+      state.prefetch.url === targetUrl &&
+      state.prefetch.expiresAt > Date.now()
+    ) {
+      return false
+    }
+
+    clearPrefetchTimer()
+    var token = ++state.prefetch.token
+    state.prefetch.url = targetUrl
+    state.prefetch.status = 'analyzing'
+    state.prefetch.startedAt = Date.now()
+    state.prefetch.expiresAt = 0
+    state.prefetch.analysis = null
+    state.prefetch.error = null
+    state.media.status = 'analyzing'
+    resetMediaResults()
+    if (state.analyzeButton) {
+      state.analyzeButton.hidden = Boolean(state.activeEmbed)
+      state.analyzeButton.textContent = copy.analyzingLabel
+      state.analyzeButton.disabled = true
+    }
+    if (state.embedAnalyzeButton) {
+      state.embedAnalyzeButton.hidden = !state.activeEmbed
+      state.embedAnalyzeButton.textContent = copy.analyzingLabel
+    }
+    setMediaBusy(true)
+    if (state.panelOpen) {
+      setMediaStatus(options.analyzingText || copy.analyzingLabel, 'info')
+    }
+
+    sendRuntimeMessage({ type: MEDIA_ANALYZE }, function (response, runtimeError) {
+      if (
+        !core.prefetchResultApplies(state.prefetch, {
+          url: targetUrl,
+          token: token,
+          now: Date.now()
+        }) ||
+        state.disabled ||
+        pageUrlKey() !== targetUrl
+      ) {
+        return
+      }
+      if (state.analyzeButton) {
+        state.analyzeButton.textContent = copy.actionLabel
+        state.analyzeButton.disabled = false
+      }
+      if (state.embedAnalyzeButton) {
+        state.embedAnalyzeButton.textContent = copy.embedActionLabel
+      }
+      setMediaBusy(false)
+
+      if (runtimeError) {
+        failPrefetch(
+          { code: 'BACKGROUND_UNAVAILABLE', message: 'The DonDownload background worker did not respond.' },
+          'The DonDownload background worker did not respond. Reload this page, then try again.'
+        )
+        return
+      }
+      if (!response || response.ok !== true || !response.analysis) {
+        var fallback = 'The page could not be analyzed. Try again in a moment.'
+        failPrefetch(
+          response && response.error ? response.error : null,
+          core.describeMediaError(response && response.error, fallback)
+        )
+        return
+      }
+
+      var view = core.mediaView(response.analysis)
+      if (!view) {
+        failPrefetch(
+          { code: 'MEDIA_RESPONSE_INVALID', message: 'The analysis response was not valid.' },
+          'The analysis response was not valid. Try again.'
+        )
+        return
+      }
+
+      state.prefetch.status = 'ready'
+      state.prefetch.analysis = response.analysis
+      state.prefetch.error = null
+      state.prefetch.expiresAt =
+        typeof response.analysis.expiresAt === 'number' &&
+        Number.isFinite(response.analysis.expiresAt)
+          ? response.analysis.expiresAt
+          : Date.now() + core.PREFETCH_MAX_AGE_MS
+      state.media.status = 'analyzed'
+      state.media.analysis = view
+      if (state.panelOpen) renderAnalysis(view)
+    })
+    return true
+  }
+
+  function failPrefetch(error, message) {
+    state.prefetch.status = 'error'
+    state.prefetch.error = error || null
+    state.prefetch.analysis = null
+    state.media.status = 'error'
+    setMediaBusy(false)
+    if (state.panelOpen) {
+      setMediaStatus(message || copy.actionLabel, 'error')
+      renderCapturedSources()
+    }
+  }
+
+  function ensurePrefetchForPanel() {
+    if (currentAnalysisView()) {
+      adoptPrefetchResult()
+      return
+    }
+    if (prefetchInFlight()) return
+    if (state.prefetch.status === 'error') return
+    schedulePrefetch(0)
+  }
+
+  function queryAnalysisStatus() {
+    if (prefetchInFlight() || state.media.status === 'analyzing') return 'analyzing'
+    if (state.media.analysis) return 'ready'
+    if (state.prefetch.status === 'ready' && prefetchView()) return 'ready'
+    if (state.prefetch.status === 'error' || state.media.status === 'error') {
+      return 'error'
+    }
+    return 'idle'
+  }
+
+  function streamingForQuery() {
+    // A visible top-frame embed is a player too. Its analysis is the separate
+    // embed request, never an automatic top-page prefetch.
+    if (state.activeEmbed && usableEmbed(state.activeEmbed).usable) {
+      return {
+        detected: true,
+        embedded: true,
+        code: 'EMBED_PLAYER',
+        message: 'Embedded video detected. Find qualities for it in the panel.'
+      }
+    }
+    var player = playerFor(state.activeVideo)
+    if (!player) {
+      for (var index = 0; index < state.capture.players.length; index += 1) {
+        var candidate = state.capture.players[index]
+        if (candidate && candidate.unsupported) {
+          player = candidate
+          break
+        }
+      }
+    }
+    if (player && player.unsupported) {
+      return {
+        detected: true,
+        code: player.unsupported.code || 'STREAMING',
+        message: player.unsupported.message || 'Streaming video detected.'
+      }
+    }
+    return { detected: false }
   }
 
   function clearSourceList() {
@@ -1156,20 +1615,28 @@
     }
 
     // Progressive captured sources stay first and keep one-click download.
-    // Analysis is offered only when no exact progressive source is available
-    // for this player (blob/MSE, HLS/DASH or no playback yet).
+    // A cached background analysis is adopted immediately. While it is still
+    // running the same action doubles as a disabled "Finding qualities…"
+    // spinner; after a failure it stays available as the manual retry.
+    var analyzing = prefetchInFlight()
+    var cachedView = state.media.analysis || prefetchView()
+    if (cachedView && !state.media.analysis) {
+      state.media.analysis = cachedView
+      state.media.status = 'analyzed'
+    }
     var offerAnalysis =
-      !state.media.analysis &&
-      state.media.status !== 'analyzing' &&
-      core.shouldOfferPageAnalysis(sources, unsupported)
+      !cachedView && core.shouldOfferPageAnalysis(sources, unsupported)
     if (state.analyzeButton) {
-      state.analyzeButton.hidden = !offerAnalysis || Boolean(state.activeEmbed)
+      state.analyzeButton.hidden =
+        (!offerAnalysis && !analyzing) || Boolean(state.activeEmbed)
+      state.analyzeButton.textContent = analyzing ? copy.analyzingLabel : copy.actionLabel
+      state.analyzeButton.disabled = analyzing
     }
     if (state.embedAnalyzeButton) {
       state.embedAnalyzeButton.hidden =
         !state.activeEmbed ||
-        state.media.status === 'analyzing' ||
-        Boolean(state.media.analysis) ||
+        analyzing ||
+        Boolean(cachedView) ||
         hasPlayingTopFrameVideo()
     }
     setCaptureBusy(state.capture.queueing)
@@ -1203,7 +1670,13 @@
 
     var button = createElement('button', 'source-action', 'Download')
     button.type = 'button'
-    button.disabled = state.capture.queueing
+    var alreadyQueued = state.capture.queuedUrls.indexOf(source.url) !== -1
+    if (alreadyQueued) {
+      button.textContent = 'Added ✓'
+      button.disabled = true
+    } else {
+      button.disabled = state.capture.queueing
+    }
     var onClick = function (event) {
       stopPlayerEvent(event)
       queueCapturedSource(source)
@@ -1223,12 +1696,19 @@
 
   function setCaptureBusy(busy) {
     for (var index = 0; index < state.capture.buttons.length; index += 1) {
-      state.capture.buttons[index].disabled = busy
+      var button = state.capture.buttons[index]
+      if (!button) continue
+      button.disabled = busy || button.textContent === 'Added ✓'
     }
   }
 
   function queueCapturedSource(source, done) {
-    if (state.disabled || state.capture.queueing || !source) {
+    if (
+      state.disabled ||
+      state.capture.queueing ||
+      !source ||
+      state.capture.queuedUrls.indexOf(source.url) !== -1
+    ) {
       if (typeof done === 'function') {
         done({ ok: false, error: { code: 'NOT_AVAILABLE', message: 'No source is available.' } })
       }
@@ -1282,7 +1762,10 @@
           return
         }
 
-        setMediaStatus('Added to DonDownload', 'success')
+        setMediaStatus('Added to DonDownload ✓ — downloading in the app', 'success')
+        if (state.capture.queuedUrls.indexOf(source.url) === -1) {
+          state.capture.queuedUrls.push(source.url)
+        }
         closePanel(false)
         showAcceptedFeedback()
         if (typeof done === 'function') done({ ok: true })
@@ -1309,6 +1792,7 @@
     state.media.analysis = null
     state.media.selectedOptionId = null
     state.media.outputFormat = 'auto'
+    state.media.queuedOptionIds = []
     if (state.mediaResults) state.mediaResults.hidden = true
     if (state.mediaTitle) state.mediaTitle.textContent = ''
     if (state.mediaMeta) state.mediaMeta.textContent = ''
@@ -1374,27 +1858,56 @@
     })
   }
 
+  function optionIsQueued(optionId) {
+    return core.isOptionQueued(state.media.queuedOptionIds, optionId)
+  }
+
+  function qualityRowQueued(row) {
+    var input = row && row.children ? row.children[0] : null
+    return Boolean(input && input.mediaOptionId && optionIsQueued(input.mediaOptionId))
+  }
+
   function setMediaBusy(busy) {
     if (state.panel) state.panel.setAttribute('aria-busy', busy ? 'true' : 'false')
-    if (state.analyzeButton) state.analyzeButton.disabled = busy
+    var analyzing = prefetchInFlight()
+    if (state.analyzeButton) {
+      state.analyzeButton.disabled = busy || analyzing
+    }
     if (state.embedAnalyzeButton) state.embedAnalyzeButton.disabled = busy
     if (state.outputFormatSelect) state.outputFormatSelect.disabled = busy
     ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
       if (!list) return
       for (var index = 0; index < list.children.length; index += 1) {
         var row = list.children[index]
+        var queued = qualityRowQueued(row)
         for (var childIndex = 0; childIndex < row.children.length; childIndex += 1) {
           var child = row.children[childIndex]
           if (child && child.className === 'source-action quality-queue') {
-            child.disabled = busy
+            child.textContent = queued ? 'Added ✓' : 'Download'
+            child.disabled = busy || queued
           }
         }
       }
     })
-    if (state.bestVideoButton) state.bestVideoButton.disabled = busy
-    if (state.bestAudioButton) state.bestAudioButton.disabled = busy
+    if (state.bestVideoButton) {
+      state.bestVideoButton.disabled =
+        busy ||
+        Boolean(
+          state.media.analysis &&
+            optionIsQueued(state.media.analysis.bestVideoOptionId)
+        )
+    }
+    if (state.bestAudioButton) {
+      state.bestAudioButton.disabled =
+        busy ||
+        Boolean(
+          state.media.analysis &&
+            optionIsQueued(state.media.analysis.bestAudioOptionId)
+        )
+    }
     if (state.queueSelectedButton) {
-      state.queueSelectedButton.disabled = busy || !state.media.selectedOptionId
+      state.queueSelectedButton.disabled =
+        busy || !state.media.selectedOptionId || optionIsQueued(state.media.selectedOptionId)
     }
     ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
       if (!list) return
@@ -1405,7 +1918,7 @@
     })
   }
 
-  function renderQualityOptions(view) {
+  function renderQualityOptions(view, pinnedOptionId) {
     clearQualityList()
     if (!state.qualityFieldset || !state.qualityList || !state.advancedQualityList) return
 
@@ -1419,11 +1932,13 @@
     if (state.simpleFieldset) state.simpleFieldset.hidden = simpleChoices.length === 0
 
     var initialId =
-      view.bestVideoOptionId !== null
-        ? view.bestVideoOptionId
-        : view.bestAudioOptionId !== null
-          ? view.bestAudioOptionId
-          : view.options[0].optionId
+      typeof pinnedOptionId === 'string' && core.optionById(view, pinnedOptionId)
+        ? pinnedOptionId
+        : view.bestVideoOptionId !== null
+          ? view.bestVideoOptionId
+          : view.bestAudioOptionId !== null
+            ? view.bestAudioOptionId
+            : view.options[0].optionId
     state.media.selectedOptionId = initialId
 
     function appendOption(list, option, displayLabel, includeDetails, radioName, directQueue) {
@@ -1454,9 +1969,17 @@
       if (directQueue) {
         // One click queues exactly this verified option; the radio row remains
         // available for the advanced format picker below.
-        var queueButton = createElement('button', 'source-action quality-queue', 'Download')
+        var queued = core.isOptionQueued(
+          state.media.queuedOptionIds,
+          option.optionId
+        )
+        var queueButton = createElement(
+          'button',
+          'source-action quality-queue',
+          queued ? 'Added ✓' : 'Download'
+        )
         queueButton.type = 'button'
-        queueButton.disabled = state.media.status === 'queueing'
+        queueButton.disabled = queued || state.media.status === 'queueing'
         var queueClick = function (event) {
           stopPlayerEvent(event)
           queueOption(option.optionId)
@@ -1486,7 +2009,12 @@
       appendOption(state.advancedQualityList, option, null, true, 'dondownload-advanced-quality')
     })
 
-    if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
+    if (state.queueSelectedButton) {
+      state.queueSelectedButton.disabled = core.isOptionQueued(
+        state.media.queuedOptionIds,
+        state.media.selectedOptionId
+      )
+    }
     updateOutputFormatControl()
   }
 
@@ -1509,6 +2037,9 @@
   }
 
   function renderAnalysis(view) {
+    var previousAnalysisId =
+      state.media.analysis && state.media.analysis.analysisId
+    var previousOptionId = state.media.selectedOptionId
     state.media.analysis = view
     if (state.analyzeButton) state.analyzeButton.hidden = true
     if (state.embedAnalyzeButton) state.embedAnalyzeButton.hidden = true
@@ -1546,7 +2077,12 @@
         ? 'Download audio-only: ' + bestAudioOption.label + ' · ' + core.describeMediaSize(bestAudioOption)
         : 'Download audio only'
     }
-    renderQualityOptions(view)
+    // A cached/refresh render keeps the user's exact pinned option: it is only
+    // preserved when it belongs to the same analysisId and still validates.
+    renderQualityOptions(
+      view,
+      previousAnalysisId === view.analysisId ? previousOptionId : null
+    )
     setMediaBusy(false)
     setMediaStatus(
       'Analysis ready. Sizes are reported by yt-dlp; choose an option to queue.',
@@ -1557,8 +2093,16 @@
   function analyzePage() {
     // The worker derives the analyzed URL from the trusted sender tab. The
     // content script never supplies a blob:, manifest, segment, cookie or
-    // header value here.
-    runAnalysis({ type: MEDIA_ANALYZE }, 'Analyzing this page…')
+    // header value here. This is the explicit retry path; a cached/ready
+    // prefetch is shown instead of asking yt-dlp a second time.
+    if (currentAnalysisView()) {
+      adoptPrefetchResult()
+      return
+    }
+    startPrefetch(pageUrlKey(), {
+      force: true,
+      analyzingText: 'Analyzing this page…'
+    })
   }
 
   function analyzeEmbeddedPage() {
@@ -1667,10 +2211,14 @@
     )
   }
 
-  function queueOption(optionId) {
-    if (state.disabled || state.media.status === 'analyzing') return
-    if (state.media.status === 'queueing') return
-    if (!state.media.analysis) return
+  function queueOption(optionId, done) {
+    function finish(result) {
+      if (typeof done === 'function') done(result)
+    }
+    if (state.disabled) return finish({ ok: false })
+    if (state.media.status === 'analyzing') return finish({ ok: false })
+    if (state.media.status === 'queueing') return finish({ ok: false })
+    if (!state.media.analysis) return finish({ ok: false })
 
     var analysis = state.media.analysis
     // Pin the exact verified option the user picked. A missing identifier is a
@@ -1685,6 +2233,15 @@
         ),
         'error'
       )
+      finish({
+        ok: false,
+        error: { code: 'MEDIA_OPTION_INVALID', message: 'The selected option is not available.' }
+      })
+      return
+    }
+    if (optionIsQueued(option.optionId)) {
+      setMediaStatus('Already added to DonDownload ✓', 'success')
+      finish({ ok: false, error: { code: 'MEDIA_DUPLICATE_JOB', message: 'This option is already queued.' } })
       return
     }
 
@@ -1705,40 +2262,54 @@
       },
       function (response, runtimeError) {
         if (token !== state.media.queueToken || state.disabled) return
-        setMediaBusy(false)
-
         if (runtimeError) {
+          setMediaBusy(false)
           state.media.status = 'error'
           setMediaStatus(
             'The DonDownload background worker did not respond. Reload this page, then try again.',
             'error'
           )
+          finish({
+            ok: false,
+            error: { code: 'BACKGROUND_UNAVAILABLE', message: 'The background worker did not respond.' }
+          })
           return
         }
         if (!response || response.ok !== true || !response.job) {
+          setMediaBusy(false)
           state.media.status = 'error'
           setMediaStatus(
             core.describeMediaError(
               response && response.error,
-              'The download could not be queued. Analyze the page again.'
+              'The download could not be queued. Analyze this page again.'
             ),
             'error'
           )
           // An expired or no-longer-valid pinned option is never replaced by
           // another quality. Clear the stale choice and offer a fresh analysis.
           if (isStaleAnalysisError(response && response.error)) {
+            state.media.queuedOptionIds = []
+            state.prefetch.status = 'error'
+            state.prefetch.analysis = null
+            state.prefetch.expiresAt = 0
+            state.prefetch.error = response && response.error ? response.error : null
             resetMediaResults()
             renderCapturedSources()
           }
+          finish(response || { ok: false })
           return
         }
 
         state.media.status = 'queued'
-        var jobLabel =
-          typeof response.job.label === 'string' && response.job.label.length > 0
-            ? response.job.label
-            : option.label
-        setMediaStatus('Queued: ' + jobLabel, 'success')
+        state.media.queuedOptionIds = core.markOptionQueued(
+          state.media.queuedOptionIds,
+          option.optionId
+        )
+        // Re-apply busy state only after recording the exact option, so this
+        // row shows its confirmation and cannot be queued twice.
+        setMediaBusy(false)
+        setMediaStatus('Added to DonDownload ✓ — downloading in the app', 'success')
+        finish({ ok: true, job: response.job })
       }
     )
   }
@@ -1777,6 +2348,7 @@
     observePlayer(video)
     observeVideoSize(video)
     renderCapturedSources()
+    schedulePrefetch()
     cancelHide()
     state.host.hidden = false
     state.trigger.hidden = false
@@ -1799,12 +2371,19 @@
       closePanel(false)
     }
     // An analysis belongs to the previously attached player/page target. Never
-    // let its opaque options be queued for a different embed.
-    if (state.media.analysis || state.media.status === 'analyzing') {
+    // let its opaque options be queued for a different embed, and never keep a
+    // top-page prefetch in flight while the embed analysis runs (one analysis
+    // at a time per tab).
+    if (
+      state.media.analysis ||
+      state.media.status === 'analyzing' ||
+      state.prefetch.status !== 'idle'
+    ) {
       state.media.token += 1
       state.media.queueToken += 1
       state.media.status = 'idle'
       resetMediaResults()
+      resetPrefetchForNavigation()
     }
     state.activeVideo = null
     state.activeEmbed = iframe
@@ -1840,11 +2419,15 @@
     state.panel.hidden = false
     state.panelOpen = true
     state.trigger.setAttribute('aria-expanded', 'true')
+    // Cached options appear immediately; otherwise the debounced background
+    // analysis starts now and the same button becomes the "Finding qualities…"
+    // spinner. This never runs yt-dlp twice for the same settled page URL.
+    ensurePrefetchForPanel()
     renderCapturedSources()
+    if (prefetchInFlight() && state.status && !state.status.textContent) {
+      setMediaStatus(copy.analyzingLabel, 'info')
+    }
     position()
-    // Opening the panel never invokes yt-dlp. It shows only playback sources
-    // already observed for this exact player. The explicit fallback button
-    // below still offers the existing page analyzer.
     if (typeof state.panel.focus === 'function') {
       try {
         state.panel.focus({ preventScroll: true })
@@ -2036,6 +2619,15 @@
     state.disabled = true
     state.active = false
     cancelHide()
+    clearPrefetchTimer()
+    if (state.navigationTimer) {
+      try {
+        window.clearInterval(state.navigationTimer)
+      } catch {
+        // Best effort.
+      }
+      state.navigationTimer = 0
+    }
     if (state.mutationObserver) state.mutationObserver.disconnect()
     if (state.resizeObserver) state.resizeObserver.disconnect()
     if (
@@ -2193,19 +2785,32 @@
     return true
   }
 
+  function handleSpaNavigation() {
+    if (!maybeResetCaptureForNavigation()) {
+      syncFloatingTrigger()
+      schedulePrefetch()
+    }
+  }
+
   function installListeners() {
     on(document, 'pointerover', handlePointerOver, true)
     on(document, 'pointerout', handlePointerOut, true)
     on(document, 'pointerdown', handleDocumentPointerDown, true)
     on(document, 'fullscreenchange', handleFullscreenChange, true)
-    on(window, 'popstate', function () {
-      maybeResetCaptureForNavigation()
-    })
-    on(window, 'hashchange', function () {
-      maybeResetCaptureForNavigation()
-    })
-    on(window, 'pageshow', function () {
-      maybeResetCaptureForNavigation()
+    on(window, 'popstate', handleSpaNavigation)
+    on(window, 'hashchange', handleSpaNavigation)
+    on(window, 'pageshow', handleSpaNavigation)
+    // YouTube and similar SPA players reuse the same <video> element and only
+    // change the URL. These events reset the icon/source/analysis state for the
+    // new page without a reload.
+    on(document, 'yt-navigate-finish', handleSpaNavigation)
+    on(window, 'yt-navigate-finish', handleSpaNavigation)
+    on(document, 'yt-page-data-updated', handleSpaNavigation)
+    on(document, 'visibilitychange', function () {
+      if (!document.hidden) {
+        syncFloatingTrigger()
+        schedulePrefetch()
+      }
     })
     on(window, 'scroll', scheduleReposition, { capture: true, passive: true })
     on(window, 'resize', scheduleReposition, { passive: true })
@@ -2213,12 +2818,26 @@
       on(window.visualViewport, 'resize', scheduleReposition, { passive: true })
       on(window.visualViewport, 'scroll', scheduleReposition, { passive: true })
     }
+    // Content scripts cannot observe the page's own history.pushState calls
+    // across the isolated world. A cheap URL check catches those SPA moves even
+    // when no event reaches this script.
+    if (typeof window.setInterval === 'function') {
+      state.navigationTimer = window.setInterval(function () {
+        maybeResetCaptureForNavigation()
+      }, 500)
+      state.cleanup.push(function () {
+        if (state.navigationTimer) {
+          window.clearInterval(state.navigationTimer)
+          state.navigationTimer = 0
+        }
+      })
+    }
   }
 
   function querySourceList() {
     var player = playerFor(state.activeVideo)
     if (!player) {
-      var playing = largestPlayingVideo()
+      var playing = largestPlayingVideo() || largestTriggerVideo()
       player = playing ? playerFor(playing) : null
     }
     if (!player) return []
@@ -2231,6 +2850,19 @@
         current: source.current === true
       }
     })
+  }
+
+  function captureQueryResponse(streaming) {
+    return {
+      ok: true,
+      origin: location.origin,
+      url: pageUrlKey(),
+      sources: querySourceList(),
+      streaming: streaming || streamingForQuery(),
+      analysis: currentAnalysisView(),
+      status: queryAnalysisStatus(),
+      queuedOptionIds: state.media.queuedOptionIds.slice()
+    }
   }
 
   function downloadQueriedSource(url, done) {
@@ -2271,8 +2903,64 @@
         return false
       }
       if (message && message.type === 'dondownload:capture-query') {
-        respond({ ok: true, origin: location.origin, sources: querySourceList() })
+        // A streaming player seen by the popup reuses the same debounced
+        // background analysis. Opening the popup therefore never triggers a
+        // second yt-dlp run when one is already cached or in flight. An embed
+        // uses its own explicit embed analysis instead.
+        var streaming = streamingForQuery()
+        if (streaming.detected && streaming.embedded !== true) {
+          schedulePrefetch(0)
+        }
+        respond(captureQueryResponse(streaming))
         return false
+      }
+      if (message && message.type === MEDIA_PAGE_ANALYZE) {
+        if (currentAnalysisView()) {
+          respond({ ok: true, status: 'ready', analysis: currentAnalysisView() })
+          return false
+        }
+        if (state.activeEmbed) {
+          analyzeEmbeddedPage()
+          respond({ ok: true, status: 'analyzing' })
+          return false
+        }
+        if (!prefetchInFlight()) {
+          // Explicit retry from the popup. The worker still derives the URL
+          // from the trusted sender tab; the popup never supplies one.
+          startPrefetch(pageUrlKey(), {
+            force: true,
+            analyzingText: 'Finding qualities…'
+          })
+        }
+        respond({ ok: true, status: 'analyzing' })
+        return false
+      }
+      if (message && message.type === MEDIA_PAGE_QUEUE) {
+        var popupView = currentAnalysisView()
+        if (
+          !popupView ||
+          !message ||
+          message.analysisId !== popupView.analysisId ||
+          typeof message.optionId !== 'string'
+        ) {
+          respond({
+            ok: false,
+            error: {
+              code: 'MEDIA_ANALYSIS_MISMATCH',
+              message: 'That analysis is no longer current. Find qualities again.'
+            }
+          })
+          return false
+        }
+        if (optionIsQueued(message.optionId)) {
+          respond({
+            ok: false,
+            error: { code: 'MEDIA_DUPLICATE_JOB', message: 'This option is already queued.' }
+          })
+          return false
+        }
+        queueOption(message.optionId, respond)
+        return true
       }
       if (message && message.type === 'dondownload:capture-download') {
         downloadQueriedSource(message.url, respond)
