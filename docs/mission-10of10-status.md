@@ -1,7 +1,7 @@
 # DonDownload 10/10 mission checkpoint
 
-Updated: 2026-11-05. Latest implementation commit: `2796dc0`; working tree is
-clean. No push or release.
+Updated: 2026-11-05. Latest commit: see `git log`; working tree clean. No push
+or release.
 
 ## DONE
 
@@ -25,6 +25,17 @@ clean. No push or release.
   preserves the existing retry budget and partial-file recovery semantics.
 - `f69a38b` and `2796dc0`: recovery audit and its focused tests are committed.
 
+- `1c3922e`: full non-live suite had 2 failing extension tests that earlier
+  checkpoints missed. Fixed: overlay status copy names the configured shortcut;
+  site-permission guard retargeted to options.js (exact-origin invariant kept).
+  Full suite now 640 passed / 8 skipped; typecheck passes.
+- `a7d0f05`: `npm run test:extension:chromium` - real headless Chromium 156
+  (cached Playwright build, temp profile, local fixtures, raw CDP, no registry).
+  PASS: worker start, options UI + shortcut, exact-origin overlay injection,
+  MP4 capture, extensionless webRequest-evidence capture, same-player quality
+  accumulation, and no-native-host hand-off leaving the 2 MiB browser download
+  complete with matching SHA-256.
+
 ## IN PROGRESS
 
 - None. Final local status/history audit is complete.
@@ -34,9 +45,13 @@ clean. No push or release.
 - HLS/DASH, blob/MSE, cross-origin iframe capture, separate audio pairing, and
   general third-party player/site adapters: no safe representation/audio
   mapping implemented; do not present them as downloadable.
-- Actual Helium/Chromium `webRequest`, Downloads API and Native Messaging
-  integration, extension options UI in a live browser, and detection/queue
-  latency: unverified in this checkpoint.
+- Verified in real headless Chromium (not Helium): webRequest evidence,
+  Downloads API fail-safe path, options UI. Still unverified: the interactive
+  optional-permission prompt (headless has no bubble; harness pre-declares the
+  permissions), and anything needing Native Messaging - i.e. one-click queue
+  into the app and the successful hand-off path (browser cancel after durable
+  receipt). Windows Chromium finds native hosts only via the registry, which
+  this session must not modify. Detection/queue latency not measured.
 - Anonymous preflight proves public replay plus matching type/size, not
   byte-for-byte identity. The browser API exposes no body hash or request method;
   mismatch/unknown size safely leaves the browser transfer running.
@@ -45,6 +60,12 @@ clean. No push or release.
   retains at most 32 exact progressive URLs per player.
 
 ## NEXT ACTION
+
+With approval for a temporary HKCU native-host registration (removed after),
+extend scripts/e2e-extension-chromium.mjs to cover one-click queue and the
+successful hand-off path against a dev app instance with temp data dirs.
+
+Previous note:
 
 Final focused recovery verification: all five manager-recovery tests passed,
 covering runtime GID loss without retry consumption, confirmed startup GID loss,
