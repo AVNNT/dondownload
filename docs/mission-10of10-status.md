@@ -35,6 +35,18 @@ or release.
   MP4 capture, extensionless webRequest-evidence capture, same-player quality
   accumulation, and no-native-host hand-off leaving the 2 MiB browser download
   complete with matching SHA-256.
+- `84488b8`, `92d89c7`: `npm run test:extension:chromium:native` adds real
+  Native Messaging coverage against an isolated dev app (temp userData,
+  downloads, SQLite, bridge state) via a temporary
+  `HKCU\Software\Chromium\NativeMessagingHosts` key removed afterwards; the
+  Helium (`Google\Chrome`) key is only read and asserted unchanged.
+  Independently re-run: 15 PASS / 0 FAIL / 1 NOT-RUNNABLE. Covers native probe,
+  one-click overlay queue (exact URL, SHA-256 match, ~110-140 ms
+  click-to-accepted), hand-off success (browser cancelled only after durable
+  app acceptance, same bytes, no duplicate file) and hand-off refusal for an
+  auth-only resource (browser completes, nothing queued). The harness removes
+  a stale registration from a hard-killed run only when it points to its own
+  vanished temp dir. Full suite 644 passed / 8 skipped; typecheck passes.
 
 ## IN PROGRESS
 
@@ -48,10 +60,8 @@ or release.
 - Verified in real headless Chromium (not Helium): webRequest evidence,
   Downloads API fail-safe path, options UI. Still unverified: the interactive
   optional-permission prompt (headless has no bubble; harness pre-declares the
-  permissions), and anything needing Native Messaging - i.e. one-click queue
-  into the app and the successful hand-off path (browser cancel after durable
-  receipt). Windows Chromium finds native hosts only via the registry, which
-  this session must not modify. Detection/queue latency not measured.
+  permissions) and Helium itself. Native Messaging paths are now verified in
+  Chromium (see DONE).
 - Anonymous preflight proves public replay plus matching type/size, not
   byte-for-byte identity. The browser API exposes no body hash or request method;
   mismatch/unknown size safely leaves the browser transfer running.
@@ -61,14 +71,7 @@ or release.
 
 ## NEXT ACTION
 
-With approval for a temporary HKCU native-host registration (removed after),
-extend scripts/e2e-extension-chromium.mjs to cover one-click queue and the
-successful hand-off path against a dev app instance with temp data dirs.
-
-Previous note:
-
-Final focused recovery verification: all five manager-recovery tests passed,
-covering runtime GID loss without retry consumption, confirmed startup GID loss,
-aria2 unavailability and transient RPC failure preservation, and tracked GID
-recovery. Next useful verification requires a disposable supported Chromium/Helium
-environment; do not substitute the sidebar preview for those platform APIs.
+Nothing further is verifiable here without a human: the interactive "allow
+this site" prompt (headless has no permission bubble) and a manual pass in real
+Helium with a disposable profile. HLS/DASH, blob/MSE, cross-origin iframes and
+separate audio remain unsupported by design.
