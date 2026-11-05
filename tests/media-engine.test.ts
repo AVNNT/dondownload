@@ -1925,6 +1925,7 @@ describe('media engine subprocess arguments and progress', () => {
     const settlement = promise.then(() => null, error => error)
     await waitFor(() => harness.calls.some(call => call.args.includes('--format')))
     const call = downloadCall(harness.calls)
+    expect(argValue(call.args, '--max-filesize')).toBe('1024')
     const partialPath = `${outputBase(call)}.mp4.part`
     await fs.writeFile(partialPath, Buffer.alloc(1_025))
     call.child.stdout.write('DONDOWNLOAD_PROGRESS|2048|NA|NA|100|137\n')
@@ -1933,6 +1934,30 @@ describe('media engine subprocess arguments and progress', () => {
     call.child.close(1)
     expect(await settlement).toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
     await expect(fs.stat(partialPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('maps yt-dlp\'s own max-filesize refusal to the size cap and cleans staging', async () => {
+    const harness = await makeHarness({
+      download: (call) => {
+        call.child.stderr.write(
+          'ERROR: File is larger than max-filesize (2048 bytes)\n'
+        )
+        call.child.close(1)
+      }
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    await expect(
+      harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir,
+          { maxBytes: 1_024 }
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
+    expect(await fs.readdir(harness.downloadDir)).toEqual([])
   })
 
   it('refuses to mark an oversized merged final file complete', async () => {

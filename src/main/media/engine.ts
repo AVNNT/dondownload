@@ -470,6 +470,13 @@ export function looksLikeDrmError(output: string): boolean {
   return DRM_ERROR_TEXT.test(output)
 }
 
+/** yt-dlp's own `--max-filesize` refusal is the app's size-cap outcome. */
+const MAX_FILESIZE_ERROR_TEXT = /max[-\s]?filesize|larger than the (?:maximum|allowed)/i
+
+function looksLikeMaxFilesizeError(output: string): boolean {
+  return MAX_FILESIZE_ERROR_TEXT.test(output)
+}
+
 /** Durations stay private; only finite, non-negative values are retained. */
 function safeCollectionDuration(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
@@ -1958,6 +1965,7 @@ export function createMediaEngine(
       ffmpegLocation: needsFfmpeg ? toolchain.ffmpegPath : null,
       denoPath: toolchain.denoPath,
       impersonate: toolchain.impersonate,
+      maxBytes,
       ...directHeaders
     })
 
@@ -2155,6 +2163,7 @@ export function createMediaEngine(
         // formats into ...` to stdout (older releases used stderr).
         if (isMergingLine(line)) markMerging()
         if (looksLikeDrmError(line)) drmDetected = true
+        if (looksLikeMaxFilesizeError(line)) sizeCapExceeded = true
 
         const progress = parseProgressLine(line)
         if (progress !== null) {
@@ -2207,6 +2216,7 @@ export function createMediaEngine(
       const handleStderrText = (text: string): void => {
         stderrRemainder += text
         if (looksLikeDrmError(stderrRemainder)) drmDetected = true
+        if (looksLikeMaxFilesizeError(stderrRemainder)) sizeCapExceeded = true
         const lines = stderrRemainder.split(/\r?\n/)
         stderrRemainder = lines.pop() ?? ''
         for (const line of lines) {

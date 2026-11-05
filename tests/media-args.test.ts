@@ -90,6 +90,41 @@ describe('build*Args impersonation', () => {
   })
 })
 
+describe('buildDownloadArgs size cap', () => {
+  it('passes the per-job byte cap to yt-dlp', () => {
+    const download = buildDownloadArgs({
+      sourceUrl,
+      formatSelector: '22',
+      outputTemplate: 'video.%(ext)s',
+      mergeOutputFormat: null,
+      remuxOutputFormat: null,
+      ffmpegLocation: null,
+      maxBytes: 30 * 1024 * 1024
+    })
+    expect(download[download.indexOf('--max-filesize') + 1]).toBe(
+      String(30 * 1024 * 1024)
+    )
+  })
+
+  it('does not emit a cap when the job is unlimited or the value is invalid', () => {
+    const base = {
+      sourceUrl,
+      formatSelector: '22',
+      outputTemplate: 'video.%(ext)s',
+      mergeOutputFormat: null,
+      remuxOutputFormat: null,
+      ffmpegLocation: null
+    }
+    expect(buildDownloadArgs(base)).not.toContain('--max-filesize')
+    expect(buildDownloadArgs({ ...base, maxBytes: null })).not.toContain(
+      '--max-filesize'
+    )
+    expect(buildDownloadArgs({ ...base, maxBytes: -1 })).not.toContain(
+      '--max-filesize'
+    )
+  })
+})
+
 describe('parseProgressLine', () => {
   it('parses byte totals, estimates and fragment position', () => {
     expect(

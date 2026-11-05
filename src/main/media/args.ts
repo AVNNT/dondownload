@@ -126,6 +126,8 @@ export interface DownloadArgumentInput {
   cookie?: string
   /** Verified curl_cffi Chrome impersonation support for this yt-dlp build. */
   impersonate?: boolean
+  /** Per-job output cap; yt-dlp refuses a known larger file up front. */
+  maxBytes?: number | null
 }
 
 /**
@@ -165,6 +167,18 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
     ),
     input.denoPath
   )
+
+  if (
+    input.maxBytes !== undefined &&
+    input.maxBytes !== null &&
+    Number.isSafeInteger(input.maxBytes) &&
+    input.maxBytes > 0
+  ) {
+    // The engine also watches summed progress bytes, because yt-dlp applies
+    // this limit per stream and merged video+audio can exceed a single-file
+    // limit. This flag still stops a known oversized format before transfer.
+    args.push('--max-filesize', String(input.maxBytes))
+  }
 
   if (input.mergeOutputFormat !== null) {
     // FFmpeg is still used for the merge itself; HLS stays on yt-dlp's native
