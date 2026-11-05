@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
   DEFAULT_MAX_CONCURRENT_DOWNLOADS,
-  DEFAULT_PER_HOST_CONNECTIONS
+  DEFAULT_PER_HOST_CONNECTIONS,
+  MAX_PER_HOST_CONNECTIONS
 } from '../src/shared/settings'
 import { buildAria2Args } from '../src/main/aria2/args'
 
@@ -45,6 +46,18 @@ describe('buildAria2Args', () => {
     )
     expect(args).toContain(
       `--max-overall-download-limit=${DEFAULT_GLOBAL_SPEED_LIMIT_BPS}`
+    )
+  })
+
+  it('keeps the split ceiling above every configurable per-host limit', () => {
+    const args = buildAria2Args({ port: 1, secret: 's', downloadDir: 'D:\\x' })
+    const split = args.find((arg) => arg.startsWith('--split='))
+
+    // aria2 clamps split to the live max-connection-per-server value. The
+    // launch value must not cap a persisted per-host setting above 8.
+    expect(split).toBe(`--split=${MAX_PER_HOST_CONNECTIONS}`)
+    expect(MAX_PER_HOST_CONNECTIONS).toBeGreaterThanOrEqual(
+      DEFAULT_PER_HOST_CONNECTIONS
     )
   })
 })

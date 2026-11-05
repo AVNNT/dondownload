@@ -1,7 +1,8 @@
 import {
   DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
   DEFAULT_MAX_CONCURRENT_DOWNLOADS,
-  DEFAULT_PER_HOST_CONNECTIONS
+  DEFAULT_PER_HOST_CONNECTIONS,
+  MAX_PER_HOST_CONNECTIONS
 } from '@shared/settings'
 
 export interface Aria2LaunchConfig {
@@ -28,7 +29,11 @@ export function buildAria2Args(config: Aria2LaunchConfig): string[] {
     '--max-concurrent-downloads=' + DEFAULT_MAX_CONCURRENT_DOWNLOADS,
     '--max-connection-per-server=' + DEFAULT_PER_HOST_CONNECTIONS,
     '--max-overall-download-limit=' + DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
-    '--split=8',
+    // aria2 caps the requested split at the live --max-connection-per-server
+    // value. Keep the launch ceiling at the largest configurable per-host
+    // value so a persisted setting above 8 is not silently capped here; the
+    // live setting (default 4) remains the actual politeness bound.
+    '--split=' + MAX_PER_HOST_CONNECTIONS,
     '--min-split-size=1M',
     '--file-allocation=none',
     '--allow-overwrite=false',
