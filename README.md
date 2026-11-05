@@ -449,10 +449,13 @@ video capture have not been verified for this checkpoint.
   `docs/media-capture-progressive.md` for the evidence limits.
 - **Cookies are off by default for every site.** The options page has a
   per-exact-origin opt-in that also requests the optional `cookies` permission.
-  Only then does the worker read that site's cookies for the detected media URL
-  and attach a `Cookie` header to one download job. The app passes it to aria2
-  or yt-dlp for that job only and never persists or logs it. Leaving the toggle
-  off means no cookie is ever read.
+  Only then does the worker read that site's cookies: for the detected media URL
+  when a detected item is queued, and for the page (or its embedded player) when
+  the overlay analyzes the page or queues a yt-dlp quality. The app passes the
+  header to aria2 or converts it to a short-lived Netscape file for exactly one
+  yt-dlp child, then deletes it; it is never persisted or logged. The cookie
+  choice is part of the analysis identity, so analyze and queue must agree.
+  Leaving the toggle off means no cookie is ever read.
 
 **Tradeoff:** Chromium's optional-permission model cannot declare "any exact
 origin the user might choose later" without declaring broad optional patterns
