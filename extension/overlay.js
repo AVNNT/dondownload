@@ -17,6 +17,7 @@
     : core.unavailableState()
 
   var MEDIA_ANALYZE = 'dondownload:media-analyze'
+  var MEDIA_ANALYZE_EMBED = 'dondownload:media-analyze-embed'
   var MEDIA_QUEUE = 'dondownload:media-queue'
   var CAPTURE_QUEUE = 'dondownload:capture-queue'
   var NETWORK_EVIDENCE_REQUEST = 'dondownload:network-evidence-request'
@@ -31,6 +32,7 @@
     trigger: null,
     panel: null,
     analyzeButton: null,
+    embedAnalyzeButton: null,
     sourceSection: null,
     sourceList: null,
     sourceEmpty: null,
@@ -49,6 +51,7 @@
     disableButton: null,
     status: null,
     activeVideo: null,
+    activeEmbed: null,
     panelOpen: false,
     hideTimer: 0,
     repositionPending: false,
@@ -307,6 +310,44 @@
     return core.evaluateVideoCandidate(candidateFor(video), viewport())
   }
 
+  function iframeCandidateFor(iframe) {
+    return {
+      tagName: iframe.tagName,
+      isConnected: iframe.isConnected,
+      hidden: iframe.hidden,
+      src: iframe.src,
+      rect: iframe.getBoundingClientRect(),
+      styles: readStyles(iframe)
+    }
+  }
+
+  function usableEmbed(iframe) {
+    return core.evaluateIframeCandidate(iframeCandidateFor(iframe), viewport())
+  }
+
+  function largestUsableEmbed() {
+    if (typeof document.querySelectorAll !== 'function') return null
+    var frames = document.querySelectorAll('iframe')
+    var best = null
+    var bestArea = 0
+    for (var index = 0; index < frames.length; index += 1) {
+      var frame = frames[index]
+      var result = usableEmbed(frame)
+      if (!result.usable) continue
+      var rect = frame.getBoundingClientRect()
+      var area = rect.width * rect.height
+      if (area > bestArea) {
+        bestArea = area
+        best = frame
+      }
+    }
+    return best
+  }
+
+  function hasPlayingTopFrameVideo() {
+    return largestPlayingVideo() !== null
+  }
+
   function eventPath(event) {
     if (event && typeof event.composedPath === 'function') {
       var path = event.composedPath()
@@ -360,6 +401,14 @@
 
     var analyzeButton = createElement('button', 'action', copy.actionLabel)
     analyzeButton.type = 'button'
+
+    var embedAnalyzeButton = createElement(
+      'button',
+      'action secondary embed-analyze',
+      copy.embedActionLabel || 'Find qualities for embedded video'
+    )
+    embedAnalyzeButton.type = 'button'
+    embedAnalyzeButton.hidden = true
 
     var sourceSection = createElement('section', 'sources')
     sourceSection.appendChild(createElement('p', 'sources-title', 'Detected from playback'))
@@ -467,6 +516,7 @@
     panel.appendChild(panelDetail)
     panel.appendChild(sourceSection)
     panel.appendChild(analyzeButton)
+    panel.appendChild(embedAnalyzeButton)
     panel.appendChild(mediaResults)
     panel.appendChild(options)
     panel.appendChild(status)
@@ -492,6 +542,7 @@
     state.sourceList = sourceList
     state.sourceEmpty = sourceEmpty
     state.analyzeButton = analyzeButton
+    state.embedAnalyzeButton = embedAnalyzeButton
     state.mediaResults = mediaResults
     state.mediaTitle = mediaTitle
     state.mediaMeta = mediaMeta
@@ -538,6 +589,10 @@
     on(analyzeButton, 'click', function (event) {
       stopPlayerEvent(event)
       analyzePage()
+    })
+    on(embedAnalyzeButton, 'click', function (event) {
+      stopPlayerEvent(event)
+      analyzeEmbeddedPage()
     })
     on(bestVideoButton, 'click', function (event) {
       stopPlayerEvent(event)
@@ -803,6 +858,7 @@
     state.capture.rowCleanups = []
     state.capture.queueing = false
     state.triggerOffset = null
+    state.activeEmbed = null
     // A fallback analysis also belongs to the previous document/page. Clear it
     // so its opaque option IDs can never be applied to a new SPA page.
     state.media.token += 1
@@ -813,6 +869,10 @@
       state.analyzeButton.hidden = true
       state.analyzeButton.textContent = copy.actionLabel
       state.analyzeButton.disabled = false
+    }
+    if (state.embedAnalyzeButton) {
+      state.embedAnalyzeButton.hidden = true
+      state.embedAnalyzeButton.disabled = false
     }
     setMediaStatus('', '')
     hideNow()
@@ -1079,7 +1139,7 @@
       unsupportedRow.setAttribute('data-unsupported', 'true')
       var unsupportedCopy = createElement('span', 'source-copy')
       unsupportedCopy.appendChild(
-        createElement('span', 'source-title', 'Unsupported playback source')
+        createElement('span', 'source-title', 'Streaming playback source')
       )
       unsupportedCopy.appendChild(
         createElement('span', 'source-detail', unsupported.message)
@@ -1090,6 +1150,27 @@
 
     if (state.sourceEmpty) {
       state.sourceEmpty.hidden = sources.length > 0 || unsupported !== null
+      state.sourceEmpty.textContent = state.activeEmbed
+        ? 'No top-frame video is playing. Find qualities for the embedded player below.'
+        : 'No progressive playback detected yet. Start playing this video, or find verified qualities if it uses HLS, DASH or Media Source.'
+    }
+
+    // Progressive captured sources stay first and keep one-click download.
+    // Analysis is offered only when no exact progressive source is available
+    // for this player (blob/MSE, HLS/DASH or no playback yet).
+    var offerAnalysis =
+      !state.media.analysis &&
+      state.media.status !== 'analyzing' &&
+      core.shouldOfferPageAnalysis(sources, unsupported)
+    if (state.analyzeButton) {
+      state.analyzeButton.hidden = !offerAnalysis || Boolean(state.activeEmbed)
+    }
+    if (state.embedAnalyzeButton) {
+      state.embedAnalyzeButton.hidden =
+        !state.activeEmbed ||
+        state.media.status === 'analyzing' ||
+        Boolean(state.media.analysis) ||
+        hasPlayingTopFrameVideo()
     }
     setCaptureBusy(state.capture.queueing)
   }
@@ -1296,7 +1377,20 @@
   function setMediaBusy(busy) {
     if (state.panel) state.panel.setAttribute('aria-busy', busy ? 'true' : 'false')
     if (state.analyzeButton) state.analyzeButton.disabled = busy
+    if (state.embedAnalyzeButton) state.embedAnalyzeButton.disabled = busy
     if (state.outputFormatSelect) state.outputFormatSelect.disabled = busy
+    ;[state.qualityList, state.advancedQualityList].forEach(function (list) {
+      if (!list) return
+      for (var index = 0; index < list.children.length; index += 1) {
+        var row = list.children[index]
+        for (var childIndex = 0; childIndex < row.children.length; childIndex += 1) {
+          var child = row.children[childIndex]
+          if (child && child.className === 'source-action quality-queue') {
+            child.disabled = busy
+          }
+        }
+      }
+    })
     if (state.bestVideoButton) state.bestVideoButton.disabled = busy
     if (state.bestAudioButton) state.bestAudioButton.disabled = busy
     if (state.queueSelectedButton) {
@@ -1332,7 +1426,7 @@
           : view.options[0].optionId
     state.media.selectedOptionId = initialId
 
-    function appendOption(list, option, displayLabel, includeDetails, radioName) {
+    function appendOption(list, option, displayLabel, includeDetails, radioName, directQueue) {
       var label = createElement('label', 'quality-option')
       var input = createElement('input', 'quality-input')
       input.type = 'radio'
@@ -1356,6 +1450,23 @@
       input.mediaSizeNode = sizeNode
       copyNode.appendChild(sizeNode)
       label.appendChild(copyNode)
+
+      if (directQueue) {
+        // One click queues exactly this verified option; the radio row remains
+        // available for the advanced format picker below.
+        var queueButton = createElement('button', 'source-action quality-queue', 'Download')
+        queueButton.type = 'button'
+        queueButton.disabled = state.media.status === 'queueing'
+        var queueClick = function (event) {
+          stopPlayerEvent(event)
+          queueOption(option.optionId)
+        }
+        if (typeof queueButton.addEventListener === 'function') {
+          queueButton.addEventListener('click', queueClick)
+        }
+        label.appendChild(queueButton)
+      }
+
       list.appendChild(label)
       bindQualityOption(input, option)
     }
@@ -1365,8 +1476,9 @@
         state.qualityList,
         choice.option,
         choice.label,
-        false,
-        'dondownload-simple-quality'
+        true,
+        'dondownload-simple-quality',
+        true
       )
     })
 
@@ -1399,6 +1511,7 @@
   function renderAnalysis(view) {
     state.media.analysis = view
     if (state.analyzeButton) state.analyzeButton.hidden = true
+    if (state.embedAnalyzeButton) state.embedAnalyzeButton.hidden = true
     if (!state.mediaResults) return
     state.mediaResults.hidden = false
     if (state.mediaTitle) state.mediaTitle.textContent = view.title
@@ -1442,7 +1555,33 @@
   }
 
   function analyzePage() {
-    if (state.disabled || !state.analyzeButton) return
+    // The worker derives the analyzed URL from the trusted sender tab. The
+    // content script never supplies a blob:, manifest, segment, cookie or
+    // header value here.
+    runAnalysis({ type: MEDIA_ANALYZE }, 'Analyzing this page…')
+  }
+
+  function analyzeEmbeddedPage() {
+    if (!state.activeEmbed) return
+    var result = usableEmbed(state.activeEmbed)
+    if (!result.usable) {
+      setMediaStatus(
+        'That embedded player is no longer usable. Reload the page and try again.',
+        'error'
+      )
+      return
+    }
+    // A separate analyze request for the visible top-frame embed src. It is
+    // still authorized by the exact-origin sender check and the desktop app
+    // revalidates the public target before yt-dlp runs.
+    runAnalysis(
+      { type: MEDIA_ANALYZE_EMBED, embedUrl: result.url },
+      'Analyzing embedded video…'
+    )
+  }
+
+  function runAnalysis(message, analyzingText) {
+    if (state.disabled) return
     if (
       state.media.status === 'analyzing' ||
       state.media.status === 'queueing' ||
@@ -1455,14 +1594,23 @@
     var token = ++state.media.token
     state.media.status = 'analyzing'
     resetMediaResults()
-    state.analyzeButton.hidden = false
-    state.analyzeButton.textContent = copy.analyzingLabel
+    if (state.analyzeButton) {
+      state.analyzeButton.hidden = Boolean(state.activeEmbed)
+      state.analyzeButton.textContent = copy.analyzingLabel
+    }
+    if (state.embedAnalyzeButton) {
+      state.embedAnalyzeButton.hidden = !state.activeEmbed
+      state.embedAnalyzeButton.textContent = copy.analyzingLabel
+    }
     setMediaBusy(true)
-    setMediaStatus('Analyzing this page…', 'info')
+    setMediaStatus(analyzingText || 'Analyzing…', 'info')
 
-    sendRuntimeMessage({ type: MEDIA_ANALYZE }, function (response, runtimeError) {
+    sendRuntimeMessage(message, function (response, runtimeError) {
       if (token !== state.media.token || state.disabled) return
-      state.analyzeButton.textContent = copy.actionLabel
+      if (state.analyzeButton) state.analyzeButton.textContent = copy.actionLabel
+      if (state.embedAnalyzeButton) {
+        state.embedAnalyzeButton.textContent = copy.embedActionLabel
+      }
       setMediaBusy(false)
 
       if (runtimeError) {
@@ -1471,6 +1619,7 @@
           'The DonDownload background worker did not respond. Reload this page, then try again.',
           'error'
         )
+        renderCapturedSources()
         return
       }
       if (!response || response.ok !== true || !response.analysis) {
@@ -1482,6 +1631,7 @@
           ),
           'error'
         )
+        renderCapturedSources()
         return
       }
 
@@ -1489,6 +1639,7 @@
       if (!view) {
         state.media.status = 'error'
         setMediaStatus('The analysis response was not valid. Try again.', 'error')
+        renderCapturedSources()
         return
       }
 
@@ -1505,15 +1656,35 @@
     return null
   }
 
+  function isStaleAnalysisError(error) {
+    var code = error && typeof error.code === 'string' ? error.code : ''
+    return (
+      code === 'MEDIA_ANALYSIS_EXPIRED' ||
+      code === 'MEDIA_ANALYSIS_NOT_FOUND' ||
+      code === 'MEDIA_ANALYSIS_MISMATCH' ||
+      code === 'MEDIA_OPTION_INVALID' ||
+      code === 'INVALID_MEDIA_OPTION'
+    )
+  }
+
   function queueOption(optionId) {
     if (state.disabled || state.media.status === 'analyzing') return
     if (state.media.status === 'queueing') return
     if (!state.media.analysis) return
 
     var analysis = state.media.analysis
-    var option = optionById(analysis, optionId)
+    // Pin the exact verified option the user picked. A missing identifier is a
+    // hard error; never fall back to the best/last option.
+    var option = core.optionById(analysis, optionId)
     if (!option) {
-      setMediaStatus('The selected option is not available. Analyze the page again.', 'error')
+      state.media.status = 'error'
+      setMediaStatus(
+        core.describeMediaError(
+          { code: 'MEDIA_OPTION_INVALID', message: 'The selected option is not available.' },
+          'The selected option is not available. Analyze this page again.'
+        ),
+        'error'
+      )
       return
     }
 
@@ -1553,6 +1724,12 @@
             ),
             'error'
           )
+          // An expired or no-longer-valid pinned option is never replaced by
+          // another quality. Clear the stale choice and offer a fresh analysis.
+          if (isStaleAnalysisError(response && response.error)) {
+            resetMediaResults()
+            renderCapturedSources()
+          }
           return
         }
 
@@ -1594,9 +1771,44 @@
     }
 
     if (state.activeVideo && state.activeVideo !== video) closePanel(false)
+    if (state.activeEmbed) closePanel(false)
+    state.activeEmbed = null
     state.activeVideo = video
     observePlayer(video)
     observeVideoSize(video)
+    renderCapturedSources()
+    cancelHide()
+    state.host.hidden = false
+    state.trigger.hidden = false
+    position()
+  }
+
+  /**
+   * Show the overlay for a visible top-frame embed. This never injects into the
+   * iframe: only its rectangle and http(s) src are read so the worker can run
+   * the existing page analysis against that embed URL as a separate request.
+   */
+  function showForEmbed(iframe) {
+    if (state.disabled || !iframe) return
+    ensureUi()
+    if (!state.host) return
+    if (!usableEmbed(iframe).usable) return
+    if (hasPlayingTopFrameVideo()) return
+
+    if (state.activeVideo || (state.activeEmbed && state.activeEmbed !== iframe)) {
+      closePanel(false)
+    }
+    // An analysis belongs to the previously attached player/page target. Never
+    // let its opaque options be queued for a different embed.
+    if (state.media.analysis || state.media.status === 'analyzing') {
+      state.media.token += 1
+      state.media.queueToken += 1
+      state.media.status = 'idle'
+      resetMediaResults()
+    }
+    state.activeVideo = null
+    state.activeEmbed = iframe
+    observeVideoSize(iframe)
     renderCapturedSources()
     cancelHide()
     state.host.hidden = false
@@ -1608,6 +1820,7 @@
     cancelHide()
     if (state.panelOpen) closePanel(false)
     state.activeVideo = null
+    state.activeEmbed = null
     if (state.resizeObserver) state.resizeObserver.disconnect()
     if (state.trigger) state.trigger.hidden = true
     if (state.host) state.host.hidden = true
@@ -1657,17 +1870,18 @@
   }
 
   function position() {
-    if (state.disabled || !state.activeVideo || !state.trigger || state.trigger.hidden) {
+    var target = state.activeVideo || state.activeEmbed
+    if (state.disabled || !target || !state.trigger || state.trigger.hidden) {
       return
     }
 
-    var result = usable(state.activeVideo)
+    var result = state.activeVideo ? usable(state.activeVideo) : usableEmbed(target)
     if (!result.usable) {
       hideNow()
       return
     }
 
-    var rect = state.activeVideo.getBoundingClientRect()
+    var rect = target.getBoundingClientRect()
     var triggerRect
     if (
       state.triggerOffset &&
@@ -1735,6 +1949,17 @@
       pruneDisconnectedPlayers()
       installSourceObservers()
       syncFloatingTrigger()
+      if (state.activeEmbed) {
+        if (
+          state.activeEmbed.isConnected === false ||
+          !usableEmbed(state.activeEmbed).usable
+        ) {
+          hideNow()
+          return
+        }
+        scheduleReposition()
+        return
+      }
       if (!state.activeVideo) return
       var next = core.nextActiveVideo(state.activeVideo)
       if (!next) {
@@ -1842,6 +2067,7 @@
     }
     state.cleanup = []
     state.activeVideo = null
+    state.activeEmbed = null
     state.panelOpen = false
     releaseCapturePlayers()
     state.capture.players = []
@@ -1860,6 +2086,7 @@
     state.sourceList = null
     state.sourceEmpty = null
     state.analyzeButton = null
+    state.embedAnalyzeButton = null
     state.mediaResults = null
     state.mediaTitle = null
     state.mediaMeta = null
@@ -1885,19 +2112,40 @@
       cancelHide()
       return
     }
-    var video = core.findVideoInPath(eventPath(event))
-    if (!video) return
-    if (video === state.activeVideo) {
+    var path = eventPath(event)
+    var video = core.findVideoInPath(path)
+    if (video) {
+      if (video === state.activeVideo) {
+        cancelHide()
+        return
+      }
+      showFor(video)
+      return
+    }
+
+    var iframe = core.findIframeInPath(path)
+    if (!iframe) return
+    if (iframe === state.activeEmbed) {
       cancelHide()
       return
     }
-    showFor(video)
+    // Embedded players are only offered when no top-frame video is playing.
+    if (hasPlayingTopFrameVideo()) return
+    if (usableEmbed(iframe).usable) showForEmbed(iframe)
   }
 
   function handlePointerOut(event) {
-    if (state.disabled || !state.activeVideo) return
-    var video = core.findVideoInPath(eventPath(event))
-    if (video !== state.activeVideo) return
+    if (state.disabled) return
+    var path = eventPath(event)
+    if (state.activeEmbed) {
+      var iframe = core.findIframeInPath(path)
+      if (iframe !== state.activeEmbed) return
+    } else if (state.activeVideo) {
+      var video = core.findVideoInPath(path)
+      if (video !== state.activeVideo) return
+    } else {
+      return
+    }
     var related = event.relatedTarget
     if (related && state.host && (related === state.host || state.host.contains(related))) {
       cancelHide()
@@ -1930,8 +2178,16 @@
         : null) ||
       largestPlayingVideo() ||
       largestUsableVideo()
-    if (!video) return false
-    showFor(video)
+    if (video) {
+      showFor(video)
+    } else {
+      var iframe =
+        (state.activeEmbed && usableEmbed(state.activeEmbed).usable
+          ? state.activeEmbed
+          : null) || largestUsableEmbed()
+      if (!iframe) return false
+      showForEmbed(iframe)
+    }
     openPanel()
     if (state.trigger) state.trigger.focus()
     return true

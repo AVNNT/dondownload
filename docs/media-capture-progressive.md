@@ -16,15 +16,32 @@ was performed for this note.
   a replay of an earlier URL becomes current again without a duplicate row, and
   SPA/`popstate`/`hashchange`/`pageshow` navigation clears the previous page's
   sources.
-- `blob:` playback (Media Source / likely segmented or encrypted) and HLS/DASH
-  manifests are shown as explicitly unsupported. They are never guessed into a
-  file, and segment URLs are not mixed across players.
+- `blob:` playback (Media Source) and HLS/DASH manifests are no longer dead
+  ends. They are never guessed into a file, and segment URLs are not mixed
+  across players. When the attached player has no verified progressive source
+  (or its current source is blob/MSE or a manifest), the panel shows `Find
+  qualities with DonDownload`.
+- That action sends the **top page URL** through the existing media analyze
+  bridge (`dondownload:media-analyze`). The content script still supplies no
+  URL at all: the worker derives it from the trusted `sender.tab.url` after the
+  exact-origin registration, tab association and permission checks. The desktop
+  app runs its existing yt-dlp analysis and public-target validation. blob,
+  manifest, segment, cookie and header values never leave the page.
+- The response is rendered in the overlay as verified options with resolution,
+  container, reported size (or `Size unknown`) and whether the streams are
+  merged. A direct Download action on an option queues exactly that opaque
+  `analysisId` + `optionId` pair. Progressive captured sources stay first and
+  keep their existing one-click behaviour.
+- Visible top-frame `<iframe>` players are detected from the top frame only
+  (large enough, connected, visible, `http(s)` src) when no top-frame video is
+  playing. The panel offers `Find qualities for embedded video`, which sends
+  that embed src as a separate `dondownload:media-analyze-embed` request. No
+  script is injected into the sub-frame, no new permission is requested, and
+  the desktop app still applies its public-target validation.
 - The panel is detected-source-first and compact: one row per verified source
   with one Download action. It closes after a successful queue and the player
-  button briefly shows `OK`. Opening the panel no longer runs yt-dlp.
-- The previous page analyzer remains as an explicit `Analyze page with yt-dlp
-  (fallback)` action. It is not used to populate the captured-source list and is
-  not run on hover, injection or panel open.
+  button briefly shows `OK`. Opening the panel no longer runs yt-dlp; only the
+  explicit analysis action does.
 - A detected source is queued through the existing native messaging host and
   the authenticated loopback bridge. The new
   `/queue-captured-source` route revalidates the public target and calls the
@@ -38,20 +55,24 @@ was performed for this note.
 
 ## Deliberate limits and deferred work
 
-- HLS/DASH support is deferred. A manifest is accepted only as an explicit
-  unsupported state until a representation/audio mapping can be proven safely.
-- No permission opt-in UI was added in this checkpoint. Observation runs only
-  inside the already user-approved exact-origin content script; no new host
-  permission, `webRequest`, `tabs`, cookies, downloads API or broad grant was
-  added.
+- DRM-protected media remains unsupported. Analysis only reports what yt-dlp
+  can verify; it is never used to bypass DRM, access restrictions or a paywall.
+- Analysis is an explicit user action and is pinned to the returned opaque
+  option identifiers. If the analysis expires or the option no longer
+  validates, the overlay shows the existing `Analyze this page again` message
+  and never substitutes another quality.
+- No permission opt-in UI was added. Observation runs only inside the already
+  user-approved exact-origin content script; no new host permission,
+  `webRequest`, `tabs`, cookies, downloads API or broad grant was added. Embed
+  detection reads only the iframe rectangle and `src` from the top frame; it
+  never injects into or reads a sub-frame document.
 - Automatic browser handoff, capture options and keyboard shortcuts are
   implemented in the following checkpoint; see `automatic-browser-handoff.md`.
   This note remains the record of the currentSrc-only overlay checkpoint.
-- Quality/resolution labels are not inferred. A progressive URL may be replaced
-  by the player on a quality switch; each exact URL remains a separate row and
-  the current one is marked. No 1080p/720p label is invented.
-- Cross-origin iframe videos remain out of scope because the overlay is
-  top-frame only.
+- Quality/resolution labels are not inferred from dimensions. A progressive URL
+  may be replaced by the player on a quality switch; each exact URL remains a
+  separate row and the current one is marked. yt-dlp's verified labels are the
+  only source of resolution names in the analysis list.
 
 ## Fixture verification
 
@@ -60,7 +81,10 @@ Focused tests:
 | Scenario | Result |
 | --- | --- |
 | Source identity accumulation, quality switch/dedupe/current, per-player isolation, navigation reset | extension overlay harness passed |
-| Blob/MSE and manifest rejection with no invented download action | extension overlay harness passed |
+| Blob/MSE and manifest states offer explicit analysis with no invented download action | extension overlay harness passed |
+| Verified analysis options show resolution/container/size/merge and queue the exact pinned option | extension overlay harness passed |
+| Expired pinned analysis surfaces Analyze this page again without substitution | extension overlay harness passed |
+| Visible top-frame embed detection thresholds and separate embed analyze request | extension overlay and media-bridge harnesses passed |
 | One-click captured queue message with exact URL/filename and subtle close feedback | extension overlay harness passed |
 | Exact-origin authorization and native envelope for the captured source | `extension-media-bridge` and `extension-bridge` passed |
 | Authenticated loopback route, public-target rejection, duplicate and body limits | `native-bridge` passed |

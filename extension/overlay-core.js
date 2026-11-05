@@ -14,6 +14,10 @@
   var PANEL_GAP = 6
   var MIN_VIDEO_WIDTH = 120
   var MIN_VIDEO_HEIGHT = 68
+  // An embedded player must be large enough to be an intentional video
+  // surface, not a tracking pixel, social widget or ad slot.
+  var MIN_IFRAME_WIDTH = 240
+  var MIN_IFRAME_HEIGHT = 135
   var PANEL_WIDTH = 292
   var PANEL_HEIGHT_ESTIMATE = 258
   var SHORTCUT_LABEL = 'chrome://extensions/shortcuts'
@@ -105,6 +109,85 @@
       if (node && String(node.tagName || '').toUpperCase() === 'VIDEO') return node
     }
     return null
+  }
+
+  /** Find the nearest IFRAME in an event path (supports open shadow roots). */
+  function findIframeInPath(path) {
+    if (!Array.isArray(path)) return null
+    for (var index = 0; index < path.length; index += 1) {
+      var node = path[index]
+      if (node && String(node.tagName || '').toUpperCase() === 'IFRAME') return node
+    }
+    return null
+  }
+
+  /**
+   * Decide whether a top-frame IFRAME looks like a visible embedded video
+   * player. The frame itself is only inspected from the top frame; nothing is
+   * injected into it and no cross-origin document is read.
+   */
+  function evaluateIframeCandidate(candidate, viewport) {
+    var view = validViewport(viewport)
+    if (!view) return { usable: false, reason: 'no-viewport' }
+    if (!candidate || typeof candidate !== 'object') {
+      return { usable: false, reason: 'no-element' }
+    }
+    if (String(candidate.tagName || '').toUpperCase() !== 'IFRAME') {
+      return { usable: false, reason: 'not-iframe' }
+    }
+    if (candidate.isConnected === false) {
+      return { usable: false, reason: 'disconnected' }
+    }
+    if (candidate.hidden === true) return { usable: false, reason: 'hidden' }
+
+    var styles = candidate.styles
+    if (styles && typeof styles === 'object') {
+      if (styles.display === 'none') return { usable: false, reason: 'display-none' }
+      if (styles.visibility === 'hidden' || styles.visibility === 'collapse') {
+        return { usable: false, reason: 'visibility-hidden' }
+      }
+      if (typeof styles.opacity === 'string' && Number(styles.opacity) === 0) {
+        return { usable: false, reason: 'transparent' }
+      }
+    }
+
+    var url = normalizeCapturedSourceUrl(candidate.src)
+    if (url === null) return { usable: false, reason: 'invalid-src' }
+
+    var rect = candidate.rect
+    if (!rect || typeof rect !== 'object') return { usable: false, reason: 'no-rect' }
+
+    var left = rect.left
+    var top = rect.top
+    var width = rect.width
+    var height = rect.height
+    if (![left, top, width, height].every(isFiniteNumber)) {
+      return { usable: false, reason: 'invalid-rect' }
+    }
+    if (width < MIN_IFRAME_WIDTH || height < MIN_IFRAME_HEIGHT) {
+      return { usable: false, reason: 'too-small' }
+    }
+
+    var right = left + width
+    var bottom = top + height
+    var overlapsViewport =
+      right > EDGE_INSET &&
+      bottom > EDGE_INSET &&
+      left < view.width - EDGE_INSET &&
+      top < view.height - EDGE_INSET
+    if (!overlapsViewport) return { usable: false, reason: 'offscreen' }
+
+    return {
+      usable: true,
+      reason: 'ok',
+      url: url,
+      visibleRect: {
+        left: Math.max(left, 0),
+        top: Math.max(top, 0),
+        right: Math.min(right, view.width),
+        bottom: Math.min(bottom, view.height)
+      }
+    }
   }
 
   function clamp(value, minimum, maximum) {
@@ -273,7 +356,7 @@
         kind: 'unsupported',
         code: 'SEGMENTED_MEDIA',
         message:
-          'This player uses segmented or encrypted Media Source playback. DonDownload cannot map it to one exact file.'
+          'This player uses Media Source playback. Find qualities with DonDownload to analyze the page and choose a verified format.'
       }
     }
 
@@ -292,7 +375,7 @@
         kind: 'unsupported',
         code: 'MANIFEST_STREAM',
         message:
-          'This HLS or DASH stream needs an explicit resolver. It is not queued as a guessed file.'
+          'This HLS or DASH stream is handled by analysis. Find qualities with DonDownload to choose a verified format.'
       }
     }
     if (extension !== null && PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1) {
@@ -300,7 +383,7 @@
         kind: 'unsupported',
         code: 'NOT_PROGRESSIVE',
         message:
-          'This source is not a recognized progressive MP4 or WebM file, so no download was guessed.'
+          'This source is not a recognized progressive MP4 or WebM file. Find qualities with DonDownload to analyze the page instead.'
       }
     }
 
@@ -470,6 +553,17 @@
       if (sources[index] && sources[index].current === true) return sources[index]
     }
     return sources[0] || null
+  }
+
+  /**
+   * The explicit analysis action is offered exactly when there is no verified
+   * progressive source for the attached player (blob/MSE, a manifest or no
+   * playback at all). Progressive sources always stay first and keep their
+   * one-click behaviour.
+   */
+  function shouldOfferPageAnalysis(sources, unsupported) {
+    if (!Array.isArray(sources) || sources.length === 0) return true
+    return Boolean(unsupported)
   }
 
   var OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
@@ -884,11 +978,12 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'Only a supported progressive file that this exact player actually played is shown here. It never reads request headers, cookies or DRM data. The explicit yt-dlp fallback lives in the DonDownload popup or Media tab.',
-      actionLabel: 'Analyze page with yt-dlp (fallback)',
+        'Progressive files this exact player actually played appear first. When a player uses HLS, DASH or Media Source, DonDownload analyzes the page with yt-dlp and shows verified qualities; it never reads request headers, cookies or DRM data.',
+      actionLabel: 'Find qualities with DonDownload',
       analyzingLabel: 'Analyzing…',
+      embedActionLabel: 'Find qualities for embedded video',
       optionsHint:
-        'Nothing is downloaded until you choose a detected source.',
+        'Nothing is downloaded until you choose a source or a verified option.',
       disableLabel: 'Turn off overlay on this site',
       shortcutLabel: SHORTCUT_LABEL
     })
@@ -916,10 +1011,14 @@
     EDGE_INSET: EDGE_INSET,
     MIN_VIDEO_WIDTH: MIN_VIDEO_WIDTH,
     MIN_VIDEO_HEIGHT: MIN_VIDEO_HEIGHT,
+    MIN_IFRAME_WIDTH: MIN_IFRAME_WIDTH,
+    MIN_IFRAME_HEIGHT: MIN_IFRAME_HEIGHT,
     SHORTCUT_LABEL: SHORTCUT_LABEL,
     MEDIA_SIZE_UNKNOWN: MEDIA_SIZE_UNKNOWN,
     evaluateVideoCandidate: evaluateVideoCandidate,
     findVideoInPath: findVideoInPath,
+    evaluateIframeCandidate: evaluateIframeCandidate,
+    findIframeInPath: findIframeInPath,
     placeTrigger: placeTrigger,
     placePanel: placePanel,
     nextActiveVideo: nextActiveVideo,
@@ -932,6 +1031,8 @@
     applyNetworkEvidence: applyNetworkEvidence,
     addCapturedSource: addCapturedSource,
     currentCapturedSource: currentCapturedSource,
+    shouldOfferPageAnalysis: shouldOfferPageAnalysis,
+    optionById: optionById,
     mediaView: mediaView,
     mediaQualityChoices: mediaQualityChoices,
     outputFormatsForOption: outputFormatsForOption,

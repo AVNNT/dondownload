@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   MEDIA_MESSAGE_TYPES,
+  analyzeEmbeddedPageForSender,
   analyzeMediaForSender,
   authorizeMediaSender,
   queueCapturedSourceForSender,
@@ -284,6 +285,56 @@ describe('authorized media operations', () => {
 
     expect(result).toMatchObject({ ok: false, error: { code: 'INVALID_MESSAGE' } })
     expect(fake.state.nativeMessages).toHaveLength(0)
+  })
+
+  it('analyzes one visible embed URL separately after the exact-origin authorization', async () => {
+    const fake = createFakeChrome()
+    fake.nativeResponse = {
+      ok: true,
+      operation: 'analyze-media',
+      analysis: analysis()
+    }
+    useChrome(fake)
+
+    const result = await analyzeEmbeddedPageForSender(
+      fake.api,
+      {
+        type: MEDIA_MESSAGE_TYPES.ANALYZE_EMBED,
+        embedUrl: 'https://player.example/embed/abc?x=1#frag'
+      },
+      validSender()
+    )
+
+    expect(result).toMatchObject({ ok: true, analysis: { title: 'Example media' } })
+    expect(fake.state.nativeMessages).toEqual([
+      {
+        host: 'com.dondownload.bridge',
+        message: {
+          type: 'analyze-media',
+          url: 'https://player.example/embed/abc?x=1'
+        }
+      }
+    ])
+    expect(fake.state.calls).toEqual(['contains', 'native'])
+  })
+
+  it('rejects a non-http(s) embed URL before any native call', async () => {
+    for (const embedUrl of [
+      'blob:https://example.com/abc',
+      'javascript:alert(1)',
+      'file:///secret.mp4',
+      'https://user:pw@player.example/embed'
+    ]) {
+      const fake = createFakeChrome()
+      useChrome(fake)
+      const result = await analyzeEmbeddedPageForSender(
+        fake.api,
+        { type: MEDIA_MESSAGE_TYPES.ANALYZE_EMBED, embedUrl },
+        validSender()
+      )
+      expect(result).toMatchObject({ ok: false, error: { code: 'INVALID_MESSAGE' } })
+      expect(fake.state.nativeMessages).toHaveLength(0)
+    }
   })
 
   it('queues one opaque analysis/option pair', async () => {

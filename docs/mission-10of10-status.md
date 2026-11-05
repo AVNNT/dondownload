@@ -35,6 +35,16 @@ or release.
   MP4 capture, extensionless webRequest-evidence capture, same-player quality
   accumulation, and no-native-host hand-off leaving the 2 MiB browser download
   complete with matching SHA-256.
+- Local checkpoint (see `git log`): the overlay now offers `Find qualities with
+  DonDownload` when the attached player is blob/MSE, an HLS/DASH manifest, or
+  has no verified progressive source. It reuses the existing analyze → pick →
+  queue media flow against the trusted top page URL, lists verified resolution,
+  container, reported size and merge status, and queues exactly the pinned
+  opaque option. Visible top-frame embeds get a separate `Find qualities for
+  embedded video` request against the iframe src, with no sub-frame injection
+  and no new permission. Expired/invalid pinned analyses show the existing
+  `Analyze this page again` message and never substitute a quality.
+  Progressive capture remains first and unchanged.
 - `84488b8`, `92d89c7`: `npm run test:extension:chromium:native` adds real
   Native Messaging coverage against an isolated dev app (temp userData,
   downloads, SQLite, bridge state) via a temporary
@@ -54,9 +64,12 @@ or release.
 
 ## DEFERRED / UNSUPPORTED
 
-- HLS/DASH, blob/MSE, cross-origin iframe capture, separate audio pairing, and
-  general third-party player/site adapters: no safe representation/audio
-  mapping implemented; do not present them as downloadable.
+- DRM-protected media: analysis does not and must not bypass DRM, access
+  restrictions or paywalls.
+- General third-party player/site adapters and site-specific extraction beyond
+  what yt-dlp already supports: no bespoke adapter is implemented.
+- Separate audio pairing is handled by yt-dlp/ffmpeg merge for analyzed options;
+  no independent browser-side pairing layer exists.
 - Verified in real headless Chromium (not Helium): webRequest evidence,
   Downloads API fail-safe path, options UI. Still unverified: the interactive
   optional-permission prompt (headless has no bubble; harness pre-declares the
@@ -73,5 +86,6 @@ or release.
 
 Nothing further is verifiable here without a human: the interactive "allow
 this site" prompt (headless has no permission bubble) and a manual pass in real
-Helium with a disposable profile. HLS/DASH, blob/MSE, cross-origin iframes and
-separate audio remain unsupported by design.
+Helium with a disposable profile. DRM-protected media remains unsupported by
+design; streaming and embedded sources now go through the existing explicit
+yt-dlp analysis flow.

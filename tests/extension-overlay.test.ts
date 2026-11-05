@@ -13,6 +13,8 @@ interface Rect {
 interface CoreApi {
   BUTTON_SIZE: number
   EDGE_INSET: number
+  MIN_IFRAME_WIDTH: number
+  MIN_IFRAME_HEIGHT: number
   SHORTCUT_LABEL: string
   MEDIA_SIZE_UNKNOWN: string
   evaluateVideoCandidate: (
@@ -26,6 +28,28 @@ interface CoreApi {
     viewport: { width: number; height: number }
   ) => { usable: boolean; reason: string }
   findVideoInPath: (path: unknown[]) => unknown
+  findIframeInPath: (path: unknown[]) => unknown
+  evaluateIframeCandidate: (
+    candidate: {
+      tagName?: string
+      isConnected?: boolean
+      hidden?: boolean
+      src?: string
+      rect?: Rect
+      styles?: { display?: string; visibility?: string; opacity?: string }
+    },
+    viewport: { width: number; height: number }
+  ) => { usable: boolean; reason: string; url?: string }
+  shouldOfferPageAnalysis: (
+    sources: Array<{ url: string }>,
+    unsupported: unknown
+  ) => boolean
+  optionById: (
+    view: {
+      options: Array<{ optionId: string; label: string }>
+    } | null,
+    optionId: unknown
+  ) => { optionId: string; label: string } | null
   placeTrigger: (
     rect: Rect,
     viewport: { width: number; height: number }
@@ -90,7 +114,7 @@ const uiSource = readFileSync(path.join(extensionDir, 'overlay.js'), 'utf8')
 function loadCore(): CoreApi {
   const value = vm.runInNewContext(
     `${coreSource}\n;globalThis.DonDownloadOverlayCore`,
-    Object.create(null)
+    { URL }
   ) as CoreApi
   return value
 }
@@ -146,6 +170,76 @@ describe('video detection and placement policy', () => {
     expect(core.findVideoInPath([{ tagName: 'SPAN' }, video])).toBe(video)
     expect(core.findVideoInPath([{ tagName: 'DIV' }])).toBeNull()
     expect(core.findVideoInPath([])).toBeNull()
+  })
+
+  it('detects only large, visible, http(s) top-frame embeds', () => {
+    const rect = { left: 100, top: 80, width: 640, height: 360 }
+    const embedded = core.evaluateIframeCandidate(
+      { tagName: 'IFRAME', isConnected: true, src: 'https://player.example/embed/1', rect },
+      viewport
+    )
+    expect(embedded).toMatchObject({
+      usable: true,
+      url: 'https://player.example/embed/1'
+    })
+
+    for (const candidate of [
+      { tagName: 'DIV', isConnected: true, src: 'https://player.example/embed/1', rect },
+      { tagName: 'IFRAME', isConnected: false, src: 'https://player.example/embed/1', rect },
+      { tagName: 'IFRAME', isConnected: true, hidden: true, src: 'https://player.example/embed/1', rect },
+      { tagName: 'IFRAME', isConnected: true, src: 'blob:https://example.com/x', rect },
+      { tagName: 'IFRAME', isConnected: true, src: 'data:text/html,x', rect },
+      { tagName: 'IFRAME', isConnected: true, src: 'https://user:pw@player.example/e', rect },
+      { tagName: 'IFRAME', isConnected: true, src: 'https://player.example/e', rect: { ...rect, width: core.MIN_IFRAME_WIDTH - 1 } },
+      { tagName: 'IFRAME', isConnected: true, src: 'https://player.example/e', rect: { ...rect, height: core.MIN_IFRAME_HEIGHT - 1 } },
+      {
+        tagName: 'IFRAME',
+        isConnected: true,
+        src: 'https://player.example/e',
+        rect,
+        styles: { display: 'none' }
+      },
+      {
+        tagName: 'IFRAME',
+        isConnected: true,
+        src: 'https://player.example/e',
+        rect: { left: -2000, top: 0, width: 640, height: 360 }
+      }
+    ]) {
+      expect(core.evaluateIframeCandidate(candidate, viewport).usable).toBe(false)
+    }
+
+    expect(
+      core.findIframeInPath([{ tagName: 'DIV' }, { tagName: 'IFRAME' }])
+    ).toEqual({ tagName: 'IFRAME' })
+    expect(core.findIframeInPath([{ tagName: 'VIDEO' }])).toBeNull()
+  })
+
+  it('offers page analysis only when no progressive source was captured', () => {
+    expect(core.shouldOfferPageAnalysis([], null)).toBe(true)
+    expect(core.shouldOfferPageAnalysis([], { code: 'MANIFEST_STREAM' })).toBe(true)
+    expect(
+      core.shouldOfferPageAnalysis(
+        [{ url: 'https://cdn.example/clip.mp4' }],
+        { code: 'MANIFEST_STREAM' }
+      )
+    ).toBe(true)
+    expect(
+      core.shouldOfferPageAnalysis([{ url: 'https://cdn.example/clip.mp4' }], null)
+    ).toBe(false)
+  })
+
+  it('pins an option identifier and never falls back to another quality', () => {
+    const view = {
+      options: [
+        { optionId: 'option_1080', label: '1080p' },
+        { optionId: 'option_720', label: '720p' }
+      ]
+    }
+    expect(core.optionById(view, 'option_720')).toEqual(view.options[1])
+    expect(core.optionById(view, 'option_missing')).toBeNull()
+    expect(core.optionById(view, '')).toBeNull()
+    expect(core.optionById(null, 'option_720')).toBeNull()
   })
 
   it('places the button at the video top-right and clamps it into the viewport', () => {
@@ -225,10 +319,10 @@ describe('video detection and placement policy', () => {
     expect(copy.title).toMatch(/video options/i)
     expect(copy.detail).toMatch(/actually played/i)
     expect(copy.detail).toMatch(/never reads/i)
-    expect(copy.actionLabel).toMatch(/analyze/i)
+    expect(copy.actionLabel).toBe('Find qualities with DonDownload')
 
     const serialized = JSON.stringify(copy)
-    for (const fabricated of ['1080p', '720p', '4K', 'MP4', 'HLS', 'DASH', 'audio only']) {
+    for (const fabricated of ['1080p', '720p', '4K', 'MP4', 'audio only']) {
       expect(serialized).not.toContain(fabricated)
     }
 
@@ -469,6 +563,7 @@ class FakeNode {
   tabIndex = 0
   isContentEditable = false
   currentSrc = ''
+  src = ''
   paused = true
   readyState = 0
   ended = false
@@ -634,6 +729,7 @@ interface Harness {
   sourceList: FakeNode
   sourceEmpty: FakeNode
   analyzeButton: FakeNode
+  embedAnalyzeButton: FakeNode
   mediaResults: FakeNode
   mediaTitle: FakeNode
   mediaMeta: FakeNode
@@ -691,9 +787,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
       for (const listener of this.listeners[type] ?? []) listener(event)
     },
     querySelectorAll(selector: string) {
-      if (selector !== 'video') return []
+      if (selector !== 'video' && selector !== 'iframe') return []
       return document.body.children.filter(
-        (child: FakeNode) => child.tagName === 'VIDEO'
+        (child: FakeNode) => child.tagName === selector.toUpperCase()
       )
     }
   }
@@ -742,7 +838,10 @@ function createHarness(options: HarnessOptions = {}): Harness {
       sendMessage(message: any, callback?: (response: any) => void) {
         sentMessages.push(message)
         if (!callback) return
-        if (message.type === 'dondownload:media-analyze') {
+        if (
+          message.type === 'dondownload:media-analyze' ||
+          message.type === 'dondownload:media-analyze-embed'
+        ) {
           const response =
             options.analyzeResponse ?? {
               ok: false,
@@ -852,6 +951,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const sourceList = findByClass('source-list')
   const sourceEmpty = findByClass('source-empty')
   const analyzeButton = findByClass('action')
+  const embedAnalyzeButton = findByClass('action secondary embed-analyze')
   const mediaResults = findByClass('media-results')
   const mediaTitle = findByClass('media-title')
   const mediaMeta = findByClass('media-meta')
@@ -872,6 +972,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     !sourceList ||
     !sourceEmpty ||
     !analyzeButton ||
+    !embedAnalyzeButton ||
     !mediaResults ||
     !mediaTitle ||
     !mediaMeta ||
@@ -910,6 +1011,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     sourceList,
     sourceEmpty,
     analyzeButton,
+    embedAnalyzeButton,
     mediaResults,
     mediaTitle,
     mediaMeta,
@@ -1110,10 +1212,12 @@ describe('overlay interaction in a minimal DOM', () => {
 
     const panelText = JSON.stringify(collectText(harness.panel))
     expect(panelText).toMatch(/video options for this page/i)
-    expect(panelText).toMatch(/analyze page with yt-dlp/i)
+    expect(panelText).toMatch(/find qualities with dondownload/i)
     expect(panelText).toMatch(/detected from playback/i)
     expect(panelText).toMatch(/no progressive playback detected yet/i)
-    expect(panelText).not.toMatch(/1080p|720p|4K|HLS|DASH/)
+    // Explanatory copy names the handled streaming formats; it never shows a
+    // fabricated resolution or a guessed option.
+    expect(panelText).not.toMatch(/1080p|720p|4K/)
 
     // Opening the panel never invokes yt-dlp or any native call; it only shows
     // already observed playback sources for this exact player.
@@ -1859,6 +1963,151 @@ describe('overlay media flow', () => {
     expect(harness.status.className).toBe('status error')
     expect(harness.bestVideoButton.disabled).toBe(false)
     expect(harness.mediaResults.hidden).toBe(false)
+  })
+
+  it('offers analysis for blob/MSE and manifest playback and queues the exact verified option', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: true,
+        job: fakeJob(BEST_VIDEO_ID, '1080p MP4 - H.264 + AAC')
+      }
+    })
+    openPanel(harness)
+    expect(harness.analyzeButton.hidden).toBe(false)
+    expect(harness.analyzeButton.textContent).toBe('Find qualities with DonDownload')
+
+    playVideo(harness.video, 'blob:https://example.com/4a2c')
+    expect(harness.analyzeButton.hidden).toBe(false)
+    expect(harness.analyzeButton.textContent).toBe('Find qualities with DonDownload')
+
+    playVideo(harness.video, 'https://cdn.example/live/index.m3u8')
+    expect(harness.analyzeButton.hidden).toBe(false)
+
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+    // The top page is analyzed by the trusted sender URL; the content script
+    // never supplies a blob, manifest, segment or header value.
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-analyze'
+    })
+    expect(
+      harness.sentMessages.find(
+        (message) => message.type === 'dondownload:media-analyze'
+      )
+    ).toEqual({ type: 'dondownload:media-analyze' })
+
+    const rendered = JSON.stringify(collectText(harness.mediaResults))
+    expect(rendered).toContain('1080p')
+    expect(rendered).toContain('720p')
+    expect(rendered).toContain('MP4')
+    expect(rendered).toContain('merged')
+    expect(rendered).toContain('9.77 KB')
+
+    // Each verified option exposes one-click download and sends exactly the
+    // option identifier the user picked.
+    const queueButtons = collectByClass(harness.qualityList, 'source-action quality-queue')
+    expect(queueButtons).toHaveLength(3)
+    queueButtons[1]?.dispatch(
+      'click',
+      pointerEvent(queueButtons[1]!, [queueButtons[1]!, harness.qualityList, harness.panel])
+    )
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-queue',
+      analysisId: ANALYSIS_ID,
+      optionId: OTHER_VIDEO_ID,
+      outputFormat: 'auto'
+    })
+  })
+
+  it('shows Analyze this page again for an expired pinned option without substituting a quality', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() },
+      queueResponse: {
+        ok: false,
+        error: {
+          code: 'MEDIA_ANALYSIS_EXPIRED',
+          message: 'The media details expired. Analyze the page again.'
+        }
+      }
+    })
+    openPanel(harness)
+    playVideo(harness.video, 'blob:https://example.com/expired')
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    const labels = collectByClass(harness.qualityList, 'quality-option')
+    const second = labels[1]
+    if (!second) throw new Error('expected a second verified option')
+    clickQualityLabel(second)
+    harness.queueSelectedButton.dispatch(
+      'click',
+      pointerEvent(harness.queueSelectedButton, [harness.queueSelectedButton, harness.panel])
+    )
+
+    const queued = harness.sentMessages.filter(
+      (message) => message.type === 'dondownload:media-queue'
+    )
+    expect(queued).toEqual([
+      {
+        type: 'dondownload:media-queue',
+        analysisId: ANALYSIS_ID,
+        optionId: OTHER_VIDEO_ID,
+        outputFormat: 'auto'
+      }
+    ])
+    expect(harness.status.textContent).toContain('Analyze this page again')
+    expect(harness.status.className).toBe('status error')
+    expect(harness.mediaResults.hidden).toBe(true)
+    expect(harness.analyzeButton.hidden).toBe(false)
+  })
+
+  it('offers analysis for a visible cross-origin embed without injecting into it', () => {
+    harness = createHarness({ analyzeResponse: { ok: true, analysis: fakeAnalysis() } })
+    const iframe = new FakeNode('iframe')
+    iframe.src = 'https://player.example/embed/abc?x=1#fragment'
+    iframe.rect = { left: 300, top: 120, width: 640, height: 360 }
+    harness.document.body.appendChild(iframe)
+
+    harness.dispatchDocument(
+      'pointerover',
+      pointerEvent(iframe, [iframe, harness.document.body, harness.document.documentElement])
+    )
+    harness.trigger.dispatch(
+      'click',
+      pointerEvent(harness.trigger, [harness.trigger, harness.host])
+    )
+
+    expect(harness.panel.hidden).toBe(false)
+    expect(harness.embedAnalyzeButton.hidden).toBe(false)
+    expect(harness.embedAnalyzeButton.textContent).toBe(
+      'Find qualities for embedded video'
+    )
+    expect(harness.analyzeButton.hidden).toBe(true)
+
+    harness.embedAnalyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.embedAnalyzeButton, [
+        harness.embedAnalyzeButton,
+        harness.panel
+      ])
+    )
+    expect(harness.sentMessages).toContainEqual({
+      type: 'dondownload:media-analyze-embed',
+      embedUrl: 'https://player.example/embed/abc?x=1'
+    })
+    expect(
+      harness.sentMessages.some(
+        (message) => message.type === 'dondownload:media-analyze'
+      )
+    ).toBe(false)
+
+    const rendered = JSON.stringify(collectText(harness.mediaResults))
+    expect(rendered).toContain('1080p')
   })
 })
 

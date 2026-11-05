@@ -21,6 +21,7 @@ import {
 
 export const MEDIA_MESSAGE_TYPES = Object.freeze({
   ANALYZE: 'dondownload:media-analyze',
+  ANALYZE_EMBED: 'dondownload:media-analyze-embed',
   QUEUE: 'dondownload:media-queue',
   CAPTURE_QUEUE: 'dondownload:capture-queue'
 })
@@ -143,6 +144,34 @@ export async function analyzeMediaForSender(chromeApi, message, sender) {
   if (authorization.ok !== true) return authorization
 
   const result = await sendAnalyzeMedia(authorization.url)
+  if (result.ok !== true) return result
+  return { ok: true, analysis: result.analysis }
+}
+
+/**
+ * Analyze one visible top-frame embed URL. Sender authorization is unchanged (exact
+ * origin, tracked tab, top frame). Only an http(s) embed src is forwarded, and
+ * the desktop app still applies its own public-target validation before
+ * yt-dlp runs. No cookie, header or sub-frame document data is read.
+ */
+export async function analyzeEmbeddedPageForSender(chromeApi, message, sender) {
+  if (
+    !message ||
+    message.type !== MEDIA_MESSAGE_TYPES.ANALYZE_EMBED ||
+    !hasExactKeys(message, ['type', 'embedUrl'])
+  ) {
+    return failure('INVALID_MESSAGE', 'The embedded media analyze request is not valid.')
+  }
+
+  const embedPage = parseSupportedPageUrl(message.embedUrl)
+  if (!embedPage) {
+    return failure('INVALID_MESSAGE', 'The embedded page URL is not a public HTTP(S) URL.')
+  }
+
+  const authorization = await authorizeMediaSender(chromeApi, sender)
+  if (authorization.ok !== true) return authorization
+
+  const result = await sendAnalyzeMedia(embedPage.url)
   if (result.ok !== true) return result
   return { ok: true, analysis: result.analysis }
 }

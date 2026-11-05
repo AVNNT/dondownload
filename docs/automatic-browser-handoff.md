@@ -153,9 +153,11 @@ authenticated/POST transfer.
   the same URL, but it cannot see inside `blob:`/Media Source playback. The
   extension does not read cookies, credentials, request headers, DRM data, MSE
   segments or resource timing. A `blob:`/Media Source playback or an HLS/DASH
-  manifest is reported as unsupported; it is never guessed into a downloadable
-  file. Cross-origin iframe videos are still out of scope because the overlay is
-  top-frame only.
+  manifest is never guessed into a downloadable file; the overlay instead offers
+  the explicit `Find qualities with DonDownload` analysis against the top page
+  URL. Visible top-frame embeds get a separate analysis request for the iframe
+  src. Neither path injects into a sub-frame or adds a permission. DRM-protected
+  media remains unsupported.
 - A quality switch replaces `currentSrc`; each exact URL remains a separate row.
   No quality is inferred when dimensions are unavailable.
 - The automatic route accepts ordinary non-media files only. It is not a general
