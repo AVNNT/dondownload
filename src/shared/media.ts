@@ -137,6 +137,8 @@ export interface MediaQueueInput {
   optionId: string
   /** Explicit user action only, for a deliberate second copy. */
   force?: true
+  /** Optional hard maximum final output size in bytes; internal persistence only. */
+  maxBytes?: number | null
 }
 
 /**
@@ -160,6 +162,7 @@ export interface MediaJobRecord {
   dir: string
   /** Final output path needed for recovery. Not exposed through MediaJob. */
   filePath: string | null
+  maxBytes?: number | null
   createdAt: number
   updatedAt: number
   completedAt: number | null
@@ -573,7 +576,7 @@ export function parseAnalyzeMediaInput(value: unknown): AnalyzeMediaInput {
 
 export function parseMediaQueueInput(value: unknown): MediaQueueInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['analysisId', 'optionId'], ['force'])
+  exactKeys(record, ['analysisId', 'optionId'], ['force', 'maxBytes'])
 
   let force = false
   if (Object.prototype.hasOwnProperty.call(record, 'force')) {
@@ -583,9 +586,16 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     force = record.force
   }
 
+  let maxBytes: number | null | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'maxBytes')) {
+    if (record.maxBytes === null) maxBytes = null
+    else maxBytes = integerValue(record, 'maxBytes', 1, 100 * 1024 ** 3)
+  }
+
   return {
     analysisId: parseMediaAnalysisId(record.analysisId),
     optionId: parseMediaOptionId(record.optionId),
-    ...(force ? { force: true as const } : {})
+    ...(force ? { force: true as const } : {}),
+    ...(maxBytes === undefined ? {} : { maxBytes })
   }
 }

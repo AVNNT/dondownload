@@ -20,6 +20,7 @@ export const IPC = {
   // Milestone 3B batch orchestration (additive). All batch channels reuse the
   // existing trusted-sender wrapper and never return a source URL or path.
   analyzeBatchCollection: 'batch:analyze-collection',
+  analyzeCollectionSelection: 'batch:analyze-selection',
   submitSmartBatch: 'batch:submit-smart',
   createCollectionBatch: 'batch:create-collection',
   getBatchSnapshot: 'batch:get-snapshot',

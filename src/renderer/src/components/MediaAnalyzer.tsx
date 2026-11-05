@@ -21,7 +21,7 @@ interface MediaAnalyzerProps {
   notice: string | null
   now: number
   onAnalyze: (url: string) => Promise<ApiResult<MediaAnalysis>>
-  onQueue: (optionId: string) => void
+  onQueue: (optionId: string, maxBytes: number | null) => void
   onClear: () => void
 }
 
@@ -40,6 +40,9 @@ export function MediaAnalyzer({
   const [url, setUrl] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
+  const [maxMiB, setMaxMiB] = useState('')
+  const maxBytes = maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
+  const validMaxBytes = maxBytes === null || (Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 100 * 1024 ** 3)
 
   const videoOptions = analysis
     ? analysis.options.filter(
@@ -268,8 +271,8 @@ export function MediaAnalyzer({
             <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-3">
               <button
                 type="button"
-                onClick={() => onQueue(bestVideo.optionId)}
-                disabled={controlsDisabled || busy}
+                onClick={() => onQueue(bestVideo.optionId, maxBytes)}
+                disabled={controlsDisabled || busy || !validMaxBytes}
                 className="h-9 w-full rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 sm:w-auto"
               >
                 {queuingOptionId === bestVideo.optionId
@@ -318,6 +321,23 @@ export function MediaAnalyzer({
             </fieldset>
           ) : null}
 
+          <label className="mt-4 block max-w-xs text-[10px] font-medium text-zinc-400">
+            Optional maximum output size per job (MiB)
+            <input
+              type="number"
+              min="0.01"
+              max="102400"
+              step="0.01"
+              value={maxMiB}
+              onChange={event => setMaxMiB(event.target.value)}
+              placeholder="No limit"
+              aria-invalid={!validMaxBytes}
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100 placeholder:text-zinc-600"
+            />
+            <span className="mt-1 block font-normal text-zinc-500">Unknown and merged sizes are checked during transfer and against the final output. A brief network overrun is possible while progress catches up.</span>
+          </label>
+          {!validMaxBytes ? <p role="alert" className="mt-1 text-[10px] text-red-300">Enter a positive limit up to 102400 MiB.</p> : null}
+
           {selectedOption ? (
             <div className="mt-4 flex flex-col gap-2 border-t border-white/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="min-w-0 text-[11px] leading-5 text-zinc-400">
@@ -326,8 +346,8 @@ export function MediaAnalyzer({
               </p>
               <button
                 type="button"
-                onClick={() => onQueue(selectedOption.optionId)}
-                disabled={controlsDisabled || busy}
+                onClick={() => onQueue(selectedOption.optionId, maxBytes)}
+                disabled={controlsDisabled || busy || !validMaxBytes}
                 className="h-9 shrink-0 rounded-lg border border-emerald-400/30 px-4 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {queuingOptionId === selectedOption.optionId

@@ -3,6 +3,7 @@ import { shell } from 'electron'
 import {
   MAX_BATCH_SOURCES,
   MAX_COLLECTION_SELECTION,
+  BATCH_MEDIA_QUALITIES,
   isActiveBatchItemStatus,
   normalizeBatchSourceUrl,
   parseAnalyzeCollectionInput,
@@ -17,10 +18,12 @@ import {
   type Batch,
   type BatchItemRecord,
   type BatchItemStatus,
+  type BatchMediaQuality,
   type BatchRecord,
   type BatchStatus,
   type BatchTargetInput,
   type CollectionPreview,
+  type CollectionSelectionAvailability,
   type CreateCollectionBatchInput
 } from '@shared/batches'
 import type {
@@ -69,6 +72,31 @@ const BATCH_ITEM_INTERRUPTED_MESSAGE =
 
 const BATCH_NO_MEDIA_OPTION_MESSAGE =
   'No verified video or audio option is available for this entry.'
+
+function selectBatchMediaOption(
+  analysis: MediaAnalysis,
+  quality: BatchMediaQuality
+): MediaAnalysis['options'][number] | null {
+  if (quality === 'best') {
+    const id = analysis.bestVideoOptionId ?? analysis.bestAudioOptionId
+    return id ? analysis.options.find(option => option.optionId === id) ?? null : null
+  }
+  if (quality === 'audio-only') {
+    const id = analysis.bestAudioOptionId
+    return id ? analysis.options.find(option => option.optionId === id && option.kind === 'audio') ?? null : null
+  }
+  const height = Number.parseInt(quality, 10)
+  const candidates = analysis.options.filter(
+    option => option.kind === 'video' && option.hasAudio && option.height === height
+  )
+  return candidates.find(option => option.filesizeBytes !== null) ?? candidates[0] ?? null
+}
+
+function noQualityMessage(quality: BatchMediaQuality): string {
+  if (quality === 'audio-only') return 'No verified audio-only format is available for this entry.'
+  if (quality === 'best') return BATCH_NO_MEDIA_OPTION_MESSAGE
+  return `No verified ${quality} format is available for this entry. It was not replaced with a different quality.`
+}
 
 export const GOFILE_BROWSER_REQUIRED_MESSAGE =
   'Gofile folder/share links require a browser session. Open the original link in your browser; DonDownload does not scrape tokens or bypass access controls.'
@@ -536,6 +564,43 @@ export class BatchManager {
     return this.analyzePlaylist(input.url)
   }
 
+  /** Analyze only explicitly selected playlist entries and expose safe format availability. */
+  async analyzeCollectionSelection(rawInput: unknown): Promise<CollectionSelectionAvailability> {
+    this.assertOpen()
+    const input = parseCreateCollectionBatchInput(rawInput)
+    const stored = this.requirePreview(input.previewId)
+    if (stored.kind !== 'playlist') {
+      throw new AppError('BATCH_MEDIA_QUALITY_UNSUPPORTED', 'Quality selection is only available for playlists.')
+    }
+    const selected = new Set(input.selectedEntryIds)
+    const resolved = await this.collectionEngine.resolveCollectionEntries(stored.id, [...selected])
+    const targets = new Map(resolved.map(target => [target.entryId, target]))
+    const entries: CollectionSelectionAvailability['entries'] = []
+    for (const entryId of input.selectedEntryIds) {
+      const entry = stored.preview.entries.find(item => item.id === entryId)
+      if (!entry || entry.availability !== 'available') continue
+      const target = targets.get(entryId)
+      if (!target) continue
+      const analysis = await this.mediaJobs.analyzeMedia({ url: target.url })
+      const optionById = new Map(analysis.options.map(option => [option.optionId, option]))
+      const qualities: CollectionSelectionAvailability['entries'][number]['qualities'] = []
+      const bestId = analysis.bestVideoOptionId ?? analysis.bestAudioOptionId
+      if (bestId) {
+        const best = optionById.get(bestId)
+        if (best) qualities.push({ quality: 'best', estimatedBytes: best.filesizeBytes })
+      }
+      for (const quality of BATCH_MEDIA_QUALITIES.filter(value => ['1080p','720p','480p','360p'].includes(value))) {
+        const selectedOption = selectBatchMediaOption(analysis, quality)
+        if (selectedOption) qualities.push({ quality, estimatedBytes: selectedOption.filesizeBytes })
+      }
+      if (analysis.bestAudioOptionId && optionById.get(analysis.bestAudioOptionId)?.kind === 'audio') {
+        qualities.push({ quality: 'audio-only', estimatedBytes: optionById.get(analysis.bestAudioOptionId)!.filesizeBytes })
+      }
+      entries.push({ entryId, title: entry.title, qualities })
+    }
+    return { previewId: stored.id, entries }
+  }
+
   /* ---------------------------- smart submit ---------------------------- */
 
   async submitSmartBatch(rawInput: unknown): Promise<SmartBatchSubmitResult> {
@@ -779,6 +844,8 @@ export class BatchManager {
       title: 'Smart batch',
       status: 'queued',
       sourceUrl: null,
+      mediaQuality: null,
+      maxBytesPerItem: null,
       errorMessage: null,
       createdAt,
       updatedAt: createdAt,
@@ -798,6 +865,9 @@ export class BatchManager {
     const input: CreateCollectionBatchInput =
       parseCreateCollectionBatchInput(rawInput)
     const stored = this.requirePreview(input.previewId)
+    if (stored.kind === 'pixeldrain-list' && (input.mediaQuality !== undefined || input.maxBytesPerItem != null)) {
+      throw new AppError('BATCH_MEDIA_POLICY_UNSUPPORTED', 'Media quality and size limits apply only to playlist media jobs.')
+    }
 
     const entryById = new Map(
       stored.preview.entries.map((entry) => [entry.id, entry])
@@ -895,6 +965,8 @@ export class BatchManager {
       title: stored.preview.title,
       status: 'queued',
       sourceUrl: stored.sourceUrl,
+      mediaQuality: stored.kind === 'playlist' ? input.mediaQuality ?? 'best' : null,
+      maxBytesPerItem: stored.kind === 'playlist' ? input.maxBytesPerItem ?? null : null,
       errorMessage: null,
       createdAt,
       updatedAt: createdAt,
@@ -1368,20 +1440,31 @@ export class BatchManager {
 
       const analysis = await this.mediaJobs.analyzeMedia({ url: sourceUrl })
       if (!this.batches.has(batch.record.id)) return
-      const optionId =
-        analysis.bestVideoOptionId ?? analysis.bestAudioOptionId
+      const quality = batch.record.mediaQuality ?? 'best'
+      const option = selectBatchMediaOption(analysis, quality)
+      const optionId = option?.optionId ?? null
       if (optionId === null) {
-        throw new AppError(
-          'BATCH_MEDIA_NO_OPTION',
-          BATCH_NO_MEDIA_OPTION_MESSAGE
-        )
+        this.markItemTerminal(item, 'skipped', noQualityMessage(quality))
+        this.persistItemNow(item)
+        this.recomputeBatch(batch)
+        this.persistBatchNow(batch)
+        return
+      }
+      const maxBytes = batch.record.maxBytesPerItem ?? null
+      if (!option || (maxBytes !== null && option.filesizeBytes !== null && option.filesizeBytes > maxBytes)) {
+        this.markItemTerminal(item, 'skipped', 'The verified format size exceeds the per-job limit.')
+        this.persistItemNow(item)
+        this.recomputeBatch(batch)
+        this.persistBatchNow(batch)
+        return
       }
 
       if (item.status !== 'running') return
 
       const job = await this.mediaJobs.queueMedia({
         analysisId: analysis.analysisId,
-        optionId
+        optionId,
+        ...(maxBytes === null ? {} : { maxBytes })
       })
 
       if (!this.batches.has(batch.record.id)) {
@@ -1595,7 +1678,7 @@ export class BatchManager {
 
   private markItemTerminal(
     item: BatchItemRecord,
-    status: 'cancelled' | 'interrupted' | 'error',
+    status: 'cancelled' | 'interrupted' | 'error' | 'skipped',
     errorMessage: string | null,
     at = this.now()
   ): void {

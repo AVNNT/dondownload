@@ -36,6 +36,7 @@ export interface MediaDownloadRequest {
   analysisId: string
   optionId: string
   dir: string
+  maxBytes?: number | null
 }
 
 export interface MediaDownloadProgress {
@@ -367,6 +368,7 @@ export class MediaJobsManager {
       errorMessage: null,
       dir: this.mediaDir,
       filePath: null,
+      maxBytes: input.maxBytes ?? null,
       createdAt,
       updatedAt: createdAt,
       completedAt: null
@@ -591,15 +593,16 @@ export class MediaJobsManager {
           sourceUrl: job.record.sourceUrl,
           analysisId: job.record.analysisId,
           optionId: job.record.optionId,
-          dir: job.record.dir
+          dir: job.record.dir,
+          maxBytes: job.record.maxBytes ?? null
         },
         (progress) => {
           this.handleProgress(id, progress)
         }
       )
       this.completeJob(id, result)
-    } catch {
-      this.failJob(id)
+    } catch (error) {
+      this.failJob(id, error)
     }
   }
 
@@ -662,6 +665,15 @@ export class MediaJobsManager {
       return
     }
 
+    if (
+      job.record.maxBytes != null &&
+      result.totalBytes !== null &&
+      result.totalBytes > job.record.maxBytes
+    ) {
+      this.failJob(id, new AppError('MEDIA_SIZE_CAP_EXCEEDED', 'The media output exceeded the configured per-job size limit.'))
+      return
+    }
+
     const reportedTotal = nullableNonNegativeInteger(result.totalBytes)
     const totalBytes =
       reportedTotal !== null && reportedTotal > 0
@@ -683,12 +695,15 @@ export class MediaJobsManager {
     this.publish(true)
   }
 
-  private failJob(id: string): void {
+  private failJob(id: string, error?: unknown): void {
     const job = this.jobs.get(id)
     if (!job || isTerminalStatus(job.record.status)) return
 
     job.record.status = 'error'
-    job.record.errorMessage = MEDIA_DOWNLOAD_FAILED_MESSAGE
+    job.record.errorMessage =
+      error instanceof AppError && error.code === 'MEDIA_SIZE_CAP_EXCEEDED'
+        ? error.message
+        : MEDIA_DOWNLOAD_FAILED_MESSAGE
     job.record.updatedAt = this.now()
     job.speedBps = 0
 

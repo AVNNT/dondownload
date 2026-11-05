@@ -31,13 +31,13 @@ visible native window. No OS input, real Downloads path, Helium profile,
 installer or external download host was used. Screenshots and a bounded renderer
 trace are recorded in the dedicated verification section below.
 
-On 2026-11-04, packaged Electron also passed one bounded real media job and the
-external HTTP redirect/Range/error checks, with screenshots and traces under
-`artifacts/test-runs/`. Playlist preview and explicit one-entry selection were
-confirmed in the packaged Batches page. Its automatic best-video choice exceeded
-the intended 25 MiB check during that attempt, so the transfer was stopped and
-no completed GUI playlist-batch download is claimed. Smart direct-URL batch UI
-and disposable-profile Helium integration were not completed in this pass.
+On 2026-11-05, a fresh isolated packaged build passed playlist preview, explicit
+one-entry selection, per-entry format inspection, and a capped audio-only
+playlist batch download (2,550,209 bytes under a 25 MiB cap). The 480p merged
+video variation downloaded both streams but failed during post-processing; no
+successful merged playlist-video transfer is claimed. Direct-URL batch UI
+lifecycle (failure/cancel/retry/restart) and disposable-profile Helium
+integration remain open in this pass.
 
 The earlier live selected-playlist media download remains a successful,
 separate Milestone 3B result (see its section below); it is not superseded by
@@ -97,8 +97,11 @@ this local HTTP flow. Pixeldrain list and Gofile-folder coverage remain open.
   - Pixeldrain lists and obvious playlist URLs are analyzed into ephemeral
     previews. `createCollectionBatch` accepts only explicit preview entry IDs.
     Playlist entries are resolved with `MediaEngine.resolveCollectionEntries`,
-    then analyzed and queued one entry at a time through `MediaJobsManager`,
-    preferring `bestVideoOptionId` and falling back to `bestAudioOptionId`.
+    then analyzed and queued one entry at a time through `MediaJobsManager`.
+    The renderer can inspect formats for explicitly selected entries, choose
+    only a reported `best`, 1080p/720p/480p/360p or audio-only option, and set an
+    optional per-job byte cap. Unavailable chosen qualities and known sizes over
+    the cap are marked `skipped`; there is no silent quality substitution.
   - Persisted parents/items keep child-ID mappings, per-item progress/errors and
     aggregate status. Startup marks active parents/items `interrupted`; nothing
     auto-resumes. Removing a batch deletes only its DB row and never a child
@@ -112,6 +115,11 @@ this local HTTP flow. Pixeldrain list and Gofile-folder coverage remain open.
   - URL/selection counts are bounded by the shared limits (500 URLs, 500 selected
     entries). Direct adds are serialized, aria2 still owns transfer concurrency,
     and media queueing is globally serialized to one active playlist job.
+  - SQLite v7 persists per-media-job byte caps and playlist quality/cap policy
+    across retries and restart. Runtime progress enforcement stops an over-cap
+    transfer; the verified final file size is checked before a job can complete.
+    Caps apply to media jobs, not direct aria2 transfers. Progress-based stopping
+    can allow a brief network overrun before yt-dlp reports progress.
   - Desktop IPC exposes analyze/submit/create/read/list/cancel/retry/remove/open
     and snapshot-update observation, all through the existing trusted-sender
     wrapper. Public results are parsed `Batch`/`CollectionPreview` DTOs and never
@@ -176,7 +184,9 @@ The foundation is deliberately narrow and additive:
   v1 download rows, v2 media rows and v3 batch parents are preserved, and a
   failed v4 rebuild rolls back completely. v4 rebuilt only `batch_items` to
   accept `unavailable`/`skipped` while preserving every row, index and cascade.
-  Milestone 5A adds schema v5 additively; `SCHEMA_VERSION` is now 5.
+  Milestone 5A and download-control migrations followed additively; schema v7
+  adds persisted media caps and playlist selection policy while leaving existing
+  rows unlimited and at the legacy best-quality behavior.
 - Still not included by the foundation contracts themselves: renderer UI,
   native-bridge batch routes, live provider verification, Milestone 4/5 work,
   torrents or VPN.
@@ -1307,7 +1317,8 @@ Milestone 3A PASS above.
 ## Packaged Electron real-world verification (2026-11-04)
 
 The following checks used the unpacked production package at
-`dist/win-unpacked/DonDownload.exe`, the actual renderer/preload/IPC and isolated
+`artifacts/packaged-verification/win-unpacked/DonDownload.exe`, a fresh isolated
+unpacked production package, the actual renderer/preload/IPC and isolated
 smoke user-data/download locations. The window was headless/offscreen; no OS
 input, real Downloads folder, browser profile or installed application was used.
 The CDP harnesses and machine-local artifacts are under `scripts/` and
@@ -1341,26 +1352,25 @@ The CDP harnesses and machine-local artifacts are under `scripts/` and
 - Evidence: `artifacts/test-runs/electron-http-2026-11-04T23-19-19-139Z/`
   (`result.json`, renderer trace, screenshots and isolated files).
 
-### Playlist and batch GUI: PARTIAL / BLOCKED
+### Playlist quality/cap GUI: PARTIAL / PASS
 
-- In the actual Batches page, Smart Batch returned a real Blender playlist
-  preview of 18 entries with zero selected and no batch created. The operator
-  selected only the pinned Caminandes CC-BY entry and queued a batch with
-  exactly one matching item.
-- The batch worker automatically chose its best-video format; unlike the Media
-  page, this collection UI does not let the user pin a lower quality. Its
-  observed progress exceeded the harness's 25 MiB guard, so the run was stopped
-  immediately. No completed selected-playlist GUI download, group progress,
-  independent HTTP failures, cancellation or persisted batch restart is claimed
-  from this run. This is a verification/scope limitation, not a confirmed
-  product defect; the playlist batch path should not be used for size-sensitive
-  selections until a quality/size bound is available.
-- Captures and the partial isolated run are under
-  `artifacts/test-runs/electron-playlist-2026-11-04T23-21-56-032Z/`.
-- Focused batch integration: **2/2 passed** with the packaged real aria2 binary
-  and SQLite. That deterministic suite is local loopback coverage, not evidence
-  of the packaged renderer UI. Pixeldrain lists remain blocked on a lawful,
-  bounded public fixture; no Gofile workaround was attempted.
+- The actual packaged Batches page previewed 18 real playlist entries with none
+  selected. One pinned CC-BY Caminandes entry was explicitly selected; only then
+  did the app analyze its yt-dlp formats. The user selected the reported
+  audio-only option, set 25 MiB, and the batch completed at **2,550,209 bytes**.
+  The isolated final output stayed below the cap and the parent/item state was
+  complete. No quality fallback occurred.
+- A separate attempt with the reported 480p merged option downloaded about
+  17 MB of streams but failed in yt-dlp post-processing; it did not complete and
+  no merged-output success is claimed. The engine surfaced the safe generic
+  failure state. This failure remains to be diagnosed independently of caps.
+- Successful evidence: `artifacts/test-runs/electron-playlist-2026-11-05T00-06-27-569Z/`
+  (`result.json`, screenshots, isolated DB and output). Failed merge evidence:
+  `artifacts/test-runs/electron-playlist-2026-11-05T00-05-21-307Z/`.
+- No packaged direct-URL batch progress/failure/cancel/retry/restart scenario is
+  claimed from this pass. The deterministic real-aria2 batch integration suite
+  remains loopback/backend coverage, not renderer lifecycle evidence. Pixeldrain
+  lists remain blocked on a lawful, bounded public fixture.
 
 ### Helium and daily-use assessment
 

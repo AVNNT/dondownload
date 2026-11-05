@@ -677,6 +677,22 @@ describe('collection input parsing', () => {
       previewId: PREVIEW_ID,
       selectedEntryIds: [ENTRY_ID, SECOND_ENTRY_ID]
     })
+    expect(parseCreateCollectionBatchInput({
+      previewId: PREVIEW_ID,
+      selectedEntryIds: [ENTRY_ID],
+      mediaQuality: '720p',
+      maxBytesPerItem: 25_000_000
+    })).toMatchObject({ mediaQuality: '720p', maxBytesPerItem: 25_000_000 })
+    expect(() => parseCreateCollectionBatchInput({
+      previewId: PREVIEW_ID,
+      selectedEntryIds: [ENTRY_ID],
+      mediaQuality: '900p'
+    })).toThrow(/quality/)
+    expect(() => parseCreateCollectionBatchInput({
+      previewId: PREVIEW_ID,
+      selectedEntryIds: [ENTRY_ID],
+      maxBytesPerItem: 0
+    })).toThrow()
 
     expect(() =>
       parseCreateCollectionBatchInput({

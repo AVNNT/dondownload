@@ -108,6 +108,7 @@ export interface MediaDownloadRequest {
   analysisId: string
   optionId: string
   dir: string
+  maxBytes?: number | null
 }
 
 export interface MediaDownloadResult {
@@ -669,6 +670,19 @@ async function findFinalFile(
   )
   withStats.sort((a, b) => b.modified - a.modified)
   return withStats[0]?.candidate ?? null
+}
+
+/** Remove only this job's named artifacts after its explicit size cap is hit. */
+async function removeJobArtifacts(directory: string, base: string): Promise<void> {
+  const root = path.resolve(directory)
+  const prefix = `${base}.`
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue
+    const candidate = path.resolve(root, entry.name)
+    if (path.dirname(candidate) !== root) continue
+    await fs.unlink(candidate).catch(() => undefined)
+  }
 }
 
 export function createMediaEngine(
@@ -1514,6 +1528,14 @@ export function createMediaEngine(
       )
     }
 
+    const maxBytes = request.maxBytes ?? null
+    if (maxBytes !== null && option.dto.filesizeBytes !== null && option.dto.filesizeBytes > maxBytes) {
+      throw new AppError(
+        'MEDIA_SIZE_CAP_EXCEEDED',
+        'The verified media format exceeds the configured per-job size limit.'
+      )
+    }
+
     if (pending.cancelRequested) {
       throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
     }
@@ -1575,6 +1597,7 @@ export function createMediaEngine(
       let stdoutRemainder = ''
       let stderrRemainder = ''
       let mergingSeen = false
+      let sizeCapExceeded = false
       const streams = new Map<
         string,
         { completed: number; total: number | null; speed: number }
@@ -1666,6 +1689,14 @@ export function createMediaEngine(
             if (finalPath === null) throw new Error('missing output')
             const stat = await fs.stat(finalPath)
             if (!stat.isFile()) throw new Error('not a file')
+            if (maxBytes !== null && stat.size > maxBytes) {
+              sizeCapExceeded = true
+              await removeJobArtifacts(outputDir, base)
+              throw new AppError(
+                'MEDIA_SIZE_CAP_EXCEEDED',
+                'The media output exceeded the configured per-job size limit.'
+              )
+            }
             emit(
               mergingSeen ? 'merging' : 'downloading',
               stat.size,
@@ -1674,13 +1705,15 @@ export function createMediaEngine(
               finalPath
             )
             resolve({ filePath: finalPath, totalBytes: stat.size })
-          } catch {
+          } catch (error) {
             reject(
-              new AppError(
-                'MEDIA_DOWNLOAD_FAILED',
-                'The download finished but the output file could not be verified.',
-                'Check the download folder and try again.'
-              )
+              error instanceof AppError
+                ? error
+                : new AppError(
+                    'MEDIA_DOWNLOAD_FAILED',
+                    'The download finished but the output file could not be verified.',
+                    'Check the download folder and try again.'
+                  )
             )
           }
           return
@@ -1690,6 +1723,9 @@ export function createMediaEngine(
           reject(
             new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
           )
+        } else if (sizeCapExceeded) {
+          await removeJobArtifacts(outputDir, base)
+          reject(new AppError('MEDIA_SIZE_CAP_EXCEEDED', 'The media output exceeded the configured per-job size limit.'))
         } else {
           reject(
             new AppError(
@@ -1725,6 +1761,10 @@ export function createMediaEngine(
             speed: progress.speedBps
           })
           emitSnapshot(mergingSeen ? 'merging' : 'downloading', null)
+          if (maxBytes !== null && snapshot().completed > maxBytes && !sizeCapExceeded) {
+            sizeCapExceeded = true
+            if (job.child !== null) terminateProcessTree(job.child, platform, spawn, env)
+          }
         }
       }
 

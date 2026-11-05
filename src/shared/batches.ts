@@ -207,6 +207,9 @@ export interface BatchRecord {
   title: string
   status: BatchStatus
   sourceUrl: string | null
+  /** Selection policy retained internally so failed children retry identically. */
+  mediaQuality?: BatchMediaQuality | null
+  maxBytesPerItem?: number | null
   errorMessage: string | null
   createdAt: number
   updatedAt: number
@@ -291,6 +294,30 @@ export const MAX_COLLECTION_ERROR_REASON_LENGTH = 240
 export const MAX_COLLECTION_ENTRIES = 5000
 /** A batch can be created from at most this many explicitly selected entries. */
 export const MAX_COLLECTION_SELECTION = 500
+export const BATCH_MEDIA_QUALITIES = [
+  'best',
+  '1080p',
+  '720p',
+  '480p',
+  '360p',
+  'audio-only'
+] as const
+export type BatchMediaQuality = (typeof BATCH_MEDIA_QUALITIES)[number]
+
+export interface CollectionEntryQuality {
+  quality: BatchMediaQuality
+  /** Null when yt-dlp does not report an exact verified byte count. */
+  estimatedBytes: number | null
+}
+
+export interface CollectionSelectionAvailability {
+  previewId: string
+  entries: Array<{
+    entryId: string
+    title: string
+    qualities: CollectionEntryQuality[]
+  }>
+}
 
 /** Renderer-safe preview entry. Contains no URL, path, selector or provider data. */
 export interface CollectionEntry {
@@ -333,6 +360,9 @@ export interface AnalyzeCollectionInput {
 export interface CreateCollectionBatchInput {
   previewId: string
   selectedEntryIds: string[]
+  /** Optional playlist-only policy; omitted means best video/unlimited. */
+  mediaQuality?: BatchMediaQuality
+  maxBytesPerItem?: number | null
 }
 
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/
@@ -1003,7 +1033,7 @@ export function parseCreateCollectionBatchInput(
   exactKeys(
     record,
     ['previewId', 'selectedEntryIds'],
-    [],
+    ['mediaQuality', 'maxBytesPerItem'],
     'collection selection'
   )
 
@@ -1024,5 +1054,30 @@ export function parseCreateCollectionBatchInput(
     throw new ValidationError('Duplicate collection entry identifier.')
   }
 
-  return { previewId, selectedEntryIds }
+  let mediaQuality: BatchMediaQuality | undefined
+  if (record.mediaQuality !== undefined) {
+    if (
+      typeof record.mediaQuality !== 'string' ||
+      !(BATCH_MEDIA_QUALITIES as readonly string[]).includes(record.mediaQuality)
+    ) {
+      throw new ValidationError('Choose a supported playlist media quality.')
+    }
+    mediaQuality = record.mediaQuality as BatchMediaQuality
+  }
+
+  let maxBytesPerItem: number | null | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'maxBytesPerItem')) {
+    if (record.maxBytesPerItem === null) {
+      maxBytesPerItem = null
+    } else {
+      maxBytesPerItem = integerValue(record, 'maxBytesPerItem', 1, 100 * 1024 ** 3, 'collection selection')
+    }
+  }
+
+  return {
+    previewId,
+    selectedEntryIds,
+    ...(mediaQuality === undefined ? {} : { mediaQuality }),
+    ...(maxBytesPerItem === undefined ? {} : { maxBytesPerItem })
+  }
 }

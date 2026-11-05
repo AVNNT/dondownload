@@ -6,6 +6,7 @@ import type {
   BatchItemTargetInput,
   BatchTargetInput,
   CollectionPreview,
+  CollectionSelectionAvailability,
   CreateCollectionBatchInput
 } from '../shared/batches'
 import type {
@@ -84,6 +85,10 @@ const api: DonDownloadApi = {
   analyzeBatchCollection: (input: AnalyzeCollectionInput) =>
     ipcRenderer.invoke(IPC.analyzeBatchCollection, input) as Promise<
       ApiResult<CollectionPreview>
+    >,
+  analyzeCollectionSelection: (input: CreateCollectionBatchInput) =>
+    ipcRenderer.invoke(IPC.analyzeCollectionSelection, input) as Promise<
+      ApiResult<CollectionSelectionAvailability>
     >,
   submitSmartBatch: (input: SmartBatchSubmitInput) =>
     ipcRenderer.invoke(IPC.submitSmartBatch, input) as Promise<

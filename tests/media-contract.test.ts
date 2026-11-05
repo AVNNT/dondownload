@@ -178,6 +178,11 @@ describe('media public schema', () => {
     expect(
       parseMediaQueueInput({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID })
     ).toEqual({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID })
+    expect(parseMediaQueueInput({
+      analysisId: ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID,
+      maxBytes: 25_000_000
+    })).toEqual({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID, maxBytes: 25_000_000 })
     expect(
       parseMediaQueueInput({
         analysisId: ANALYSIS_ID,
@@ -194,6 +199,9 @@ describe('media public schema', () => {
     ).toEqual({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID })
 
     expect(() => parseMediaQueueInput({ analysisId: 'bestvideo+bestaudio', optionId: VIDEO_OPTION_ID })).toThrow()
+    for (const maxBytes of [0, -1, 1.5, 100 * 1024 ** 3 + 1]) {
+      expect(() => parseMediaQueueInput({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID, maxBytes })).toThrow()
+    }
     expect(() =>
       parseMediaQueueInput({
         analysisId: ANALYSIS_ID,

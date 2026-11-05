@@ -3,6 +3,7 @@ out/
 dist/
 coverage/
 artifacts/test-runs/
+artifacts/packaged-verification/
 
 # Local third-party binaries are intentionally not redistributed with this repo.
 vendor/

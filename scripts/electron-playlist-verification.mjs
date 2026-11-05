@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const appPath = path.join(root, 'dist', 'win-unpacked', 'DonDownload.exe')
+const appPath = process.env.DONDOWNLOAD_PACKAGED_APP || path.join(root, 'dist', 'win-unpacked', 'DonDownload.exe')
 const runDir = path.join(root, 'artifacts', 'test-runs', `electron-playlist-${new Date().toISOString().replace(/[:.]/g, '-')}`)
 const userData = path.join(runDir, 'user-data')
 const screenshotDir = path.join(runDir, 'screenshots')
@@ -93,12 +93,33 @@ try {
   // Explicitly choose only the pinned, lawful fixture; all other entries stay unchecked.
   const chosen=await cdp.eval(`(() => { const card=document.querySelector('article[aria-labelledby^="batch-preview-"]'); const row=[...card.querySelectorAll('li')].find(li=>li.innerText.includes('Caminandes 2: Gran Dillama')); const box=row?.querySelector('input[type=checkbox]'); box?.click(); return {checked:box?.checked,title:row?.innerText.replace(/\\s+/g,' ').trim(),selected:card?.innerText.match(/(\\d+) selected/)?.[1]} })()`)
   if(!chosen.checked||chosen.selected!=='1') throw new Error(`Explicit single selection failed: ${JSON.stringify(chosen)}`)
-  await cdp.shot('03-playlist-one-selected.png')
-  record('explicit-playlist-selection',{selectedCount:chosen.selected,selectedEntry:chosen.title,screenshot:path.join(screenshotDir,'03-playlist-one-selected.png')})
+   await cdp.shot('03-playlist-one-selected.png')
+   record('explicit-playlist-selection',{selectedCount:chosen.selected,selectedEntry:chosen.title,screenshot:path.join(screenshotDir,'03-playlist-one-selected.png')})
   const stillEmpty=await batchSnapshot()
   if(!stillEmpty.ok||stillEmpty.value.batches.length!==0) throw new Error('Preview/selection stage unexpectedly created a batch.')
-  record('boundedness-stop',{result:'No transfer started: the collection UI does not expose a format/size limit; individual Media UI verified separately.',batchCount:0})
-  const report={status:'PASS — preview and explicit selection only',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),app:appPath,renderer:'actual packaged Electron renderer + production preload/IPC + yt-dlp/FFmpeg',playlistUrl,selection:'exactly one explicit CC-BY Caminandes entry; transfer intentionally not started without an enforceable batch size/quality bound',userData,mediaDir,screenshots:screenshotDir,checks}
+   await clickButton('Check selected formats')
+   const formats=await waitFor(()=>cdp.eval(`(() => ({text:document.querySelector('article[aria-labelledby^="batch-preview-"]')?.innerText??''}))()`),state=>/Verified:|No verified media formats/.test(state.text),180_000,'Selected entry format analysis')
+   if(!formats.text.includes('Verified:')) throw new Error(`Selected entry has no verified quality: ${formats.text}`)
+   await cdp.shot('04-playlist-quality-verified.png')
+   const controls=await cdp.eval(`(() => { const card=document.querySelector('article[aria-labelledby^="batch-preview-"]'); const select=card?.querySelector('select'); const input=[...card?.querySelectorAll('input[type=number]')??[]].find(x=>x.placeholder==='No limit'); return {qualities:[...select?.options??[]].map(x=>x.text),selectValue:select?.value,hasCap:!!input} })()`)
+   if(!controls.qualities.length||!controls.hasCap) throw new Error(`Playlist quality/cap controls missing: ${JSON.stringify(controls)}`)
+   const lowQuality=controls.qualities.map((text,index)=>({text,index})).find(option=>/Audio only/.test(option.text)) ?? controls.qualities.map((text,index)=>({text,index})).find(option=>/360p|480p/.test(option.text))
+   if(!lowQuality) throw new Error(`No bounded low-resolution/audio reported quality: ${JSON.stringify(controls.qualities)}`)
+   await cdp.eval(`(() => { const card=document.querySelector('article[aria-labelledby^="batch-preview-"]'); const select=card.querySelector('select'); select.selectedIndex=${lowQuality.index}; select.dispatchEvent(new Event('change',{bubbles:true})); const input=[...card.querySelectorAll('input[type=number]')].find(x=>x.placeholder==='No limit'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; setter.call(input,'25'); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); return true })()`)
+   await cdp.shot('05-playlist-quality-and-size-cap.png')
+   const beforeQueue=await batchSnapshot(); if(!beforeQueue.ok||beforeQueue.value.batches.length) throw new Error('Format analysis unexpectedly created a batch.')
+   await clickButton('Queue selected (1)')
+   const completed=await waitFor(async()=>{const result=await batchSnapshot();return result.ok?result.value:null},value=>value?.batches?.some(batch=>batch.items?.some(item=>item.status==='complete'||item.status==='error'||item.status==='skipped')),300_000,'Capped playlist batch terminal state')
+   const batch=completed.batches[0]
+   const item=batch.items[0]
+   if(item.status!=='complete') throw new Error(`Capped playlist item did not complete: ${JSON.stringify(item)}`)
+   const files=await allFiles(mediaDir)
+   if(files.length!==1) throw new Error(`Expected one capped output file, found ${files.length}`)
+   const outputStat=await stat(files[0])
+   if(outputStat.size>25*1024*1024) throw new Error(`Playlist output exceeded cap: ${outputStat.size}`)
+   await cdp.shot('06-playlist-batch-complete.png')
+   record('playlist-quality-cap-transfer',{selectedQuality:lowQuality.text,capBytes:25*1024*1024,finalBytes:outputStat.size,itemStatus:item.status,output:files[0],screenshot:path.join(screenshotDir,'06-playlist-batch-complete.png')})
+   const report={status:'PASS — packaged playlist quality/cap transfer',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),app:appPath,renderer:'actual packaged Electron renderer + production preload/IPC + yt-dlp/FFmpeg',playlistUrl,selection:'exactly one explicit CC-BY Caminandes entry',userData,mediaDir,screenshots:screenshotDir,checks}
   await writeFile(path.join(runDir,'result.json'),JSON.stringify(report,null,2));console.log(`PLAYLIST_RESULT ${path.join(runDir,'result.json')}`)
 } catch(error) {
   if(cdp)try{await cdp.shot('99-failure.png')}catch{}

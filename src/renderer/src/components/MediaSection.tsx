@@ -91,7 +91,7 @@ export function MediaSection(): JSX.Element {
   )
 
   const handleQueue = useCallback(
-    async (optionId: string): Promise<void> => {
+    async (optionId: string, maxBytes: number | null): Promise<void> => {
       if (!analysis || queuingOptionId !== null) return
 
       setQueuingOptionId(optionId)
@@ -101,7 +101,8 @@ export function MediaSection(): JSX.Element {
       try {
         const result = await window.donDownload.queueMedia({
           analysisId: analysis.analysisId,
-          optionId
+          optionId,
+          ...(maxBytes === null ? {} : { maxBytes })
         })
         if (result.ok) {
           setSnapshot(result.value)
@@ -213,8 +214,8 @@ export function MediaSection(): JSX.Element {
         notice={notice}
         now={now}
         onAnalyze={handleAnalyze}
-        onQueue={(optionId) => {
-          void handleQueue(optionId)
+        onQueue={(optionId, maxBytes) => {
+          void handleQueue(optionId, maxBytes)
         }}
         onClear={() => {
           setAnalysis(null)

@@ -436,7 +436,7 @@ describe('batch persistence', () => {
 
     expect(first.schemaVersion).toBe(SCHEMA_VERSION)
     first.saveBatchWithItems(
-      batchRecord({ sourceUrl: 'https://example.com/playlist?list=abc#frag' }),
+      batchRecord({ sourceUrl: 'https://example.com/playlist?list=abc#frag', mediaQuality: '720p', maxBytesPerItem: 25_000_000 }),
       [
         batchItem({
           sourceUrl: 'https://example.com/watch?v=abc#frag',
@@ -467,6 +467,7 @@ describe('batch persistence', () => {
     expect(stored?.record.sourceUrl).toBe(
       'https://example.com/playlist?list=abc'
     )
+    expect(stored?.record).toMatchObject({ mediaQuality: '720p', maxBytesPerItem: 25_000_000 })
     expect(stored?.items).toHaveLength(2)
     expect(stored?.items[0]).toMatchObject({
       id: 'bitem_0123456789abcdef',
@@ -622,7 +623,9 @@ describe('batch persistence', () => {
       'error_message',
       'created_at',
       'updated_at',
-      'completed_at'
+      'completed_at',
+      'media_quality',
+      'max_bytes_per_item'
     ])
     expect(itemColumns).toEqual([
       'id',
@@ -693,7 +696,8 @@ describe('v2 to v5 batch migration', () => {
       expect(row.connections).toBeNull()
       expect(row.block_reason).toBeNull()
     }
-    expect(rowsOf(verify, 'media_jobs')).toEqual(mediaBefore)
+    expect(rowsOf(verify, 'media_jobs')[0]).toMatchObject(mediaBefore[0] ?? {})
+    expect(rowsOf(verify, 'media_jobs')[0]?.max_bytes).toBeNull()
     const tables = (
       verify
         .prepare(
@@ -760,7 +764,9 @@ describe('v3 to v5 batch_items migration', () => {
     expect(database.loadAll()).toHaveLength(1)
     expect(database.loadMediaJobs()).toHaveLength(1)
     const migrated = database.loadBatch(fixture.batch.id)
-    expect(migrated?.record).toEqual(fixture.batch)
+    expect(migrated?.record).toMatchObject(fixture.batch)
+    expect(migrated?.record.mediaQuality).toBeUndefined()
+    expect(migrated?.record.maxBytesPerItem).toBeUndefined()
     expect(migrated?.items).toEqual(fixture.items)
 
     database.saveManyBatchItems([

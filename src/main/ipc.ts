@@ -7,7 +7,8 @@ import type {
 } from '@shared/media'
 import type {
   Batch,
-  CollectionPreview
+  CollectionPreview,
+  CollectionSelectionAvailability
 } from '@shared/batches'
 import type {
   ApiResult,
@@ -162,6 +163,10 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<CollectionPreview>(IPC.analyzeBatchCollection, (_event, input) =>
     batches().analyzeCollection(input)
+  )
+
+  invoke<CollectionSelectionAvailability>(IPC.analyzeCollectionSelection, (_event, input) =>
+    batches().analyzeCollectionSelection(input)
   )
 
   invoke<SmartBatchSubmitResult>(IPC.submitSmartBatch, (_event, input) =>

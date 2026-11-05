@@ -1430,6 +1430,57 @@ describe('media engine subprocess arguments and progress', () => {
     })
   })
 
+  it('rejects an exact known format size over the cap before spawning yt-dlp', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const known = analysis.options.find(option => option.kind === 'video' && option.height === 720)
+    expect(known?.filesizeBytes).toBe(800)
+    await expect(harness.engine.download({
+      ...downloadRequest(analysis.analysisId, known!.optionId, harness.downloadDir),
+      maxBytes: 799
+    }, () => undefined)).rejects.toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
+    expect(harness.calls.some(call => call.args.includes('--format'))).toBe(false)
+  })
+
+  it('aborts unknown-size transfers over the runtime cap and removes only the job output', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const optionId = analysis.bestVideoOptionId as string
+    const promise = harness.engine.download({
+      ...downloadRequest(analysis.analysisId, optionId, harness.downloadDir),
+      maxBytes: 1_024
+    }, () => undefined)
+    const settlement = promise.then(() => null, error => error)
+    await waitFor(() => harness.calls.some(call => call.args.includes('--format')))
+    const call = downloadCall(harness.calls)
+    const partialPath = `${outputBase(call)}.mp4.part`
+    await fs.writeFile(partialPath, Buffer.alloc(1_025))
+    call.child.stdout.write('DONDOWNLOAD_PROGRESS|2048|NA|NA|100|137\n')
+    await tick()
+    expect(call.child.killed).toBe(true)
+    call.child.close(1)
+    expect(await settlement).toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
+    await expect(fs.stat(partialPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses to mark an oversized merged final file complete', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const optionId = analysis.bestVideoOptionId as string
+    const promise = harness.engine.download({
+      ...downloadRequest(analysis.analysisId, optionId, harness.downloadDir),
+      maxBytes: 5
+    }, () => undefined)
+    const settlement = promise.then(() => null, error => error)
+    await waitFor(() => harness.calls.some(call => call.args.includes('--format')))
+    const call = downloadCall(harness.calls)
+    const finalPath = `${outputBase(call)}.${downloadOutputExt(call)}`
+    await fs.writeFile(finalPath, Buffer.from('oversize'))
+    call.child.close(0)
+    expect(await settlement).toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
+    await expect(fs.stat(finalPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('detects a post-processing marker split across stdout chunks', async () => {
     const harness = await makeHarness({ download: () => undefined })
     const { promise, updates, child, finalPath } = await startDownload(harness)

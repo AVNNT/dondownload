@@ -20,6 +20,7 @@ import {
   isBatchStatus,
   normalizeBatchSourceUrl,
   type BatchItemRecord,
+  type BatchMediaQuality,
   type BatchRecord
 } from '@shared/batches'
 import {
@@ -37,7 +38,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -305,7 +306,24 @@ const MIGRATIONS: readonly Migration[] = [
         CHECK (
           block_reason IS NULL OR
           block_reason IN ('scheduled', 'allowed-hours')
-        );
+      );
+    `
+  },
+  {
+    // Optional media output caps and playlist choices survive restart/retry.
+    // Existing jobs and batches remain unlimited and retain best-quality behavior.
+    version: 7,
+    sql: `
+      ALTER TABLE media_jobs ADD COLUMN max_bytes INTEGER
+        CHECK (max_bytes IS NULL OR max_bytes BETWEEN 1 AND 107374182400);
+
+      ALTER TABLE batches ADD COLUMN media_quality TEXT
+        CHECK (media_quality IS NULL OR media_quality IN (
+          'best', '1080p', '720p', '480p', '360p', 'audio-only'
+        ));
+
+      ALTER TABLE batches ADD COLUMN max_bytes_per_item INTEGER
+        CHECK (max_bytes_per_item IS NULL OR max_bytes_per_item BETWEEN 1 AND 107374182400);
     `
   }
 ]
@@ -488,6 +506,9 @@ function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
     errorMessage: text(row, 'error_message'),
     dir,
     filePath: text(row, 'file_path'),
+    ...(nullableNumber(row, 'max_bytes') === null
+      ? {}
+      : { maxBytes: nullableNumber(row, 'max_bytes') }),
     createdAt: Math.trunc(number(row, 'created_at')),
     updatedAt: Math.trunc(number(row, 'updated_at')),
     completedAt: nullableNumber(row, 'completed_at')
@@ -511,6 +532,12 @@ function rowToBatchRecord(row: Record<string, unknown>): BatchRecord | null {
     title,
     status: rawStatus,
     sourceUrl: text(row, 'source_url'),
+    ...(text(row, 'media_quality') === null
+      ? {}
+      : { mediaQuality: text(row, 'media_quality') as BatchMediaQuality }),
+    ...(nullableNumber(row, 'max_bytes_per_item') === null
+      ? {}
+      : { maxBytesPerItem: nullableNumber(row, 'max_bytes_per_item') }),
     errorMessage: text(row, 'error_message'),
     createdAt: Math.trunc(number(row, 'created_at')),
     updatedAt: Math.trunc(number(row, 'updated_at')),
@@ -653,8 +680,8 @@ export class DownloadDatabase {
         INSERT INTO media_jobs (
           id, source_url, analysis_id, option_id, kind, title, label, status,
           completed_bytes, total_bytes, error_message, dir, file_path,
-          created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          created_at, updated_at, completed_at, max_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           source_url = excluded.source_url,
           analysis_id = excluded.analysis_id,
@@ -670,7 +697,8 @@ export class DownloadDatabase {
           file_path = excluded.file_path,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
-          completed_at = excluded.completed_at
+          completed_at = excluded.completed_at,
+          max_bytes = excluded.max_bytes
       `)
       this.mediaSelectAllStatement = this.db.prepare(`
         SELECT * FROM media_jobs ORDER BY created_at DESC, updated_at DESC
@@ -682,8 +710,8 @@ export class DownloadDatabase {
       this.batchUpsertStatement = this.db.prepare(`
         INSERT INTO batches (
           id, kind, title, status, source_url, error_message,
-          created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          created_at, updated_at, completed_at, media_quality, max_bytes_per_item
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           kind = excluded.kind,
           title = excluded.title,
@@ -692,7 +720,9 @@ export class DownloadDatabase {
           error_message = excluded.error_message,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
-          completed_at = excluded.completed_at
+          completed_at = excluded.completed_at,
+          media_quality = excluded.media_quality,
+          max_bytes_per_item = excluded.max_bytes_per_item
       `)
       this.batchSelectAllStatement = this.db.prepare(`
         SELECT * FROM batches ORDER BY created_at DESC, updated_at DESC
@@ -1149,7 +1179,8 @@ export class DownloadDatabase {
       record.filePath,
       Math.trunc(record.createdAt),
       Math.trunc(record.updatedAt),
-      record.completedAt === null ? null : Math.trunc(record.completedAt)
+      record.completedAt === null ? null : Math.trunc(record.completedAt),
+      record.maxBytes ?? null
     )
   }
 
@@ -1169,7 +1200,9 @@ export class DownloadDatabase {
       record.errorMessage,
       Math.trunc(record.createdAt),
       Math.trunc(record.updatedAt),
-      record.completedAt === null ? null : Math.trunc(record.completedAt)
+      record.completedAt === null ? null : Math.trunc(record.completedAt),
+      record.mediaQuality ?? null,
+      record.maxBytesPerItem ?? null
     )
   }
 

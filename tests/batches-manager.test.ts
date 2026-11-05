@@ -886,6 +886,70 @@ describe('collection previews and explicit selection', () => {
     expect(media.analyzeCalls[0]?.url).toBe(engine.targets.get('colentry_1'))
   })
 
+  it('reports only quality options returned by per-entry media analysis', async () => {
+    const { manager, engine, media } = createHarness()
+    const preview = await manager.analyzeCollection({ url: 'https://media.example/playlist?list=abc' })
+    const availability = await manager.analyzeCollectionSelection({
+      previewId: preview.id,
+      selectedEntryIds: ['colentry_1']
+    })
+    expect(availability.entries).toEqual([{
+      entryId: 'colentry_1',
+      title: 'Entry 1',
+      qualities: [
+        { quality: 'best', estimatedBytes: 1_000 },
+        { quality: '1080p', estimatedBytes: 1_000 }
+      ]
+    }])
+    expect(engine.resolveCalls).toEqual([{ previewId: preview.id, entryIds: ['colentry_1'] }])
+    expect(media.queueCalls).toHaveLength(0)
+  })
+
+  it('skips a selected quality that is absent instead of replacing it with a higher format', async () => {
+    const { manager, media } = createHarness()
+    const preview = await manager.analyzeCollection({ url: 'https://media.example/playlist?list=abc' })
+    const batch = await manager.createCollectionBatch({
+      previewId: preview.id,
+      selectedEntryIds: ['colentry_1'],
+      mediaQuality: '720p'
+    })
+    await manager.waitForIdle()
+    expect(media.queueCalls).toHaveLength(0)
+    expect(manager.getBatch(batch.id).items[0]).toMatchObject({
+      status: 'skipped',
+      errorMessage: expect.stringContaining('No verified 720p')
+    })
+  })
+
+  it('skips known oversize options and passes a cap for unknown-size options', async () => {
+    const first = createHarness()
+    const preview = await first.manager.analyzeCollection({ url: 'https://media.example/playlist?list=abc' })
+    const tooSmall = await first.manager.createCollectionBatch({
+      previewId: preview.id,
+      selectedEntryIds: ['colentry_1'],
+      mediaQuality: '1080p',
+      maxBytesPerItem: 999
+    })
+    await first.manager.waitForIdle()
+    expect(first.media.queueCalls).toHaveLength(0)
+    expect(first.manager.getBatch(tooSmall.id).items[0]?.status).toBe('skipped')
+
+    const media = new FakeMediaJobs()
+    media.analysis = analysisFixture({
+      options: [{ ...analysisFixture().options[0]!, filesizeBytes: null }]
+    })
+    const second = createHarness({ media })
+    const preview2 = await second.manager.analyzeCollection({ url: 'https://media.example/playlist?list=abc' })
+    await second.manager.createCollectionBatch({
+      previewId: preview2.id,
+      selectedEntryIds: ['colentry_1'],
+      mediaQuality: '1080p',
+      maxBytesPerItem: 25_000
+    })
+    await second.manager.waitForIdle()
+    expect(media.queueCalls[0]).toMatchObject({ maxBytes: 25_000 })
+  })
+
   it('isolates a bad playlist entry while its sibling continues', async () => {
     const media = new FakeMediaJobs()
     const original = media.analyzeMedia.bind(media)

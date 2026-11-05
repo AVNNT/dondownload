@@ -4,6 +4,7 @@ import type {
   BatchItemTargetInput,
   BatchTargetInput,
   CollectionPreview,
+  CollectionSelectionAvailability,
   CreateCollectionBatchInput
 } from './batches'
 import type {
@@ -203,6 +204,9 @@ export interface DonDownloadApi {
   analyzeBatchCollection: (
     input: AnalyzeCollectionInput
   ) => Promise<ApiResult<CollectionPreview>>
+  analyzeCollectionSelection: (
+    input: CreateCollectionBatchInput
+  ) => Promise<ApiResult<CollectionSelectionAvailability>>
   submitSmartBatch: (
     input: SmartBatchSubmitInput
   ) => Promise<ApiResult<SmartBatchSubmitResult>>

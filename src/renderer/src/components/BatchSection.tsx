@@ -7,13 +7,16 @@ import {
 } from 'react'
 import {
   MAX_BATCH_SOURCES,
+  BATCH_MEDIA_QUALITIES,
   MAX_COLLECTION_SELECTION,
   type Batch,
   type BatchItem,
   type BatchItemStatus,
   type BatchKind,
+  type BatchMediaQuality,
   type BatchStatus,
-  type CollectionPreview
+  type CollectionPreview,
+  type CollectionSelectionAvailability
 } from '@shared/batches'
 import { formatBytes, formatPercent } from '@shared/format'
 import type {
@@ -300,7 +303,7 @@ export function BatchSection(): JSX.Element {
   }, [])
 
   const handleQueueSelected = useCallback(
-    async (preview: CollectionPreview): Promise<void> => {
+    async (preview: CollectionPreview & { quality: BatchMediaQuality; maxBytes: number | null }): Promise<void> => {
       const selectedEntryIds = selections[preview.id] ?? []
       if (selectedEntryIds.length === 0 || queueingPreviewId !== null) return
 
@@ -316,7 +319,11 @@ export function BatchSection(): JSX.Element {
       try {
         const result = await window.donDownload.createCollectionBatch({
           previewId: preview.id,
-          selectedEntryIds
+          selectedEntryIds,
+          ...(preview.kind === 'playlist' ? {
+            mediaQuality: preview.quality,
+            maxBytesPerItem: preview.maxBytes
+          } : {})
         })
         if (!result.ok) {
           setPreviewErrors((current) => ({
@@ -561,8 +568,8 @@ export function BatchSection(): JSX.Element {
               }}
               onSelectAll={() => handleSelectAll(preview)}
               onClearSelection={() => handleClearSelection(preview.id)}
-              onQueue={() => {
-                void handleQueueSelected(preview)
+              onQueue={(quality, maxBytes) => {
+                void handleQueueSelected({ ...preview, quality, maxBytes })
               }}
               onDismiss={() => handleDismissPreview(preview.id)}
             />
@@ -728,12 +735,48 @@ function PreviewCard({
   onToggleEntry: (entryId: string) => void
   onSelectAll: () => void
   onClearSelection: () => void
-  onQueue: () => void
+  onQueue: (quality: BatchMediaQuality, maxBytes: number | null) => void
   onDismiss: () => void
 }): JSX.Element {
   const titleId = `batch-preview-${preview.id}-title`
   const selectedCount = selectedIds.length
+  const selectedKey = selectedIds.join('|')
   const atLimit = selectedCount >= MAX_COLLECTION_SELECTION
+  const [availability, setAvailability] = useState<CollectionSelectionAvailability | null>(null)
+  const [checkingFormats, setCheckingFormats] = useState(false)
+  const [quality, setQuality] = useState<BatchMediaQuality>('best')
+  const [maxMiB, setMaxMiB] = useState('')
+  const [qualityError, setQualityError] = useState<string | null>(null)
+  useEffect(() => {
+    setAvailability(null)
+    setQualityError(null)
+  }, [selectedKey])
+
+  const analyzeSelected = async (): Promise<void> => {
+    if (!selectedCount || checkingFormats) return
+    setCheckingFormats(true)
+    setQualityError(null)
+    try {
+      const result = await window.donDownload.analyzeCollectionSelection({
+        previewId: preview.id,
+        selectedEntryIds: selectedIds
+      })
+      if (!result.ok) setQualityError(result.error.message)
+      else setAvailability(result.value)
+    } catch {
+      setQualityError('Selected entries could not be analyzed for available formats.')
+    } finally {
+      setCheckingFormats(false)
+    }
+  }
+
+  const qualityCounts = new Map<BatchMediaQuality, number>()
+  for (const entry of availability?.entries ?? []) {
+    for (const option of entry.qualities) qualityCounts.set(option.quality, (qualityCounts.get(option.quality) ?? 0) + 1)
+  }
+  const matchingCount = qualityCounts.get(quality) ?? 0
+  const maxBytes = maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
+  const validMaxBytes = maxBytes === null || (Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 100 * 1024 ** 3)
   const selectAllLabel =
     preview.availableCount > MAX_COLLECTION_SELECTION
       ? `Select first ${MAX_COLLECTION_SELECTION} available`
@@ -855,6 +898,13 @@ function PreviewCard({
                       </span>
                     ) : null}
                   </span>
+                  {preview.kind === 'playlist' && checked && availability ? (
+                    <span className="mt-1 block text-[10px] leading-4 text-zinc-500">
+                      {availability.entries.find(result => result.entryId === entry.id)?.qualities.length
+                        ? `Verified: ${availability.entries.find(result => result.entryId === entry.id)!.qualities.map(option => `${qualityLabel(option.quality)}${option.estimatedBytes === null ? '' : ` (~${formatBytes(option.estimatedBytes)})`}`).join(', ')}`
+                        : 'No verified media formats available'}
+                    </span>
+                  ) : null}
                   {!available ? (
                     <span
                       id={reasonId}
@@ -881,6 +931,36 @@ function PreviewCard({
         </p>
       ) : null}
 
+      {preview.kind === 'playlist' ? <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-medium text-zinc-200">Playlist quality</p>
+            <p className="text-[10px] text-zinc-500">Analyze selected entries first; unavailable qualities are skipped, never substituted.</p>
+          </div>
+          <button type="button" onClick={() => void analyzeSelected()} disabled={busy || selectedCount === 0 || checkingFormats} className="h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-200 disabled:opacity-40">
+            {checkingFormats ? 'Checking formats…' : 'Check selected formats'}
+          </button>
+        </div>
+        {availability ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="text-[10px] font-medium text-zinc-400">Quality
+              <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100">
+                {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => <option key={option} value={option}>{qualityLabel(option)} · available for {qualityCounts.get(option)}/{selectedCount}</option>)}
+              </select>
+            </label>
+            <label className="text-[10px] font-medium text-zinc-400">Optional max per-job size (MiB)
+              <input type="number" min="0.01" max="102400" step="0.01" value={maxMiB} onChange={event => setMaxMiB(event.target.value)} placeholder="No limit" className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100 placeholder:text-zinc-600" />
+            </label>
+            <p className="text-[10px] leading-4 text-zinc-500 sm:col-span-2">
+              {matchingCount < selectedCount ? `${selectedCount - matchingCount} selected ${selectedCount - matchingCount === 1 ? 'entry has' : 'entries have'} no ${qualityLabel(quality)} option and will be marked Skipped.` : `${matchingCount} selected ${matchingCount === 1 ? 'entry has' : 'entries have'} this verified quality.`}
+              {' '}Unknown-size and merged jobs are stopped at the cap during transfer; final output is checked before completion. Progress granularity may allow a small network overrun.
+            </p>
+          </div>
+        ) : null}
+        {!validMaxBytes ? <p role="alert" className="mt-2 text-[10px] text-red-300">Enter a per-job limit up to 102400 MiB.</p> : null}
+        {qualityError ? <p role="alert" className="mt-2 text-[10px] text-red-300">{qualityError}</p> : null}
+      </div> : null}
+
       {error ? (
         <div
           role="alert"
@@ -902,8 +982,8 @@ function PreviewCard({
         </p>
         <button
           type="button"
-          onClick={onQueue}
-          disabled={busy || selectedCount === 0}
+          onClick={() => onQueue(quality, maxBytes)}
+          disabled={busy || selectedCount === 0 || (preview.kind === 'playlist' && (!availability || matchingCount === 0 || !validMaxBytes))}
           className="h-10 shrink-0 rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {queueing
@@ -1382,6 +1462,10 @@ function batchKindLabel(kind: BatchKind): string {
 
 function previewKindLabel(kind: CollectionPreview['kind']): string {
   return kind === 'playlist' ? 'Playlist' : 'Pixeldrain list'
+}
+
+function qualityLabel(quality: BatchMediaQuality): string {
+  return quality === 'audio-only' ? 'Audio only' : quality === 'best' ? 'Best available' : quality
 }
 
 function defaultOutcomeMessage(entry: SmartBatchSubmitEntry): string {

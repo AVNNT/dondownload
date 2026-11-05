@@ -493,18 +493,19 @@ describe('media job persistence', () => {
       )
     ).toThrow(/credentials/)
     first.saveMediaJob(
-      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc#fragment' })
+      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc#fragment', maxBytes: 25_000_000 })
     )
 
     const stored = first.loadMediaJobs()
     expect(stored).toHaveLength(1)
     expect(stored[0]).toEqual(
-      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc' })
+      mediaRecord({ sourceUrl: 'https://example.com/watch?v=abc', maxBytes: 25_000_000 })
     )
 
     first.saveMediaJob(
       mediaRecord({
         sourceUrl: 'https://example.com/watch?v=abc',
+        maxBytes: 25_000_000,
         status: 'complete',
         completedBytes: 1_000,
         filePath: 'C:\\Users\\Test\\Downloads\\DonDownload\\Media\\video.mp4',
@@ -519,6 +520,7 @@ describe('media job persistence', () => {
     expect(reopened).toHaveLength(1)
     expect(reopened[0]?.status).toBe('complete')
     expect(reopened[0]?.completedBytes).toBe(1_000)
+    expect(reopened[0]?.maxBytes).toBe(25_000_000)
     expect(reopened[0]?.filePath).toBe(
       'C:\\Users\\Test\\Downloads\\DonDownload\\Media\\video.mp4'
     )
@@ -591,7 +593,8 @@ describe('media job persistence', () => {
       'file_path',
       'created_at',
       'updated_at',
-      'completed_at'
+      'completed_at',
+      'max_bytes'
     ])
   })
 })

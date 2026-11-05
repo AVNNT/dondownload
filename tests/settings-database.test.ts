@@ -521,12 +521,12 @@ afterEach(async () => {
 })
 
 describe('download settings persistence', () => {
-  it('creates one defaults row on a new schema-v5 database', async () => {
+  it('creates one defaults row on a new schema-v7 database', async () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
 
-    expect(database.schemaVersion).toBe(6)
-    expect(SCHEMA_VERSION).toBe(6)
+    expect(database.schemaVersion).toBe(7)
+    expect(SCHEMA_VERSION).toBe(7)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -902,7 +902,7 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(6)
+    expect(userVersion(verify)).toBe(7)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
     expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
@@ -910,11 +910,11 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
       project(fixture.downloads, DOWNLOAD_COLUMNS)
     )
     if (version >= 2) {
-      expect(rowsOf(verify, 'media_jobs')).toEqual(fixture.media)
+      expect(rowsOf(verify, 'media_jobs')).toMatchObject(fixture.media)
       expect(indexNames(verify, 'media_jobs')).toEqual(mediaIndexes)
     }
     if (version >= 3) {
-      expect(rowsOf(verify, 'batches')).toEqual(fixture.batches)
+      expect(rowsOf(verify, 'batches')).toMatchObject(fixture.batches)
       expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
       expect(indexNames(verify, 'batches')).toEqual(batchParentIndexes)
       expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
@@ -931,8 +931,8 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
   })
 })
 
-describe('v5 to v6 migration', () => {
-  it('adds connection and policy columns without changing v5 controls or settings', async () => {
+describe('v5 to v7 migration', () => {
+  it('adds connection, policy, and optional media cap columns without changing prior data', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
     createLegacyDatabase(filePath, 4)
@@ -975,7 +975,7 @@ describe('v5 to v6 migration', () => {
     raw.close()
 
     const database = open(filePath)
-    expect(database.schemaVersion).toBe(6)
+    expect(database.schemaVersion).toBe(7)
     expect(database.loadSettings()).toEqual({
       maxConcurrentDownloads: 7,
       perHostConnections: 9,
@@ -995,7 +995,7 @@ describe('v5 to v6 migration', () => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(6)
+    expect(userVersion(verify)).toBe(7)
     expect(columnNames(verify, 'downloads')).toEqual([
       ...DOWNLOAD_COLUMNS,
       'scheduled_at',
