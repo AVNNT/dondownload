@@ -7,17 +7,19 @@ compliant. DonDownload's own source is licensed under MIT (see `LICENSE`); that
 license does not replace or override the terms of any bundled third-party
 binary.
 
-The application does not download these tools at runtime. The staging script
-copies locally installed, version-checked executables into the git-ignored
-`build/vendor/` directory. The installer then includes that directory as
-`resources/vendor/`.
+The application does not download these tools at runtime (the managed yt-dlp
+updater is a separate, opt-in update path that writes below the user data
+directory). The staging script copies locally installed, version-checked
+executables into the git-ignored `build/vendor/` directory; for yt-dlp it stages
+the official one-folder release archive (`yt-dlp.exe` plus `_internal/`). The
+installer then includes that directory as `resources/vendor/`.
 
 ## Inventory
 
 | Tool | Pinned version | Staged path | License | Upstream | Corresponding source archive |
 | --- | --- | --- | --- | --- | --- |
 | aria2 (`aria2c.exe`) | 1.37.0 | `vendor/aria2/aria2c.exe` | GPL-2.0-or-later | <https://aria2.github.io/> | <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2> |
-| yt-dlp (`yt-dlp.exe`) | 2026.10.26 | `vendor/yt-dlp/yt-dlp.exe` | Unlicense, plus bundled third-party licenses | <https://github.com/yt-dlp/yt-dlp> | <https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz> |
+| yt-dlp (`yt-dlp.exe` plus `_internal/`) | 2026.10.26 | `vendor/yt-dlp/` (official one-folder build) | Unlicense, plus bundled third-party licenses | <https://github.com/yt-dlp/yt-dlp> | <https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz> |
 | FFmpeg (`ffmpeg.exe`) | 9.0.2 Gyan full build | `vendor/ffmpeg/ffmpeg.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
 | ffprobe (`ffprobe.exe`) | 9.0.2 Gyan full build | `vendor/ffmpeg/ffprobe.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
 | Deno (`deno.exe`) | 2.9.8 | `vendor/deno/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
@@ -44,10 +46,12 @@ authenticate the upstream origin or prove a reproducible build.
 
 - License: Unlicense. The text is included in
   `third-party/licenses/yt-dlp-UNLICENSE.txt`.
-- The standalone Windows `yt-dlp.exe` bundles Python and other third-party
-  components. The upstream aggregated notice file for the pinned release is
+- The official Windows one-folder build (`yt-dlp.exe` plus `_internal/`) bundles
+  Python and other third-party components, just like the older one-file
+  `yt-dlp.exe`. The upstream aggregated notice file for the pinned release is
   included in `third-party/licenses/yt-dlp-THIRD_PARTY_LICENSES.txt`. The
-  executable must not be redistributed with the Unlicense text alone.
+  executables and runtime files must not be redistributed with the Unlicense
+  text alone.
 - Source archive: the upstream source tarball above. A distributor should also
   archive the build recipe used to produce the standalone executable, or provide
   a written offer that covers it.

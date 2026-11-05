@@ -150,4 +150,48 @@ describe('managed yt-dlp locator preference', () => {
     await writeBundled(root, '2026.10.26')
     await expect(readBundledYtdlpVersion(root)).resolves.toBe('2026.10.26')
   })
+
+  it('resolves both one-folder and legacy one-file managed layouts', async () => {
+    const root = await makeRoot()
+    const bundled = await writeBundled(root, '2026.10.26')
+    // The bundled layout is now the official one-folder build.
+    await writeFileAt(
+      path.join(root, 'vendor', 'yt-dlp', '_internal', 'python313.dll')
+    )
+
+    const managedDir = path.join(root, 'userData', 'tools', 'yt-dlp')
+    // New onedir managed version.
+    const onedir = await writeManaged(managedDir, '2026.11.05')
+    await writeFileAt(
+      path.join(managedDir, '2026.11.05', '_internal', 'python313.dll')
+    )
+
+    const location = await locateMediaTool('ytdlp', {
+      ...BASE_OPTIONS,
+      cwd: root,
+      managedToolsDir: managedDir
+    })
+    expect(location).toMatchObject({ path: onedir, source: 'managed' })
+
+    // Without a newer managed version the one-folder bundled exe wins.
+    const fallbackRoot = await makeRoot()
+    const fallbackBundled = await writeBundled(fallbackRoot, '2026.10.26')
+    await writeFileAt(
+      path.join(fallbackRoot, 'vendor', 'yt-dlp', '_internal', 'python313.dll')
+    )
+    const fallbackManaged = path.join(
+      fallbackRoot,
+      'userData',
+      'tools',
+      'yt-dlp'
+    )
+    await writeManaged(fallbackManaged, '2026.10.26')
+    const fallback = await locateMediaTool('ytdlp', {
+      ...BASE_OPTIONS,
+      cwd: fallbackRoot,
+      managedToolsDir: fallbackManaged
+    })
+    expect(fallback.path).toBe(fallbackBundled)
+    expect(bundled).not.toBe(onedir)
+  })
 })

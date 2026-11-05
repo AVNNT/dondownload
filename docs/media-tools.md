@@ -11,7 +11,7 @@ repository or produced by its build.
 
 | Tool | Verified version | Install source | Exact local path |
 | --- | --- | --- | --- |
-| yt-dlp | `2026.10.26` | WinGet package `yt-dlp.yt-dlp` (publisher `yt-dlp`) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe` |
+| yt-dlp | `2026.10.26` | Official Windows **one-folder** release `yt-dlp_win.zip` (`yt-dlp.exe` plus `_internal\`), staged into `build\vendor\yt-dlp\`; the WinGet one-file package may still be used for ad-hoc local runs | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe` (one-file); staged onedir copy under `build\vendor\yt-dlp\` |
 | FFmpeg | `9.0.2-full_build` (Gyan) | WinGet package `Gyan.FFmpeg` (full build) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe` |
 | ffprobe | `9.0.2-full_build` (Gyan) | same Gyan package | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffprobe.exe` |
 | Deno | `2.9.8` (stable, `x86_64-pc-windows-msvc`) | WinGet package `DenoLand.Deno`, user-scoped | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe` |
@@ -33,7 +33,11 @@ package directory is user-scoped rather than machine-wide.
 
 - **yt-dlp** performs media analysis and downloads. DonDownload locates it via
   `DONDOWNLOAD_YTDLP_PATH`, `<app>\vendor\yt-dlp\`, `<app>\vendor\bin\`, then
-  `PATH`.
+  `PATH`. The bundled copy is the official one-folder build
+  (`vendor\yt-dlp\yt-dlp.exe` plus `vendor\yt-dlp\_internal\`), which starts
+  without the PyInstaller one-file self-extraction step on every launch.
+  The one-file and one-folder layouts are interchangeable at the locator level
+  because both expose `<layout>\yt-dlp.exe`.
 - **FFmpeg** is required only for options whose separate video and audio streams
   must be merged. The verified engine passes the located executable to yt-dlp
   with `--ffmpeg-location`. It is located via `DONDOWNLOAD_FFMPEG_PATH`,
@@ -58,6 +62,7 @@ yt-dlp releases a newer version, DonDownload may place it at:
 
 ```text
 <userData>/tools/yt-dlp/<version>/yt-dlp.exe
+<userData>/tools/yt-dlp/<version>/_internal/...
 ```
 
 Resolution order per media job is:
@@ -75,11 +80,29 @@ The updater reads
 `https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest` with a
 `DonDownload/<app version>` user agent and no credentials. It only follows HTTPS
 redirects on `github.com`, `api.github.com`, `objects.githubusercontent.com`
-and `release-assets.githubusercontent.com`. It downloads `yt-dlp.exe` plus
-`SHA2-256SUMS`, enforces a 50 MB size cap, verifies the exact SHA-256, writes a
-temporary file, runs the new binary with `--version` (15 s timeout) and requires
-the expected release tag before an atomic rename activates it. Any failure
-keeps the current binary and reports a safe error.
+and `release-assets.githubusercontent.com`. On Windows it downloads the official
+`yt-dlp_win.zip` one-folder archive plus `SHA2-256SUMS`, enforces a 100 MB
+download cap, verifies the archive's exact SHA-256, and unpacks it into a
+temporary sibling of the target version directory. Extraction rejects absolute
+paths, drive letters, `..` segments, symlinks and control characters, and caps
+the entry count (20,000) and total extracted size (300 MB). The updater then
+runs the extracted `<dir>/yt-dlp.exe` with `--version` (15 s timeout), requires
+the expected release tag, and only then renames the whole directory into
+`<userData>/tools/yt-dlp/<version>/` atomically. Any failure keeps the current
+binary and reports a safe error.
+
+Managed versions installed by an older release as the one-file
+`<version>/yt-dlp.exe` remain usable: the locator only requires that executable
+to exist, so they are used until a newer onedir version replaces them. The same
+back-compat path is used on non-Windows platforms, which still receive the
+legacy single-file asset.
+
+`scripts/stage-vendor.ps1` stages the same one-folder layout into
+`build/vendor/yt-dlp/` from a verified `yt-dlp_win.zip`. It accepts a local
+archive through `DONDOWNLOAD_YTDLP_ZIP_PATH`, a cached copy under
+`%LOCALAPPDATA%\DonDownload\vendor`, or an existing one-folder installation
+pointed at by `DONDOWNLOAD_YTDLP_PATH`; otherwise it downloads only the pinned
+release archive URL and verifies the pinned SHA-256.
 
 The automatic check runs at most once every 24 hours in the background and is
 controlled by **Keep yt-dlp up to date automatically** in Settings (default
@@ -95,10 +118,10 @@ yt-dlp itself is released under the **Unlicense** (public-domain dedication):
 <https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE> and
 <https://unlicense.org/>.
 
-The standalone Windows `yt-dlp.exe` bundles Python and other third-party
-components. Their licenses, including PSF, OpenSSL, SQLite, bzip2, libffi,
-liblzma and zlib terms, are aggregated in
-`THIRD_PARTY_LICENSES.txt`:
+The official Windows one-folder build (`yt-dlp.exe` plus `_internal/`) and the
+older one-file `yt-dlp.exe` both bundle Python and other third-party components.
+Their licenses, including PSF, OpenSSL, SQLite, bzip2, libffi, liblzma and zlib
+terms, are aggregated in `THIRD_PARTY_LICENSES.txt`:
 <https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES.txt>.
 Redistributing the executable therefore requires the Unlicense text plus the
 applicable third-party notices, not just the Unlicense alone.

@@ -6,14 +6,23 @@ Stages verified third-party Windows executables for the DonDownload installer.
 .DESCRIPTION
 Copies only the expected executables from an explicit DONDOWNLOAD_*_PATH
 override or a verified local installation path into the ignored build\vendor
-staging directory. It never downloads, installs, upgrades or modifies a tool,
-the registry, the firewall or an existing DonDownload installation.
+staging directory. It never installs, upgrades or modifies a tool, the registry,
+the firewall or an existing DonDownload installation.
+
+yt-dlp is staged as the official Windows one-folder build (`yt-dlp.exe` plus
+`_internal\`) because it starts much faster than the PyInstaller one-file
+executable. A verified local `yt-dlp_win.zip` may be supplied with
+DONDOWNLOAD_YTDLP_ZIP_PATH (or a cached copy may exist below
+%LOCALAPPDATA%\DonDownload\vendor). When neither is present, the script downloads
+only the pinned yt-dlp archive URL below and requires its SHA-256 to match the
+pinned value; no other download is performed.
 
 Every tool is executed with a read-only version flag and its version must match
 the pinned version below. A missing tool, a mismatched version, a missing
-license/notice file, or an unexpected staging directory fails the script before
-an installer can be produced. The script writes a deterministic JSON manifest
-with the SHA-256, version, source and license metadata for each staged file.
+license/notice file, an unsafe archive entry, or an unexpected staging directory
+fails the script before an installer can be produced. The script writes a
+deterministic JSON manifest with the SHA-256, version, source and license
+metadata for each staged file.
 
 .PARAMETER OutputDirectory
 Optional staging directory. It must be a child of the repository's build\
@@ -23,7 +32,11 @@ directory. Defaults to build\vendor.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1
 
 .EXAMPLE
-$env:DONDOWNLOAD_YTDLP_PATH = 'D:\tools\yt-dlp.exe'
+$env:DONDOWNLOAD_YTDLP_ZIP_PATH = 'D:\downloads\yt-dlp_win.zip'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1
+
+.EXAMPLE
+$env:DONDOWNLOAD_YTDLP_PATH = 'D:\tools\yt-dlp\yt-dlp.exe'
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1
 #>
 [CmdletBinding()]
@@ -78,6 +91,14 @@ $tools = @(
         VersionArguments     = @('--version')
         VersionPattern       = '(?m)^\s*([0-9]{4}\.[0-9]{2}\.[0-9]{2})\s*$'
         TargetRelativePath   = 'yt-dlp\yt-dlp.exe'
+        # The official Windows one-folder build starts much faster than the
+        # PyInstaller one-file executable because nothing self-extracts on
+        # every launch. It is staged as `yt-dlp\yt-dlp.exe` plus `_internal\`.
+        Layout               = 'onedir'
+        ArchiveEnvOverride   = 'DONDOWNLOAD_YTDLP_ZIP_PATH'
+        ArchiveFileName      = 'yt-dlp_win.zip'
+        ArchiveUrl           = 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip'
+        ArchiveSha256        = 'fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419'
         PathCommand          = 'yt-dlp'
         KnownPaths           = @(
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe'
@@ -90,7 +111,7 @@ $tools = @(
         Upstream             = 'https://github.com/yt-dlp/yt-dlp'
         SourceVersion        = '2026.10.26'
         SourceArchive        = 'https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz'
-        Notice               = 'yt-dlp is Unlicense; the standalone Windows executable also carries third-party licenses. See third-party/NOTICE.md.'
+        Notice               = 'yt-dlp is Unlicense; the official Windows one-folder build also carries the bundled third-party licenses. See third-party/NOTICE.md.'
     }
     [pscustomobject]@{
         Name                 = 'ffmpeg'
@@ -236,6 +257,167 @@ function Get-Sha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Assert-Sha256 {
+    param(
+        [string]$Path,
+        [string]$Expected,
+        [string]$Description
+    )
+    $actual = Get-Sha256 -Path $Path
+    if ($actual -ne $Expected.ToLowerInvariant()) {
+        throw "$Description checksum mismatch. Expected $Expected, got $actual for $Path."
+    }
+    return $actual
+}
+
+function Expand-VerifiedZip {
+    param(
+        [string]$ZipPath,
+        [string]$Destination,
+        [pscustomobject]$Tool
+    )
+
+    # Caps mirror the runtime updater: reject oversized archives before any
+    # byte is written, and validate every entry name for zip-slip safety.
+    $maxEntries = 20000
+    $maxTotalBytes = [long](300 * 1024 * 1024)
+    $maxEntryBytes = [long](300 * 1024 * 1024)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $destinationFull = [System.IO.Path]::GetFullPath($Destination)
+    $prefix = $destinationFull.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        if ($zip.Entries.Count -gt $maxEntries) {
+            throw "$($Tool.Name): archive contains too many entries ($($zip.Entries.Count))."
+        }
+        [long]$totalBytes = 0
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName
+            if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 4096) {
+                throw "$($Tool.Name): archive contains an invalid entry name."
+            }
+            if ($name -match '[\x00-\x1f\x7f]') {
+                throw "$($Tool.Name): archive contains a control character in an entry name."
+            }
+            if ($name.Contains('\')) {
+                throw "$($Tool.Name): archive entry uses a backslash separator: $name"
+            }
+            if ($name.StartsWith('/') -or $name -match '^[A-Za-z]:') {
+                throw "$($Tool.Name): archive contains an absolute entry path: $name"
+            }
+            foreach ($segment in $name.Split('/')) {
+                if ($segment -eq '..' -or $segment -eq '.') {
+                    throw "$($Tool.Name): archive entry escapes the extraction directory: $name"
+                }
+            }
+            if ($name.EndsWith('/')) { continue }
+
+            if ($entry.Length -gt $maxEntryBytes) {
+                throw "$($Tool.Name): archive entry exceeds the extraction size limit: $name"
+            }
+            $totalBytes += $entry.Length
+            if ($totalBytes -gt $maxTotalBytes) {
+                throw "$($Tool.Name): archive expands beyond the extraction size limit."
+            }
+
+            $relative = $name.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            $target = [System.IO.Path]::GetFullPath((Join-Path $destinationFull $relative))
+            if (-not $target.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "$($Tool.Name): archive entry escapes the extraction directory: $name"
+            }
+            $parent = Split-Path -Parent $target
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Resolve-YtdlpOnedir {
+    param([pscustomobject]$Tool)
+
+    $cacheDir = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path ([System.IO.Path]::GetTempPath()) 'DonDownload\vendor'
+    } else {
+        Join-Path $env:LOCALAPPDATA 'DonDownload\vendor'
+    }
+    $cachePath = Join-Path $cacheDir ("yt-dlp_win-{0}.zip" -f $Tool.ExpectedVersion)
+
+    $override = [Environment]::GetEnvironmentVariable($Tool.ArchiveEnvOverride)
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        $raw = $override.Trim().Trim('"')
+        $candidate = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $root $raw }
+        $candidate = [System.IO.Path]::GetFullPath($candidate)
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "$($Tool.Name): $($Tool.ArchiveEnvOverride) points to a missing file: $candidate"
+        }
+        Assert-Sha256 -Path $candidate -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) archive" | Out-Null
+        return [pscustomobject]@{
+            ZipPath   = $candidate
+            Directory = $null
+            Kind      = 'environment-override'
+            Origin    = $Tool.ArchiveEnvOverride
+        }
+    }
+
+    # A staged one-folder installation can be pointed at directly.
+    $exeCandidates = New-Object System.Collections.Generic.List[string]
+    $exeOverride = [Environment]::GetEnvironmentVariable($Tool.EnvOverride)
+    if (-not [string]::IsNullOrWhiteSpace($exeOverride)) {
+        $raw = $exeOverride.Trim().Trim('"')
+        $exeCandidates.Add($(if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $root $raw }))
+    }
+    foreach ($known in $Tool.KnownPaths) { $exeCandidates.Add($known) }
+    foreach ($candidate in $exeCandidates) {
+        $exePath = [System.IO.Path]::GetFullPath($candidate)
+        if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) { continue }
+        $directory = Split-Path -Parent $exePath
+        if (Test-Path -LiteralPath (Join-Path $directory '_internal') -PathType Container) {
+            return [pscustomobject]@{
+                ZipPath   = $null
+                Directory = $directory
+                Kind      = 'verified-local-onedir'
+                Origin    = 'documented one-folder installation'
+            }
+        }
+    }
+
+    if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
+        Assert-Sha256 -Path $cachePath -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) cached archive" | Out-Null
+        return [pscustomobject]@{
+            ZipPath   = $cachePath
+            Directory = $null
+            Kind      = 'verified-local-cache'
+            Origin    = $cachePath
+        }
+    }
+
+    # No verified local copy: fetch only the pinned official archive URL.
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    $tempDownload = Join-Path $cacheDir ('.yt-dlp-download-{0}.zip' -f [guid]::NewGuid().ToString('N'))
+    try {
+        Write-Host "Downloading pinned $($Tool.ArchiveFileName) from $($Tool.ArchiveUrl)"
+        Invoke-WebRequest -Uri $Tool.ArchiveUrl -OutFile $tempDownload -UseBasicParsing
+        Assert-Sha256 -Path $tempDownload -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) downloaded archive" | Out-Null
+        Move-Item -LiteralPath $tempDownload -Destination $cachePath -Force
+    } catch {
+        if (Test-Path -LiteralPath $tempDownload) {
+            Remove-Item -LiteralPath $tempDownload -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    return [pscustomobject]@{
+        ZipPath   = $cachePath
+        Directory = $null
+        Kind      = 'verified-github-archive'
+        Origin    = $Tool.ArchiveUrl
+    }
+}
+
 if (Test-Path -LiteralPath $OutputDirectory) {
     Remove-Item -LiteralPath $OutputDirectory -Recurse -Force
 }
@@ -244,9 +426,6 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $stagedTools = New-Object System.Collections.Generic.List[object]
 
 foreach ($tool in $tools) {
-    $source = Resolve-ToolSource -Tool $tool
-    $version = Get-ToolVersion -Tool $tool -Path $source.Path
-
     $licenseFiles = New-Object System.Collections.Generic.List[object]
     foreach ($relativeLicense in $tool.LicenseFiles) {
         $licensePath = Join-Path $root $relativeLicense
@@ -260,19 +439,93 @@ foreach ($tool in $tools) {
         })
     }
 
-    $target = Join-Path $OutputDirectory $tool.TargetRelativePath
-    $targetDirectory = Split-Path -Parent $target
-    New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
-    Copy-Item -LiteralPath $source.Path -Destination $target -Force
+    $isOnedir = ($tool.PSObject.Properties.Name -contains 'Layout') -and $tool.Layout -eq 'onedir'
+    $extra = [ordered]@{}
+    $stagingWork = $null
 
-    $sourceHash = Get-Sha256 -Path $source.Path
-    $stagedHash = Get-Sha256 -Path $target
-    if ($sourceHash -ne $stagedHash) {
-        throw "$($tool.Name): staged copy hash does not match the source hash."
+    if ($isOnedir) {
+        # Stage the official one-folder build: `yt-dlp.exe` plus `_internal\`.
+        $archive = Resolve-YtdlpOnedir -Tool $tool
+        $sourceDirectory = $archive.Directory
+        if ($null -eq $sourceDirectory) {
+            $stagingWork = Join-Path ([System.IO.Path]::GetTempPath()) ('dondownload-stage-{0}-{1}' -f $tool.Name, [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Force -Path $stagingWork | Out-Null
+            try {
+                Expand-VerifiedZip -ZipPath $archive.ZipPath -Destination $stagingWork -Tool $tool
+            } catch {
+                Remove-Item -LiteralPath $stagingWork -Recurse -Force -ErrorAction SilentlyContinue
+                throw
+            }
+            $sourceDirectory = $stagingWork
+        }
+
+        try {
+            $sourceExe = Join-Path $sourceDirectory $tool.Executable
+            if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+                throw "$($tool.Name): the verified archive did not contain $($tool.Executable)."
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory '_internal') -PathType Container)) {
+                throw "$($tool.Name): the verified archive is not the expected one-folder build (missing _internal)."
+            }
+            $version = Get-ToolVersion -Tool $tool -Path $sourceExe
+
+            $target = Join-Path $OutputDirectory $tool.TargetRelativePath
+            $targetDirectory = Split-Path -Parent $target
+            New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
+            Copy-Item -Path (Join-Path $sourceDirectory '*') -Destination $targetDirectory -Recurse -Force
+
+            $sourceHash = Get-Sha256 -Path $sourceExe
+            $stagedHash = Get-Sha256 -Path $target
+            if ($sourceHash -ne $stagedHash) {
+                throw "$($tool.Name): staged copy hash does not match the source hash."
+            }
+
+            $item = Get-Item -LiteralPath $target
+            $stagedFiles = @(Get-ChildItem -LiteralPath $targetDirectory -Recurse -File)
+            [long]$extractedSizeBytes = ($stagedFiles | Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $extractedSizeBytes) { $extractedSizeBytes = 0 }
+
+            $extra = [ordered]@{
+                layout             = 'onedir'
+                fileCount          = $stagedFiles.Count
+                extractedSizeBytes = $extractedSizeBytes
+                archive            = [ordered]@{
+                    name      = $tool.ArchiveFileName
+                    url       = $tool.ArchiveUrl
+                    sha256    = $tool.ArchiveSha256
+                    sizeBytes = if ($null -ne $archive.ZipPath) { (Get-Item -LiteralPath $archive.ZipPath).Length } else { $null }
+                }
+            }
+            $sourceKind = $archive.Kind
+            $sourcePath = if ($null -ne $archive.ZipPath) { $archive.ZipPath } else { $sourceExe }
+            $sourceOrigin = $archive.Origin
+        } finally {
+            if ($null -ne $stagingWork -and (Test-Path -LiteralPath $stagingWork)) {
+                Remove-Item -LiteralPath $stagingWork -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } else {
+        $source = Resolve-ToolSource -Tool $tool
+        $version = Get-ToolVersion -Tool $tool -Path $source.Path
+
+        $target = Join-Path $OutputDirectory $tool.TargetRelativePath
+        $targetDirectory = Split-Path -Parent $target
+        New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
+        Copy-Item -LiteralPath $source.Path -Destination $target -Force
+
+        $sourceHash = Get-Sha256 -Path $source.Path
+        $stagedHash = Get-Sha256 -Path $target
+        if ($sourceHash -ne $stagedHash) {
+            throw "$($tool.Name): staged copy hash does not match the source hash."
+        }
+
+        $item = Get-Item -LiteralPath $target
+        $sourceKind = $source.Kind
+        $sourcePath = $source.Path
+        $sourceOrigin = $source.Origin
     }
 
-    $item = Get-Item -LiteralPath $target
-    $stagedTools.Add([ordered]@{
+    $manifestItem = [ordered]@{
         name            = $tool.Name
         executable      = $tool.Executable
         stagedPath      = $tool.TargetRelativePath.Replace('\', '/')
@@ -281,9 +534,9 @@ foreach ($tool in $tools) {
         sha256          = $stagedHash
         sizeBytes       = $item.Length
         source          = [ordered]@{
-            kind   = $source.Kind
-            path   = $source.Path
-            origin = $source.Origin
+            kind   = $sourceKind
+            path   = $sourcePath
+            origin = $sourceOrigin
         }
         license         = $tool.License
         licenseFiles    = @($licenseFiles.ToArray())
@@ -291,7 +544,9 @@ foreach ($tool in $tools) {
         sourceVersion   = $tool.SourceVersion
         sourceArchive   = $tool.SourceArchive
         notice          = $tool.Notice
-    })
+    }
+    foreach ($key in $extra.Keys) { $manifestItem[$key] = $extra[$key] }
+    $stagedTools.Add($manifestItem)
 
     Write-Host ("Staged {0} {1} ({2:N0} bytes, sha256 {3})" -f $tool.Name, $version, $item.Length, $stagedHash)
 }

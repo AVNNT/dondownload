@@ -26,6 +26,8 @@ files:
 extraResources:
   # Staged, version-checked third-party executables plus manifest.json.
   # build/vendor is produced by scripts/stage-vendor.ps1 and is git-ignored.
+  # The whole tree is copied, so yt-dlp's official one-folder layout
+  # (`yt-dlp/yt-dlp.exe` plus `yt-dlp/_internal/`) stays intact outside asar.
   - from: build/vendor
     to: vendor
   # Compiled native messaging host. Produced by scripts/build-native-host.ps1.

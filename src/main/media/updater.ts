@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsPromises } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
+import { inflateRawSync } from 'node:zlib'
 import {
   compareYtdlpVersions,
   isYtdlpVersion
@@ -25,13 +26,23 @@ import {
  * Security properties:
  * - Only `https://github.com`, `api.github.com`, `objects.githubusercontent.com`
  *   and `release-assets.githubusercontent.com` URLs are requested or followed.
- * - The executable must match the release's `SHA2-256SUMS` entry exactly and
- *   stay below the size cap before it is written as an executable.
- * - The downloaded file is run with `--version` and must print the expected
- *   release tag before it becomes visible to the locator.
+ * - The Windows asset is the official one-folder `yt-dlp_win.zip`, which starts
+ *   far faster than the PyInstaller one-file executable because it does not
+ *   self-extract on every launch. The archive must match the release's
+ *   `SHA2-256SUMS` entry exactly and stay below the size cap before extraction.
+ * - Archive entries are validated before anything is written: absolute paths,
+ *   drive letters, `..` segments, symlinks and control characters are rejected,
+ *   and the entry count and total extracted size are capped. The zip is never
+ *   extracted in place; it is unpacked into a temporary sibling directory.
+ * - The extracted `yt-dlp.exe` is run with `--version` and must print the
+ *   expected release tag before the temporary directory is atomically renamed
+ *   into place.
  * - The bundled app resources are never written. Every managed file lives below
  *   `<userData>/tools/yt-dlp`, and an active media job never has its executable
  *   swapped underneath it.
+ * - An already-installed one-file managed `<version>/yt-dlp.exe` stays usable
+ *   until a newer onedir version replaces it; the layout is self-describing, so
+ *   the locator needs no migration step.
  *
  * Network, filesystem, clock and process verification are injectable so unit
  * tests never touch the network or run a real binary.
@@ -39,13 +50,20 @@ import {
 
 export const YTDLP_RELEASE_API =
   'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest'
-export const YTDLP_ASSET_NAME = 'yt-dlp.exe'
+/** Official Windows one-folder archive: `yt-dlp.exe` plus `_internal/`. */
+export const YTDLP_ASSET_NAME = 'yt-dlp_win.zip'
+/** One-file Windows executable, kept for the pre-onedir compatibility path. */
+export const YTDLP_LEGACY_ASSET_NAME = 'yt-dlp.exe'
 export const YTDLP_SUMS_NAME = 'SHA2-256SUMS'
-export const MAX_YTDLP_DOWNLOAD_BYTES = 50 * 1024 * 1024
+export const MAX_YTDLP_DOWNLOAD_BYTES = 100 * 1024 * 1024
 export const MAX_YTDLP_SUMS_BYTES = 1024 * 1024
+export const MAX_YTDLP_EXTRACTED_BYTES = 300 * 1024 * 1024
+export const MAX_YTDLP_ARCHIVE_ENTRIES = 20_000
 export const YTDLP_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 export const YTDLP_EXTRACTOR_RETRY_AFTER_MS = 60 * 60 * 1000
 export const YTDLP_VERSION_TIMEOUT_MS = 15_000
+const ONEDIR_EXECUTABLE = 'yt-dlp.exe'
+const ONEDIR_LIBRARY_DIRECTORY = '_internal'
 
 const ALLOWED_HOSTS = new Set([
   'api.github.com',
@@ -136,7 +154,9 @@ interface PendingInstall {
 
 interface LatestRelease {
   version: string
-  exeUrl: string
+  /** Windows: `yt-dlp_win.zip`; other platforms use the legacy one-file asset. */
+  assetName: string
+  assetUrl: string
   sumsUrl: string
 }
 
@@ -223,7 +243,269 @@ function decodeUtf8(data: Uint8Array): string {
   return new TextDecoder('utf-8').decode(data)
 }
 
-function parseLatestRelease(value: unknown): LatestRelease {
+/* ------------------------------------------------------------------------- *
+ * Minimal, defensive ZIP reader.
+ *
+ * The updater only needs stored/deflated entries, so a small reader keeps the
+ * security rules auditable and avoids adding a dependency to the packaged main
+ * process. Every offset is bounds-checked before use.
+ * ------------------------------------------------------------------------- */
+
+const ZIP_EOCD_SIGNATURE = 0x06054b50
+const ZIP_CENTRAL_SIGNATURE = 0x02014b50
+const ZIP_LOCAL_SIGNATURE = 0x04034b50
+const ZIP_METHOD_STORED = 0
+const ZIP_METHOD_DEFLATE = 8
+const ZIP_FLAG_ENCRYPTED = 1 << 0
+const ZIP_FLAG_UTF8 = 1 << 11
+const ZIP_UNIX_FILE_TYPE = 0xf000
+const ZIP_UNIX_SYMLINK = 0xa000
+
+export interface ZipLimits {
+  maxEntries: number
+  maxTotalBytes: number
+  maxEntryBytes: number
+}
+
+export const DEFAULT_ZIP_LIMITS: ZipLimits = {
+  maxEntries: MAX_YTDLP_ARCHIVE_ENTRIES,
+  maxTotalBytes: MAX_YTDLP_EXTRACTED_BYTES,
+  maxEntryBytes: MAX_YTDLP_EXTRACTED_BYTES
+}
+
+export interface ExtractedArchiveEntry {
+  /** Validated relative path using the host path separator. */
+  relativePath: string
+  data: Uint8Array
+}
+
+interface ZipCentralEntry {
+  name: string
+  compressedSize: number
+  uncompressedSize: number
+  crc32: number
+  localOffset: number
+  method: number
+  flags: number
+  externalAttributes: number
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let index = 0; index < 256; index += 1) {
+    let value = index
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+    }
+    table[index] = value >>> 0
+  }
+  return table
+})()
+
+function crc32(bytes: Uint8Array): number {
+  let value = 0xffffffff
+  for (const byte of bytes) {
+    value = (CRC32_TABLE[(value ^ byte) & 0xff] as number) ^ (value >>> 8)
+  }
+  return (value ^ 0xffffffff) >>> 0
+}
+
+function requireRange(
+  bytes: Uint8Array,
+  offset: number,
+  length: number,
+  what: string
+): void {
+  if (offset < 0 || length < 0 || offset + length > bytes.byteLength) {
+    fail(`The yt-dlp archive is truncated (${what}).`)
+  }
+}
+
+function readU16(bytes: Uint8Array, offset: number): number {
+  requireRange(bytes, offset, 2, 'u16')
+  return (bytes[offset] as number) | ((bytes[offset + 1] as number) << 8)
+}
+
+function readU32(bytes: Uint8Array, offset: number): number {
+  requireRange(bytes, offset, 4, 'u32')
+  return (
+    ((bytes[offset] as number) |
+      ((bytes[offset + 1] as number) << 8) |
+      ((bytes[offset + 2] as number) << 16) |
+      ((bytes[offset + 3] as number) << 24)) >>>
+    0
+  )
+}
+
+function findEndOfCentralDirectory(bytes: Uint8Array): number {
+  const minimum = Math.max(0, bytes.byteLength - 22 - 0xffff)
+  for (let offset = bytes.byteLength - 22; offset >= minimum; offset -= 1) {
+    if (readU32(bytes, offset) === ZIP_EOCD_SIGNATURE) return offset
+  }
+  return -1
+}
+
+function decodeEntryName(nameBytes: Uint8Array, flags: number): string {
+  const encoding = (flags & ZIP_FLAG_UTF8) !== 0 ? 'utf-8' : 'latin1'
+  return new TextDecoder(encoding).decode(nameBytes)
+}
+
+function readCentralDirectory(bytes: Uint8Array): ZipCentralEntry[] {
+  if (bytes.byteLength < 22) fail('The yt-dlp archive is empty.')
+  const eocd = findEndOfCentralDirectory(bytes)
+  if (eocd < 0) fail('The yt-dlp archive is not a ZIP file.')
+
+  const entryCount = readU16(bytes, eocd + 10)
+  const centralOffset = readU32(bytes, eocd + 16)
+  if (entryCount === 0xffff || centralOffset === 0xffffffff) {
+    fail('The yt-dlp archive uses an unsupported ZIP64 layout.')
+  }
+  requireRange(bytes, centralOffset, 0, 'central directory')
+
+  const entries: ZipCentralEntry[] = []
+  let offset = centralOffset
+  for (let index = 0; index < entryCount; index += 1) {
+    if (readU32(bytes, offset) !== ZIP_CENTRAL_SIGNATURE) {
+      fail('The yt-dlp archive has a corrupt central directory.')
+    }
+    const flags = readU16(bytes, offset + 8)
+    const method = readU16(bytes, offset + 10)
+    const crc = readU32(bytes, offset + 16)
+    const compressedSize = readU32(bytes, offset + 20)
+    const uncompressedSize = readU32(bytes, offset + 24)
+    const nameLength = readU16(bytes, offset + 28)
+    const extraLength = readU16(bytes, offset + 30)
+    const commentLength = readU16(bytes, offset + 32)
+    const externalAttributes = readU32(bytes, offset + 38)
+    const localOffset = readU32(bytes, offset + 42)
+    requireRange(bytes, offset + 46, nameLength, 'entry name')
+
+    entries.push({
+      name: decodeEntryName(
+        bytes.subarray(offset + 46, offset + 46 + nameLength),
+        flags
+      ),
+      compressedSize,
+      uncompressedSize,
+      crc32: crc,
+      localOffset,
+      method,
+      flags,
+      externalAttributes
+    })
+    offset += 46 + nameLength + extraLength + commentLength
+  }
+  return entries
+}
+
+/**
+ * Validate one archive member name and map it onto a relative host path.
+ * Returns null for anything that could escape the extraction directory.
+ */
+export function sanitizeZipEntryName(name: string): string | null {
+  if (name.length === 0 || name.length > 4096) return null
+  const unified = name.replace(/\\/g, '/')
+  if (unified.startsWith('/')) return null
+  if (/^[A-Za-z]:/.test(unified)) return null
+  if (/[\u0000-\u001f\u007f]/.test(unified)) return null
+
+  const segments = unified.split('/')
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return null
+  }
+  const relative = segments.join(path.sep)
+  return path.isAbsolute(relative) ? null : relative
+}
+
+function readEntryData(
+  archive: Uint8Array,
+  entry: ZipCentralEntry
+): Uint8Array {
+  if (readU32(archive, entry.localOffset) !== ZIP_LOCAL_SIGNATURE) {
+    fail('The yt-dlp archive has a corrupt local file header.')
+  }
+  if ((entry.flags & ZIP_FLAG_ENCRYPTED) !== 0) {
+    fail('The yt-dlp archive contains an encrypted entry.')
+  }
+  const nameLength = readU16(archive, entry.localOffset + 26)
+  const extraLength = readU16(archive, entry.localOffset + 28)
+  const dataStart = entry.localOffset + 30 + nameLength + extraLength
+  requireRange(archive, dataStart, entry.compressedSize, 'entry data')
+
+  const compressed = archive.subarray(dataStart, dataStart + entry.compressedSize)
+  let data: Uint8Array
+  if (entry.method === ZIP_METHOD_STORED) {
+    data = compressed
+  } else if (entry.method === ZIP_METHOD_DEFLATE) {
+    try {
+      // Cap the inflater at the declared size so a hostile archive cannot
+      // expand far beyond the entry caps before the length check below.
+      data = new Uint8Array(
+        inflateRawSync(compressed, {
+          maxOutputLength: Math.max(entry.uncompressedSize, 1)
+        })
+      )
+    } catch {
+      fail('The yt-dlp archive contains an unreadable compressed entry.')
+    }
+  } else {
+    fail('The yt-dlp archive uses an unsupported compression method.')
+  }
+
+  if (data.byteLength !== entry.uncompressedSize) {
+    fail('The yt-dlp archive entry size did not match its header.')
+  }
+  if (crc32(data) !== entry.crc32) {
+    fail('The yt-dlp archive entry failed its CRC check.')
+  }
+  return data
+}
+
+/**
+ * Read and validate every file member of a ZIP archive in memory. Directory
+ * entries are skipped. Nothing is written to disk here.
+ */
+export function extractZipArchive(
+  archive: Uint8Array,
+  limits: ZipLimits = DEFAULT_ZIP_LIMITS
+): ExtractedArchiveEntry[] {
+  const central = readCentralDirectory(archive)
+  if (central.length > limits.maxEntries) {
+    fail('The yt-dlp archive contained too many entries.')
+  }
+
+  const files: ExtractedArchiveEntry[] = []
+  let totalBytes = 0
+  for (const entry of central) {
+    const unixType = (entry.externalAttributes >>> 16) & ZIP_UNIX_FILE_TYPE
+    if (unixType === ZIP_UNIX_SYMLINK) {
+      fail('The yt-dlp archive contains a symbolic link.')
+    }
+    if (entry.name.endsWith('/') || entry.name.endsWith('\\')) continue
+
+    if (entry.uncompressedSize > limits.maxEntryBytes) {
+      fail('A yt-dlp archive entry exceeded the extraction size limit.')
+    }
+    totalBytes += entry.uncompressedSize
+    if (totalBytes > limits.maxTotalBytes) {
+      fail('The yt-dlp archive expanded beyond the extraction size limit.')
+    }
+
+    const relativePath = sanitizeZipEntryName(entry.name)
+    if (relativePath === null) {
+      fail('The yt-dlp archive contained an unsafe file path.')
+    }
+    files.push({ relativePath, data: readEntryData(archive, entry) })
+  }
+
+  if (files.length === 0) fail('The yt-dlp archive contained no files.')
+  return files
+}
+
+function parseLatestRelease(
+  value: unknown,
+  platform: NodeJS.Platform
+): LatestRelease {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     fail('GitHub returned an unreadable yt-dlp release.')
   }
@@ -235,13 +517,17 @@ function parseLatestRelease(value: unknown): LatestRelease {
     fail('The latest yt-dlp release has no downloadable assets.')
   }
 
-  let exeUrl: string | null = null
+  // The official Windows one-folder build is `yt-dlp_win.zip`. Other
+  // platforms keep the legacy single-file asset name used before onedir.
+  const assetName =
+    platform === 'win32' ? YTDLP_ASSET_NAME : YTDLP_LEGACY_ASSET_NAME
+  let assetUrl: string | null = null
   let sumsUrl: string | null = null
   for (const asset of record.assets) {
     if (typeof asset !== 'object' || asset === null) continue
     const entry = asset as Record<string, unknown>
-    if (entry.name === YTDLP_ASSET_NAME && typeof entry.browser_download_url === 'string') {
-      exeUrl = entry.browser_download_url
+    if (entry.name === assetName && typeof entry.browser_download_url === 'string') {
+      assetUrl = entry.browser_download_url
     } else if (
       entry.name === YTDLP_SUMS_NAME &&
       typeof entry.browser_download_url === 'string'
@@ -250,14 +536,14 @@ function parseLatestRelease(value: unknown): LatestRelease {
     }
   }
 
-  if (exeUrl === null || sumsUrl === null) {
-    fail('The latest yt-dlp release is missing yt-dlp.exe or its checksum file.')
+  if (assetUrl === null || sumsUrl === null) {
+    fail(`The latest yt-dlp release is missing ${assetName} or its checksum file.`)
   }
-  if (!isAllowedGithubUrl(exeUrl) || !isAllowedGithubUrl(sumsUrl)) {
+  if (!isAllowedGithubUrl(assetUrl) || !isAllowedGithubUrl(sumsUrl)) {
     fail('The latest yt-dlp release points outside the approved GitHub hosts.')
   }
 
-  return { version: record.tag_name, exeUrl, sumsUrl }
+  return { version: record.tag_name, assetName, assetUrl, sumsUrl }
 }
 
 function defaultRunVersion(
@@ -456,7 +742,7 @@ export function createYtdlpUpdater(
     } catch {
       fail('GitHub returned an unreadable yt-dlp release.')
     }
-    return parseLatestRelease(parsed)
+    return parseLatestRelease(parsed, platform)
   }
 
   async function download(
@@ -520,6 +806,24 @@ export function createYtdlpUpdater(
     } catch {
       return
     }
+    // Remove extraction directories left behind by an interrupted install.
+    // The in-memory pending install is never touched here: prune runs during
+    // an install, before a pending directory can be registered.
+    for (const entry of entries) {
+      if (
+        entry.isDirectory() &&
+        /^\.yt-dlp-[0-9a-f]{16}\.tmp$/.test(entry.name)
+      ) {
+        const stale = path.join(toolsDir, entry.name)
+        if (!isInsideDirectory(toolsDir, stale)) continue
+        try {
+          await fs.rm(stale, { recursive: true, force: true })
+        } catch {
+          // Best effort; a later check will try again.
+        }
+      }
+    }
+
     const versions = entries
       .filter((entry) => entry.isDirectory() && isYtdlpVersion(entry.name))
       .map((entry) => entry.name)
@@ -536,7 +840,104 @@ export function createYtdlpUpdater(
     }
   }
 
-  async function install(
+  function deferredState(version: string): YtdlpUpdateState {
+    return publish({
+      status: 'deferred',
+      latestVersion: version,
+      message: `yt-dlp ${version} is ready and will be used by the next media job.`
+    })
+  }
+
+  function updatedState(version: string): YtdlpUpdateState {
+    return publish({
+      status: 'updated',
+      currentVersion: version,
+      latestVersion: version,
+      message: `Updated to ${version}.`
+    })
+  }
+
+  /**
+   * Windows: the official one-folder build. The archive was checksum-verified
+   * before this call; entries are validated and written into a temporary
+   * sibling directory, the executable is version-checked, then the whole
+   * directory is renamed into `<toolsDir>/<version>` atomically.
+   */
+  async function installOnedir(
+    release: LatestRelease,
+    archive: Uint8Array
+  ): Promise<YtdlpUpdateState> {
+    const versionDir = path.join(toolsDir, release.version)
+    if (!isInsideDirectory(toolsDir, versionDir)) {
+      fail('The yt-dlp update path was not inside the managed tools directory.')
+    }
+    const tempDir = path.join(
+      toolsDir,
+      `.yt-dlp-${randomBytes(8).toString('hex')}.tmp`
+    )
+    await fs.mkdir(tempDir, { recursive: true })
+
+    try {
+      const entries = extractZipArchive(archive)
+      const hasExecutable = entries.some(
+        (entry) => entry.relativePath === ONEDIR_EXECUTABLE
+      )
+      const hasLibraryDirectory = entries.some((entry) =>
+        entry.relativePath.startsWith(ONEDIR_LIBRARY_DIRECTORY + path.sep)
+      )
+      if (!hasExecutable || !hasLibraryDirectory) {
+        fail('The yt-dlp archive did not contain the one-folder layout.')
+      }
+
+      for (const entry of entries) {
+        const destination = path.resolve(tempDir, entry.relativePath)
+        if (!isInsideDirectory(tempDir, destination)) {
+          fail('The yt-dlp archive contained an unsafe file path.')
+        }
+        await fs.mkdir(path.dirname(destination), { recursive: true })
+        await fs.writeFile(
+          destination,
+          entry.data,
+          entry.relativePath === ONEDIR_EXECUTABLE ? { mode: 0o700 } : undefined
+        )
+      }
+
+      const tempExecutable = path.join(tempDir, ONEDIR_EXECUTABLE)
+      const reported = await runVersion(tempExecutable)
+      if (reported !== release.version) {
+        fail('The downloaded yt-dlp did not report the expected version.')
+      }
+
+      if (isJobActive()) {
+        pending = {
+          version: release.version,
+          tempPath: tempDir,
+          targetPath: versionDir
+        }
+        return deferredState(release.version)
+      }
+
+      // A version directory must never be the one currently in use here: an
+      // install only happens for a release newer than the resolved version,
+      // and no media job is active. Removing a stale partial install is safe.
+      await fs
+        .rm(versionDir, { recursive: true, force: true })
+        .catch(() => undefined)
+      await fs.rename(tempDir, versionDir)
+    } catch (error) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
+
+    await pruneVersions()
+    return updatedState(release.version)
+  }
+
+  /**
+   * Non-Windows legacy path and back-compat install of the one-file binary.
+   * The layout stays `<version>/yt-dlp`, exactly as before onedir support.
+   */
+  async function installOneFile(
     release: LatestRelease,
     expectedSha: string,
     binary: Uint8Array
@@ -572,11 +973,7 @@ export function createYtdlpUpdater(
           tempPath,
           targetPath: finalPath
         }
-        return publish({
-          status: 'deferred',
-          latestVersion: release.version,
-          message: `yt-dlp ${release.version} is ready and will be used by the next media job.`
-        })
+        return deferredState(release.version)
       }
 
       try {
@@ -592,12 +989,7 @@ export function createYtdlpUpdater(
     }
 
     await pruneVersions()
-    return publish({
-      status: 'updated',
-      currentVersion: release.version,
-      latestVersion: release.version,
-      message: `Updated to ${release.version}.`
-    })
+    return updatedState(release.version)
   }
 
   async function tryActivatePending(): Promise<boolean> {
@@ -605,19 +997,14 @@ export function createYtdlpUpdater(
     const ready = pending
     try {
       try {
-        await fs.rm(ready.targetPath, { force: true })
+        await fs.rm(ready.targetPath, { recursive: true, force: true })
       } catch {
         // Missing destination is fine.
       }
       await fs.rename(ready.tempPath, ready.targetPath)
       pending = null
       await pruneVersions()
-      publish({
-        status: 'updated',
-        currentVersion: ready.version,
-        latestVersion: ready.version,
-        message: `Updated to ${ready.version}.`
-      })
+      updatedState(ready.version)
       return true
     } catch {
       // Keep the pending file for the next attempt.
@@ -674,24 +1061,33 @@ export function createYtdlpUpdater(
         })
       }
 
+      // A verified install is already waiting for the active job to finish.
+      // Do not download the same release again.
+      if (pending !== null && pending.version === release.version) {
+        return deferredState(release.version)
+      }
+
       publish({
         status: 'updating',
         message: `Downloading yt-dlp ${release.version}…`
       })
 
-      const [binary, sums] = await Promise.all([
-        download(release.exeUrl, MAX_YTDLP_DOWNLOAD_BYTES),
+      const [asset, sums] = await Promise.all([
+        download(release.assetUrl, MAX_YTDLP_DOWNLOAD_BYTES),
         download(release.sumsUrl, MAX_YTDLP_SUMS_BYTES)
       ])
-      const expectedSha = parseSha256Sums(decodeUtf8(sums))
+      const expectedSha = parseSha256Sums(decodeUtf8(sums), release.assetName)
       if (expectedSha === null) {
-        fail('The yt-dlp checksum file did not contain yt-dlp.exe.')
+        fail(`The yt-dlp checksum file did not contain ${release.assetName}.`)
       }
-      if (sha256(binary) !== expectedSha) {
+      if (sha256(asset) !== expectedSha) {
         fail('The downloaded yt-dlp checksum did not match the published SHA-256 sums.')
       }
 
-      return await install(release, expectedSha, binary)
+      if (platform === 'win32') {
+        return await installOnedir(release, asset)
+      }
+      return await installOneFile(release, expectedSha, asset)
     } catch (error) {
       return publish({
         status: 'failed',

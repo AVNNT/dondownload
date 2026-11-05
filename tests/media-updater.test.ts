@@ -1,15 +1,19 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_ZIP_LIMITS,
   MAX_YTDLP_DOWNLOAD_BYTES,
+  YTDLP_ASSET_NAME,
   YTDLP_RELEASE_API,
   createYtdlpUpdater,
+  extractZipArchive,
   isAllowedGithubUrl,
   looksLikeExtractorFailure,
   parseSha256Sums,
+  sanitizeZipEntryName,
   type MediaToolSettingsStore,
   type UpdaterFetch,
   type UpdaterHttpResponse
@@ -60,8 +64,8 @@ function releaseJson(version: string): string {
     tag_name: version,
     assets: [
       {
-        name: 'yt-dlp.exe',
-        browser_download_url: `https://github.com/yt-dlp/yt-dlp/releases/download/${version}/yt-dlp.exe`
+        name: YTDLP_ASSET_NAME,
+        browser_download_url: `https://github.com/yt-dlp/yt-dlp/releases/download/${version}/${YTDLP_ASSET_NAME}`
       },
       {
         name: 'SHA2-256SUMS',
@@ -71,10 +75,116 @@ function releaseJson(version: string): string {
   })
 }
 
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let index = 0; index < 256; index += 1) {
+    let value = index
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+    }
+    table[index] = value >>> 0
+  }
+  return table
+})()
+
+function crc32(data: Uint8Array): number {
+  let value = 0xffffffff
+  for (const byte of data) {
+    value = (CRC32_TABLE[(value ^ byte) & 0xff] as number) ^ (value >>> 8)
+  }
+  return (value ^ 0xffffffff) >>> 0
+}
+
+interface TestZipEntry {
+  name: string
+  data?: Uint8Array
+  directory?: boolean
+  /** Declare a different uncompressed size to exercise the size caps. */
+  declaredUncompressedSize?: number
+}
+
+/** Build a stored (uncompressed) ZIP archive for tests. */
+function buildZip(entries: TestZipEntry[]): Uint8Array {
+  const encoder = new TextEncoder()
+  const locals: Uint8Array[] = []
+  const centrals: Uint8Array[] = []
+  let offset = 0
+
+  for (const entry of entries) {
+    const name = encoder.encode(entry.name)
+    const data = entry.directory
+      ? new Uint8Array()
+      : (entry.data ?? new Uint8Array())
+    const uncompressed = entry.declaredUncompressedSize ?? data.length
+
+    const local = new Uint8Array(30 + name.length + data.length)
+    const localView = new DataView(local.buffer)
+    localView.setUint32(0, 0x04034b50, true)
+    localView.setUint16(4, 20, true)
+    localView.setUint16(6, 0x800, true)
+    localView.setUint16(8, 0, true)
+    localView.setUint32(14, crc32(data), true)
+    localView.setUint32(18, data.length, true)
+    localView.setUint32(22, uncompressed, true)
+    localView.setUint16(26, name.length, true)
+    local.set(name, 30)
+    local.set(data, 30 + name.length)
+    locals.push(local)
+
+    const central = new Uint8Array(46 + name.length)
+    const centralView = new DataView(central.buffer)
+    centralView.setUint32(0, 0x02014b50, true)
+    centralView.setUint32(4, 20, true)
+    centralView.setUint32(6, 20, true)
+    centralView.setUint16(8, 0x800, true)
+    centralView.setUint16(10, 0, true)
+    centralView.setUint32(16, crc32(data), true)
+    centralView.setUint32(20, data.length, true)
+    centralView.setUint32(24, uncompressed, true)
+    centralView.setUint16(28, name.length, true)
+    centralView.setUint32(42, offset, true)
+    central.set(name, 46)
+    centrals.push(central)
+
+    offset += local.length
+  }
+
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0)
+  const eocd = new Uint8Array(22)
+  const eocdView = new DataView(eocd.buffer)
+  eocdView.setUint32(0, 0x06054b50, true)
+  eocdView.setUint16(8, entries.length, true)
+  eocdView.setUint16(10, entries.length, true)
+  eocdView.setUint32(12, centralSize, true)
+  eocdView.setUint32(16, offset, true)
+
+  const total = offset + centralSize + eocd.length
+  const archive = new Uint8Array(total)
+  let cursor = 0
+  for (const part of [...locals, ...centrals, eocd]) {
+    archive.set(part, cursor)
+    cursor += part.length
+  }
+  return archive
+}
+
+function onedirArchive(
+  exe = 'verified-yt-dlp-binary',
+  extra: TestZipEntry[] = []
+): Uint8Array {
+  const encoder = new TextEncoder()
+  return buildZip([
+    { name: 'yt-dlp.exe', data: encoder.encode(exe) },
+    { name: '_internal/', directory: true },
+    { name: '_internal/pyinstaller.pyc', data: encoder.encode('runtime') },
+    ...extra
+  ])
+}
+
 interface HarnessOptions {
   currentVersion?: string
   latestVersion?: string
-  binary?: Uint8Array
+  archive?: Uint8Array
   sumsHash?: string
   fetch?: UpdaterFetch
   isJobActive?: () => boolean
@@ -98,9 +208,8 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
   const cwd = path.join(root, 'app')
   const currentVersion = options.currentVersion ?? '2026.10.26'
   const latestVersion = options.latestVersion ?? '2026.11.05'
-  const binary =
-    options.binary ?? new TextEncoder().encode('verified-yt-dlp-binary')
-  const expectedHash = options.sumsHash ?? sha256(binary)
+  const archive = options.archive ?? onedirArchive()
+  const expectedHash = options.sumsHash ?? sha256(archive)
 
   await mkdir(path.join(cwd, 'vendor', 'yt-dlp'), { recursive: true })
   await writeFile(path.join(cwd, 'vendor', 'yt-dlp', 'yt-dlp.exe'), 'bundled')
@@ -124,10 +233,10 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
       return response(releaseJson(latestVersion))
     }
     if (url.endsWith('/SHA2-256SUMS')) {
-      return response(`${expectedHash}  yt-dlp.exe\n`)
+      return response(`${expectedHash}  ${YTDLP_ASSET_NAME}\n`)
     }
-    if (url.endsWith('/yt-dlp.exe')) {
-      return response(binary)
+    if (url.endsWith(`/${YTDLP_ASSET_NAME}`)) {
+      return response(archive)
     }
     return response('not found', { ok: false, status: 404 })
   }
@@ -149,7 +258,9 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
       (async (binaryPath) => {
         const managedRoot = path.join(userData, 'tools', 'yt-dlp')
         if (binaryPath.startsWith(managedRoot + path.sep)) {
-          return path.basename(path.dirname(binaryPath))
+          const directory = path.basename(path.dirname(binaryPath))
+          // Temporary extraction directories are not version-named.
+          return isYtdlpVersion(directory) ? directory : latestVersion
         }
         return currentVersion
       })
@@ -213,10 +324,13 @@ describe('yt-dlp version helpers', () => {
     expect(isAllowedGithubUrl('https://user:pass@github.com/x')).toBe(false)
   })
 
-  it('parses the SHA2-256SUMS entry for yt-dlp.exe', () => {
+  it('parses the SHA2-256SUMS entry for the requested asset', () => {
     const hash = 'a'.repeat(64)
-    expect(parseSha256Sums(`${hash}  yt-dlp.exe\n`)).toBe(hash)
-    expect(parseSha256Sums(`${hash} *yt-dlp.exe\n`)).toBe(hash)
+    expect(parseSha256Sums(`${hash}  ${YTDLP_ASSET_NAME}\n`)).toBe(hash)
+    expect(parseSha256Sums(`${hash} *${YTDLP_ASSET_NAME}\n`)).toBe(hash)
+    // Legacy one-file entries remain parseable for the compatibility path.
+    expect(parseSha256Sums(`${hash}  yt-dlp.exe\n`, 'yt-dlp.exe')).toBe(hash)
+    expect(parseSha256Sums(`${hash}  ${YTDLP_ASSET_NAME}\n`, 'yt-dlp.exe')).toBeNull()
     expect(parseSha256Sums(`${hash}  other.exe\n`)).toBeNull()
     expect(parseSha256Sums('not a sums file')).toBeNull()
   })
@@ -239,20 +353,54 @@ describe('managed yt-dlp update check', () => {
     expect(state.status).toBe('up-to-date')
     expect(state.currentVersion).toBe('2026.11.05')
     expect(
-      harness.fetchCalls.filter((url) => url.endsWith('/yt-dlp.exe'))
+      harness.fetchCalls.filter((url) => url.endsWith(`/${YTDLP_ASSET_NAME}`))
     ).toHaveLength(0)
   })
 
-  it('downloads, verifies and activates a newer managed version', async () => {
+  it('downloads, verifies and activates the newer one-folder build', async () => {
     const store = memoryStore()
     const harness = await makeHarness({ store })
     const state = await harness.updater.check({ force: true })
 
     expect(state.status).toBe('updated')
     expect(state.currentVersion).toBe('2026.11.05')
-    const finalPath = path.join(harness.toolsDir, '2026.11.05', 'yt-dlp.exe')
-    expect(await readFile(finalPath, 'utf8')).toBe('verified-yt-dlp-binary')
+    const versionDir = path.join(harness.toolsDir, '2026.11.05')
+    expect(await readFile(path.join(versionDir, 'yt-dlp.exe'), 'utf8')).toBe(
+      'verified-yt-dlp-binary'
+    )
+    // The one-folder runtime is extracted next to the executable.
+    expect(
+      await readFile(path.join(versionDir, '_internal', 'pyinstaller.pyc'), 'utf8')
+    ).toBe('runtime')
+    expect(
+      (await readdir(harness.toolsDir)).some((name) =>
+        name.startsWith('.yt-dlp-')
+      )
+    ).toBe(false)
     expect(store.saved.lastYtdlpCheckAt).not.toBeNull()
+  })
+
+  it('keeps an already-installed one-file managed executable usable', async () => {
+    // A one-file layout written by an older DonDownload release is still a
+    // valid managed version: only `<version>/yt-dlp.exe` matters to the locator.
+    const harness = await makeHarness({ managedVersion: '2026.11.01' })
+    expect(
+      await readFile(
+        path.join(harness.toolsDir, '2026.11.01', 'yt-dlp.exe'),
+        'utf8'
+      )
+    ).toBe('managed')
+
+    const state = await harness.updater.check({ force: true })
+    expect(state.status).toBe('updated')
+    expect(state.currentVersion).toBe('2026.11.05')
+    // The superseded one-file directory is retained by the two-version policy.
+    expect(
+      await readFile(
+        path.join(harness.toolsDir, '2026.11.01', 'yt-dlp.exe'),
+        'utf8'
+      )
+    ).toBe('managed')
   })
 
   it('rejects a checksum mismatch and keeps the current binary', async () => {
@@ -322,6 +470,83 @@ describe('managed yt-dlp update check', () => {
   })
 })
 
+describe('verified archive extraction', () => {
+  it('extracts the one-folder layout from a valid archive', () => {
+    const entries = extractZipArchive(onedirArchive())
+    const paths = entries.map((entry) => entry.relativePath).sort()
+    expect(paths).toContain('yt-dlp.exe')
+    expect(paths).toContain(path.join('_internal', 'pyinstaller.pyc'))
+  })
+
+  it('rejects traversal, absolute and drive-qualified entry names', () => {
+    expect(sanitizeZipEntryName('../evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('a/../../evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('/evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('C:/evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('C:\\evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('a\\..\\evil.exe')).toBeNull()
+    expect(sanitizeZipEntryName('_internal\\python313.dll')).toBe(
+      path.join('_internal', 'python313.dll')
+    )
+
+    const traversal = buildZip([
+      { name: 'yt-dlp.exe', data: new TextEncoder().encode('binary') },
+      { name: '../escape.txt', data: new TextEncoder().encode('nope') }
+    ])
+    expect(() => extractZipArchive(traversal)).toThrow(/unsafe file path/i)
+  })
+
+  it('rejects an archive that expands beyond the size cap', () => {
+    const archive = onedirArchive()
+    expect(() =>
+      extractZipArchive(archive, {
+        maxEntries: 100,
+        maxEntryBytes: 1024 * 1024,
+        maxTotalBytes: 4
+      })
+    ).toThrow(/extraction size limit/i)
+    expect(() =>
+      extractZipArchive(archive, {
+        maxEntries: 100,
+        maxEntryBytes: 2,
+        maxTotalBytes: 1024 * 1024
+      })
+    ).toThrow(/extraction size limit/i)
+  })
+
+  it('rejects an archive with too many entries', () => {
+    const archive = onedirArchive()
+    expect(() =>
+      extractZipArchive(archive, {
+        ...DEFAULT_ZIP_LIMITS,
+        maxEntries: 2
+      })
+    ).toThrow(/too many entries/i)
+  })
+
+  it('rejects a truncated archive instead of reading out of bounds', () => {
+    const archive = onedirArchive().subarray(0, 20)
+    expect(() => extractZipArchive(archive)).toThrow(/empty|ZIP|truncated/i)
+  })
+
+  it('fails the update without writing outside the tools directory', async () => {
+    const unsafe = buildZip([
+      { name: 'yt-dlp.exe', data: new TextEncoder().encode('binary') },
+      { name: '_internal/', directory: true },
+      { name: '_internal/x', data: new TextEncoder().encode('x') },
+      { name: '../../escape.txt', data: new TextEncoder().encode('nope') }
+    ])
+    const harness = await makeHarness({ archive: unsafe })
+    const state = await harness.updater.check({ force: true })
+
+    expect(state.status).toBe('failed')
+    expect(state.message).toMatch(/unsafe file path/i)
+    await expect(
+      readFile(path.join(harness.root, 'escape.txt'), 'utf8')
+    ).rejects.toThrow()
+  })
+})
+
 describe('managed version retention', () => {
   it('keeps only the two newest managed versions', async () => {
     const harness = await makeHarness({ managedVersion: '2026.11.01' })
@@ -334,7 +559,6 @@ describe('managed version retention', () => {
     const state = await harness.updater.check({ force: true })
     expect(state.status).toBe('updated')
 
-    const { readdir } = await import('node:fs/promises')
     const versions = (await readdir(harness.toolsDir, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -419,6 +643,18 @@ describe('media tool settings persistence', () => {
 })
 
 describe('activation safety', () => {
+  it('does not re-download a verified release that is already waiting', async () => {
+    const harness = await makeHarness({ isJobActive: () => true })
+    expect((await harness.updater.check({ force: true })).status).toBe('deferred')
+    const assetDownloads = () =>
+      harness.fetchCalls.filter((url) => url.endsWith(`/${YTDLP_ASSET_NAME}`))
+        .length
+    expect(assetDownloads()).toBe(1)
+
+    expect((await harness.updater.check({ force: true })).status).toBe('deferred')
+    expect(assetDownloads()).toBe(1)
+  })
+
   it('does not swap the binary while a media job is active', async () => {
     let active = true
     const harness = await makeHarness({ isJobActive: () => active })
