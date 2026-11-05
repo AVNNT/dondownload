@@ -23,6 +23,13 @@ export function createMainWindow(
     minHeight: 520,
     show: false,
     backgroundColor: '#000000',
+    accentColor: false,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#000000',
+      symbolColor: '#f4f4f5',
+      height: 40
+    },
     title: 'DonDownload',
     autoHideMenuBar: true,
     webPreferences: {

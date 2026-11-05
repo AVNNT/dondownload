@@ -55,6 +55,13 @@
   scrollbar-color: #27272a #000000;
 }
 
+.window-drag-region {
+  width: calc(100% - 140px);
+  height: 40px;
+  background: #000000;
+  -webkit-app-region: drag;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
