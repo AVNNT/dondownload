@@ -548,7 +548,7 @@ async function resolveNativeFixtureHost() {
   return { hostname, address }
 }
 
-async function startFixtureServer({ clip, clip720 }) {
+async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffer.alloc(0) }) {
   const fileBin = makeFileBin()
   const secureBin = makeSecureBin()
   const log = []
@@ -570,7 +570,13 @@ async function startFixtureServer({ clip, clip720 }) {
       range: req.headers.range || null,
       cookie: req.headers.cookie || null,
       userAgent: req.headers['user-agent'] || null,
-      at: Date.now()
+      referer: req.headers.referer || null,
+      at: Date.now(),
+      status: null
+    })
+    const logRow = log[log.length - 1]
+    res.once('finish', () => {
+      logRow.status = res.statusCode
     })
 
     const sendBuffer = (buffer, contentType, extraHeaders = {}, options = {}) => {
@@ -672,6 +678,86 @@ async function startFixtureServer({ clip, clip720 }) {
       )
       return
     }
+    if (parsed.pathname === '/hls') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(
+        '<!doctype html><meta charset="utf-8"><title>fixture-hls</title>' +
+          '<body style="margin:0;background:#111">' +
+          '<video id="p" src="/hls/master.m3u8" width="640" height="360" muted autoplay loop playsinline></video>' +
+          '<script>(async function(){' +
+          'const master=await fetch("/hls/master.m3u8");await master.text();' +
+          'await fetch("/hls/high/index.m3u8");' +
+          'await fetch("/hls/high/seg0.ts");' +
+          '})().catch(function(){})</script>' +
+          '</body>'
+      )
+      return
+    }
+    if (parsed.pathname === '/referer-hidden') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(
+        '<!doctype html><meta charset="utf-8"><title>fixture-referer</title>' +
+          '<body style="margin:0;background:#111">' +
+          '<p style="color:#888">hidden referer-checked media</p>' +
+          '<script>fetch("/hidden-referer.mp4").then(function(r){return r.arrayBuffer()}).catch(function(){})</script>' +
+          '</body>'
+      )
+      return
+    }
+    if (parsed.pathname === '/audio') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(
+        '<!doctype html><meta charset="utf-8"><title>fixture-audio</title>' +
+          '<body style="margin:0;background:#111">' +
+          '<audio id="p" src="/tone.mp3" controls autoplay loop></audio>' +
+          '</body>'
+      )
+      return
+    }
+    if (parsed.pathname.startsWith('/hls/') && hlsRoot) {
+      const relative = decodeURIComponent(parsed.pathname.slice('/hls/'.length))
+      if (
+        relative.length === 0 ||
+        relative.includes('..') ||
+        relative.includes('\\') ||
+        path.isAbsolute(relative)
+      ) {
+        res.writeHead(404)
+        res.end()
+        return
+      }
+      const file = path.join(hlsRoot, relative)
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        res.writeHead(404)
+        res.end()
+        return
+      }
+      const extension = path.extname(file).toLowerCase()
+      const contentType =
+        extension === '.m3u8'
+          ? 'application/vnd.apple.mpegurl'
+          : extension === '.ts'
+            ? 'video/mp2t'
+            : 'application/octet-stream'
+      sendBuffer(fs.readFileSync(file), contentType)
+      return
+    }
+    if (parsed.pathname === '/hidden-referer.mp4') {
+      const referer =
+        typeof req.headers.referer === 'string' ? req.headers.referer : ''
+      if (!/\/referer-hidden(?:[?#]|$)/.test(referer)) {
+        res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('referer required')
+        return
+      }
+      // Above the 100 KB detection threshold on purpose.
+      sendBuffer(clip720, 'video/mp4')
+      return
+    }
+    if (parsed.pathname === '/tone.mp3') {
+      sendBuffer(audio, 'audio/mpeg')
+      return
+    }
     if (parsed.pathname === '/clip.mp4') {
       sendBuffer(clip, 'video/mp4')
       return
@@ -749,6 +835,12 @@ async function startFixtureServer({ clip, clip720 }) {
         ? null
         : `http://${nativeHost.hostname}:${nativePort}`,
     nativeHost,
+    clip,
+    clipSha256: crypto.createHash('sha256').update(clip).digest('hex'),
+    hiddenRefererBytes: clip720.length,
+    hiddenRefererSha256: crypto.createHash('sha256').update(clip720).digest('hex'),
+    audioBytes: audio.length,
+    audioSha256: crypto.createHash('sha256').update(audio).digest('hex'),
     fileBin,
     fileBinSha256: crypto.createHash('sha256').update(fileBin).digest('hex'),
     secureBinBytes: secureBin.length,
@@ -809,6 +901,87 @@ async function generateClip(ffmpegPath, output, { width, height }) {
   return stat.size
 }
 
+async function generateHls(ffmpegPath, source, targetDir) {
+  fs.mkdirSync(targetDir, { recursive: true })
+  const playlist = path.join(targetDir, 'index.m3u8')
+  await new Promise((resolve, reject) => {
+    const proc = spawn(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-i',
+        source,
+        '-c',
+        'copy',
+        '-an',
+        '-f',
+        'hls',
+        '-hls_time',
+        '1',
+        '-hls_playlist_type',
+        'vod',
+        '-hls_segment_filename',
+        path.join(targetDir, 'seg%d.ts'),
+        playlist
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    )
+    let stderr = ''
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    proc.on('error', reject)
+    proc.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`ffmpeg HLS exited ${code}: ${stderr.slice(-1000)}`))
+    })
+  })
+  if (!fs.existsSync(playlist)) {
+    throw new Error(`HLS playlist was not generated: ${playlist}`)
+  }
+}
+
+async function generateAudio(ffmpegPath, output) {
+  await new Promise((resolve, reject) => {
+    const proc = spawn(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=8',
+        '-c:a',
+        'libmp3lame',
+        '-b:a',
+        '192k',
+        output
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    )
+    let stderr = ''
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    proc.on('error', reject)
+    proc.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`ffmpeg audio exited ${code}: ${stderr.slice(-1000)}`))
+    })
+  })
+  const stat = fs.statSync(output)
+  if (stat.size < 100 * 1024) {
+    throw new Error(`generated audio is below the detection threshold: ${stat.size} bytes`)
+  }
+  return stat.size
+}
+
 // ---------------------------------------------------------------------------
 // extension page helpers
 // ---------------------------------------------------------------------------
@@ -834,6 +1007,17 @@ async function tabIdForOrigin(browser, optionsSession, origin) {
     optionsSession,
     `new Promise((resolve) => chrome.tabs.query({}, (tabs) => {
       const match = tabs.find((tab) => typeof tab.url === 'string' && tab.url.startsWith(${JSON.stringify(origin + '/')}))
+      resolve(match ? match.id : null)
+    }))`,
+    { userGesture: false }
+  )
+}
+
+async function tabIdForUrl(browser, optionsSession, url) {
+  return browser.connection.evaluate(
+    optionsSession,
+    `new Promise((resolve) => chrome.tabs.query({}, (tabs) => {
+      const match = tabs.find((tab) => typeof tab.url === 'string' && (tab.url === ${JSON.stringify(url)} || tab.url.startsWith(${JSON.stringify(url + '?')})))
       resolve(match ? match.id : null)
     }))`,
     { userGesture: false }
@@ -908,6 +1092,90 @@ async function waitForCapturedSources(browser, optionsSession, tabId, predicate,
     await sleep(250)
   }
   throw new Error(`captured sources did not satisfy predicate: ${JSON.stringify(last)}`)
+}
+
+async function querySniffed(browser, optionsSession, tabId) {
+  return browser.connection.evaluate(
+    optionsSession,
+    `new Promise((resolve) => chrome.runtime.sendMessage({ type: 'dondownload:sniffed-query', tabId: ${tabId} }, (value) => resolve({
+      response: value,
+      error: chrome.runtime.lastError && chrome.runtime.lastError.message
+    })))`,
+    { userGesture: false }
+  )
+}
+
+async function waitForSniffed(
+  browser,
+  optionsSession,
+  tabId,
+  predicate,
+  timeoutMs = 20000
+) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    try {
+      last = await querySniffed(browser, optionsSession, tabId)
+      if (
+        last &&
+        last.response &&
+        Array.isArray(last.response.media) &&
+        predicate(last.response.media)
+      ) {
+        return last.response.media
+      }
+    } catch {
+      // Worker may still be starting.
+    }
+    await sleep(200)
+  }
+  throw new Error(`sniffed media did not satisfy predicate: ${JSON.stringify(last)}`)
+}
+
+async function queueSniffed(browser, optionsSession, tabId, url, variantUrl) {
+  return browser.connection.evaluate(
+    optionsSession,
+    `new Promise((resolve) => chrome.runtime.sendMessage({
+      type: 'dondownload:sniffed-queue',
+      tabId: ${tabId},
+      url: ${JSON.stringify(url)},
+      ${variantUrl ? `variantUrl: ${JSON.stringify(variantUrl)},` : ''}
+    }, (value) => resolve({
+      response: value,
+      error: chrome.runtime.lastError && chrome.runtime.lastError.message
+    })))`,
+    { userGesture: true }
+  )
+}
+
+async function navigatePage(page, url, timeoutMs = 15000) {
+  await page.browser.connection.send(
+    'Page.navigate',
+    { url },
+    page.sessionId
+  )
+  return waitForValue(
+    () =>
+      pageEvaluate(
+        page,
+        '({ ready: document.readyState, href: location.href })',
+        { userGesture: false }
+      ),
+    (state) =>
+      state && state.ready === 'complete' && state.href === url,
+    timeoutMs,
+    `navigation to ${url}`,
+    100
+  )
+}
+
+async function badgeText(browser, optionsSession, tabId) {
+  return browser.connection.evaluate(
+    optionsSession,
+    `new Promise((resolve) => chrome.action.getBadgeText({ tabId: ${tabId} }, (value) => resolve(value)))`,
+    { userGesture: false }
+  )
 }
 
 async function waitForVideoPlaying(page, timeoutMs = 15000) {
@@ -2958,7 +3226,25 @@ async function main() {
     const clip720Bytes = await generateClip(FFMPEG, clip720Path, { width: 1280, height: 720 })
     const clip = fs.readFileSync(clipPath)
     const clip720 = fs.readFileSync(clip720Path)
-    server = await startFixtureServer({ clip, clip720 })
+    const hlsRoot = path.join(mediaDir, 'hls')
+    await generateHls(FFMPEG, clipPath, path.join(hlsRoot, 'low'))
+    await generateHls(FFMPEG, clip720Path, path.join(hlsRoot, 'high'))
+    fs.writeFileSync(
+      path.join(hlsRoot, 'master.m3u8'),
+      [
+        '#EXTM3U',
+        '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360',
+        'low/index.m3u8',
+        '#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720',
+        'high/index.m3u8',
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    const audioPath = path.join(mediaDir, 'tone.mp3')
+    const audioBytes = await generateAudio(FFMPEG, audioPath)
+    const audio = fs.readFileSync(audioPath)
+    server = await startFixtureServer({ clip, clip720, hlsRoot, audio })
     const { origin, nativeOrigin } = server
     const originPattern = `${origin}/*`
     const nativeOriginPattern =
@@ -3378,6 +3664,178 @@ async function main() {
       }
     })
 
+    await scenario('3c', 'HLS master is sniffed as one entry with pickable variants and badge count', async () => {
+      const page = await createPage(browserB, `${origin}/hls`)
+      page.browser = browserB
+      let hlsTab = null
+      try {
+        hlsTab = await waitForValue(
+          () => tabIdForUrl(browserB, optionsB.sessionId, `${origin}/hls`),
+          (value) => value !== null,
+          10000,
+          'HLS fixture tab'
+        )
+      } catch (error) {
+        const tabs = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          'new Promise((resolve) => chrome.tabs.query({}, (value) => resolve(value.map((tab) => ({ id: tab.id, url: tab.url, active: tab.active })))))',
+          { userGesture: false }
+        )
+        throw new Error(`${error.message}; tabs=${JSON.stringify(tabs)}`)
+      }
+      const tab = hlsTab
+      await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+      const enable = await enableOverlayForTab(browserB, optionsB.sessionId, origin, tab)
+      // The page's first HLS fetches happened before the tab was opted in.
+      // Reload with the grant already in place so the sniffer observes them.
+      await browserB.connection.send('Page.reload', {}, page.sessionId)
+      await sleep(400)
+      const media = await waitForSniffed(
+        browserB,
+        optionsB.sessionId,
+        tab,
+        (list) =>
+          list.some(
+            (entry) =>
+              entry.kind === 'hls' &&
+              Array.isArray(entry.variants) &&
+              entry.variants.length >= 2
+          )
+      )
+      const hls = media.find((entry) => entry.kind === 'hls')
+      const segmentsHidden = !media.some(
+        (entry) =>
+          /\.(?:ts|m4s)(?:\?|$)/i.test(entry.url) ||
+          /index\.m3u8(?:\?|$)/i.test(entry.url)
+      )
+      const badge = await badgeText(browserB, optionsB.sessionId, tab)
+      const host = await waitForOverlayHost(page)
+      await pageEvaluate(
+        page,
+        `(() => {
+          const host = document.getElementById('dondownload-overlay-host')
+          const trigger = host && host.shadowRoot && host.shadowRoot.querySelector('.trigger')
+          if (!trigger) return false
+          trigger.hidden = false
+          trigger.click()
+          return true
+        })()`,
+        { userGesture: true }
+      )
+      let panelText = ''
+      try {
+        panelText = await waitForValue(
+          () =>
+            pageEvaluate(
+              page,
+              `(() => {
+                const host = document.getElementById('dondownload-overlay-host')
+                const panel = host && host.shadowRoot && host.shadowRoot.querySelector('.panel')
+                return panel && !panel.hidden ? panel.textContent || '' : ''
+              })()`,
+              { userGesture: false }
+            ),
+          (text) => typeof text === 'string' && text.includes('Detected media on this tab') && text.includes('720p'),
+          10000,
+          'overlay sniffed HLS rows'
+        )
+      } catch {
+        panelText = ''
+      }
+      const ok =
+        enable &&
+        enable.response &&
+        enable.response.ok === true &&
+        Boolean(hls) &&
+        segmentsHidden &&
+        /^[1-9]/.test(String(badge || '')) &&
+        host.host &&
+        panelText.includes('720p')
+      await browserB.connection
+        .send('Target.closeTarget', { targetId: page.targetId })
+        .catch(() => undefined)
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `enable=${JSON.stringify(enable && enable.response)}; media=${JSON.stringify(media.map((entry) => ({ url: entry.url, kind: entry.kind, variants: entry.variants, size: entry.sizeBytes })))}; segmentsHidden=${segmentsHidden}; badge=${JSON.stringify(badge)}; overlay=${JSON.stringify(host)}; panelText=${JSON.stringify(panelText.slice(0, 900))}`
+      }
+    })
+
+    await scenario('3d', 'Referer-protected hidden MP4 is detected without listing unrelated rows', async () => {
+      const page = await createPage(browserB, `${origin}/referer-hidden`)
+      page.browser = browserB
+      const tab = await waitForValue(
+        () => tabIdForUrl(browserB, optionsB.sessionId, `${origin}/referer-hidden`),
+        (value) => value !== null,
+        10000,
+        'referer fixture tab'
+      )
+      await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+      await enableOverlayForTab(browserB, optionsB.sessionId, origin, tab)
+      await browserB.connection.send('Page.reload', {}, page.sessionId)
+      await sleep(400)
+      let media = []
+      try {
+        media = await waitForSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) => list.some((entry) => /\/hidden-referer\.mp4$/.test(entry.url))
+        )
+      } catch {
+        media = []
+      }
+      const entry = media.find((candidate) => /\/hidden-referer\.mp4$/.test(candidate.url))
+      const logHits = server.log.filter((row) => row.path === '/hidden-referer.mp4')
+      await browserB.connection
+        .send('Target.closeTarget', { targetId: page.targetId })
+        .catch(() => undefined)
+      return {
+        status:
+          entry &&
+          entry.kind === 'file' &&
+          entry.sizeBytes === server.hiddenRefererBytes &&
+          logHits.length > 0
+            ? 'PASS'
+            : 'FAIL',
+        evidence: `media=${JSON.stringify(media)}; entry=${JSON.stringify(entry)}; serverHits=${JSON.stringify(logHits)}; clipBytes=${server.hiddenRefererBytes}`
+      }
+    })
+
+    await scenario('3e', 'MP3 audio is detected above the small-file threshold', async () => {
+      const page = await createPage(browserB, `${origin}/audio`)
+      page.browser = browserB
+      const tab = await waitForValue(
+        () => tabIdForUrl(browserB, optionsB.sessionId, `${origin}/audio`),
+        (value) => value !== null,
+        10000,
+        'audio fixture tab'
+      )
+      await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+      await enableOverlayForTab(browserB, optionsB.sessionId, origin, tab)
+      await browserB.connection.send('Page.reload', {}, page.sessionId)
+      await sleep(400)
+      const media = await waitForSniffed(
+        browserB,
+        optionsB.sessionId,
+        tab,
+        (list) => list.some((entry) => /\/tone\.mp3$/.test(entry.url))
+      )
+      const entry = media.find((candidate) => /\/tone\.mp3$/.test(candidate.url))
+      await browserB.connection
+        .send('Target.closeTarget', { targetId: page.targetId })
+        .catch(() => undefined)
+      return {
+        status:
+          entry &&
+          entry.kind === 'file' &&
+          entry.sizeBytes === server.audioBytes &&
+          entry.audioOnly === true
+            ? 'PASS'
+            : 'FAIL',
+        evidence: `media=${JSON.stringify(media)}; audioBytes=${server.audioBytes}; sha256=${server.audioSha256}`
+      }
+    })
+
     await scenario('5', 'No native host: hand-off leaves the browser download running and bytes match', async () => {
       // Enable automatic hand-off through the real options checkbox.
       const handoffClick = await browserB.connection.evaluate(
@@ -3564,9 +4022,9 @@ async function main() {
         const nativePage = await createPage(browserB, `${nativeOrigin}/`)
         nativePage.browser = browserB
         const nativeTab = await waitForValue(
-          () => tabIdForOrigin(browserB, optionsB.sessionId, nativeOrigin),
+          () => tabIdForUrl(browserB, optionsB.sessionId, `${nativeOrigin}/`),
           (value) => typeof value === 'number',
-          8000,
+          15000,
           'native fixture tab visible to the extension',
           100
         ).catch(async () => {
@@ -3602,6 +4060,7 @@ async function main() {
             )
         )
         nativeRun.page = nativePage
+        nativeRun.tabId = nativeTab
         record(
           'N0',
           'Isolated dev app and temporary Chromium registration ready',
@@ -3986,6 +4445,117 @@ async function main() {
         return {
           status: ok ? 'PASS' : 'FAIL',
           evidence: `cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: complete.state, totalBytes: complete.totalBytes, bytesReceived: complete.bytesReceived, filename: complete.filename })}; file (${hash.bytes}B) sha256=${hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; secure requests=${JSON.stringify(secureHits)}; anonymous range probes=${JSON.stringify(anonymousPreflight)}; authenticated browser requests=${authenticatedBrowser.length}; app preflight rejection logged=${preflightRejected}; app log=${JSON.stringify(newAppLog.slice(-1200))}; app row=${JSON.stringify(appRow)}; app files=${JSON.stringify(appFiles)}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        }
+      })
+
+      await scenario('N6', 'Referer-protected detected MP4 downloads through the app with matching SHA-256', async () => {
+        if (setupError) return blocked()
+        const page = nativeRun.page
+        const tab = nativeRun.tabId
+        await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+        // Reuse the already opted-in native fixture tab instead of creating a
+        // new one; this keeps Helium's tab list small and avoids a redundant
+        // tab-id lookup. The overlay grant is per origin and already active.
+        await navigatePage(page, `${nativeOrigin}/referer-hidden`)
+        const media = await waitForSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) => list.some((entry) => /\/hidden-referer\.mp4$/.test(entry.url))
+        )
+        const entry = media.find((candidate) => /\/hidden-referer\.mp4$/.test(candidate.url))
+        if (!entry) throw new Error('the hidden referer MP4 was not detected')
+        const queued = await queueSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          entry.url
+        )
+        const completed = await waitForCompletedAppDownload(nativeRun.db, entry.url, 90000)
+        const hashOk = completed.hash.sha256 === server.hiddenRefererSha256
+        const bytesOk = completed.hash.bytes === server.hiddenRefererBytes
+        const refererHits = server.log.filter(
+          (row) =>
+            row.path === '/hidden-referer.mp4' &&
+            typeof row.referer === 'string' &&
+            /\/referer-hidden(?:[?#]|$)/.test(row.referer)
+        )
+        const ok =
+          queued &&
+          queued.response &&
+          queued.response.ok === true &&
+          hashOk &&
+          bytesOk &&
+          refererHits.length > 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `queued=${JSON.stringify(queued)}; row=${JSON.stringify({ id: completed.row.id, status: completed.row.status, url: completed.row.url, file: completed.filePath })}; bytes=${completed.hash.bytes} sha256=${completed.hash.sha256} expected=${server.hiddenRefererSha256} match=${hashOk}; refererHits=${JSON.stringify(refererHits)}`
+        }
+      })
+
+      await scenario('N7', 'Detected HLS variant downloads as a media job with duration and progress', async () => {
+        if (setupError) return blocked()
+        const page = nativeRun.page
+        const tab = nativeRun.tabId
+        await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+        await navigatePage(page, `${nativeOrigin}/hls`)
+        const media = await waitForSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) =>
+            list.some(
+              (entry) =>
+                entry.kind === 'hls' &&
+                Array.isArray(entry.variants) &&
+                entry.variants.some((variant) => variant.height === 720)
+            )
+        )
+        const hls = media.find(
+          (entry) =>
+            entry.kind === 'hls' &&
+            Array.isArray(entry.variants) &&
+            entry.variants.some((variant) => variant.height === 720)
+        )
+        const variant = hls && hls.variants.find((entry) => entry.height === 720)
+        if (!hls || !variant) throw new Error('the HLS master or 720p variant was not detected')
+        const queued = await queueSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          hls.url,
+          variant.url
+        )
+        const row = await waitForValue(
+          () =>
+            readMediaJobRows(nativeRun.db).find(
+              (entry) =>
+                entry.source_url === variant.url && entry.status === 'complete'
+            ) || null,
+          (match) => match !== null,
+          120000,
+          'completed HLS media job',
+          100
+        )
+        const filePath = row.file_path || path.join(row.dir, `${row.title}.mp4`)
+        const exists = fs.existsSync(filePath)
+        const hash = exists ? hashFile(filePath) : null
+        const probe = exists ? ffprobeOutput(filePath) : null
+        const duration = probe && probe.ok ? probe.duration : null
+        const durationOk =
+          typeof duration === 'number' && duration >= 1 && duration <= 5
+        const ok =
+          queued &&
+          queued.response &&
+          queued.response.ok === true &&
+          exists &&
+          hash &&
+          hash.bytes > 10_000 &&
+          durationOk &&
+          row.completed_bytes > 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `queued=${JSON.stringify(queued)}; variant=${JSON.stringify(variant)}; job=${JSON.stringify({ id: row.id, status: row.status, title: row.title, label: row.label, completed: row.completed_bytes, total: row.total_bytes, dir: row.dir, file: row.file_path })}; file=${filePath} (${hash ? hash.bytes : 0}B); ffprobe=${JSON.stringify(probe)}; durationOk=${durationOk}`
         }
       })
     }
