@@ -23,6 +23,7 @@ import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
 import type { SettingsManager } from './settings/manager'
+import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
   manager: DownloadManager
@@ -220,7 +221,14 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<DownloadSettings>(IPC.getSettings, () => settings().getSettings())
 
-  invoke<DownloadSettings>(IPC.updateSettings, (_event, input) =>
-    settings().update(input)
-  )
+  invoke<DownloadSettings>(IPC.updateSettings, async (_event, input) => {
+    const updated = await settings().update(input)
+    // Theme changes are applied to the native caption buttons here, in the
+    // same IPC round trip that persists them. No window reload occurs.
+    const window = context.getWindow()
+    if (window && !window.isDestroyed()) {
+      applyThemeToWindow(window, updated.theme)
+    }
+    return updated
+  })
 }

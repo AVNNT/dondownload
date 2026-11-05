@@ -171,7 +171,7 @@ export function MediaAnalyzer({
       onSubmit={(event) => {
         void handleSubmit(event)
       }}
-      className="rounded-xl border border-white/10 bg-[#080808] p-3"
+      className="rounded-xl border border-white/10 surface-card p-3"
     >
       <div className="flex items-center justify-between gap-3">
         <label
@@ -202,12 +202,12 @@ export function MediaAnalyzer({
             localError ? 'media-url-help media-url-error' : 'media-url-help'
           }
           aria-invalid={localError !== null}
-          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 bg-black px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={disabled || busy || url.trim().length === 0}
-          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {analyzing ? 'Analyzing…' : 'Analyze'}
         </button>
@@ -244,7 +244,7 @@ export function MediaAnalyzer({
       ) : null}
 
       {analysis ? (
-        <div className="mt-3 rounded-lg border border-white/10 bg-black/40 p-3">
+        <div className="mt-3 rounded-lg border border-white/10 surface-soft p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
@@ -284,7 +284,7 @@ export function MediaAnalyzer({
                 type="button"
                 onClick={() => onQueue(bestVideo.optionId, maxBytes)}
                 disabled={controlsDisabled || busy || !validMaxBytes}
-                className="h-9 w-full rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 sm:w-auto"
+                className="h-9 w-full rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 sm:w-auto"
               >
                 {queuingOptionId === bestVideo.optionId
                   ? 'Queueing…'
@@ -345,7 +345,7 @@ export function MediaAnalyzer({
               onChange={event => setMaxMiB(event.target.value)}
               placeholder="No limit"
               aria-invalid={!validMaxBytes}
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2 text-xs text-zinc-100 placeholder:text-zinc-600"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600"
             />
             <span className="mt-1 block font-normal text-zinc-500">Unknown and merged sizes are checked during transfer and against the final output. A brief network overrun is possible while progress catches up.</span>
           </label>

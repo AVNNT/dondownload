@@ -14,6 +14,7 @@ import { MediaSection } from './components/MediaSection'
 import { QuickAdd } from './components/QuickAdd'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { SettingsSection } from './components/SettingsSection'
+import { applyRendererTheme } from './theme'
 
 type PageId = 'downloads' | 'media' | 'batches' | 'settings'
 
@@ -76,6 +77,18 @@ export default function App(): JSX.Element {
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [page, setPage] = useState<PageId>('downloads')
+
+  useEffect(() => {
+    let cancelled = false
+    // Apply the persisted appearance as soon as the renderer can read it, so a
+    // relaunch restores the saved theme without a reload or navigation.
+    void window.donDownload.getSettings().then((result) => {
+      if (!cancelled && result.ok) applyRendererTheme(result.value.theme)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -182,8 +195,8 @@ export default function App(): JSX.Element {
   ).length
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100">
-      <header className="window-app-header border-b border-white/10 bg-black">
+    <div className="surface-app min-h-screen text-zinc-100">
+      <header className="window-app-header surface-app border-b border-white/10">
         <div aria-hidden="true" className="window-drag-region" />
         <div className="window-app-header-content mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:flex-none">
@@ -395,7 +408,7 @@ function ErrorBanner({
 
 function EmptyState(): JSX.Element {
   return (
-    <div className="rounded-xl border border-dashed border-white/10 bg-[#050505] px-6 py-7 text-center">
+    <div className="surface-inset rounded-xl border border-dashed border-white/10 px-6 py-7 text-center">
       <div
         aria-hidden="true"
         className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"

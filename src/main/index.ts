@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { IPC } from '@shared/ipc'
 import { isAllowedAt } from '@shared/schedule'
+import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
@@ -40,6 +41,7 @@ let aria2: Aria2Service | null = null
 let manager: DownloadManager | null = null
 let mediaJobs: MediaJobsManager | null = null
 let batches: BatchManager | null = null
+let settingsManager: SettingsManager | null = null
 let nativeBridge: NativeBridge | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
@@ -119,8 +121,12 @@ function refreshTray(): void {
   appTray?.refresh()
 }
 
-function openMainWindow(show = true, offscreen = false): BrowserWindow {
-  const window = createMainWindow({ show, offscreen })
+function openMainWindow(
+  show = true,
+  offscreen = false,
+  theme: AppTheme = settingsManager?.getSettings().theme ?? DEFAULT_THEME
+): BrowserWindow {
+  const window = createMainWindow({ show, offscreen, theme })
 
   window.on('close', (event) => {
     const action = decideWindowClose({
@@ -211,6 +217,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
         void manager?.refreshPolicy()
       }
     })
+    settingsManager = settings
     aria2.onBeforeReady = (client) => settings.applyStartup(client)
 
     manager = new DownloadManager(

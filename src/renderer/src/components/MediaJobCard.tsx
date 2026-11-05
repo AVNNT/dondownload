@@ -70,7 +70,7 @@ export function MediaJobCard({
   return (
     <article
       aria-labelledby={titleId}
-      className="rounded-xl border border-white/10 bg-[#080808] p-3 transition-colors hover:border-white/20"
+      className="rounded-xl border border-white/10 surface-card p-3 transition-colors hover:border-white/20"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">

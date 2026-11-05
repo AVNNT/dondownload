@@ -1,5 +1,95 @@
 @import "tailwindcss";
 
+/*
+ * Desktop appearance tokens.
+ *
+ * The app renders from a single `data-theme` attribute on <html>. OLED is the
+ * default and matches the original pure-black UI. Surfaces are semantic
+ * variables; text/border utilities come from the Tailwind color variables,
+ * which are remapped only where a light palette needs different contrast.
+ */
+:root,
+:root[data-theme="oled"] {
+  color-scheme: dark;
+  --surface-app: #000000;
+  --surface-card: #080808;
+  --surface-inset: #050505;
+  --surface-input: #000000;
+  --surface-soft: rgb(0 0 0 / 0.4);
+  --scrollbar-track: #000000;
+  --scrollbar-thumb: #27272a;
+  --selection-bg: rgb(52 211 153 / 0.3);
+  --selection-text: #ffffff;
+  --focus-ring: rgb(110 231 183 / 0.8);
+  --divider: rgb(255 255 255 / 0.1);
+  --drag-region: #000000;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-app: #09090b;
+  --surface-card: #111113;
+  --surface-inset: #0b0b0d;
+  --surface-input: #0b0b0d;
+  --surface-soft: rgb(0 0 0 / 0.35);
+  --scrollbar-track: #09090b;
+  --scrollbar-thumb: #3f3f46;
+  --selection-bg: rgb(52 211 153 / 0.3);
+  --selection-text: #ffffff;
+  --focus-ring: rgb(110 231 183 / 0.8);
+  --divider: rgb(255 255 255 / 0.1);
+  --drag-region: #09090b;
+
+  /* Only the app chrome changes; the default zinc palette stays readable. */
+  --color-black: #09090b;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --surface-app: #f4f4f5;
+  --surface-card: #ffffff;
+  --surface-inset: #fafafa;
+  --surface-input: #ffffff;
+  --surface-soft: rgb(24 24 27 / 0.04);
+  --scrollbar-track: #f4f4f5;
+  --scrollbar-thumb: #c4c4cc;
+  --selection-bg: rgb(4 120 87 / 0.18);
+  --selection-text: #052e16;
+  --focus-ring: rgb(4 120 87 / 0.7);
+  --divider: rgb(24 24 27 / 0.12);
+  --drag-region: #f4f4f5;
+
+  /*
+   * Invert the neutral ramp for a light surface. Utilities that read as
+   * "primary text" or "muted text" in the dark palette stay primary/muted.
+   * `white` becomes the border/overlay ink so existing alpha utilities keep
+   * their meaning on light surfaces.
+   */
+  --color-black: #ffffff;
+  --color-white: #18181b;
+  --color-zinc-950: #f4f4f5;
+  --color-zinc-900: #f4f4f5;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-400: #52525b;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-200: #27272a;
+  --color-zinc-100: #18181b;
+
+  /* Status text needs darker tones on white; accent fills stay bright. */
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-red-100: #7f1d1d;
+  --color-red-200: #991b1b;
+  --color-red-300: #b91c1c;
+  --color-red-400: #dc2626;
+}
+
 @layer base {
   html,
   body,
@@ -8,15 +98,14 @@
   }
 
   html {
-    background: #000000;
-    color-scheme: dark;
+    background: var(--surface-app);
     scrollbar-gutter: stable;
   }
 
   body {
     margin: 0;
-    background: #000000;
-    color: #f4f4f5;
+    background: var(--surface-app);
+    color: var(--color-zinc-100, #f4f4f5);
     font-family:
       "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -35,30 +124,51 @@
 
   summary:focus-visible {
     border-radius: 6px;
-    outline: 2px solid rgb(110 231 183 / 0.8);
+    outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
   }
 
   ::selection {
-    background: rgb(52 211 153 / 0.3);
-    color: #ffffff;
+    background: var(--selection-bg);
+    color: var(--selection-text);
   }
 
   :focus-visible {
-    outline: 2px solid rgb(110 231 183 / 0.8);
+    outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
   }
 }
 
+/* Semantic surfaces used by every screen, card, dialog-like panel and input. */
+.surface-app {
+  background-color: var(--surface-app);
+}
+
+.surface-card {
+  background-color: var(--surface-card);
+}
+
+.surface-inset {
+  background-color: var(--surface-inset);
+}
+
+.surface-input {
+  background-color: var(--surface-input);
+}
+
+.surface-soft {
+  background-color: var(--surface-soft);
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: #27272a #000000;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 .window-drag-region {
   width: calc(100% - 140px);
   height: 40px;
-  background: #000000;
+  background: var(--drag-region);
   app-region: drag;
   -webkit-app-region: drag;
 }
@@ -79,12 +189,12 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #000000;
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border: 2px solid #000000;
+  background: var(--scrollbar-thumb);
+  border: 2px solid var(--scrollbar-track);
   border-radius: 999px;
 }
 

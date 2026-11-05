@@ -24,6 +24,7 @@ import {
   type BatchRecord
 } from '@shared/batches'
 import {
+  DEFAULT_THEME,
   parseDownloadControls,
   parseDownloadSettings,
   type DownloadControls,
@@ -38,7 +39,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -325,6 +326,16 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE batches ADD COLUMN max_bytes_per_item INTEGER
         CHECK (max_bytes_per_item IS NULL OR max_bytes_per_item BETWEEN 1 AND 107374182400);
     `
+  },
+  {
+    // Appearance is part of the existing single settings row. The additive
+    // column keeps every previously stored download-control value and defaults
+    // existing/new users to the original OLED-black theme.
+    version: 8,
+    sql: `
+      ALTER TABLE download_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'oled'
+        CHECK (theme IN ('oled', 'dark', 'light'));
+    `
   }
 ]
 
@@ -456,7 +467,10 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
       enabled: number(row, 'allowed_hours_enabled') === 1,
       start: text(row, 'allowed_hours_start'),
       end: text(row, 'allowed_hours_end')
-    }
+    },
+    // The migration default covers old rows; this fallback keeps a malformed
+    // row from taking the app down before the shared parser can reject it.
+    theme: text(row, 'theme') ?? DEFAULT_THEME
   })
 }
 
@@ -664,8 +678,8 @@ export class DownloadDatabase {
         INSERT INTO download_settings (
           id, max_concurrent_downloads, per_host_connections,
           global_speed_limit_bps, allowed_hours_enabled,
-          allowed_hours_start, allowed_hours_end, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+          allowed_hours_start, allowed_hours_end, theme, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           max_concurrent_downloads = excluded.max_concurrent_downloads,
           per_host_connections = excluded.per_host_connections,
@@ -673,6 +687,7 @@ export class DownloadDatabase {
           allowed_hours_enabled = excluded.allowed_hours_enabled,
           allowed_hours_start = excluded.allowed_hours_start,
           allowed_hours_end = excluded.allowed_hours_end,
+          theme = excluded.theme,
           updated_at = excluded.updated_at
       `)
 
@@ -924,6 +939,7 @@ export class DownloadDatabase {
         parsed.allowedHours.enabled ? 1 : 0,
         parsed.allowedHours.start,
         parsed.allowedHours.end,
+        parsed.theme,
         Date.now()
       )
     } catch (error) {

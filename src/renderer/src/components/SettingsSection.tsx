@@ -1,9 +1,24 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import {
+  APP_THEMES,
   MAX_SPEED_LIMIT_BPS,
+  type AppTheme,
   type DownloadSettings
 } from '@shared/settings'
 import { formatSpeed } from '@shared/format'
+import { applyRendererTheme } from '../theme'
+
+const THEME_LABEL: Record<AppTheme, string> = {
+  oled: 'OLED black',
+  dark: 'Dark',
+  light: 'Light'
+}
+
+const THEME_DESCRIPTION: Record<AppTheme, string> = {
+  oled: 'Pure black surfaces',
+  dark: 'Soft near-black surfaces',
+  light: 'Light surfaces and dark text'
+}
 
 const BYTES_PER_MB = 1_000_000
 const MAX_SPEED_MB = MAX_SPEED_LIMIT_BPS / BYTES_PER_MB
@@ -31,12 +46,14 @@ export function SettingsSection(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [themePending, setThemePending] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     void window.donDownload.getSettings().then((result) => {
       if (cancelled) return
       if (result.ok) {
+        applyRendererTheme(result.value.theme)
         setSettings(result.value)
         setDraft(result.value)
         setSpeedInput(speedInputValue(result.value.globalSpeedLimitBps))
@@ -52,7 +69,7 @@ export function SettingsSection(): JSX.Element {
   if (!draft) {
     return (
       <section
-        className="rounded-xl border border-white/10 bg-[#080808] p-4"
+        className="rounded-xl border border-white/10 surface-card p-4"
         aria-labelledby="settings-heading"
       >
         <h2
@@ -86,6 +103,54 @@ export function SettingsSection(): JSX.Element {
           }
         : current
     )
+  }
+
+  /**
+   * Appearance is an immediate preference: apply the renderer token set and
+   * persist the same IPC round trip. Saved download settings are resent, so an
+   * unsaved draft for the numeric fields is never committed by a theme click.
+   */
+  const changeTheme = async (theme: AppTheme): Promise<void> => {
+    if (!settings || settings.theme === theme || themePending) return
+    const previousTheme = settings.theme
+    setThemePending(true)
+    setError(null)
+    setMessage(null)
+    applyRendererTheme(theme)
+    setDraft((current) => (current ? { ...current, theme } : current))
+
+    try {
+      const result = await window.donDownload.updateSettings({
+        ...settings,
+        theme
+      })
+      if (!result.ok) {
+        applyRendererTheme(previousTheme)
+        setDraft((current) =>
+          current ? { ...current, theme: previousTheme } : current
+        )
+        setError(result.error.message)
+        return
+      }
+      const saved = result.value
+      setSettings(saved)
+      setDraft((current) =>
+        current ? { ...current, theme: saved.theme } : saved
+      )
+      setMessage('Appearance saved and applied.')
+    } catch (error) {
+      applyRendererTheme(previousTheme)
+      setDraft((current) =>
+        current ? { ...current, theme: previousTheme } : current
+      )
+      setError(
+        error instanceof Error
+          ? error.message
+          : 'The appearance could not be saved.'
+      )
+    } finally {
+      setThemePending(false)
+    }
   }
 
   const handleSpeedInput = (value: string): void => {
@@ -129,7 +194,7 @@ export function SettingsSection(): JSX.Element {
 
   return (
     <section
-      className="rounded-xl border border-white/10 bg-[#080808] p-3 sm:p-4"
+      className="rounded-xl border border-white/10 surface-card p-3 sm:p-4"
       aria-labelledby="settings-heading"
     >
       <div className="mb-3">
@@ -147,6 +212,55 @@ export function SettingsSection(): JSX.Element {
       </div>
 
       <form onSubmit={(event) => void submit(event)} className="space-y-4">
+        <fieldset className="rounded-lg border border-white/10 surface-soft px-3 py-3">
+          <legend className="px-1 text-[11px] font-medium text-zinc-400">
+            Appearance
+          </legend>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {APP_THEMES.map((theme) => {
+              const selected = draft.theme === theme
+              return (
+                <label
+                  key={theme}
+                  className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 transition ${
+                    selected
+                      ? 'border-emerald-400/40 surface-card text-zinc-100 ring-1 ring-inset ring-emerald-400/20'
+                      : 'border-white/10 text-zinc-400 hover:border-white/20 hover:text-zinc-300'
+                  } ${
+                    themePending || saving
+                      ? 'cursor-not-allowed opacity-70'
+                      : ''
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={theme}
+                    checked={selected}
+                    disabled={themePending || saving}
+                    onChange={() => {
+                      void changeTheme(theme)
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">
+                      {THEME_LABEL[theme]}
+                    </span>
+                    <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                      {THEME_DESCRIPTION[theme]}
+                    </span>
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+          <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+            Switches immediately, including the native title bar, and is restored
+            the next time DonDownload starts. Downloads keep running.
+          </p>
+        </fieldset>
+
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="text-[11px] text-zinc-400">
             Concurrent downloads
@@ -163,7 +277,7 @@ export function SettingsSection(): JSX.Element {
                   maxConcurrentDownloads: Number(event.currentTarget.value)
                 })
               }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -181,7 +295,7 @@ export function SettingsSection(): JSX.Element {
                   perHostConnections: Number(event.currentTarget.value)
                 })
               }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -196,7 +310,7 @@ export function SettingsSection(): JSX.Element {
               placeholder="Unlimited"
               value={speedInput}
               onChange={(event) => handleSpeedInput(event.currentTarget.value)}
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50"
             />
             <span
               id="settings-speed-exact"
@@ -213,7 +327,7 @@ export function SettingsSection(): JSX.Element {
           </label>
         </div>
 
-        <fieldset className="rounded-lg border border-white/10 bg-black/30 px-3 py-3">
+        <fieldset className="rounded-lg border border-white/10 surface-soft px-3 py-3">
           <legend className="px-1 text-[11px] font-medium text-zinc-400">
             Allowed download hours (local time)
           </legend>
@@ -239,7 +353,7 @@ export function SettingsSection(): JSX.Element {
                 onChange={(event) =>
                   updateAllowedHours({ start: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
               />
             </label>
             <label className="text-[11px] text-zinc-400">
@@ -252,7 +366,7 @@ export function SettingsSection(): JSX.Element {
                 onChange={(event) =>
                   updateAllowedHours({ end: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-black px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
               />
             </label>
           </div>
@@ -283,7 +397,7 @@ export function SettingsSection(): JSX.Element {
           <button
             type="submit"
             disabled={saving || unchanged}
-            className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-black transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+            className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
           >
             {saving ? 'Saving…' : 'Save settings'}
           </button>

@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  APP_THEMES,
   DEFAULT_ALLOWED_HOURS_END,
   DEFAULT_ALLOWED_HOURS_START,
   DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
   DEFAULT_MAX_CONCURRENT_DOWNLOADS,
   DEFAULT_PER_HOST_CONNECTIONS,
+  DEFAULT_THEME,
   MAX_EPOCH_MS,
   MAX_SPEED_LIMIT_BPS,
   defaultDownloadSettings,
+  isAppTheme,
   isClockTime,
   parseAllowedHours,
+  parseAppTheme,
   parseClockTime,
   parseDownloadControls,
   parseDownloadSettings,
@@ -39,13 +43,16 @@ describe('download settings contract', () => {
         enabled: false,
         start: '00:00',
         end: '00:00'
-      }
+      },
+      theme: 'oled'
     })
     expect(DEFAULT_MAX_CONCURRENT_DOWNLOADS).toBe(3)
     expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(4)
     expect(DEFAULT_GLOBAL_SPEED_LIMIT_BPS).toBe(0)
     expect(DEFAULT_ALLOWED_HOURS_START).toBe('00:00')
     expect(DEFAULT_ALLOWED_HOURS_END).toBe('00:00')
+    expect(DEFAULT_THEME).toBe('oled')
+    expect(APP_THEMES).toEqual(['oled', 'dark', 'light'])
     expect(MAX_SPEED_LIMIT_BPS).toBe(1024 * 1024 * 1024)
   })
 
@@ -71,7 +78,8 @@ describe('download settings contract', () => {
         enabled: true,
         start: '22:00',
         end: '06:00'
-      }
+      },
+      theme: 'light'
     }
     expect(parseDownloadSettings(custom)).toEqual(custom)
     expect(parseDownloadSettings(validSettings())).toEqual(validSettings())
@@ -89,7 +97,8 @@ describe('download settings contract', () => {
               enabled: true,
               start: '00:00',
               end: '00:00'
-            }
+            },
+            theme: 'oled' as const
           }
           expect(parseDownloadSettings(settings)).toEqual(settings)
         }
@@ -187,6 +196,29 @@ describe('download settings contract', () => {
     expect(() =>
       parseAllowedHours({ enabled: true, start: '08:00', end: '24:00' })
     ).toThrow(/HH:mm/)
+  })
+
+  it('accepts only the shared OLED, dark and light themes', () => {
+    for (const theme of APP_THEMES) {
+      expect(isAppTheme(theme)).toBe(true)
+      expect(parseAppTheme(theme)).toBe(theme)
+      expect(parseDownloadSettings(validSettings({ theme })).theme).toBe(theme)
+    }
+    for (const value of ['system', 'DARK', '', null, undefined, 1]) {
+      expect(isAppTheme(value)).toBe(false)
+      expect(() => parseAppTheme(value)).toThrow(/Invalid theme/)
+    }
+    expect(() =>
+      parseDownloadSettings(validSettings({ theme: 'system' as never }))
+    ).toThrow(/Invalid theme/)
+    expect(() =>
+      parseDownloadSettings({
+        maxConcurrentDownloads: 3,
+        perHostConnections: 4,
+        globalSpeedLimitBps: 0,
+        allowedHours: { enabled: false, start: '00:00', end: '00:00' }
+      })
+    ).toThrow(/missing/)
   })
 })
 

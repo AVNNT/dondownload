@@ -27,6 +27,7 @@ import type { Aria2Service } from '../src/main/aria2/service'
 import type { DownloadManager } from '../src/main/downloads/manager'
 import { registerIpc } from '../src/main/ipc'
 import type { SettingsManager } from '../src/main/settings/manager'
+import { themeWindowColors } from '../src/main/settings/theme'
 import { ValidationError } from '../src/shared/validation'
 
 const SETTINGS_CHANNELS = [IPC.getSettings, IPC.updateSettings]
@@ -53,6 +54,8 @@ type FakeSettingsManager = ReturnType<typeof createSettingsManager>
 interface FakeWindow {
   window: {
     isDestroyed: () => boolean
+    setBackgroundColor: ReturnType<typeof vi.fn>
+    setTitleBarOverlay: ReturnType<typeof vi.fn>
     webContents: {
       mainFrame: { url: string }
       getURL: () => string
@@ -73,6 +76,8 @@ function createWindow(): FakeWindow {
   }
   const window = {
     isDestroyed: () => false,
+    setBackgroundColor: vi.fn(),
+    setTitleBarOverlay: vi.fn(),
     webContents
   }
   return { window, frame, webContents }
@@ -160,6 +165,33 @@ describe('settings IPC security and results', () => {
 
     const reloaded = await handler(IPC.getSettings)(event)
     expect(reloaded).toEqual({ ok: true, value: next })
+  })
+
+  it('applies a saved theme to the native title bar in the same update', async () => {
+    const settingsManager = createSettingsManager()
+    const fakeWindow = register(settingsManager)
+    const event = trustedEvent(fakeWindow)
+    const next = settings({ theme: 'light' })
+
+    const updated = await handler(IPC.updateSettings)(event, next)
+
+    expect(updated).toEqual({ ok: true, value: next })
+    const expected = themeWindowColors('light')
+    expect(fakeWindow.window.setBackgroundColor).toHaveBeenCalledWith(
+      expected.backgroundColor
+    )
+    expect(fakeWindow.window.setTitleBarOverlay).toHaveBeenCalledWith(
+      expected.titleBarOverlay
+    )
+
+    const dark = await handler(IPC.updateSettings)(
+      event,
+      settings({ theme: 'dark' })
+    )
+    expect(dark).toEqual({ ok: true, value: settings({ theme: 'dark' }) })
+    expect(fakeWindow.window.setTitleBarOverlay).toHaveBeenLastCalledWith(
+      themeWindowColors('dark').titleBarOverlay
+    )
   })
 
   it('returns the manager validation failure without persisting', async () => {
