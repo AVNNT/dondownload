@@ -1,0 +1,82 @@
+{
+  "_type": "video",
+  "id": "SpeedySparklingCockroach",
+  "title": "Clipped moment",
+  "extractor": "TwitchClips",
+  "duration": 27.4,
+  "thumbnail": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-preview-480x272.jpg",
+  "formats": [
+    {
+      "format_id": "portrait-360",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 360,
+      "height": 640,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-portrait-360.mp4"
+    },
+    {
+      "format_id": "portrait-480",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 480,
+      "height": 854,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-portrait-480.mp4"
+    },
+    {
+      "format_id": "portrait-720",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 720,
+      "height": 1280,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-portrait-720.mp4"
+    },
+    {
+      "format_id": "portrait-1080",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 1080,
+      "height": 1920,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-portrait-1080.mp4"
+    },
+    {
+      "format_id": "portrait-1440",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 1440,
+      "height": 2560,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-portrait-1440.mp4"
+    },
+    {
+      "format_id": "landscape-360",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 640,
+      "height": 360,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-landscape-360.mp4"
+    },
+    {
+      "format_id": "landscape-480",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 854,
+      "height": 480,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-landscape-480.mp4"
+    },
+    {
+      "format_id": "landscape-720",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 1280,
+      "height": 720,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-landscape-720.mp4"
+    },
+    {
+      "format_id": "landscape-1080",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 1920,
+      "height": 1080,
+      "url": "https://clips-media-assets2.twitch.tv/AT-cm%7C1234567-landscape-1080.mp4"
+    }
+  ]
+}

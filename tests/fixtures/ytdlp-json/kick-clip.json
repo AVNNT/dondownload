@@ -1,0 +1,16 @@
+{
+  "_type": "video",
+  "id": "clip_01HZ",
+  "title": "Kick clip",
+  "extractor": "KickClip",
+  "duration": 30.0,
+  "thumbnail": "https://clips.kick.com/clips/clip_01HZ/thumbnail.jpg",
+  "formats": [
+    {
+      "format_id": "0",
+      "ext": "mp4",
+      "protocol": "m3u8_native",
+      "url": "https://clips.kick.com/clips/clip_01HZ/playlist.m3u8"
+    }
+  ]
+}

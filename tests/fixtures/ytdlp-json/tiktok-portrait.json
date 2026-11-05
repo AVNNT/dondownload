@@ -1,0 +1,22 @@
+{
+  "_type": "video",
+  "id": "7300000000000000000",
+  "title": "TikTok video",
+  "extractor": "TikTok",
+  "duration": 15.0,
+  "thumbnail": "https://p16-sign-va.tiktokcdn.com/obj/thumb.jpeg",
+  "formats": [
+    {
+      "format_id": "h264_720p",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 720,
+      "height": 1280,
+      "fps": 30,
+      "tbr": 1200,
+      "vcodec": "h264",
+      "acodec": "aac",
+      "url": "https://v16-webapp.tiktok.com/video.mp4"
+    }
+  ]
+}

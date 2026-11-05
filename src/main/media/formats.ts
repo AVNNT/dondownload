@@ -29,6 +29,35 @@ const HTTP_STREAM_PROTOCOLS = new Set([
 ])
 
 /**
+ * Some extractors (Twitch clips, Streamable, Kick, Facebook, archive.org and
+ * generic HTML5 pages) omit `vcodec`/`acodec` and sometimes even the frame
+ * size. The container and protocol are then the only reliable video signal.
+ */
+const VIDEO_EXTENSIONS = new Set([
+  'mp4',
+  'webm',
+  'mkv',
+  'mov',
+  'flv',
+  'm4v',
+  'ts'
+])
+const AUDIO_EXTENSIONS = new Set([
+  'm4a',
+  'mp3',
+  'opus',
+  'ogg',
+  'oga',
+  'aac',
+  'flac',
+  'wav',
+  'weba',
+  'mka'
+])
+const AUDIO_NOTE = /\baudio\b|audio[- ]only/
+const VIDEO_NOTE = /\bvideo\b|\b\d{3,4}p\d{0,3}\b|\b(?:hd|sd|uhd|4k|2k|8k)\b/
+
+/**
  * HLS playlist protocols are downloaded through yt-dlp's fragment path or,
  * historically, FFmpeg. Direct HTTP/DASH streams are a single connection per
  * format and report progress reliably, so equally good formats prefer them.
@@ -98,10 +127,18 @@ interface FormatDescriptor {
   fps: number | null
   filesize: number | null
   filesizeApprox: number | null
+  /** Human-readable `format_note`, used when dimensions are missing. */
+  formatNote: string
+  /** yt-dlp `resolution` string, another dimension fallback. */
+  resolutionText: string
   tbr: number
   vbr: number
   abr: number
   hdr: boolean
+  /**
+   * `muxed` includes formats whose audio stream is present but whose reported
+   * `acodec` is missing (assumed muxed), not only verified audio codecs.
+   */
   kind: 'muxed' | 'video' | 'audio'
 }
 
@@ -113,8 +150,8 @@ interface DisplaySize {
 interface VideoDraft {
   dto: Omit<MediaFormatOption, 'optionId'>
   choices: Map<MediaOutputFormat, InternalOutputChoice>
-  sortHeight: number
-  sortWidth: number
+  /** Short side of the frame, so portrait and landscape rank sensibly. */
+  sortShortSide: number
   sortFps: number
   sortBitrate: number
   sortFilesize: number
@@ -149,11 +186,23 @@ function cleanText(value: unknown): string | null {
   return cleaned.length === 0 ? null : cleaned
 }
 
-function cleanCodec(value: unknown): string | null {
+interface CodecInfo {
+  /** Verified codec name, or null when missing or explicitly `none`. */
+  value: string | null
+  /** True only when yt-dlp reported the literal `none` (stream absent). */
+  declaredNone: boolean
+}
+
+/**
+ * `null`/missing and `"none"` mean different things: a missing codec is
+ * unknown and may still be present in the stream, while `"none"` explicitly
+ * declares the stream absent. Keep them apart during classification.
+ */
+function codecInfo(value: unknown): CodecInfo {
   const text = cleanText(value)
-  if (text === null) return null
-  if (text.toLowerCase() === 'none') return null
-  return text.slice(0, 64)
+  if (text === null) return { value: null, declaredNone: false }
+  if (text.toLowerCase() === 'none') return { value: null, declaredNone: true }
+  return { value: text.slice(0, 64), declaredNone: false }
 }
 
 function cleanContainer(value: unknown): string | null {
@@ -316,11 +365,12 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   const formatId = cleanFormatId(record.format_id)
   if (formatId === null) return null
 
-  const formatNote =
-    typeof record.format_note === 'string'
-      ? record.format_note.toLowerCase()
-      : ''
-  if (formatId.toLowerCase().startsWith('sb') || formatNote.includes('storyboard')) {
+  const formatNote = cleanText(record.format_note) ?? ''
+  const formatNoteLower = formatNote.toLowerCase()
+  if (
+    formatId.toLowerCase().startsWith('sb') ||
+    formatNoteLower.includes('storyboard')
+  ) {
     return null
   }
 
@@ -331,8 +381,13 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   const ext = cleanContainer(record.ext)
   if (ext === null) return null
 
-  const videoCodec = cleanCodec(record.vcodec)
-  const audioCodec = cleanCodec(record.acodec)
+  // Storyboard image sheets are never media, regardless of their codecs.
+  if (ext === 'mhtml') return null
+
+  const video = codecInfo(record.vcodec)
+  const audio = codecInfo(record.acodec)
+  if (video.declaredNone && audio.declaredNone) return null
+
   const width = safeInteger(record.width, 1, 65_535)
   const height = safeInteger(record.height, 1, 65_535)
   const fps = finitePositive(record.fps, 1_000)
@@ -354,34 +409,101 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
     colorTransfer === 'smpte2084' ||
     colorTransfer === 'arib-std-b67'
 
-  const hasVideo = videoCodec !== null && (width !== null || height !== null)
-  const hasAudio = audioCodec !== null
+  // Classification must survive missing codecs. A verified video codec always
+  // wins; otherwise dimensions, an explicit video container/note/protocol or
+  // an HLS playlist identify video. Audio is assumed only from an explicit
+  // `vcodec: none` or a clearly audio-only container/note.
+  const hasDimensions = width !== null || height !== null
+  const resolutionText = cleanText(record.resolution) ?? ''
+  const resolutionLower = resolutionText.toLowerCase()
+  const noteSaysAudio = AUDIO_NOTE.test(formatNoteLower)
+  const noteSaysVideo = !noteSaysAudio && VIDEO_NOTE.test(formatNoteLower)
+  const resolutionSaysAudio = /\baudio\b/.test(resolutionLower)
+  const resolutionSaysVideo = resolutionText !== '' && !resolutionSaysAudio
+  const hls = protocol.startsWith('m3u8')
 
-  if (!hasVideo && !hasAudio) return null
+  let isVideo: boolean
+  if (video.declaredNone) {
+    isVideo = false
+  } else if (video.value !== null) {
+    isVideo = true
+  } else if (AUDIO_EXTENSIONS.has(ext) || noteSaysAudio || resolutionSaysAudio) {
+    isVideo = false
+  } else {
+    isVideo =
+      hasDimensions ||
+      noteSaysVideo ||
+      resolutionSaysVideo ||
+      VIDEO_EXTENSIONS.has(ext) ||
+      hls
+  }
+
+  let isAudio: boolean
+  if (isVideo) {
+    // An unknown acodec on a video format is assumed muxed unless yt-dlp
+    // explicitly reported `acodec: none`.
+    isAudio = !audio.declaredNone
+  } else if (video.declaredNone) {
+    isAudio = !audio.declaredNone
+  } else {
+    isAudio =
+      audio.value !== null ||
+      AUDIO_EXTENSIONS.has(ext) ||
+      noteSaysAudio ||
+      resolutionSaysAudio
+  }
+
+  if (!isVideo && !isAudio) return null
 
   return {
     formatId,
     ext,
     protocol,
-    videoCodec,
-    audioCodec,
+    videoCodec: video.value,
+    audioCodec: audio.value,
     width,
     height,
     fps,
     filesize,
     filesizeApprox,
+    formatNote,
+    resolutionText,
     tbr,
     vbr,
     abr,
     hdr,
-    kind: hasVideo ? (hasAudio ? 'muxed' : 'video') : 'audio'
+    kind: isVideo ? (isAudio ? 'muxed' : 'video') : 'audio'
   }
 }
 
-function resolutionLabel(height: number | null, width: number | null, fps: number | null): string {
-  const base = height !== null ? `${height}p` : width !== null ? `${width}px` : 'Video'
-  if (fps === null || fps < 50) return base
-  return `${base}${Math.round(fps)}`
+/**
+ * The short side of the frame is the resolution class users recognise: a
+ * 720x1280 TikTok video is "720p", not "1280p", and portrait formats sort next
+ * to their landscape equivalents instead of above larger landscape video.
+ */
+function shortSideOf(descriptor: FormatDescriptor): number | null {
+  if (descriptor.width !== null && descriptor.height !== null) {
+    return Math.min(descriptor.width, descriptor.height)
+  }
+  return descriptor.height ?? descriptor.width
+}
+
+function resolutionLabel(descriptor: FormatDescriptor): string {
+  const shortSide = shortSideOf(descriptor)
+  let base: string
+  if (shortSide !== null) {
+    base = `${shortSide}p`
+  } else if (descriptor.formatNote !== '') {
+    base = descriptor.formatNote
+  } else if (descriptor.resolutionText !== '') {
+    base = descriptor.resolutionText
+  } else {
+    base = `Quality ${descriptor.formatId}`
+  }
+  if (shortSide !== null && descriptor.fps !== null && descriptor.fps >= 50) {
+    base = `${base}${Math.round(descriptor.fps)}`
+  }
+  return base
 }
 
 function mergeContainer(videoExt: string, audioExt: string): string {
@@ -398,6 +520,11 @@ function outputFormatsOf(
   )
 }
 
+/**
+ * Formats whose metadata cannot prove the codecs must not offer codec-specific
+ * remux targets (MP4/WebM) that may fail. `auto` keeps the downloaded
+ * container; `mkv` accepts any codec and is therefore still safe.
+ */
 function muxedOutputChoices(
   descriptor: FormatDescriptor,
   ffmpegAvailable: boolean
@@ -545,8 +672,7 @@ function compareAudio(a: AudioDraft, b: AudioDraft): number {
 
 function compareVideo(a: VideoDraft, b: VideoDraft): number {
   return (
-    b.sortHeight - a.sortHeight ||
-    b.sortWidth - a.sortWidth ||
+    b.sortShortSide - a.sortShortSide ||
     b.sortFps - a.sortFps ||
     // Same resolution/fps: prefer the direct HTTP/DASH transport before
     // bitrate and size, so deduplication keeps the progress-reporting format.
@@ -562,6 +688,38 @@ function compareVideo(a: VideoDraft, b: VideoDraft): number {
   )
 }
 
+/** Human-readable codec pair, omitting parts yt-dlp did not report. */
+function muxedCodecLabel(descriptor: FormatDescriptor): string | null {
+  if (descriptor.videoCodec === null) return null
+  if (descriptor.audioCodec === null) return descriptor.videoCodec
+  return `${descriptor.videoCodec} + ${descriptor.audioCodec}`
+}
+
+function dedupeKeyOf(
+  descriptor: FormatDescriptor,
+  container: string,
+  audioCodec: string | null
+): string {
+  const parts = [
+    String(descriptor.height ?? 0),
+    String(descriptor.width ?? 0),
+    String(Math.round(descriptor.fps ?? 0)),
+    container,
+    descriptor.videoCodec ?? 'unknown',
+    audioCodec ?? 'unknown'
+  ]
+  if (shortSideOf(descriptor) === null) {
+    // Distinct formats whose only quality signal is a note/resolution string
+    // must not collapse into one indistinguishable option.
+    parts.push(descriptor.formatNote, descriptor.resolutionText)
+    // Generic HTML5 embeds have no signal at all; keep every format_id.
+    if (descriptor.formatNote === '' && descriptor.resolutionText === '') {
+      parts.push(descriptor.formatId)
+    }
+  }
+  return parts.join('|')
+}
+
 function buildVideoDrafts(
   descriptors: FormatDescriptor[],
   audioDescriptors: FormatDescriptor[],
@@ -575,27 +733,25 @@ function buildVideoDrafts(
     if (descriptor.kind === 'audio') continue
 
     const videoCodec = descriptor.videoCodec ?? 'video'
-    const resolution = resolutionLabel(
-      descriptor.height,
-      descriptor.width,
-      descriptor.fps
-    )
+    const resolution = resolutionLabel(descriptor)
 
-    if (descriptor.kind === 'muxed' && descriptor.audioCodec !== null) {
+    if (descriptor.kind === 'muxed') {
       const container = descriptor.ext
       const size = displaySize(descriptor, durationSeconds)
       const choices = muxedOutputChoices(descriptor, ffmpegAvailable)
+      const codecs = muxedCodecLabel(descriptor)
       drafts.push({
         dto: {
           kind: 'video',
           label: truncateLabel(
-            `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${descriptor.audioCodec}`
+            `${resolution} ${container.toUpperCase()}` +
+              (codecs === null ? '' : ` · ${codecs}`)
           ),
           container,
           width: descriptor.width,
           height: descriptor.height,
           fps: descriptor.fps,
-          videoCodec,
+          videoCodec: descriptor.videoCodec,
           audioCodec: descriptor.audioCodec,
           hasAudio: true,
           requiresMerge: false,
@@ -608,26 +764,18 @@ function buildVideoDrafts(
           formatIds: choices.get('auto')?.formatIds
         },
         choices,
-        sortHeight: descriptor.height ?? 0,
-        sortWidth: descriptor.width ?? 0,
+        sortShortSide: shortSideOf(descriptor) ?? 0,
         sortFps: descriptor.fps ?? 0,
         sortBitrate: descriptor.tbr,
         sortFilesize: size.bytes ?? 0,
         sortProtocol: protocolPreference(descriptor.protocol),
-        dedupeKey: [
-          descriptor.height ?? 0,
-          descriptor.width ?? 0,
-          Math.round(descriptor.fps ?? 0),
-          container,
-          videoCodec,
-          descriptor.audioCodec
-        ].join('|')
+        dedupeKey: dedupeKeyOf(descriptor, container, descriptor.audioCodec)
       })
       continue
     }
 
     // A video-only stream is offered only as a real video+audio deliverable.
-    if (!ffmpegAvailable || bestAudio === null || bestAudio.audioCodec === null) {
+    if (!ffmpegAvailable || bestAudio === null) {
       continue
     }
 
@@ -645,7 +793,7 @@ function buildVideoDrafts(
       dto: {
         kind: 'video',
         label: truncateLabel(
-          `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${autoAudio.audioCodec} (merged)`
+          `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${autoAudio.audioCodec ?? 'audio'} (merged)`
         ),
         container,
         width: descriptor.width,
@@ -672,20 +820,12 @@ function buildVideoDrafts(
         formatIds: autoChoice.formatIds
       },
       choices,
-      sortHeight: descriptor.height ?? 0,
-      sortWidth: descriptor.width ?? 0,
+      sortShortSide: shortSideOf(descriptor) ?? 0,
       sortFps: descriptor.fps ?? 0,
       sortBitrate: descriptor.tbr,
       sortFilesize: size.bytes ?? 0,
       sortProtocol: protocolPreference(descriptor.protocol),
-      dedupeKey: [
-        descriptor.height ?? 0,
-        descriptor.width ?? 0,
-        Math.round(descriptor.fps ?? 0),
-        container,
-        videoCodec,
-        autoAudio.audioCodec
-      ].join('|')
+      dedupeKey: dedupeKeyOf(descriptor, container, autoAudio.audioCodec)
     })
   }
 
@@ -699,7 +839,7 @@ function buildAudioDrafts(
   const drafts: AudioDraft[] = []
 
   for (const descriptor of descriptors) {
-    if (descriptor.kind !== 'audio' || descriptor.audioCodec === null) continue
+    if (descriptor.kind !== 'audio') continue
 
     const container = descriptor.ext
     const size = displaySize(descriptor, durationSeconds)
@@ -708,7 +848,10 @@ function buildAudioDrafts(
       dto: {
         kind: 'audio',
         label: truncateLabel(
-          `Audio only · ${container.toUpperCase()} · ${descriptor.audioCodec}` +
+          `Audio only · ${container.toUpperCase()}` +
+            (descriptor.audioCodec === null
+              ? ''
+              : ` · ${descriptor.audioCodec}`) +
             (descriptor.abr >= 1
               ? ` · ${Math.round(descriptor.abr)} kbps`
               : '')
@@ -736,7 +879,7 @@ function buildAudioDrafts(
       sortFilesize: size.bytes ?? 0,
       sortProtocol: protocolPreference(descriptor.protocol),
       dedupeKey: [
-        descriptor.audioCodec,
+        descriptor.audioCodec ?? `unknown:${descriptor.formatId}`,
         container,
         Math.round(descriptor.abr || descriptor.tbr)
       ].join('|')
@@ -764,10 +907,13 @@ function dedupeAndSort<T extends { dedupeKey: string }>(
 /**
  * Convert a yt-dlp JSON metadata object into public, opaque options.
  *
- * Only verified HTTP(S) streams with a known codec and container are exposed.
- * Video-only streams are paired with a real audio-only stream and exposed only
- * when FFmpeg is available. A pure video-only stream is never an option and a
- * silent stream is never the best video deliverable.
+ * Only verified HTTP(S) streams with a known container are exposed. Sites that
+ * omit codecs (Twitch clips, Streamable, Kick, Facebook, archive.org, generic
+ * HTML5 pages) are still offered, but only with output choices that do not
+ * depend on the unknown codecs. Video-only streams are paired with an
+ * audio-only stream and exposed only when FFmpeg is available. A pure
+ * video-only stream is never an option and a silent stream is never the best
+ * video deliverable.
  */
 export function buildMediaAnalysis(
   rawInfo: unknown,

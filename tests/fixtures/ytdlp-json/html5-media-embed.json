@@ -1,0 +1,27 @@
+{
+  "_type": "video",
+  "id": "multiple-video-formats",
+  "title": "Media formats",
+  "extractor": "HTML5MediaEmbed",
+  "duration": null,
+  "formats": [
+    {
+      "format_id": "0",
+      "ext": "mp4",
+      "protocol": "https",
+      "url": "https://developer.mozilla.org/media/flower.mp4"
+    },
+    {
+      "format_id": "1",
+      "ext": "webm",
+      "protocol": "https",
+      "url": "https://developer.mozilla.org/media/flower.webm"
+    },
+    {
+      "format_id": "2",
+      "ext": "mp4",
+      "protocol": "https",
+      "url": "https://developer.mozilla.org/media/rabbit320.mp4"
+    }
+  ]
+}

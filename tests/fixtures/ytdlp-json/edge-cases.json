@@ -1,0 +1,77 @@
+{
+  "_type": "video",
+  "id": "edge-cases",
+  "title": "Edge cases",
+  "duration": 60.0,
+  "formats": [
+    {
+      "format_id": "sb0",
+      "ext": "mhtml",
+      "protocol": "https",
+      "format_note": "storyboard",
+      "vcodec": "none",
+      "acodec": "none",
+      "url": "https://example.com/storyboard.mhtml"
+    },
+    {
+      "format_id": "0",
+      "ext": "mhtml",
+      "protocol": "https",
+      "url": "https://example.com/storyboard-sheet.mhtml"
+    },
+    {
+      "format_id": "silent",
+      "ext": "mp4",
+      "protocol": "https",
+      "vcodec": "none",
+      "acodec": "none",
+      "url": "https://example.com/silent.mp4"
+    },
+    {
+      "format_id": "140",
+      "ext": "m4a",
+      "protocol": "https",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "abr": 128,
+      "filesize": 1048576,
+      "url": "https://example.com/audio.m4a"
+    },
+    {
+      "format_id": "hls-audio",
+      "ext": "m4a",
+      "protocol": "m3u8_native",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "abr": 64,
+      "url": "https://example.com/audio.m3u8"
+    },
+    {
+      "format_id": "251",
+      "ext": "m4a",
+      "protocol": "https",
+      "vcodec": "none",
+      "url": "https://example.com/unknown-audio.m4a"
+    },
+    {
+      "format_id": "mystery",
+      "ext": "mp4",
+      "protocol": "https",
+      "url": "https://example.com/mystery.mp4"
+    },
+    {
+      "format_id": "note-video",
+      "ext": "mp4",
+      "protocol": "https",
+      "format_note": "720p60",
+      "url": "https://example.com/note.mp4"
+    },
+    {
+      "format_id": "res-video",
+      "ext": "webm",
+      "protocol": "https",
+      "resolution": "640x360",
+      "url": "https://example.com/resolution.webm"
+    }
+  ]
+}

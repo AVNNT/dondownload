@@ -1,0 +1,18 @@
+{
+  "_type": "video",
+  "id": "moo",
+  "title": "moo",
+  "extractor": "Streamable",
+  "duration": 12.0,
+  "thumbnail": "https://cdn-cf-east.streamable.com/image/moo.jpg",
+  "formats": [
+    {
+      "format_id": "mp4",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 852,
+      "height": 480,
+      "url": "https://cdn-cf-east.streamable.com/video/mp4/moo.mp4"
+    }
+  ]
+}

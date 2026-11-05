@@ -1,0 +1,28 @@
+{
+  "_type": "video",
+  "id": "1234567890",
+  "title": "Facebook video",
+  "extractor": "facebook",
+  "duration": 84.0,
+  "thumbnail": "https://scontent.xx.fbcdn.net/v/thumb.jpg",
+  "formats": [
+    {
+      "format_id": "sd",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 640,
+      "height": 360,
+      "format_note": "sd",
+      "url": "https://video.xx.fbcdn.net/v/sd.mp4"
+    },
+    {
+      "format_id": "hd",
+      "ext": "mp4",
+      "protocol": "https",
+      "width": 1280,
+      "height": 720,
+      "format_note": "hd",
+      "url": "https://video.xx.fbcdn.net/v/hd.mp4"
+    }
+  ]
+}
