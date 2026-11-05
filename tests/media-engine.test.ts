@@ -1367,11 +1367,43 @@ describe('media engine subprocess arguments and progress', () => {
       outputTemplate,
       '--merge-output-format',
       'mp4',
+      '--hls-prefer-ffmpeg',
       '--ffmpeg-location',
       harness.ffmpegFile,
       '--',
       SOURCE_URL
     ])
+  })
+
+  it('does not add the HLS FFmpeg preference for a muxed download that needs no merge', async () => {
+    const harness = await makeHarness({
+      download: (call) => call.child.close(1)
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const muxed = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 720
+    )
+    expect(muxed?.requiresMerge).toBe(false)
+
+    const failure = harness.engine
+      .download(
+        downloadRequest(analysis.analysisId, muxed!.optionId, harness.downloadDir),
+        () => undefined
+      )
+      .then(
+        () => null,
+        (error: unknown) => error
+      )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    expect(await failure).toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+
+    const download = downloadCall(harness.calls)
+    expect(argValue(download.args, '--format')).toBe('22')
+    expect(download.args).not.toContain('--merge-output-format')
+    expect(download.args).not.toContain('--hls-prefer-ffmpeg')
+    expect(download.args[download.args.length - 1]).toBe(SOURCE_URL)
   })
 
   it('parses progress lines and reports downloading, merging and the verified file', async () => {

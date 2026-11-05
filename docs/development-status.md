@@ -31,13 +31,15 @@ visible native window. No OS input, real Downloads path, Helium profile,
 installer or external download host was used. Screenshots and a bounded renderer
 trace are recorded in the dedicated verification section below.
 
-On 2026-11-05, a fresh isolated packaged build passed playlist preview, explicit
-one-entry selection, per-entry format inspection, and a capped audio-only
-playlist batch download (2,550,209 bytes under a 25 MiB cap). The 480p merged
-video variation downloaded both streams but failed during post-processing; no
-successful merged playlist-video transfer is claimed. Direct-URL batch UI
-lifecycle (failure/cancel/retry/restart) and disposable-profile Helium
-integration remain open in this pass.
+On 2026-11-05, the initially failing packaged 480p merged-playlist transfer was
+diagnosed and fixed; a fresh isolated packaged run then completed the actual
+merged download (16,280,605 bytes, below the 25 MiB cap), with bundled ffprobe
+verifying Matroska, H.264 854×480 and stereo Opus. A separate packaged
+loopback-only direct-URL batch run verified progress, independent 404 failure
+and success, item/group cancellation, retry, partial-file and sentinel
+preservation, parent aggregation, and SQLite restart persistence. See the
+verification record near the end of this document. Disposable-profile Helium
+integration remains open.
 
 The earlier live selected-playlist media download remains a successful,
 separate Milestone 3B result (see its section below); it is not superseded by
@@ -846,6 +848,69 @@ for exactly that ported origin while returning false for
 `http://127.0.0.1/*`. No port-stripped or broader fallback is used.
 
 ## Fixes in the working tree
+
+## Packaged merged-playlist fix and direct-URL batch lifecycle — 2026-11-05
+
+### Confirmed 480p merged-playlist failure and fix
+
+The first packaged 480p merged download transferred 16,996,129 bytes, below
+the configured 25 MiB per-job ceiling, then failed in FFmpeg post-processing.
+The source video MPEG-TS packets were missing PTS/DTS because yt-dlp's native
+HLS downloader copied the affected HLS stream without timestamps. Bundled
+FFmpeg 9.0.2 rejected a packet with `Can't write packet with unknown timestamp`
+and exited `-22`. A bounded reproduction failed the same way; repeating it with
+yt-dlp's FFmpeg HLS downloader completed, confirming the source/tool interaction
+rather than a cap failure.
+
+`src/main/media/args.ts` now adds `--hls-prefer-ffmpeg` only when a merged output
+format is requested. Non-merge arguments are unchanged. Regression coverage in
+`tests/media-args.test.ts` and `tests/media-engine.test.ts` checks both paths.
+
+The fresh packaged Electron verification at
+`artifacts/test-runs/electron-playlist-2026-11-05T00-24-23-675Z/` selected the
+actual available 480p merged quality and completed below the 25 MiB cap. The
+output was 16,280,605 bytes. Bundled ffprobe verified Matroska, H.264 at
+854×480, and stereo Opus. The harness records active and completed renderer
+screenshots and the media metadata in `result.json`.
+
+### Packaged direct-URL batch lifecycle
+
+`scripts/electron-batch-lifecycle-verification.mjs` exercises the actual
+packaged Electron renderer, preload/IPC, SQLite and bundled aria2 with
+deterministic loopback-only HTTP fixtures in isolated user data. The run at
+`artifacts/test-runs/electron-batch-lifecycle-2026-11-05T00-28-30-599Z/`
+verified:
+
+- Three independent direct URLs made progress concurrently: one fixture 404,
+  one exact-byte completion, and one individually cancelled transfer. The
+  parent aggregated to `partial`; cancellation paused the child and retained a
+  non-empty partial file.
+- Retrying only the failed item succeeded after the fixture was enabled; both
+  successful outputs matched exact fixture length and SHA-256. The parent
+  correctly remained partial due to the separately cancelled sibling.
+- A second two-item batch was group-cancelled after both children had made
+  progress. Both child downloads became paused and both partial files remained.
+- Batch and item statuses/mappings survived an app restart. Completed and
+  partial files and a pre-existing sentinel in the isolated download directory
+  remained intact.
+
+Screenshots and structured results are in that run directory. No OS input, real
+Downloads path, Helium profile, external HTTP fixture or user data was used.
+
+### Verification for this change
+
+| Command / check | Result |
+| --- | --- |
+| `npx vitest run tests/media-args.test.ts tests/media-engine.test.ts tests/media-js-runtime.test.ts` | **51 passed**, 3 files |
+| `npm run test:media` | **94 passed**, 4 files |
+| `npm run typecheck` | **passed** |
+| `npm run build` | **passed** |
+| Packaged merged playlist verification | **passed**, verified 480p video + audio, 16,280,605 bytes under cap |
+| Packaged direct-URL lifecycle | **passed**, isolated loopback fixtures; details above |
+| Verification harness syntax checks | **passed** |
+
+No full test gate was rerun. No installer was executed, no release/signing or
+distribution action was taken, and no Helium integration claim is made.
 
 - Added `extension/overlay-controller.js`, a Chrome-API-injected lifecycle
   module so the whole enable/sync/disable flow is testable with a fake browser:

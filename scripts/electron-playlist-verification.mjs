@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Real packaged Electron playlist preview and explicit one-entry selection. */
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { mkdir, writeFile, stat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -103,22 +103,31 @@ try {
    await cdp.shot('04-playlist-quality-verified.png')
    const controls=await cdp.eval(`(() => { const card=document.querySelector('article[aria-labelledby^="batch-preview-"]'); const select=card?.querySelector('select'); const input=[...card?.querySelectorAll('input[type=number]')??[]].find(x=>x.placeholder==='No limit'); return {qualities:[...select?.options??[]].map(x=>x.text),selectValue:select?.value,hasCap:!!input} })()`)
    if(!controls.qualities.length||!controls.hasCap) throw new Error(`Playlist quality/cap controls missing: ${JSON.stringify(controls)}`)
-   const lowQuality=controls.qualities.map((text,index)=>({text,index})).find(option=>/Audio only/.test(option.text)) ?? controls.qualities.map((text,index)=>({text,index})).find(option=>/360p|480p/.test(option.text))
-   if(!lowQuality) throw new Error(`No bounded low-resolution/audio reported quality: ${JSON.stringify(controls.qualities)}`)
+   const lowQuality=controls.qualities.map((text,index)=>({text,index})).find(option=>/480p/.test(option.text))
+   if(!lowQuality) throw new Error(`No genuinely available 480p quality: ${JSON.stringify(controls.qualities)}`)
    await cdp.eval(`(() => { const card=document.querySelector('article[aria-labelledby^="batch-preview-"]'); const select=card.querySelector('select'); select.selectedIndex=${lowQuality.index}; select.dispatchEvent(new Event('change',{bubbles:true})); const input=[...card.querySelectorAll('input[type=number]')].find(x=>x.placeholder==='No limit'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; setter.call(input,'25'); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true})); return true })()`)
    await cdp.shot('05-playlist-quality-and-size-cap.png')
    const beforeQueue=await batchSnapshot(); if(!beforeQueue.ok||beforeQueue.value.batches.length) throw new Error('Format analysis unexpectedly created a batch.')
    await clickButton('Queue selected (1)')
-   const completed=await waitFor(async()=>{const result=await batchSnapshot();return result.ok?result.value:null},value=>value?.batches?.some(batch=>batch.items?.some(item=>item.status==='complete'||item.status==='error'||item.status==='skipped')),300_000,'Capped playlist batch terminal state')
+   let activeCaptured=false
+   const completed=await waitFor(async()=>{const result=await batchSnapshot();const value=result.ok?result.value:null;const batch=value?.batches?.[0];const item=batch?.items?.[0];if(!activeCaptured&&item?.status==='running'){activeCaptured=true;await cdp.shot('06-playlist-batch-active.png');record('playlist-batch-active',{batchStatus:batch.status,itemStatus:item.status,completedBytes:item.completedBytes,totalBytes:item.totalBytes,screenshot:path.join(screenshotDir,'06-playlist-batch-active.png')})}return value},value=>value?.batches?.some(batch=>batch.items?.some(item=>item.status==='complete'||item.status==='error'||item.status==='skipped')),300_000,'Capped playlist batch terminal state')
    const batch=completed.batches[0]
    const item=batch.items[0]
    if(item.status!=='complete') throw new Error(`Capped playlist item did not complete: ${JSON.stringify(item)}`)
+   if(!/merged/i.test(item.label)) throw new Error(`Selected 480p quality did not resolve to a merged format: ${JSON.stringify(item)}`)
    const files=await allFiles(mediaDir)
    if(files.length!==1) throw new Error(`Expected one capped output file, found ${files.length}`)
    const outputStat=await stat(files[0])
    if(outputStat.size>25*1024*1024) throw new Error(`Playlist output exceeded cap: ${outputStat.size}`)
-   await cdp.shot('06-playlist-batch-complete.png')
-   record('playlist-quality-cap-transfer',{selectedQuality:lowQuality.text,capBytes:25*1024*1024,finalBytes:outputStat.size,itemStatus:item.status,output:files[0],screenshot:path.join(screenshotDir,'06-playlist-batch-complete.png')})
+   const ffprobe=path.join(path.dirname(appPath),'resources','vendor','ffmpeg','ffprobe.exe')
+   const probe=spawnSync(ffprobe,['-v','error','-show_streams','-show_format','-of','json',files[0]],{encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:4*1024*1024})
+   if(probe.error||probe.status!==0) throw new Error(`Bundled ffprobe failed on final merged output: ${probe.error?.message??probe.stderr}`)
+   const metadata=JSON.parse(probe.stdout)
+   const video=metadata.streams?.find(stream=>stream.codec_type==='video')
+   const audio=metadata.streams?.find(stream=>stream.codec_type==='audio')
+   if(!video||!audio||video.width!==854||video.height!==480) throw new Error(`Final file is missing verified 480p video/audio streams: ${JSON.stringify(metadata.streams?.map(stream=>({type:stream.codec_type,codec:stream.codec_name,width:stream.width,height:stream.height})))}`)
+   await cdp.shot('07-playlist-batch-complete.png')
+   record('playlist-quality-cap-transfer',{selectedQuality:lowQuality.text,capBytes:25*1024*1024,finalBytes:outputStat.size,itemStatus:item.status,output:files[0],container:metadata.format?.format_name,video:{codec:video.codec_name,width:video.width,height:video.height},audio:{codec:audio.codec_name,channels:audio.channels},ffprobeExitCode:probe.status,screenshot:path.join(screenshotDir,'07-playlist-batch-complete.png')})
    const report={status:'PASS — packaged playlist quality/cap transfer',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),app:appPath,renderer:'actual packaged Electron renderer + production preload/IPC + yt-dlp/FFmpeg',playlistUrl,selection:'exactly one explicit CC-BY Caminandes entry',userData,mediaDir,screenshots:screenshotDir,checks}
   await writeFile(path.join(runDir,'result.json'),JSON.stringify(report,null,2));console.log(`PLAYLIST_RESULT ${path.join(runDir,'result.json')}`)
 } catch(error) {

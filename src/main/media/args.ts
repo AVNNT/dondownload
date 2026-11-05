@@ -117,6 +117,13 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
 
   if (input.mergeOutputFormat !== null) {
     args.push('--merge-output-format', input.mergeOutputFormat)
+    // Some HLS video streams (for example YouTube format 231) contain packets
+    // without PTS/DTS. yt-dlp's native HLS downloader copies them into MPEG-TS,
+    // which the FFmpeg muxer then rejects with "Can't write packet with unknown
+    // timestamp". Routing HLS through FFmpeg during download remuxes those
+    // timestamps before the merge step. Only merge jobs need this: a download
+    // without post-processing has no muxer step that can fail this way.
+    args.push('--hls-prefer-ffmpeg')
     if (input.ffmpegLocation !== null) {
       args.push('--ffmpeg-location', input.ffmpegLocation)
     }
