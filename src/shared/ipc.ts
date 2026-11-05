@@ -9,6 +9,7 @@ export const IPC = {
   retryDownload: 'download:retry',
   removeDownload: 'download:remove',
   showInFolder: 'download:show-in-folder',
+  openFile: 'download:open-file',
   analyzeMedia: 'media:analyze',
   queueMedia: 'media:queue',
   getMediaSnapshot: 'media:get-snapshot',
@@ -16,6 +17,7 @@ export const IPC = {
   cancelMedia: 'media:cancel',
   removeMedia: 'media:remove',
   showMediaInFolder: 'media:show-in-folder',
+  openMediaFile: 'media:open-file',
   mediaSnapshotChanged: 'media:snapshot-changed',
   // Milestone 3B batch orchestration (additive). All batch channels reuse the
   // existing trusted-sender wrapper and never return a source URL or path.

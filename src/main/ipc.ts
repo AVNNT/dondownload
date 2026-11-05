@@ -114,6 +114,7 @@ export function registerIpc(context: IpcContext): void {
   invoke<null>(IPC.showInFolder, (_event, id) =>
     context.manager.showInFolder(id)
   )
+  invoke<null>(IPC.openFile, (_event, id) => context.manager.openFile(id))
 
   // Additive media channels. They reuse the same trusted-sender wrapper and
   // never widen the existing download capabilities.
@@ -154,6 +155,10 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<null>(IPC.showMediaInFolder, (_event, jobId) =>
     media().showMediaInFolder(jobId)
+  )
+
+  invoke<null>(IPC.openMediaFile, (_event, jobId) =>
+    media().openMediaFile(jobId)
   )
 
   // Additive Milestone 3B batch channels. Every handler goes through the same

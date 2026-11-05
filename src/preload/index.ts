@@ -49,6 +49,8 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.removeDownload, id) as Promise<ApiResult<AppSnapshot>>,
   showInFolder: (id: string) =>
     ipcRenderer.invoke(IPC.showInFolder, id) as Promise<ApiResult<null>>,
+  openFile: (id: string) =>
+    ipcRenderer.invoke(IPC.openFile, id) as Promise<ApiResult<null>>,
   restartAria2: () =>
     ipcRenderer.invoke(IPC.restartAria2) as Promise<ApiResult<AppSnapshot>>,
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => {
@@ -74,6 +76,8 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.removeMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
   showMediaInFolder: (jobId: string) =>
     ipcRenderer.invoke(IPC.showMediaInFolder, jobId) as Promise<ApiResult<null>>,
+  openMediaFile: (jobId: string) =>
+    ipcRenderer.invoke(IPC.openMediaFile, jobId) as Promise<ApiResult<null>>,
   onMediaSnapshotChanged: (listener: (snapshot: MediaSnapshot) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

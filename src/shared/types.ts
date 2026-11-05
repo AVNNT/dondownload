@@ -213,6 +213,8 @@ export interface DonDownloadApi {
   retryDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   removeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   showInFolder: (id: string) => Promise<ApiResult<null>>
+  /** Open a completed download's verified file with the OS default app. */
+  openFile: (id: string) => Promise<ApiResult<null>>
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
 
@@ -225,6 +227,8 @@ export interface DonDownloadApi {
   cancelMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   removeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   showMediaInFolder: (jobId: string) => Promise<ApiResult<null>>
+  /** Open a completed media output with the OS default app. */
+  openMediaFile: (jobId: string) => Promise<ApiResult<null>>
   onMediaSnapshotChanged: (
     listener: (snapshot: MediaSnapshot) => void
   ) => () => void

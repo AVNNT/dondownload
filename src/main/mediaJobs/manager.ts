@@ -668,6 +668,41 @@ export class MediaJobsManager {
     return null
   }
 
+  /** Open a completed media output with the OS default application. */
+  async openMediaFile(rawId: unknown): Promise<null> {
+    const job = this.requireJob(rawId)
+    const record = job.record
+    if (record.status !== 'complete' || !record.filePath) {
+      throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
+    }
+    if (!isInsideDirectory(this.mediaDir, record.filePath)) {
+      throw new AppError(
+        'FILE_OUTSIDE_MEDIA_DIR',
+        'The reported media file is outside the configured media folder.'
+      )
+    }
+
+    try {
+      await fs.access(record.filePath)
+    } catch {
+      throw new AppError(
+        'FILE_MISSING',
+        'The media file is no longer on disk.',
+        'It may have been moved or deleted.'
+      )
+    }
+
+    const failure = await shell.openPath(record.filePath)
+    if (failure.length > 0) {
+      throw new AppError(
+        'FILE_OPEN_FAILED',
+        'The media file could not be opened.',
+        failure
+      )
+    }
+    return null
+  }
+
   /** Read the engine tool state and publish the new snapshot. */
   async refreshToolState(): Promise<MediaToolState> {
     if (this.closed) return Object.freeze({ ...this.tool })

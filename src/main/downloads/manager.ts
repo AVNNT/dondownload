@@ -684,6 +684,44 @@ export class DownloadManager {
     return null
   }
 
+  /**
+   * Open a completed download with the OS default application. The renderer
+   * sends only the opaque download id; the trusted, persisted path is resolved
+   * and re-validated here against the configured download directory.
+   */
+  async openFile(rawId: unknown): Promise<null> {
+    const record = this.getRecord(rawId)
+    if (record.status !== 'complete' || !record.filePath) {
+      throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
+    }
+    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+      throw new AppError(
+        'FILE_OUTSIDE_DOWNLOAD_DIR',
+        'The reported file is outside the configured download folder.'
+      )
+    }
+
+    try {
+      await fs.access(record.filePath)
+    } catch {
+      throw new AppError(
+        'FILE_MISSING',
+        'The downloaded file is no longer on disk.',
+        'It may have been moved or deleted.'
+      )
+    }
+
+    const failure = await shell.openPath(record.filePath)
+    if (failure.length > 0) {
+      throw new AppError(
+        'FILE_OPEN_FAILED',
+        'The downloaded file could not be opened.',
+        failure
+      )
+    }
+    return null
+  }
+
   /** Flush bounded progress snapshots. Call before closing the database. */
   flushPersistence(): void {
     if (this.flushTimer !== null) {
