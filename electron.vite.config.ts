@@ -73,6 +73,15 @@ export default defineConfig({
       alias: {
         '@shared': resolve(__dirname, 'src/shared')
       }
+    },
+    build: {
+      rollupOptions: {
+        // Only the real app entry ships. The dev-only `preview.html` fixture
+        // route is never part of a production renderer build.
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html')
+        }
+      }
     }
   }
 })

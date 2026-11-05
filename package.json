@@ -8,6 +8,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:preview": "vite --config vite.preview.config.ts",
     "build": "npm run typecheck && electron-vite build",
     "build:native-host": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-host.ps1",
     "stage:vendor": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/stage-vendor.ps1",
