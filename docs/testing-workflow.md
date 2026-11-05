@@ -172,3 +172,36 @@ mid-merge cancellation remains unverified because no FFmpeg child was running
 when cancellation was issued. Do not treat the historical automation pattern as
 a model for future browser checks, and do not cite these timings as newly
 measured results.
+
+## Opt-in headless extension E2E check
+
+`npm run test:extension:chromium` runs a real, non-visible Chromium end-to-end
+check for `extension/`. It is opt-in and is not part of `test:fast` or
+`npm test`. It uses only already-installed tooling: Playwright's Chromium at
+`%LOCALAPPDATA%\ms-playwright\chromium-1248`, the repository FFmpeg at
+`build/vendor/ffmpeg/ffmpeg.exe`, and Node built-ins. No package is installed,
+no OS input is sent, no real browser profile or Downloads folder is used, and
+the native messaging host is never registered.
+
+The script starts a loopback HTTP fixture on `127.0.0.1` (random port, Range
+support), generates small H.264 MP4 clips, and drives Chromium through raw CDP
+over Node's built-in WebSocket. Each run uses a fresh `--user-data-dir` under
+`os.tmpdir()` and a temp download directory; both the process tree and the temp
+directory are removed on success and failure. It prints a PASS/FAIL/
+NOT-RUNNABLE table with evidence and exits non-zero on any FAIL.
+
+Checks: service worker start and console health, options page rendering and the
+shortcut setting, exact-origin host permission state, overlay injection into a
+playing page (DOM and shadow root), captured progressive MP4 sources, switching
+the same `<video>` to a second quality without losing the first, evidence-based
+capture of an extensionless `video/mp4` URL through the optional webRequest
+observer, and the fail-safe automatic hand-off when no native host answers
+(the browser download must finish with matching SHA-256).
+
+Known limitation: headless Chromium has no extension permission bubble, so
+`chrome.permissions.request` never calls back and grants nothing. That step is
+reported NOT-RUNNABLE with the observed timeout. The remaining checks run the
+same extension sources from a temporary copy whose manifest declares the
+optional permissions as required, scoped to the fixture origin only; the code
+files are byte-identical and the deviation is printed in the table. This is a
+test-harness accommodation, not evidence that the interactive grant flow works.
