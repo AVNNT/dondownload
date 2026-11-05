@@ -36,6 +36,7 @@ function createManager(
     ready?: boolean
     tracked?: Map<string, unknown>
     calls?: string[]
+    failure?: Error
   } = {}
 ): DownloadManager {
   const ready = options.ready ?? true
@@ -51,6 +52,7 @@ function createManager(
   const client = {
     call: async (method: string, params: unknown[]): Promise<unknown> => {
       calls.push(method)
+      if (options.failure) throw options.failure
       if (method !== 'aria2.tellStatus') {
         throw new AppError('ARIA2_RPC_ERROR', `Unexpected method ${method}`)
       }
@@ -119,6 +121,34 @@ afterEach(async () => {
 })
 
 describe('DownloadManager startup recovery', () => {
+  it('preserves in-flight records when aria2 is unavailable or its status lookup fails transiently', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const record = sample({ filename: 'ambiguous.bin', status: 'active' })
+    database.save({ record, explicitFilename: null })
+
+    const unavailable = createManager(database, { ready: false })
+    await unavailable.reconcileDownloads()
+    expect(unavailable.getSnapshot().downloads[0]).toMatchObject({
+      status: 'active',
+      gid: record.gid,
+      completedBytes: record.completedBytes
+    })
+
+    unavailable.close()
+    const reopened = open(filePath)
+    const transientFailure = createManager(reopened, {
+      failure: new AppError('ARIA2_RPC_ERROR', 'Temporary RPC transport timeout.')
+    })
+    await transientFailure.reconcileDownloads()
+    expect(transientFailure.getSnapshot().downloads[0]).toMatchObject({
+      status: 'active',
+      gid: record.gid,
+      completedBytes: record.completedBytes
+    })
+    expect(reopened.loadAll()[0]?.record.status).toBe('active')
+  })
+
   it('marks lost in-flight records interrupted, keeps paused and terminal history', async () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)

@@ -199,14 +199,19 @@ export class DownloadManager {
 
         const blockReason = this.blockReasons.get(record.id) ?? null
         let tracked: Aria2StatusSnapshot | null = null
+        // An unavailable service is not evidence that an in-flight GID was
+        // lost. Keep the persisted row intact until aria2 is ready to answer.
+        if (record.gid !== '' && client === null) continue
         if (client && record.gid !== '') {
           try {
             tracked = parseAria2Status(
               await client.call<unknown>('aria2.tellStatus', [record.gid])
             )
-          } catch {
-            // A missing GID (the normal case after an app restart) or any
-            // transient RPC failure is handled conservatively below.
+          } catch (error) {
+            // Only aria2's explicit missing-GID response proves the transfer
+            // is no longer tracked. A transport/server error is ambiguous;
+            // preserve the old state so Retry cannot create a duplicate.
+            if (!isGidNotFound(error)) continue
             tracked = null
           }
         }
