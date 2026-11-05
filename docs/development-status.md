@@ -1,5 +1,27 @@
 # Development status
 
+## Autonomous performance, extension and theme mission (2026-11-05)
+
+The media-size implementation is integrated at `93f0e54`; the extension video
+overlay handoff is integrated at `f1c622c`; and the persistent OLED/Dark/Light
+theme system is integrated at `fef76df`. `2484b37` updates the native-bridge
+analysis DTO test for the optional size fields and hardens extension error-hint
+lookup against inherited object property names. No push or release was made.
+
+Theme verification passed with the packaged Electron app: production build and
+typecheck passed, and 64 focused settings/database/theme tests passed. A fresh
+isolated user-data profile was switched immediately between all three themes;
+the saved Light theme remained selected after a normal app quit and relaunch.
+Native Windows title-bar symbols remained contrasted against each theme. Real
+Electron screenshots (including narrow layout) are in
+`artifacts/test-runs/theme-visual-verification/`.
+
+The extension handoff passes focused automated coverage (120 tests across the
+bridge and overlay set, including the media-size DTO regression). Real Helium
+verification of the new overlay-size and handoff copy is still pending. The
+aria2 performance workstream is measuring a local HTTP baseline before any
+tuning; no throughput improvement is claimed yet.
+
 As of 2026-11-05. Milestone 2B checkpoint: `e15c772`
 (`feat: complete per-site video overlay milestone`), following the Milestone 2A
 checkpoint `f03886d`. The Milestone 2B overlay work is complete and locally
