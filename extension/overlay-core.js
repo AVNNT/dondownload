@@ -17,6 +17,7 @@
   var PANEL_WIDTH = 292
   var PANEL_HEIGHT_ESTIMATE = 258
   var SHORTCUT_LABEL = 'Alt+Shift+D'
+  var MEDIA_SIZE_UNKNOWN = 'Size unknown'
 
   function isFiniteNumber(value) {
     return typeof value === 'number' && Number.isFinite(value)
@@ -223,7 +224,16 @@
       audioCodec: isNonEmptyText(option.audioCodec, 64) ? option.audioCodec : null,
       hasAudio: option.hasAudio === true,
       requiresMerge: option.requiresMerge === true,
-      filesizeBytes: nullableInteger(option.filesizeBytes, 0, Number.MAX_SAFE_INTEGER)
+      filesizeBytes: nullableInteger(option.filesizeBytes, 0, Number.MAX_SAFE_INTEGER),
+      // Display-only metadata already reported by yt-dlp. `estimatedBytes` is
+      // the best available size (exact or approximate); it is never computed
+      // in the browser.
+      estimatedBytes: nullableInteger(
+        option.estimatedBytes,
+        0,
+        Number.MAX_SAFE_INTEGER
+      ),
+      sizeIsEstimate: option.sizeIsEstimate === true
     }
   }
 
@@ -283,16 +293,49 @@
   }
 
   function formatBytes(value) {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return ''
-    if (value < 1024) return value + ' B'
-    if (value < 1024 * 1024) return Math.round(value / 1024) + ' KB'
-    if (value < 1024 * 1024 * 1024) {
-      return (Math.round(value / (1024 * 1024) * 10) / 10) + ' MB'
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      return ''
     }
-    return (Math.round(value / (1024 * 1024 * 1024) * 10) / 10) + ' GB'
+    var units = ['B', 'KB', 'MB', 'GB', 'TB']
+    var scaled = value
+    var unit = 0
+    while (scaled >= 1024 && unit < units.length - 1) {
+      scaled /= 1024
+      unit += 1
+    }
+    var decimals = unit === 0 ? 0 : scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+    return scaled.toFixed(decimals) + ' ' + units[unit]
   }
 
-  function describeMediaOption(option) {
+  /** Render only sizes yt-dlp already reported. Never invent an estimate. */
+  function formatMediaSize(bytes, estimate) {
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+      return MEDIA_SIZE_UNKNOWN
+    }
+    var formatted = formatBytes(bytes)
+    return estimate === true ? '~' + formatted + ' estimated' : formatted
+  }
+
+  /** Best available size: exact, approximate, or summed merged streams. */
+  function mediaSizeBytes(option) {
+    if (!option || typeof option !== 'object') return null
+    if (typeof option.estimatedBytes === 'number' && option.estimatedBytes > 0) {
+      return option.estimatedBytes
+    }
+    if (typeof option.filesizeBytes === 'number' && option.filesizeBytes > 0) {
+      return option.filesizeBytes
+    }
+    return null
+  }
+
+  /** Visible size label for one verified option, including unknown sizes. */
+  function describeMediaSize(option) {
+    if (!option || typeof option !== 'object') return MEDIA_SIZE_UNKNOWN
+    return formatMediaSize(mediaSizeBytes(option), option.sizeIsEstimate === true)
+  }
+
+  /** Format details without the size, so the UI can show the size separately. */
+  function describeMediaDetails(option) {
     if (!option || typeof option !== 'object') return ''
     var parts = []
     if (typeof option.height === 'number') parts.push(option.height + 'p')
@@ -305,9 +348,81 @@
     }
     if (option.kind === 'video' && option.hasAudio === true) parts.push('with audio')
     if (option.requiresMerge === true) parts.push('merged')
-    var size = formatBytes(option.filesizeBytes)
-    if (size) parts.push(size)
     return parts.join(' · ')
+  }
+
+  /** Complete option description, retained for callers that need one line. */
+  function describeMediaOption(option) {
+    if (!option || typeof option !== 'object') return ''
+    var details = describeMediaDetails(option)
+    var size = describeMediaSize(option)
+    return details ? details + ' · ' + size : size
+  }
+
+  function mediaErrorMessage(error, fallback) {
+    if (
+      error &&
+      typeof error.message === 'string' &&
+      error.message.trim().length > 0
+    ) {
+      return error.message.trim()
+    }
+    return fallback
+  }
+
+  /**
+   * Turn a verified error code into a short, actionable instruction. The
+   * desktop app intentionally sends stable codes with general messages, so the
+   * next step has to live here rather than in native/security code.
+   */
+  function describeMediaError(error, fallback) {
+    var code = error && typeof error.code === 'string' ? error.code : ''
+    var message = mediaErrorMessage(error, fallback)
+
+    var hints = {
+      APP_NOT_RUNNING: 'Start DonDownload (the tray icon is enough), then try again.',
+      APP_UNAVAILABLE: 'Start DonDownload (the tray icon is enough), then try again.',
+      NATIVE_RESPONSE_INVALID:
+        'Reload this page and try again. If it keeps happening, update DonDownload.',
+      MEDIA_REQUEST_FAILED: 'Reload this page, then try again.',
+      INVALID_SENDER: 'Reload this page, then enable the overlay again from the DonDownload popup.',
+      ORIGIN_MISMATCH: 'Reload this page, then enable the overlay again from the DonDownload popup.',
+      PERMISSION_REQUIRED:
+        'Enable the overlay for this site again from the DonDownload popup.',
+      OVERLAY_NOT_REGISTERED:
+        'Reload this page, then enable the overlay again from the DonDownload popup.',
+      TAB_NOT_ASSOCIATED:
+        'Reload this page, then enable the overlay again from the DonDownload popup.',
+      INVALID_MEDIA_OPTION: 'Analyze this page again, then pick an option.',
+      MEDIA_ANALYSIS_EXPIRED: 'Analyze this page again, then pick an option.',
+      MEDIA_ANALYSIS_NOT_FOUND: 'Analyze this page again, then pick an option.',
+      MEDIA_ANALYSIS_MISMATCH: 'Analyze this page again, then pick an option.',
+      MEDIA_OPTION_INVALID: 'Analyze this page again, then pick an option.',
+      MEDIA_DUPLICATE_JOB: 'This option is already queued in DonDownload.',
+      MEDIA_TOOL_UNAVAILABLE:
+        'Open DonDownload and check that yt-dlp is available, then try again.',
+      MEDIA_ANALYSIS_TIMEOUT: 'Try again, or open this page directly in DonDownload.',
+      MEDIA_UNSUPPORTED_PLAYLIST:
+        'Open a single video page instead of a playlist or collection.',
+      MEDIA_UNSUPPORTED_LIVE: 'Live streams are not supported by DonDownload.',
+      MEDIA_UNSUPPORTED_MEDIA:
+        'This page does not expose a supported video that DonDownload can download.',
+      MEDIA_TARGET_NOT_PUBLIC:
+        'Local and private network addresses are not supported by DonDownload.',
+      MEDIA_TARGET_UNRESOLVED: 'Check the connection to this site, then try again.',
+      MEDIA_SIZE_CAP_EXCEEDED:
+        'The size limit in DonDownload is too small for this option.',
+      MEDIA_MERGE_UNAVAILABLE:
+        'DonDownload could not merge these video and audio streams on this system.',
+      MEDIA_OUTPUT_UNAVAILABLE:
+        'DonDownload could not write the output file. Check the download folder.'
+    }
+
+    var hint = hints[code]
+    if (!hint || message.toLowerCase().indexOf(hint.toLowerCase()) !== -1) {
+      return message
+    }
+    return message + ' ' + hint
   }
 
   function formatDuration(seconds) {
@@ -329,11 +444,11 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'Choose Analyze to ask DonDownload about this page. Only the page address from the browser is used; the video source, cookies and player state are never read.',
+        'Choose Analyze to ask DonDownload about this page. Only the page address from the browser is used; the video source, cookies and player state are never read. Reported file sizes come from yt-dlp metadata and may be estimates or unknown.',
       actionLabel: 'Analyze this page',
       analyzingLabel: 'Analyzing…',
       optionsHint:
-        'Options come from a verified analysis. Nothing is captured or downloaded until you choose one.',
+        'Options and reported sizes come from a verified analysis. Nothing is captured or downloaded until you choose one.',
       disableLabel: 'Turn off overlay on this site',
       shortcutLabel: SHORTCUT_LABEL
     })
@@ -362,6 +477,7 @@
     MIN_VIDEO_WIDTH: MIN_VIDEO_WIDTH,
     MIN_VIDEO_HEIGHT: MIN_VIDEO_HEIGHT,
     SHORTCUT_LABEL: SHORTCUT_LABEL,
+    MEDIA_SIZE_UNKNOWN: MEDIA_SIZE_UNKNOWN,
     evaluateVideoCandidate: evaluateVideoCandidate,
     findVideoInPath: findVideoInPath,
     placeTrigger: placeTrigger,
@@ -371,7 +487,11 @@
     isOverlayShortcut: isOverlayShortcut,
     initialMediaState: initialMediaState,
     mediaView: mediaView,
+    formatMediaSize: formatMediaSize,
+    describeMediaDetails: describeMediaDetails,
+    describeMediaSize: describeMediaSize,
     describeMediaOption: describeMediaOption,
+    describeMediaError: describeMediaError,
     formatDuration: formatDuration,
     unavailableState: unavailableState
   })

@@ -689,7 +689,7 @@ export function describeOverlayStatus(input) {
       state: 'off',
       label: 'Off',
       tone: 'off',
-      hint: 'Optional. Adds a small DonDownload button when you hover a video on this site. Enabling asks for access to this exact origin only. Choose Analyze to see verified options, and a download is queued only when you pick one.'
+      hint: 'Optional. Adds a small DonDownload button when you hover a video on this site. Enabling asks for access to this exact origin only. Choose Analyze to see verified options and reported file sizes; a download is queued only when you pick one.'
     }
   }
   if (ready) {
@@ -697,7 +697,7 @@ export function describeOverlayStatus(input) {
       state: 'on',
       label: 'On',
       tone: 'on',
-      hint: `Overlay is on for ${site}. Hover a video or press Alt+Shift+D, then choose Analyze to see verified options. A download is queued only when you pick one, and access stays limited to this exact origin.`
+      hint: `Overlay is on for ${site}. Hover a video or press Alt+Shift+D, then choose Analyze to see verified options and reported file sizes. A download is queued only when you pick one, and access stays limited to this exact origin.`
     }
   }
   return {
