@@ -36,6 +36,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(SCRIPT_DIR, '..')
 const EXTENSION_DIR = path.join(ROOT, 'extension')
 const FFMPEG = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffmpeg.exe')
+const FFPROBE = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffprobe.exe')
 const ARIA2 = path.join(ROOT, 'build', 'vendor', 'aria2', 'aria2c.exe')
 
 function browserArgument() {
@@ -60,6 +61,10 @@ const CHROME =
 // reliably they honour --load-extension.
 const BROWSER_NAME = /helium/i.test(CHROME) ? 'Helium' : 'Chromium'
 const NATIVE_MODE = process.argv.includes('--native')
+// Opt-in real public sites. Requires the isolated app (--native), because the
+// verified quality list and the one-click download are produced by yt-dlp in
+// the desktop app. Never part of the default npm test commands.
+const REAL_SITES = process.argv.includes('--real-sites')
 const NATIVE_HOST_NAME = 'com.dondownload.bridge'
 // Chromium-branded builds read this exact per-user key. Only this key is
 // written, and only after proving it did not exist.
@@ -653,6 +658,20 @@ async function startFixtureServer({ clip, clip720 }) {
       )
       return
     }
+    if (parsed.pathname === '/embed') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(
+        '<!doctype html><meta charset="utf-8"><title>fixture-embed</title>' +
+          '<body style="margin:0;background:#111">' +
+          '<iframe id="e" width="560" height="315" ' +
+          'src="https://www.youtube.com/embed/jNQXAC9IVRw" ' +
+          'title="Embedded fixture video" frameborder="0" ' +
+          'allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture" ' +
+          'allowfullscreen></iframe>' +
+          '</body>'
+      )
+      return
+    }
     if (parsed.pathname === '/clip.mp4') {
       sendBuffer(clip, 'video/mp4')
       return
@@ -1220,12 +1239,24 @@ async function startIsolatedApp({
   env.DONDOWNLOAD_SMOKE_TEST = '1'
   env.DONDOWNLOAD_INTERACTIVE_SMOKE = '1'
   env.DONDOWNLOAD_INTERACTIVE_BRIDGE = '1'
-  env.DONDOWNLOAD_SMOKE_FIXTURE_HOST = fixtureHost
-  env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS = fixtureAddress
-  // A globally routable placeholder keeps the production public-target check
-  // in force; the injected preflight pins the real connection to the fixture.
-  env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS = '93.184.216.34'
+  // Real-site runs must keep the production public-target policy untouched, so
+  // the loopback fixture whitelist is omitted unless a fixture host was given.
+  delete env.DONDOWNLOAD_SMOKE_FIXTURE_HOST
+  delete env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS
+  delete env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS
+  if (fixtureHost && fixtureAddress) {
+    env.DONDOWNLOAD_SMOKE_FIXTURE_HOST = fixtureHost
+    env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS = fixtureAddress
+    // A globally routable placeholder keeps the production public-target check
+    // in force; the injected preflight pins the real connection to the fixture.
+    env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS = '93.184.216.34'
+  }
   env.DONDOWNLOAD_ARIA2_PATH = ARIA2
+  // The repository keeps its binaries under build/vendor; point the isolated
+  // app at them explicitly instead of relying on a staged vendor/ directory.
+  env.DONDOWNLOAD_YTDLP_PATH = path.join(ROOT, 'build', 'vendor', 'yt-dlp', 'yt-dlp.exe')
+  env.DONDOWNLOAD_FFMPEG_PATH = FFMPEG
+  env.DONDOWNLOAD_DENO_PATH = path.join(ROOT, 'build', 'vendor', 'deno', 'deno.exe')
 
   const proc = spawn(
     electronExe,
@@ -1412,6 +1443,1418 @@ function filesInDirectory(directory) {
 }
 
 // ---------------------------------------------------------------------------
+// real public sites (--real-sites; opt-in, network required)
+// ---------------------------------------------------------------------------
+
+const REAL_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+const REAL_VIDEO_URL = 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
+const REAL_VIDEO_TITLE = 'Me at the zoo'
+const REAL_PROGRESSIVE_PAGE = 'https://www.w3schools.com/html/html5_video.asp'
+const REAL_PROGRESSIVE_MP4 = 'https://www.w3schools.com/html/mov_bbb.mp4'
+const REAL_ICON_BUDGET_MS = 1500
+
+const timings = []
+
+function recordTiming(label, ms, note) {
+  timings.push({ label, ms, note: note || '' })
+}
+
+function realProbeSource() {
+  return `(() => {
+    if (window.top !== window) return
+    if (window.__ddRealProbe) return
+    const probe = {
+      startedAt: performance.now(),
+      tVisible: null,
+      tPlay: null,
+      tIcon: null,
+      paused: null,
+      readyState: null,
+      currentTime: null,
+      videoWidth: null,
+      videoHeight: null,
+      href: location.href,
+      nav: []
+    }
+    window.__ddRealProbe = probe
+    const visible = (el) => {
+      if (!el) return false
+      const rect = el.getBoundingClientRect()
+      if (rect.width < 2 || rect.height < 2) return false
+      const style = getComputedStyle(el)
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0'
+    }
+    const iconVisible = () => {
+      const host = document.getElementById('dondownload-overlay-host')
+      const shadow = host && host.shadowRoot
+      const trigger = shadow && shadow.querySelector('.trigger')
+      return Boolean(trigger && !trigger.hidden && visible(trigger))
+    }
+    const largestVideo = () => {
+      let best = null
+      let area = 0
+      const videos = Array.from(document.querySelectorAll('video'))
+      for (const video of videos) {
+        if (!visible(video)) continue
+        const rect = video.getBoundingClientRect()
+        const value = rect.width * rect.height
+        if (value > area) {
+          area = value
+          best = video
+        }
+      }
+      return best
+    }
+    setInterval(() => {
+      if (location.href !== probe.href) {
+        probe.nav.push({ at: performance.now(), from: probe.href, to: location.href })
+        probe.href = location.href
+        probe.tVisible = null
+        probe.tPlay = null
+        probe.tIcon = null
+      }
+      const video = largestVideo()
+      if (video) {
+        probe.readyState = video.readyState
+        probe.paused = video.paused
+        probe.currentTime = video.currentTime
+        probe.videoWidth = video.videoWidth
+        probe.videoHeight = video.videoHeight
+        if (probe.tVisible === null && video.readyState >= 2) {
+          probe.tVisible = performance.now()
+        }
+        if (
+          probe.tPlay === null &&
+          probe.tVisible !== null &&
+          !video.paused &&
+          video.readyState >= 2 &&
+          (video.currentTime > 0.05 || video.readyState >= 3)
+        ) {
+          probe.tPlay = performance.now()
+        }
+      }
+      if (probe.tVisible !== null && probe.tIcon === null && iconVisible()) {
+        probe.tIcon = performance.now()
+      }
+    }, 20)
+  })()`
+}
+
+async function createRealPage(browser, url) {
+  const { targetId } = await browser.connection.send('Target.createTarget', { url: 'about:blank' })
+  const sessionId = await browser.connection.attach(targetId)
+  await browser.connection.send('Page.enable', {}, sessionId).catch(() => undefined)
+  await browser.connection.send('Network.enable', {}, sessionId).catch(() => undefined)
+  await browser.connection
+    .send(
+      'Network.setUserAgentOverride',
+      { userAgent: REAL_UA, acceptLanguage: 'en-US,en' },
+      sessionId
+    )
+    .catch(() => undefined)
+  await browser.connection
+    .send('Page.addScriptToEvaluateOnNewDocument', { source: realProbeSource() }, sessionId)
+    .catch(() => undefined)
+  await browser.connection.send('Page.navigate', { url }, sessionId)
+  const page = { targetId, sessionId, browser }
+  const deadline = Date.now() + 45000
+  while (Date.now() < deadline) {
+    try {
+      const state = await pageEvaluate(page, '({ ready: document.readyState, href: location.href })', {
+        userGesture: false
+      })
+      if (state && state.ready === 'complete' && state.href.startsWith('http')) return page
+    } catch {
+      // still navigating
+    }
+    await sleep(150)
+  }
+  return page
+}
+
+async function readPageState(page) {
+  return pageEvaluate(
+    page,
+    `(() => ({
+      href: location.href,
+      ready: document.readyState,
+      title: document.title,
+      text: document.body ? String(document.body.innerText || '').slice(0, 600) : ''
+    }))()`,
+    { userGesture: false }
+  ).catch(() => null)
+}
+
+async function clickConsent(browser, page) {
+  return pageEvaluate(
+    page,
+    `(() => {
+      const nodes = Array.from(document.querySelectorAll('button, [role="button"], a'))
+      const text = (node) => String(node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim()
+      const reject = nodes.find((node) => /^(reject all|reject|decline all|no thanks)$/i.test(text(node)))
+      const accept = nodes.find((node) => /^(accept all|i agree|agree to all)$/i.test(text(node)))
+      const target = reject || accept
+      if (!target) return { clicked: false, labels: nodes.slice(0, 24).map(text).filter(Boolean) }
+      target.click()
+      return { clicked: true, label: text(target), kind: reject ? 'reject' : 'accept' }
+    })()`,
+    { userGesture: true }
+  )
+}
+
+/**
+ * Follow consent/redirect hops on a real page. Every click happens inside the
+ * fresh temporary profile through CDP; nothing is read from the user's browser.
+ */
+async function settleRealPage(browser, page, predicate, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  let consentClicks = 0
+  while (Date.now() < deadline) {
+    last = await readPageState(page)
+    if (last && last.ready === 'complete' && predicate(last)) {
+      return { ok: true, state: last, consentClicks }
+    }
+    const consentish =
+      last &&
+      (/consent\.youtube\.com/i.test(last.href) ||
+        /before you continue/i.test(last.title || '') ||
+        /before you continue/i.test(last.text || ''))
+    if (consentish) {
+      const click = await clickConsent(browser, page).catch(() => null)
+      if (click && click.clicked) {
+        consentClicks += 1
+        await sleep(1500)
+        continue
+      }
+    }
+    await sleep(250)
+  }
+  return { ok: false, state: last, consentClicks }
+}
+
+async function tabIdForUrlFragment(browser, optionsSession, fragment) {
+  return browser.connection.evaluate(
+    optionsSession,
+    `new Promise((resolve) => chrome.tabs.query({}, (tabs) => {
+      const match = tabs.find((tab) => typeof tab.url === 'string' && tab.url.indexOf(${JSON.stringify(fragment)}) !== -1)
+      resolve(match ? match.id : null)
+    }))`,
+    { userGesture: false }
+  )
+}
+
+async function ensureRealVideoPlaying(page, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    last = await pageEvaluate(
+      page,
+      `(() => {
+        const videos = Array.from(document.querySelectorAll('video')).filter((video) => {
+          const rect = video.getBoundingClientRect()
+          return rect.width >= 100 && rect.height >= 80
+        })
+        const video = videos.sort((left, right) => {
+          const a = left.getBoundingClientRect()
+          const b = right.getBoundingClientRect()
+          return b.width * b.height - a.width * a.height
+        })[0]
+        if (!video) return { present: false, href: location.href, title: document.title }
+        video.muted = true
+        if (video.paused && video.readyState >= 2) video.play().catch(() => undefined)
+        return {
+          present: true,
+          readyState: video.readyState,
+          paused: video.paused,
+          currentTime: video.currentTime,
+          duration: video.duration,
+          width: video.videoWidth,
+          height: video.videoHeight,
+          error: video.error ? video.error.code + ':' + video.error.message : null
+        }
+      })()`,
+      { userGesture: true }
+    ).catch(() => null)
+    if (last && last.present && last.readyState >= 2 && !last.error) return last
+    await sleep(250)
+  }
+  return last || { present: false }
+}
+
+async function readProbe(page) {
+  return pageEvaluate(page, 'window.__ddRealProbe || null', { userGesture: false }).catch(() => null)
+}
+
+async function readOverlayState(page) {
+  return pageEvaluate(
+    page,
+    `(() => {
+      const host = document.getElementById('dondownload-overlay-host')
+      const shadow = host && host.shadowRoot
+      const trigger = shadow && shadow.querySelector('.trigger')
+      const panel = shadow && shadow.querySelector('.panel')
+      const visible = (el) => {
+        if (!el || el.hidden) return false
+        const rect = el.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      const rows = shadow
+        ? Array.from(shadow.querySelectorAll('.quality-list .quality-option, .advanced-quality-list .quality-option')).map((row) => {
+            const label = String(row.textContent || '').replace(/\\s+/g, ' ').trim()
+            const heightMatch = /(\\d{2,5})p/.exec(label)
+            return {
+              label,
+              optionId: null,
+              kind: /audio only/i.test(label) ? 'audio' : 'video',
+              height: heightMatch ? Number(heightMatch[1]) : null,
+              hasAudio: /with audio|\\+/.test(label),
+              estimatedBytes: null
+            }
+          })
+        : []
+      const sourceRows = shadow
+        ? Array.from(shadow.querySelectorAll('.source-list .source')).map((row) => String(row.innerText || '').replace(/\\s+/g, ' ').trim())
+        : []
+      const analyze = shadow && shadow.querySelector('.analyze')
+      const embed = shadow && shadow.querySelector('.embed-analyze')
+      return {
+        host: Boolean(host),
+        shadow: Boolean(shadow),
+        triggerVisible: visible(trigger),
+        triggerHidden: trigger ? trigger.hidden : null,
+        panelHidden: panel ? panel.hidden : null,
+        qualityRows: rows,
+        sourceRows,
+        status: shadow && shadow.querySelector('.status') ? shadow.querySelector('.status').textContent : '',
+        analyzeHidden: analyze ? analyze.hidden : null,
+        analyzeText: analyze ? analyze.textContent : null,
+        embedHidden: embed ? embed.hidden : null,
+        embedText: embed ? embed.textContent : null
+      }
+    })()`,
+    { userGesture: false }
+  )
+}
+
+async function openOverlayPanel(page) {
+  await pageEvaluate(
+    page,
+    `(() => {
+      const host = document.getElementById('dondownload-overlay-host')
+      const trigger = host && host.shadowRoot && host.shadowRoot.querySelector('.trigger')
+      if (trigger && !trigger.hidden) trigger.click()
+      return true
+    })()`,
+    { userGesture: true }
+  )
+  return readOverlayState(page)
+}
+
+/** Open popup.html as the harness does for options, but target a real tab. */
+async function openPopupForTab(browser, extensionId, page) {
+  const { targetId } = await browser.connection.send('Target.createTarget', {
+    url: `chrome-extension://${extensionId}/popup.html`
+  })
+  const sessionId = await browser.connection.attach(targetId)
+  const popup = { targetId, sessionId, browser }
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline) {
+    try {
+      const ready = await browser.connection.evaluate(
+        sessionId,
+        'document.readyState === "complete" && !!document.getElementById("detected-state")',
+        { userGesture: false }
+      )
+      if (ready) break
+    } catch {
+      // still loading
+    }
+    await sleep(150)
+  }
+  // A real action popup is not a tab. Activate the measured tab and reload the
+  // extension page so chrome.tabs.query({active:true}) resolves it, then keep
+  // the popup page as an inactive tab for observation.
+  await browser.connection.send('Target.activateTarget', { targetId: page.targetId }).catch(() => undefined)
+  await browser.connection.send('Page.reload', {}, sessionId).catch(() => undefined)
+  const expected = await pageEvaluate(page, 'location.href', { userGesture: false })
+  const readyDeadline = Date.now() + 20000
+  while (Date.now() < readyDeadline) {
+    try {
+      const state = await browser.connection.evaluate(
+        sessionId,
+        `(() => ({
+          pageUrl: document.getElementById('page-url') ? document.getElementById('page-url').textContent : '',
+          detected: document.getElementById('detected-state') ? document.getElementById('detected-state').textContent : '',
+          rows: Array.from(document.querySelectorAll('#capture-list .capture-row')).map((row) => String(row.innerText || '').replace(/\\s+/g, ' ').trim()),
+          emptyHidden: document.getElementById('capture-empty') ? document.getElementById('capture-empty').hidden : null,
+          findHidden: document.getElementById('find-qualities') ? document.getElementById('find-qualities').hidden : null,
+          status: document.getElementById('status') ? document.getElementById('status').textContent : ''
+        }))()`,
+        { userGesture: false }
+      )
+      if (state && state.pageUrl && expected && state.pageUrl.indexOf('youtube.com/watch') !== -1) {
+        return { popup, state, expected }
+      }
+    } catch {
+      // reloading
+    }
+    await sleep(250)
+  }
+  return { popup, state: null, expected }
+}
+
+function ffprobeOutput(filePath) {
+  const result = spawnSync(
+    FFPROBE,
+    ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath],
+    { encoding: 'utf8', windowsHide: true }
+  )
+  if (result.status !== 0) {
+    return { ok: false, error: `${result.status}: ${String(result.stderr || '').slice(-400)}` }
+  }
+  try {
+    const parsed = JSON.parse(result.stdout)
+    const streams = Array.isArray(parsed.streams) ? parsed.streams : []
+    return {
+      ok: true,
+      duration: parsed.format ? Number(parsed.format.duration) : null,
+      size: parsed.format ? Number(parsed.format.size) : null,
+      videoStreams: streams.filter((stream) => stream.codec_type === 'video').length,
+      audioStreams: streams.filter((stream) => stream.codec_type === 'audio').length,
+      videoCodec: (streams.find((stream) => stream.codec_type === 'video') || {}).codec_name || null
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function readMediaJobRows(db) {
+  try {
+    return db
+      .prepare(
+        'SELECT id, source_url, analysis_id, option_id, kind, title, label, status, completed_bytes, total_bytes, error_message, dir, file_path, created_at, updated_at FROM media_jobs ORDER BY created_at DESC, updated_at DESC'
+      )
+      .all()
+  } catch {
+    return []
+  }
+}
+
+async function watchMediaJob(db, sourceUrl, timeoutMs = 180000) {
+  const samples = []
+  let lastKey = ''
+  let final = null
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const row = readMediaJobRows(db).find((entry) => entry.source_url === sourceUrl)
+    if (row) {
+      const key = `${row.status}:${row.completed_bytes}:${row.file_path || ''}`
+      if (key !== lastKey) {
+        lastKey = key
+        samples.push({ ...row })
+      }
+      if (['complete', 'error', 'cancelled', 'interrupted'].includes(row.status)) {
+        final = row
+        break
+      }
+    }
+    await sleep(50)
+  }
+  if (final === null) {
+    final = readMediaJobRows(db).find((entry) => entry.source_url === sourceUrl) || null
+  }
+  return { samples, final }
+}
+
+async function watchDownloadRow(db, url, timeoutMs = 120000) {
+  return waitForValue(
+    () => readDownloadRows(db).find((entry) => entry.url === url) || null,
+    (row) => row !== null && ['complete', 'error', 'cancelled', 'interrupted'].includes(row.status),
+    timeoutMs,
+    `download row for ${url}`,
+    50
+  )
+}
+
+async function queueSmallestQualityOnPage(page) {
+  const state = await readOverlayState(page)
+  if (state.panelHidden !== false) await openOverlayPanel(page)
+  const result = await pageEvaluate(
+    page,
+    `(() => {
+      const host = document.getElementById('dondownload-overlay-host')
+      const shadow = host && host.shadowRoot
+      if (!shadow) return { ok: false, error: 'overlay-missing' }
+      const rows = Array.from(shadow.querySelectorAll('.quality-list .quality-option, .advanced-quality-list .quality-option'))
+      const candidates = []
+      for (const row of rows) {
+        const label = String(row.textContent || '').replace(/\\s+/g, ' ').trim()
+        const heightMatch = /(\\d{2,5})p/.exec(label)
+        if (!heightMatch || /audio only/i.test(label)) continue
+        candidates.push({ row, label, height: Number(heightMatch[1]) })
+      }
+      candidates.sort((left, right) => left.height - right.height)
+      const pick = candidates[0]
+      if (!pick) {
+        return {
+          ok: false,
+          error: 'no-video-options',
+          rows: rows.map((row) => String(row.textContent || '').replace(/\\s+/g, ' ').trim())
+        }
+      }
+      const button = pick.row.querySelector('.quality-queue')
+      if (!button) return { ok: false, error: 'queue-button-missing' }
+      const status = shadow.querySelector('.status')
+      const started = performance.now()
+      button.click()
+      return {
+        ok: true,
+        label: pick.label,
+        option: {
+          height: pick.height,
+          kind: 'video'
+        },
+        clickStartedAt: started,
+        statusBefore: status ? status.textContent : ''
+      }
+    })()`,
+    { userGesture: true }
+  )
+  if (!result || result.ok !== true) return result
+  const accepted = await waitForValue(
+    () => pageEvaluate(page, `(() => {
+      const host = document.getElementById('dondownload-overlay-host')
+      const shadow = host && host.shadowRoot
+      const status = shadow && shadow.querySelector('.status')
+      return { text: status ? status.textContent : '' }
+    })()`, { userGesture: false }),
+    (value) =>
+      Boolean(
+        value &&
+          (/Added to DonDownload/i.test(value.text) || /already/i.test(value.text))
+      ),
+    2500,
+    'overlay queue confirmation',
+    50
+  ).catch((error) => ({ text: `timeout: ${error.message}` }))
+  return { ...result, accepted }
+}
+
+async function runRealSites({ tempRoot, downloadsDir }) {
+  record(
+    'R0',
+    'Real-site mode is opt-in and requires the isolated app',
+    REAL_SITES && NATIVE_MODE ? 'PASS' : 'FAIL',
+    `browser=${BROWSER_NAME} (${CHROME}); native=${NATIVE_MODE}; realSites=${REAL_SITES}; profile=${path.join(tempRoot, 'profile-real-sites')}`
+  )
+
+  // Anonymous direct fetch is the byte reference for R3. It shares nothing with
+  // the browser profile or the app.
+  let reference = null
+  try {
+    const response = await fetch(REAL_PROGRESSIVE_MP4, {
+      redirect: 'follow',
+      headers: { 'user-agent': REAL_UA }
+    })
+    const bytes = Buffer.from(await response.arrayBuffer())
+    reference = {
+      status: response.status,
+      bytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+    }
+  } catch (error) {
+    reference = { error: error instanceof Error ? error.message : String(error) }
+  }
+
+  const clipPath = path.join(tempRoot, 'media', 'real-clip.mp4')
+  const clipBytes = await generateClip(FFMPEG, clipPath, { width: 320, height: 180 })
+  const clip = fs.readFileSync(clipPath)
+  const server = await startFixtureServer({ clip, clip720: clip })
+  record(
+    'R0b',
+    'Cross-origin embed fixture and anonymous byte reference ready',
+    reference && reference.sha256 ? 'PASS' : 'NOT-RUNNABLE',
+    `embedFixture=${server.origin}/embed; clip=${clipBytes}B; progressiveReference=${JSON.stringify(reference)}`
+  )
+
+  const harnessDir = path.join(tempRoot, 'extension-real-sites')
+  fs.cpSync(EXTENSION_DIR, harnessDir, { recursive: true })
+  const harnessManifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'))
+  harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest'])]
+  harnessManifest.host_permissions = [
+    `${server.origin}/*`,
+    'https://www.youtube.com/*',
+    'https://www.w3schools.com/*'
+  ]
+  delete harnessManifest.optional_permissions
+  delete harnessManifest.optional_host_permissions
+  fs.writeFileSync(path.join(harnessDir, 'manifest.json'), `${JSON.stringify(harnessManifest, null, 2)}\n`)
+  record(
+    'R0c',
+    'Harness manifest predeclares only the three measured origins',
+    'INFO',
+    `host_permissions=${JSON.stringify(harnessManifest.host_permissions)}; the extension source files are byte-identical`
+  )
+
+  const userDataDir = path.join(tempRoot, 'real-app-user-data')
+  const statePath = path.join(userDataDir, 'native-bridge.json')
+  const downloadDir = path.join(userDataDir, 'smoke-downloads')
+  const browser = await launchChromium({
+    userDataDir: path.join(tempRoot, 'profile-real-sites'),
+    extensionPath: harnessDir,
+    label: 'real-sites',
+    env: { DONDOWNLOAD_BRIDGE_STATE: statePath }
+  })
+  let db = null
+  let app = null
+  try {
+    const worker = await ensureExtensionLoaded(browser, harnessDir, 'real-sites')
+    const options = await openExtensionPage(browser, worker.id, 'options.html')
+    await sleep(500)
+
+    // Native messaging registration is identical to --native: only the
+    // temporary Chromium key is written, only after proving it is absent.
+    const heliumSnapshot = queryRegistryDefault(HELIUM_REG_KEY)
+    nativeRun.attempted = true
+    nativeRun.heliumBefore = heliumSnapshot.exists ? heliumSnapshot.output : '<absent>'
+    nativeRun.heliumAfter = nativeRun.heliumBefore
+    let setupError = null
+    try {
+      removeStaleHarnessRegistration()
+      if (queryRegistryDefault(CHROMIUM_REG_KEY).exists) {
+        throw new Error(`${CHROMIUM_REG_KEY} already exists; refusing to overwrite it.`)
+      }
+      const host = resolveNativeHost(tempRoot)
+      nativeRun.hostExe = host.exe
+      nativeRun.hostBuilt = host.built
+      const manifestPath = path.join(tempRoot, 'native-manifest-real', `${NATIVE_HOST_NAME}.json`)
+      nativeRun.manifestPath = manifestPath
+      writeNativeManifest(manifestPath, host.exe, worker.id)
+      registerChromiumHost(manifestPath)
+      if (BROWSER_NAME === 'Helium') {
+        const probe = await browser.connection.evaluate(
+          options.sessionId,
+          `Promise.race([
+            new Promise((resolve) => chrome.runtime.sendNativeMessage(${JSON.stringify(NATIVE_HOST_NAME)}, { type: 'helium-registry-probe' }, (response) => resolve({
+              response: response || null,
+              error: chrome.runtime.lastError && chrome.runtime.lastError.message
+            }))),
+            new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 8000))
+          ])`,
+          { userGesture: false }
+        )
+        nativeRun.heliumProbe = probe
+        const code = probe && probe.response && probe.response.error && probe.response.error.code
+        if (code !== 'UNSUPPORTED_OPERATION') nativeRun.notRunnable = true
+        if (code !== 'UNSUPPORTED_OPERATION') {
+          throw new Error(`Helium did not resolve the temporary Chromium registration: ${JSON.stringify(probe)}`)
+        }
+      }
+      nativeRun.userDataDir = userDataDir
+      nativeRun.downloadDir = downloadDir
+      app = await startIsolatedApp({
+        userDataDir,
+        statePath,
+        tempRoot,
+        fixtureHost: null,
+        fixtureAddress: null
+      })
+      nativeRun.app = app
+      nativeRun.appStderr = app.stderr
+      db = await openDownloadsDatabase(path.join(userDataDir, 'downloads.sqlite3'))
+      nativeRun.db = db
+      record(
+        'R0d',
+        'Isolated app, temporary native registration and database ready',
+        'PASS',
+        `extensionId=${worker.id}; host=${host.exe} (tempBuild=${host.built}); key=${CHROMIUM_REG_KEY}; userData=${userDataDir}; downloadDir=${downloadDir}; appLog=${JSON.stringify(app.stderr().slice(-800))}`
+      )
+    } catch (error) {
+      setupError = error
+      record(
+        'R0d',
+        'Isolated app, temporary native registration and database ready',
+        nativeRun.notRunnable ? 'NOT-RUNNABLE' : 'FAIL',
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+
+    const blocked = (title) => ({
+      status: 'NOT-RUNNABLE',
+      evidence: `native setup did not complete: ${setupError instanceof Error ? setupError.message : String(setupError)}`
+    })
+
+    // ------------------------------------------------------------------
+    // R1 + R2: YouTube watch page
+    // ------------------------------------------------------------------
+    let ytPage = null
+    let ytTab = null
+    let analysis = null
+
+    await scenario('R1a', 'YouTube floating icon appears within 1500 ms of the video', async () => {
+      if (setupError) return blocked()
+      ytPage = await createRealPage(browser, 'https://www.youtube.com/')
+      const settledHome = await settleRealPage(
+        browser,
+        ytPage,
+        (state) => /^https:\/\/www\.youtube\.com\//.test(state.href),
+        45000,
+        'youtube home'
+      )
+      if (!settledHome.ok) {
+        return {
+          status: 'NOT-RUNNABLE',
+          evidence: `YouTube did not finish loading its home page (consent/network). state=${JSON.stringify(settledHome.state)}; consentClicks=${settledHome.consentClicks}`
+        }
+      }
+      ytTab = await waitForValue(
+        () => tabIdForUrlFragment(browser, options.sessionId, 'https://www.youtube.com/'),
+        (value) => typeof value === 'number',
+        15000,
+        'YouTube tab visible to the extension',
+        100
+      )
+      await enableOverlayForTab(browser, options.sessionId, 'https://www.youtube.com', ytTab)
+      await browser.connection
+        .send('Page.navigate', { url: REAL_VIDEO_URL }, ytPage.sessionId)
+        .catch(() => undefined)
+      const settled = await settleRealPage(
+        browser,
+        ytPage,
+        (state) => /youtube\.com\/watch\?v=jNQXAC9IVRw/.test(state.href),
+        60000,
+        'youtube watch'
+      )
+      if (!settled.ok) {
+        return {
+          status: 'NOT-RUNNABLE',
+          evidence: `YouTube watch page did not load (consent/network/anti-bot). state=${JSON.stringify(settled.state)}; consentClicks=${settled.consentClicks}`
+        }
+      }
+      await browser.connection.send('Target.activateTarget', { targetId: ytPage.targetId })
+      const video = await ensureRealVideoPlaying(ytPage)
+      if (!video || video.present !== true) {
+        return {
+          status: 'NOT-RUNNABLE',
+          evidence: `YouTube did not render a playable <video> in this headless profile (anti-bot or region gate). state=${JSON.stringify(await readPageState(ytPage))}`
+        }
+      }
+      const probe = await waitForValue(
+        () => readProbe(ytPage),
+        (value) => value !== null && typeof value.tVisible === 'number',
+        30000,
+        'in-page video visibility probe',
+        100
+      )
+      const icon = await waitForValue(
+        () => readProbe(ytPage),
+        (value) => value !== null && typeof value.tIcon === 'number',
+        10000,
+        'floating icon visibility',
+        50
+      ).catch(() => null)
+      if (!icon) {
+        return {
+          status: 'FAIL',
+          evidence: `floating icon never became visible. video=${JSON.stringify(video)}; probe=${JSON.stringify(probe)}; overlay=${JSON.stringify(await readOverlayState(ytPage))}`
+        }
+      }
+      const ms = Math.round(icon.tIcon - icon.tVisible)
+      recordTiming('R1a icon vs video visible', ms, 'budget 1500 ms')
+      const ok = ms >= 0 && ms <= REAL_ICON_BUDGET_MS
+      analysis = { tVisible: icon.tVisible, tIcon: icon.tIcon }
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `video=${JSON.stringify(video)}; videoVisibleAt=${Math.round(icon.tVisible)}ms (page clock); iconVisibleAt=${Math.round(icon.tIcon)}ms; delta=${ms} ms (budget ${REAL_ICON_BUDGET_MS}); playAt=${icon.tPlay === null ? null : Math.round(icon.tPlay)}; iconPresentNow=${(await readOverlayState(ytPage)).triggerVisible}`
+      }
+    })
+
+    await scenario('R1b', 'YouTube prefetch fills the overlay panel without "Find qualities"', async () => {
+      if (setupError) return blocked()
+      if (!ytPage) return { status: 'NOT-RUNNABLE', evidence: 'R1a did not open the watch page' }
+      const opened = await openOverlayPanel(ytPage)
+      const panelOpenedAt = Date.now()
+      const firstIcon = analysis && typeof analysis.tIcon === 'number' ? analysis.tIcon : null
+      const ready = await waitForValue(
+        () => readOverlayState(ytPage),
+        (state) =>
+          Array.isArray(state.qualityRows) &&
+          state.qualityRows.some((row) => typeof row.height === 'number'),
+        25000,
+        'prefetched quality rows',
+        250
+      ).catch(() => null)
+      if (!ready) {
+        return {
+          status: 'FAIL',
+          evidence: `no quality rows appeared within 25 s and no Find qualities button was clicked. panel=${JSON.stringify(opened)}; now=${JSON.stringify(await readOverlayState(ytPage))}; status=${JSON.stringify(await readOverlayState(ytPage)).status}`
+        }
+      }
+      const ms = Date.now() - panelOpenedAt
+      recordTiming('R1b options after panel open', ms, `${ready.qualityRows.length} rows`)
+      analysis = { ...analysis, rows: ready.qualityRows, tOptions: firstIcon === null ? null : ms }
+      return {
+        status: 'PASS',
+        evidence: `panelOpen=${JSON.stringify({ panelHidden: opened.panelHidden, analyzeHidden: opened.analyzeHidden, analyzeText: opened.analyzeText })}; waited=${ms} ms after opening the panel (within 25 s); rows=${JSON.stringify(ready.qualityRows)}; sourceRows=${JSON.stringify(ready.sourceRows)}; status="${ready.status}"; analyzeClicked=false`
+      }
+    })
+
+    await scenario('R1c', 'YouTube popup shows "Streaming video detected" with options', async () => {
+      if (setupError) return blocked()
+      if (!ytPage) return { status: 'NOT-RUNNABLE', evidence: 'R1a did not open the watch page' }
+      const opened = await openPopupForTab(browser, worker.id, ytPage)
+      if (!opened.state) {
+        return {
+          status: 'FAIL',
+          evidence: `popup did not resolve the YouTube tab; expected=${opened.expected}`
+        }
+      }
+      const ready = await waitForValue(
+        () =>
+          browser.connection.evaluate(
+            opened.popup.sessionId,
+            `(() => ({
+              detected: document.getElementById('detected-state').textContent,
+              rows: Array.from(document.querySelectorAll('#capture-list .capture-row')).map((row) => String(row.innerText || '').replace(/\\s+/g, ' ').trim()),
+              emptyHidden: document.getElementById('capture-empty').hidden,
+              emptyText: document.getElementById('capture-empty').textContent,
+              findHidden: document.getElementById('find-qualities').hidden,
+              pageUrl: document.getElementById('page-url').textContent
+            }))()`,
+            { userGesture: false }
+          ),
+        (state) =>
+          state &&
+          state.detected === 'Streaming video detected' &&
+          Array.isArray(state.rows) &&
+          state.rows.length > 0,
+        25000,
+        'popup streaming detection',
+        250
+      ).catch(() => null)
+      const finalState =
+        ready ||
+        (await browser.connection.evaluate(
+          opened.popup.sessionId,
+          `(() => ({
+            detected: document.getElementById('detected-state').textContent,
+            rows: Array.from(document.querySelectorAll('#capture-list .capture-row')).map((row) => String(row.innerText || '').replace(/\\s+/g, ' ').trim()),
+            emptyHidden: document.getElementById('capture-empty').hidden,
+            emptyText: document.getElementById('capture-empty').textContent,
+            findHidden: document.getElementById('find-qualities').hidden,
+            pageUrl: document.getElementById('page-url').textContent
+          }))()`,
+          { userGesture: false }
+        ))
+      const ok =
+        finalState &&
+        finalState.detected === 'Streaming video detected' &&
+        Array.isArray(finalState.rows) &&
+        finalState.rows.length > 0 &&
+        !/Nothing detected/i.test(finalState.detected)
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `popupPageUrl="${finalState.pageUrl}"; detected="${finalState.detected}"; rows=${JSON.stringify(finalState.rows)}; emptyHidden=${finalState.emptyHidden}; empty="${finalState.emptyText}"; findQualitiesHidden=${finalState.findHidden}`
+      }
+    })
+
+    await scenario('R2', 'One-click smallest YouTube quality: progress, filename, playback, staging', async () => {
+      if (setupError) return blocked()
+      if (!ytPage || !db) return { status: 'NOT-RUNNABLE', evidence: 'R1a/app setup did not complete' }
+      await browser.connection.send('Target.activateTarget', { targetId: ytPage.targetId })
+      const queued = await queueSmallestQualityOnPage(ytPage)
+      if (!queued || queued.ok !== true) {
+        return {
+          status: 'FAIL',
+          evidence: `the smallest-quality row could not be queued: ${JSON.stringify(queued)}; panel=${JSON.stringify(await readOverlayState(ytPage))}`
+        }
+      }
+      // Capture the job id as soon as it exists, then sample the app's own IPC
+      // status (the same data the renderer draws) rather than only the
+      // throttled SQLite writes.
+      const rowSeen = await waitForValue(
+        () => readMediaJobRows(db).find((entry) => entry.source_url === REAL_VIDEO_URL) || null,
+        (row) => row !== null,
+        30000,
+        'media job row',
+        20
+      ).catch(() => null)
+      const ipcSamples = []
+      let ipcFinal = null
+      if (rowSeen) {
+        const ipcDeadline = Date.now() + 180000
+        let lastKey = ''
+        const dbRow = () => readMediaJobRows(db).find((entry) => entry.id === rowSeen.id) || null
+        while (Date.now() < ipcDeadline) {
+          const status = await browser.connection.evaluate(
+            options.sessionId,
+            `new Promise((resolve) => chrome.runtime.sendNativeMessage(${JSON.stringify(NATIVE_HOST_NAME)}, { type: 'media-status', jobId: ${JSON.stringify(rowSeen.id)} }, (response) => resolve({
+              response: response || null,
+              error: chrome.runtime.lastError && chrome.runtime.lastError.message
+            })))`,
+            { userGesture: false }
+          ).catch(() => null)
+          const job = status && status.response && status.response.job ? status.response.job : null
+          if (job) {
+            const key = `${job.status}:${job.completedBytes}:${job.totalBytes}`
+            if (key !== lastKey) {
+              lastKey = key
+              ipcSamples.push(job)
+            }
+            if (['complete', 'error', 'cancelled', 'interrupted'].includes(job.status)) {
+              ipcFinal = job
+              break
+            }
+          } else {
+            const row = dbRow()
+            if (row && ['complete', 'error', 'cancelled', 'interrupted'].includes(row.status)) break
+          }
+          await sleep(60)
+        }
+      }
+      const watched = await watchMediaJob(db, REAL_VIDEO_URL, 180000)
+      const final = watched.final || (ipcFinal
+        ? {
+            id: ipcFinal.id,
+            status: ipcFinal.status,
+            title: ipcFinal.title,
+            label: ipcFinal.label,
+            completed_bytes: ipcFinal.completedBytes,
+            total_bytes: ipcFinal.totalBytes,
+            dir: ipcFinal.dir,
+            file_path: ipcFinal.filePath
+          }
+        : null)
+      if (!final) {
+        return {
+          status: 'FAIL',
+          evidence: `no media job row was persisted. click=${JSON.stringify(queued)}; ipcSamples=${JSON.stringify(ipcSamples)}; appLog=${JSON.stringify((app ? app.stderr() : '').slice(-2500))}`
+        }
+      }
+      const filePath = final.file_path || (final.dir ? path.join(final.dir, 'unknown') : null)
+      const fileExists = Boolean(filePath && fs.existsSync(filePath))
+      const hash = fileExists ? hashFile(filePath) : null
+      const base = filePath ? path.basename(filePath) : ''
+      const stem = base.replace(/\.[^.]+$/, '')
+      const probe = fileExists ? ffprobeOutput(filePath) : null
+      const stagingLeft = final.dir
+        ? fs
+            .readdirSync(final.dir, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory() && entry.name.startsWith('.dondownload-'))
+            .map((entry) => entry.name)
+        : []
+      const combined = [
+        ...ipcSamples.map((row) => ({ status: row.status, completed_bytes: row.completedBytes, total_bytes: row.totalBytes, source: 'ipc' })),
+        ...watched.samples.map((row) => ({ status: row.status, completed_bytes: row.completed_bytes, total_bytes: row.total_bytes, source: 'db' }))
+      ]
+      const stages = combined.map((row) => row.status)
+      const progressObserved = combined.some(
+        (row) =>
+          (row.status === 'downloading' || row.status === 'merging') &&
+          row.completed_bytes > 0
+      )
+      const mergingSeen = combined.some((row) => row.status === 'merging')
+      const startingSeen = stages.includes('queued') || stages.includes('downloading')
+      const progressUpdates = combined.filter(
+        (row) => row.status === 'downloading' || row.status === 'merging'
+      ).length
+      const duration = probe && probe.ok ? probe.duration : null
+      const durationOk = typeof duration === 'number' && duration >= 17.5 && duration <= 21
+      const ok =
+        final.status === 'complete' &&
+        fileExists &&
+        stem === REAL_VIDEO_TITLE &&
+        !/[\[\]{}]/.test(base) &&
+        progressObserved &&
+        progressUpdates > 0 &&
+        probe &&
+        probe.ok &&
+        probe.videoStreams >= 1 &&
+        durationOk &&
+        stagingLeft.length === 0 &&
+        queued.option &&
+        queued.option.height ===
+          Math.min(
+            ...(analysis && Array.isArray(analysis.rows)
+              ? analysis.rows.filter((row) => typeof row.height === 'number').map((row) => row.height)
+              : [queued.option.height])
+          )
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `clicked=${JSON.stringify({ label: queued.label, option: queued.option, accepted: queued.accepted })}; job=${JSON.stringify({ id: final.id, status: final.status, title: final.title, label: final.label, completed: final.completed_bytes, total: final.total_bytes, dir: final.dir, file: final.file_path })}; ipcSamples=${JSON.stringify(ipcSamples.map((row) => ({ status: row.status, bytes: row.completedBytes, total: row.totalBytes })))}; dbSamples=${JSON.stringify(watched.samples.map((row) => ({ status: row.status, bytes: row.completed_bytes, total: row.total_bytes })))}; progressUpdates=${progressUpdates}; progressObserved=${progressObserved}; startingPhase=${startingSeen}; mergingPhase=${mergingSeen}; file=${filePath} (${hash ? hash.bytes : 0}B); name="${base}" stem="${stem}" expected="${REAL_VIDEO_TITLE}"; ffprobe=${JSON.stringify(probe)}; stagingDirsLeft=${JSON.stringify(stagingLeft)}; stagedStatuses=${JSON.stringify(stages)}`
+      }
+    })
+
+    await scenario('R1d', 'YouTube SPA navigation resets icon and options to the new video', async () => {
+      if (setupError) return blocked()
+      if (!ytPage) return { status: 'NOT-RUNNABLE', evidence: 'R1a did not open the watch page' }
+      await browser.connection.send('Target.activateTarget', { targetId: ytPage.targetId })
+      await sleep(500)
+      const before = await readOverlayState(ytPage)
+      const beforeCapture = await queryCapturedSources(browser, options.sessionId, ytTab).catch(() => null)
+      const beforeAnalysisId =
+        beforeCapture && beforeCapture.response && beforeCapture.response.analysis
+          ? beforeCapture.response.analysis.analysisId
+          : null
+      const beforeProbe = await readProbe(ytPage)
+      const beforeHref = await pageEvaluate(ytPage, 'location.href', { userGesture: false })
+      const spaStartedAt = Date.now()
+      const clicked = await pageEvaluate(
+        ytPage,
+        `(() => {
+          const current = new URL(location.href).searchParams.get('v')
+          const links = Array.from(document.querySelectorAll('a[href*="/watch?v="]'))
+          const pick = links.find((link) => {
+            try {
+              const url = new URL(link.href, location.href)
+              const id = url.searchParams.get('v')
+              return url.hostname.endsWith('youtube.com') && id && id !== current
+            } catch {
+              return false
+            }
+          })
+          if (!pick) return { clicked: false, candidates: links.length }
+          const href = pick.href
+          pick.click()
+          return { clicked: true, href }
+        })()`,
+        { userGesture: true }
+      )
+      if (!clicked || clicked.clicked !== true) {
+        return {
+          status: 'NOT-RUNNABLE',
+          evidence: `no in-page related-video link was available to drive SPA navigation; links=${JSON.stringify(clicked)}; href=${beforeHref}`
+        }
+      }
+      const changed = await waitForValue(
+        () => pageEvaluate(ytPage, '({ href: location.href, probe: window.__ddRealProbe || null })', { userGesture: false }),
+        (value) => value && value.href !== beforeHref && !value.href.includes('jNQXAC9IVRw'),
+        45000,
+        'SPA URL change',
+        250
+      ).catch(() => null)
+      if (!changed) {
+        return { status: 'NOT-RUNNABLE', evidence: `YouTube did not complete the in-page navigation within 45 s; clicked=${JSON.stringify(clicked)}; href=${beforeHref}` }
+      }
+      await ensureRealVideoPlaying(ytPage, 20000).catch(() => null)
+      const videoAfter = await pageEvaluate(
+        ytPage,
+        `(() => {
+          const videos = Array.from(document.querySelectorAll('video'))
+          return videos.map((video) => ({
+            readyState: video.readyState,
+            paused: video.paused,
+            duration: video.duration,
+            width: video.videoWidth,
+            height: video.videoHeight,
+            src: String(video.currentSrc || '').slice(0, 120)
+          }))
+        })()`,
+        { userGesture: false }
+      ).catch(() => null)
+      const autoDeadline = Date.now() + 20000
+      let autoCapture = null
+      let autoReadyAt = null
+      while (Date.now() < autoDeadline) {
+        const value = await queryCapturedSources(browser, options.sessionId, ytTab).catch(() => null)
+        const response = value && value.response ? value.response : null
+        if (response) {
+          autoCapture = {
+            status: response.status,
+            streaming: response.streaming,
+            analysisId: response.analysis ? response.analysis.analysisId : null,
+            title: response.analysis ? response.analysis.title : null,
+            options: response.analysis && Array.isArray(response.analysis.options) ? response.analysis.options.length : 0,
+            url: response.url
+          }
+          if (response.analysis && response.analysis.analysisId !== beforeAnalysisId) {
+            autoReadyAt = Date.now() - spaStartedAt
+            break
+          }
+          if (response.status === 'error') break
+        }
+        await sleep(250)
+      }
+      const autoPrefetchReady = autoReadyAt !== null
+      await openOverlayPanel(ytPage)
+      const resetState = await waitForValue(
+        () => readOverlayState(ytPage),
+        (state) =>
+          state.triggerVisible === true &&
+          Array.isArray(state.qualityRows) &&
+          state.qualityRows.length > 0,
+        30000,
+        'new video options after SPA navigation',
+        250
+      ).catch(() => null)
+      const afterHref = await pageEvaluate(ytPage, 'location.href', { userGesture: false })
+      const afterProbe = await readProbe(ytPage)
+      const afterCapture = await queryCapturedSources(browser, options.sessionId, ytTab).catch(() => null)
+      const afterAnalysisId =
+        afterCapture && afterCapture.response && afterCapture.response.analysis
+          ? afterCapture.response.analysis.analysisId
+          : null
+      const newId = new URL(afterHref).searchParams.get('v')
+      const beforeId = new URL(beforeHref).searchParams.get('v')
+      const navRecorded = Boolean(
+        afterProbe && Array.isArray(afterProbe.nav) && afterProbe.nav.length > 0
+      )
+      const optionsChanged =
+        resetState &&
+        Array.isArray(resetState.qualityRows) &&
+        resetState.qualityRows.length > 0
+      const ok =
+        newId &&
+        beforeId &&
+        newId !== beforeId &&
+        resetState &&
+        resetState.triggerVisible === true &&
+        optionsChanged &&
+        navRecorded &&
+        afterAnalysisId !== null &&
+        afterAnalysisId !== beforeAnalysisId
+      recordTiming(
+        'R1d SPA reset to options',
+        Date.now() - spaStartedAt,
+        `newId=${newId}; autoPrefetch=${autoPrefetchReady ? `${autoReadyAt}ms` : 'did not start before the panel opened'}`
+      )
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `before=${beforeHref} (v=${beforeId}, rows=${before.qualityRows.length}, analysisId=${beforeAnalysisId}); after=${afterHref} (v=${newId}, analysisId=${afterAnalysisId}); clicked=${JSON.stringify(clicked)}; videosAfter=${JSON.stringify(videoAfter)}; probeNavigations=${JSON.stringify(afterProbe && afterProbe.nav)}; autoPrefetchReady=${autoPrefetchReady} at ${autoReadyAt} ms; autoCapture=${JSON.stringify(autoCapture)}; afterOverlay=${JSON.stringify({ triggerVisible: resetState && resetState.triggerVisible, rows: resetState && resetState.qualityRows, status: resetState && resetState.status, panelHidden: resetState && resetState.panelHidden })}; overlayNow=${JSON.stringify(await readOverlayState(ytPage))}; pageNow=${JSON.stringify(await readPageState(ytPage))}; beforeOptions=${JSON.stringify(before.qualityRows.map((row) => row.label))}`
+      }
+    })
+
+    // ------------------------------------------------------------------
+    // R3: one plain progressive <video> site
+    // ------------------------------------------------------------------
+    await scenario('R3', 'Plain progressive video: capture, one-click queue, bytes match direct fetch', async () => {
+      if (setupError) return blocked()
+      if (!db) return blocked()
+      if (!reference || !reference.sha256) {
+        return { status: 'NOT-RUNNABLE', evidence: `the direct anonymous fetch failed: ${JSON.stringify(reference)}` }
+      }
+      const page = await createRealPage(browser, REAL_PROGRESSIVE_PAGE)
+      // The demo video sits low on the w3schools page; a taller viewport keeps
+      // it inside the real visibility rule instead of scrolling a fixed page.
+      await browser.connection
+        .send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 1400, deviceScaleFactor: 1, mobile: false }, page.sessionId)
+        .catch(() => undefined)
+      const settled = await settleRealPage(
+        browser,
+        page,
+        (state) => /w3schools\.com\/html\/html5_video\.asp/.test(state.href),
+        45000,
+        'w3schools video page'
+      )
+      if (!settled.ok) {
+        return { status: 'NOT-RUNNABLE', evidence: `the progressive page did not load: ${JSON.stringify(settled.state)}` }
+      }
+      const tabId = await waitForValue(
+        () => tabIdForUrlFragment(browser, options.sessionId, 'w3schools.com/html/html5_video.asp'),
+        (value) => typeof value === 'number',
+        15000,
+        'w3schools tab',
+        100
+      )
+      await browser.connection.send('Target.activateTarget', { targetId: page.targetId })
+      await enableOverlayForTab(browser, options.sessionId, 'https://www.w3schools.com', tabId)
+      await pageEvaluate(
+        page,
+        `(() => {
+          const video = document.querySelector('video')
+          if (video) video.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+          return true
+        })()`,
+        { userGesture: false }
+      )
+      await sleep(800)
+      const videoBox = await pageEvaluate(
+        page,
+        `(() => {
+          const video = document.querySelector('video')
+          if (!video) return null
+          const rect = video.getBoundingClientRect()
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height, top: rect.top, left: rect.left }
+        })()`,
+        { userGesture: false }
+      )
+      if (videoBox) {
+        await browser.connection
+          .send(
+            'Input.dispatchMouseEvent',
+            { type: 'mousePressed', x: Math.round(videoBox.x), y: Math.round(videoBox.y), button: 'left', clickCount: 1 },
+            page.sessionId
+          )
+          .catch(() => undefined)
+        await browser.connection
+          .send(
+            'Input.dispatchMouseEvent',
+            { type: 'mouseReleased', x: Math.round(videoBox.x), y: Math.round(videoBox.y), button: 'left', clickCount: 1 },
+            page.sessionId
+          )
+          .catch(() => undefined)
+      }
+      const playing = await pageEvaluate(
+        page,
+        `(async () => {
+          const video = document.querySelector('video')
+          if (!video) return { ok: false }
+          video.muted = true
+          video.loop = true
+          let playResult = null
+          try {
+            await video.play()
+            playResult = 'ok'
+          } catch (error) {
+            playResult = error && error.name ? error.name + ':' + error.message : String(error)
+          }
+          return { ok: true, src: video.currentSrc || (video.querySelector('source') && video.querySelector('source').src), playResult, paused: video.paused, readyState: video.readyState }
+        })()`,
+        { userGesture: true }
+      )
+      const capturedDeadline = Date.now() + 30000
+      let captured = null
+      let lastCapture = null
+      while (Date.now() < capturedDeadline) {
+        lastCapture = await queryCapturedSources(browser, options.sessionId, tabId).catch((error) => ({
+          error: error instanceof Error ? error.message : String(error)
+        }))
+        if (
+          lastCapture &&
+          lastCapture.response &&
+          Array.isArray(lastCapture.response.sources) &&
+          lastCapture.response.sources.some(
+            (source) => typeof source.url === 'string' && source.url.includes('mov_bbb.mp4')
+          )
+        ) {
+          captured = lastCapture
+          break
+        }
+        await sleep(250)
+      }
+      const videoState = await pageEvaluate(
+        page,
+        `(() => {
+          const video = document.querySelector('video')
+          if (!video) return { present: false }
+          return {
+            present: true,
+            readyState: video.readyState,
+            paused: video.paused,
+            currentSrc: video.currentSrc,
+            width: video.videoWidth,
+            height: video.videoHeight,
+            duration: video.duration
+          }
+        })()`,
+        { userGesture: false }
+      ).catch(() => null)
+      if (!captured) {
+        const diagnostic = await browser.connection.evaluate(
+          options.sessionId,
+          `new Promise((resolve) => chrome.scripting.executeScript({
+            target: { tabId: ${tabId} },
+            func: () => {
+              const state = globalThis.__dondownloadOverlayRuntime
+              const video = document.querySelector('video')
+              const rect = video ? video.getBoundingClientRect() : null
+              if (!state) return { runtime: false, video: video ? { paused: video.paused, readyState: video.readyState, src: video.currentSrc } : null }
+              return {
+                runtime: true,
+                disabled: state.disabled,
+                floatingEnabled: state.floatingEnabled,
+                activeVideo: Boolean(state.activeVideo),
+                activeEmbed: Boolean(state.activeEmbed),
+                players: (state.capture && state.capture.players ? state.capture.players : []).map((player) => ({
+                  hasVideo: Boolean(player.video),
+                  sources: (player.sources || []).map((source) => source.url),
+                  unsupported: player.unsupported ? player.unsupported.code : null,
+                  playbackKind: player.playbackKind
+                })),
+                video: video ? {
+                  paused: video.paused,
+                  readyState: video.readyState,
+                  currentSrc: video.currentSrc,
+                  rect: rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null
+                } : null
+              }
+            }
+          }, (results) => resolve({
+            result: results && results[0] ? results[0].result : null,
+            error: chrome.runtime.lastError && chrome.runtime.lastError.message
+          })))`,
+          { userGesture: false }
+        ).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }))
+        return {
+          status: 'FAIL',
+          evidence: `the progressive source was not captured. playing=${JSON.stringify(playing)}; tabId=${tabId}; video=${JSON.stringify(videoState)}; lastCapture=${JSON.stringify(lastCapture)}; overlay=${JSON.stringify(await readOverlayState(page))}; contentScriptState=${JSON.stringify(diagnostic)}; appLog=${JSON.stringify((app ? app.stderr() : '').slice(-1200))}`
+        }
+      }
+      await openOverlayPanel(page)
+      const click = await pageEvaluate(
+        page,
+        `(() => {
+          const host = document.getElementById('dondownload-overlay-host')
+          const shadow = host && host.shadowRoot
+          if (!shadow) return { ok: false, error: 'no-overlay' }
+          const rows = Array.from(shadow.querySelectorAll('.source-list .source'))
+          const row = rows.find((entry) => String(entry.innerText || '').includes('mov_bbb.mp4'))
+          if (!row) return { ok: false, error: 'no-row', rows: rows.map((entry) => String(entry.innerText || '')) }
+          const button = row.querySelector('.source-action')
+          if (!button) return { ok: false, error: 'no-button' }
+          button.click()
+          return { ok: true }
+        })()`,
+        { userGesture: true }
+      )
+      if (!click || click.ok !== true) {
+        return { status: 'FAIL', evidence: `the captured row could not be clicked: ${JSON.stringify(click)}` }
+      }
+      const row = await watchDownloadRow(db, REAL_PROGRESSIVE_MP4, 120000)
+      const filePath = row.file_path || (row.dir ? path.join(row.dir, row.filename) : null)
+      const exists = Boolean(filePath && fs.existsSync(filePath))
+      const hash = exists ? hashFile(filePath) : null
+      const ok =
+        row.status === 'complete' &&
+        exists &&
+        hash.sha256 === reference.sha256 &&
+        hash.bytes === reference.bytes
+      return {
+        status: ok ? 'PASS' : 'FAIL',
+        evidence: `captured=${JSON.stringify(captured.response.sources.filter((source) => source.url.includes('mov_bbb.mp4')))}; overlayClick=${JSON.stringify(click)}; appRow=${JSON.stringify({ id: row.id, url: row.url, status: row.status, filename: row.filename, total: row.total_bytes, completed: row.completed_bytes })}; file=${filePath} (${hash ? hash.bytes : 0}B); sha256=${hash ? hash.sha256 : null} expected=${reference.sha256} directStatus=${reference.status} directBytes=${reference.bytes}`
+      }
+    })
+
+    // ------------------------------------------------------------------
+    // R4: cross-origin embed
+    // ------------------------------------------------------------------
+    await scenario('R4', 'Cross-origin YouTube embed: "Find qualities for embedded video" yields options', async () => {
+      if (setupError) return blocked()
+      const page = await createRealPage(browser, `${server.origin}/embed`)
+      const tabId = await waitForValue(
+        () => tabIdForUrlFragment(browser, options.sessionId, `${server.origin}/embed`),
+        (value) => typeof value === 'number',
+        15000,
+        'embed fixture tab',
+        100
+      )
+      await browser.connection.send('Target.activateTarget', { targetId: page.targetId })
+      await enableOverlayForTab(browser, options.sessionId, server.origin, tabId)
+      await sleep(1000)
+      // A real pointer move over the iframe rectangle is the same path a user
+      // takes; the fallback uses the extension's keyboard-command entry point.
+      await browser.connection
+        .send(
+          'Input.dispatchMouseEvent',
+          { type: 'mouseMoved', x: 12, y: 12, button: 'none' },
+          page.sessionId
+        )
+        .catch(() => undefined)
+      let embedState = await waitForValue(
+        () => readOverlayState(page),
+        (state) => state.triggerVisible === true && state.embedHidden === false,
+        8000,
+        'embedded player overlay',
+        200
+      ).catch(() => null)
+      if (!embedState) {
+        await browser.connection.evaluate(
+          options.sessionId,
+          `new Promise((resolve) => chrome.tabs.sendMessage(${tabId}, { type: 'dondownload:overlay-toggle' }, (value) => resolve({
+            response: value,
+            error: chrome.runtime.lastError && chrome.runtime.lastError.message
+          })))`,
+          { userGesture: true }
+        )
+        await sleep(500)
+        embedState = await waitForValue(
+          () => readOverlayState(page),
+          (state) => state.triggerVisible === true && state.embedHidden === false,
+          8000,
+          'embedded player overlay after toggle',
+          200
+        ).catch(() => null)
+      }
+      if (!embedState) {
+        return {
+          status: 'FAIL',
+          evidence: `the embedded player was not offered. overlay=${JSON.stringify(await readOverlayState(page))}`
+        }
+      }
+      await openOverlayPanel(page)
+      const before = await readOverlayState(page)
+      const embedStartedAt = Date.now()
+      const clicked = await pageEvaluate(
+        page,
+        `(() => {
+          const host = document.getElementById('dondownload-overlay-host')
+          const shadow = host && host.shadowRoot
+          const button = shadow && shadow.querySelector('.embed-analyze')
+          if (!button || button.hidden) return { ok: false, hidden: button ? button.hidden : null }
+          button.click()
+          return { ok: true, text: button.textContent }
+        })()`,
+        { userGesture: true }
+      )
+      if (!clicked || clicked.ok !== true) {
+        return { status: 'FAIL', evidence: `the embedded qualities button was missing: ${JSON.stringify(clicked)}; overlay=${JSON.stringify(before)}` }
+      }
+      const ready = await waitForValue(
+        () => readOverlayState(page),
+        (state) => Array.isArray(state.qualityRows) && state.qualityRows.some((row) => typeof row.height === 'number'),
+        90000,
+        'embedded quality options',
+        250
+      ).catch(() => null)
+      if (!ready) {
+        return {
+          status: 'FAIL',
+          evidence: `embedded analysis produced no options. button=${JSON.stringify(clicked)}; overlay=${JSON.stringify(await readOverlayState(page))}; appLog=${JSON.stringify((app ? app.stderr() : '').slice(-2500))}`
+        }
+      }
+      recordTiming('R4 embed options', Date.now() - embedStartedAt, `${ready.qualityRows.length} rows`)
+      return {
+        status: 'PASS',
+        evidence: `button="${clicked.text}"; embedSelection=${JSON.stringify({ hidden: before.embedHidden })}; rows=${JSON.stringify(ready.qualityRows)}; status="${ready.status}"`
+      }
+    })
+  } finally {
+    try {
+      if (db) db.close()
+    } catch {
+      // ignore
+    }
+    try {
+      if (nativeRun.app) {
+        killTree(nativeRun.app.proc.pid)
+        nativeRun.app = null
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      await browser.close()
+    } catch {
+      // ignore
+    }
+    try {
+      await server.close()
+    } catch {
+      // ignore
+    }
+    try {
+      finalizeNativeCleanup()
+    } catch (error) {
+      console.error(
+        `[real-sites] registry cleanup verification failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -1492,6 +2935,20 @@ async function main() {
     }
     if (!fs.existsSync(FFMPEG)) {
       record('0', 'FFmpeg available', 'FAIL', `not found: ${FFMPEG}`)
+      return
+    }
+
+    if (REAL_SITES) {
+      if (!NATIVE_MODE) {
+        record(
+          '0',
+          'Real-site mode needs the isolated app',
+          'FAIL',
+          '--real-sites requires --native: verified qualities and one-click downloads are produced by yt-dlp in the isolated desktop app.'
+        )
+        return
+      }
+      await runRealSites({ tempRoot, downloadsDir })
       return
     }
 
@@ -2561,6 +4018,18 @@ function printTable() {
     console.log(`${pad(row.Scenario, widths.Scenario)}  ${pad(row.Result, widths.Result)}  ${row.Check}`)
   }
   console.log('')
+  if (timings.length > 0) {
+    console.log('Real-site timings')
+    const labelWidth = Math.max(8, ...timings.map((item) => item.label.length))
+    console.log(`${'Check'.padEnd(labelWidth)}  ${'ms'.padStart(8)}  Note`)
+    console.log(`${'-'.repeat(labelWidth)}  ${'-'.repeat(8)}  ${'-'.repeat(16)}`)
+    for (const item of timings) {
+      console.log(
+        `${item.label.padEnd(labelWidth)}  ${String(Math.round(item.ms)).padStart(8)}  ${item.note}`
+      )
+    }
+    console.log('')
+  }
   const failures = results.filter((item) => item.status === 'FAIL')
   const blocked = results.filter((item) => item.status === 'NOT-RUNNABLE')
   console.log(

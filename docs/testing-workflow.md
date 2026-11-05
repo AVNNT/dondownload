@@ -294,3 +294,41 @@ Native mode needs outbound DNS once for `nip.io` name resolution. If no
 non-internal IPv4 address, DNS, Electron runtime, aria2 or native compiler is
 available, N0/N1-N4 are reported NOT-RUNNABLE with the exact reason and the
 cleanup checks still run.
+
+### Real public sites (`--real-sites`, opt-in)
+
+`npm run test:extension:real` (`--native --real-sites`) drives the same harness
+against real public pages. It is deliberately separate from every default
+command: it needs outbound network, YouTube may change or gate its player, and
+the run takes minutes. `npm run test:extension:real:helium` runs the same checks
+under Helium. Both use a fresh temporary profile and stay inside the same
+isolated app/native registration as `--native`; the user's browser, Downloads
+folder and `%APPDATA%\dondownload` are untouched.
+
+| Check | What is measured |
+| --- | --- |
+| R1a | YouTube watch page: floating icon visible within 1500 ms of the `<video>` becoming visible and playing (in-page probe clock, exact ms). |
+| R1b | Options appear in the overlay panel without clicking "Find qualities" (report ms and row count). |
+| R1c | `popup.html` opened for that tab shows "Streaming video detected" and verified options, never "Nothing detected". |
+| R2 | One-click queue of the smallest offered video quality: app IPC/DB samples must show progress > 0 before completion, `queued`/`downloading` and `merging` phases are reported, the final file is the plain sanitized title with no `[id]`, ffprobe reports a video stream and ~19 s duration, and no `.dondownload-*` staging directory remains. |
+| R1d | In-page YouTube SPA navigation to a related video: the URL and analysis id change, the icon returns, and options are re-rendered for the new video. |
+| R3 | w3schools `html5_video.asp`: the progressive `mov_bbb.mp4` is captured and one-click queued; the app's bytes match an independent anonymous fetch (SHA-256). |
+| R4 | A loopback page embedding `https://www.youtube.com/embed/jNQXAC9IVRw`: "Find qualities for embedded video" is offered and yields verified options. |
+
+Consent is handled only inside the disposable profile: the harness clicks
+reject/accept-all on `consent.youtube.com` through CDP. Network failures,
+consent walls, anti-bot pages and an unplayable player are reported as
+NOT-RUNNABLE with the observed page state; a product failure (late icon, missing
+prefetch, wrong popup, missing progress, bad filename, no SPA reset) is FAIL.
+The harness manifest for this mode declares only the three measured origins
+(`https://www.youtube.com/*`, `https://www.w3schools.com/*` and the loopback
+fixture) as required host permissions, and the extension sources are
+byte-identical. That is the same headless test accommodation described above,
+not evidence that the interactive per-origin grant flow works.
+
+The harness prints a timing table (R1a icon delta, R1b options, R1d SPA reset,
+R4 embed options) in addition to the PASS/FAIL/NOT-RUNNABLE table. R2 samples
+the app's own `media-status` native IPC (the data the renderer draws) and the
+SQLite rows; progress is only accepted when a positive completed byte count is
+observed while the job is still `downloading` or `merging`.
+

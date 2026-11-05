@@ -35,6 +35,8 @@
     "test:extension:chromium:native": "node scripts/e2e-extension-chromium.mjs --native",
     "test:extension:helium": "node scripts/e2e-extension-chromium.mjs --browser=%LOCALAPPDATA%\\imput\\Helium\\Application\\chrome.exe",
     "test:extension:helium:native": "node scripts/e2e-extension-chromium.mjs --browser=%LOCALAPPDATA%\\imput\\Helium\\Application\\chrome.exe --native",
+    "test:extension:real": "node scripts/e2e-extension-chromium.mjs --native --real-sites",
+    "test:extension:real:helium": "node scripts/e2e-extension-chromium.mjs --browser=%LOCALAPPDATA%\\imput\\Helium\\Application\\chrome.exe --native --real-sites",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
     "test:gate": "npm test && npm run build"
   },
