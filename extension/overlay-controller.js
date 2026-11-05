@@ -697,7 +697,7 @@ export function describeOverlayStatus(input) {
       state: 'on',
       label: 'On',
       tone: 'on',
-      hint: `Overlay is on for ${site}. Hover a video or press Alt+Shift+D, then choose Analyze to see verified options and reported file sizes. A download is queued only when you pick one, and access stays limited to this exact origin.`
+      hint: `Overlay is on for ${site}. A floating button follows the active playing video; a detected progressive source can be downloaded directly. Set a browser shortcut at chrome://extensions/shortcuts. Access stays limited to this exact origin.`
     }
   }
   return {

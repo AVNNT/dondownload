@@ -93,6 +93,12 @@ export interface DownloadManagerOptions {
   settings?: () => DownloadSettings
 }
 
+/** A receipt is returned only after the strict SQLite write was verified. */
+export interface DurableHandoffAcceptance {
+  downloadId: string
+  persistedAt: number
+}
+
 export class DownloadManager {
   private readonly records = new Map<string, DownloadItem>()
   private readonly explicitFilenames = new Map<string, string>()
@@ -270,11 +276,41 @@ export class DownloadManager {
   }
 
   async add(rawInput: unknown): Promise<AppSnapshot> {
+    await this.addInternal(rawInput, false)
+    return this.getSnapshot()
+  }
+
+  /**
+   * Additive automatic browser hand-off. Success means the download row was
+   * written with SQLite FULL durability and read back. Any failure removes the
+   * local record and, when this method already handed a job to aria2, removes
+   * that job too. The caller must keep the browser's own transfer running.
+   */
+  async addDurable(rawInput: unknown): Promise<DurableHandoffAcceptance> {
+    const record = await this.addInternal(rawInput, true)
+    return {
+      downloadId: record.id,
+      persistedAt: record.updatedAt
+    }
+  }
+
+  private async addInternal(
+    rawInput: unknown,
+    durable: boolean
+  ): Promise<DownloadItem> {
     // Validate before starting aria2 or touching the disk. Both the IPC Quick
     // Add path and the native browser bridge call this method, so the duplicate
     // policy exists in exactly one place.
     const input = parseAddDownloadInput(rawInput)
     const force = input.force === true
+
+    if (durable && this.database === null) {
+      throw new AppError(
+        'PERSISTENCE_UNAVAILABLE',
+        'DonDownload cannot guarantee this hand-off because download history is unavailable.',
+        'The browser download was left running.'
+      )
+    }
 
     if (!force) {
       if (
@@ -289,6 +325,9 @@ export class DownloadManager {
     // this reservation and is rejected even while the first aria2.addUri is
     // still in flight.
     this.reservePendingUrl(input.url)
+    let id: string | null = null
+    let gid = ''
+    let client: Aria2Client | null = null
     try {
       const controls = input.controls ?? defaultDownloadControls()
       const now = this.now()
@@ -298,13 +337,12 @@ export class DownloadManager {
         now
       )
 
-      const id = randomUUID()
-      let gid = ''
+      id = randomUUID()
       if (decision.allowed) {
         // Only a job that may start now is handed to aria2. Blocked jobs stay
         // in DonDownload as `waiting` and are submitted by the same policy
         // timer later, so aria2 cannot start them outside the window.
-        const client = await this.aria2.getClient()
+        client = await this.aria2.getClient()
         await this.ensureDownloadDirectory()
         gid = await this.addUri(client, input.url, input.filename, controls)
       }
@@ -336,16 +374,68 @@ export class DownloadManager {
         this.explicitFilenames.set(id, input.filename)
       }
 
-      this.persistNow(record)
+      if (durable) {
+        try {
+          this.database!.saveDurable({
+            record,
+            explicitFilename: this.explicitFilenames.get(id) ?? null
+          })
+          this.dirtyIds.delete(id)
+        } catch {
+          throw new AppError(
+            'DURABLE_PERSISTENCE_FAILED',
+            'DonDownload could not durably save this hand-off.',
+            'The browser download was left running.'
+          )
+        }
+      } else {
+        this.persistNow(record)
+      }
       this.persistDownloadControls(record)
       this.persistBlockReason(record)
       this.lastPublished = null
       this.publish(true)
       this.ensurePolling()
-      return this.getSnapshot()
+      return record
+    } catch (error) {
+      if (durable && id !== null) {
+        await this.rollbackDurableAdd(id, gid, client)
+      }
+      throw error
     } finally {
       this.releasePendingUrl(input.url)
     }
+  }
+
+  /**
+   * Remove the uncertain local row and any aria2 job it created. Best effort:
+   * the browser hand-off still fails closed even if aria2 has already dropped
+   * the GID, and the next policy pass cannot start a removed record.
+   */
+  private async rollbackDurableAdd(
+    id: string,
+    gid: string,
+    client: Aria2Client | null
+  ): Promise<void> {
+    if (gid !== '' && client !== null) {
+      await this.removeFromAria2(client, gid)
+    }
+    this.records.delete(id)
+    this.explicitFilenames.delete(id)
+    this.controls.delete(id)
+    this.blockReasons.delete(id)
+    this.startNowIds.delete(id)
+    this.submittingIds.delete(id)
+    this.dirtyIds.delete(id)
+    if (this.database) {
+      try {
+        this.database.delete(id)
+      } catch (error) {
+        this.logPersistenceError('could not be rolled back', error)
+      }
+    }
+    this.lastPublished = null
+    this.publish(true)
   }
 
   async pause(rawId: unknown): Promise<AppSnapshot> {

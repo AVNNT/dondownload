@@ -1725,3 +1725,37 @@ diagnostics). No unit tests were added or run; no installer was rebuilt. The
 only harness adjustments were selectors/page waits and additional screenshots
 for the newly navigable renderer. Visible-native-window behavior remains
 untested because verification avoided desktop interference.
+
+## Automatic browser hand-off checkpoint (2026-11-05)
+
+Status: locally implemented on top of `5765276`. No commit, push, release,
+installer, registry, desktop launch, browser-profile change or real external
+download was performed. This is not the completed browser/media mission.
+
+- Added a separate strict `handoff-download` native operation and
+  `/handoff-download` loopback route. Success returns a receipt only after
+  `DownloadDatabase.saveDurable` writes with WAL `synchronous=FULL` and reads
+  the row back.
+- Missing persistence fails before aria2. An uncertain write after aria2
+  accepted a job rolls back the aria2 GID and local/database row, and returns
+  failure so the browser keeps its own download.
+- Added optional `downloads` permission requested only from the options page on
+  a direct user gesture. Automatic hand-off is off until granted; non-media
+  file candidates only, exact-origin exclusions, session-persisted
+  pending/processed IDs, no retry on uncertain outcomes, and cancellation only
+  after a durable receipt plus an `in_progress` re-read.
+- Added options page controls (floating icon default on, notifications,
+  exclusions, site access, shortcut guidance), popup detected-source list with
+  manual fallback, and a no-default-key `toggle-overlay` command. Removed the
+  hard-coded DOM `Alt+Shift+D` interception.
+- Overlay now follows the active playing player with a draggable relative
+  position, cleans per-player and per-row listeners, and labels quality from
+  decoded dimensions only after exact `currentSrc` proof. Capture remains
+  currentSrc-only; manifests and Media Source playback are unsupported.
+
+Focused verification: three scenarios only (`-t` filters) covering strict
+durable success/rollback/route fail-closed, extension failure-preservation
+aggregate, and overlay command/query/persistent-icon lifecycle. Also
+`npm run typecheck`, `node --check` for extension scripts, and a native compile
+to `%TEMP%` (31,232 bytes); the checked-in native executable was not overwritten
+and no installer was built. Full details: `docs/automatic-browser-handoff.md`.

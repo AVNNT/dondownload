@@ -473,6 +473,8 @@ class FakeNode {
   readyState = 0
   ended = false
   error: unknown = null
+  videoWidth = 0
+  videoHeight = 0
   shadowRoot: FakeShadowRoot | null = null
   rect: FakeRect = { left: 0, top: 0, width: 0, height: 0 }
   computed: { display?: string; visibility?: string; opacity?: string } = {
@@ -652,7 +654,7 @@ interface Harness {
   timers: Array<() => void>
   dispatchDocument: (type: string, event: any) => void
   dispatchWindow: (type: string, event: any) => void
-  dispatchRuntimeMessage: (message: any) => void
+  dispatchRuntimeMessage: (message: any, respond?: (value: any) => void) => void
   runTimers: () => void
   flushMediaResponses: () => void
   findByClass: (className: string) => FakeNode | null
@@ -934,8 +936,10 @@ function createHarness(options: HarnessOptions = {}): Harness {
     dispatchWindow(type, event) {
       window.dispatch(type, event)
     },
-    dispatchRuntimeMessage(message) {
-      for (const listener of [...runtimeListeners]) listener(message)
+    dispatchRuntimeMessage(message, respond) {
+      for (const listener of [...runtimeListeners]) {
+        ;(listener as any)(message, {}, respond)
+      }
     },
     runTimers() {
       const pending = timers.splice(0, timers.length)
@@ -1132,7 +1136,9 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(Object.keys(harness.video.style)).toHaveLength(0)
     expect(Object.keys(harness.video.listeners).sort()).toEqual([
       'emptied',
+      'ended',
       'loadeddata',
+      'pause',
       'playing',
       'timeupdate'
     ])
@@ -1152,20 +1158,10 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(harness.trigger.hidden).toBe(true)
   })
 
-  it('supports the Alt+Shift+D keyboard path and avoids it while typing', () => {
+  it('does not intercept a page Alt+Shift+D keydown from the DOM', () => {
     harness = createHarness()
     const input = new FakeNode('input')
     harness.document.body.appendChild(input)
-
-    const typingEvent = pointerEvent(input, [input, harness.document.body], {
-      altKey: true,
-      shiftKey: true,
-      code: 'KeyD',
-      key: 'd'
-    })
-    harness.dispatchDocument('keydown', typingEvent)
-    expect(typingEvent.defaultPrevented).toBe(false)
-    expect(harness.host.hidden).toBe(true)
 
     const shortcut = pointerEvent(harness.document.body, [harness.document.body], {
       altKey: true,
@@ -1174,9 +1170,20 @@ describe('overlay interaction in a minimal DOM', () => {
       key: 'D'
     })
     harness.dispatchDocument('keydown', shortcut)
-    expect(shortcut.defaultPrevented).toBe(true)
+    expect(shortcut.defaultPrevented).toBe(false)
+    expect(harness.host.hidden).toBe(true)
+
+    // The browser command path is the supported shortcut; it arrives as an
+    // extension runtime message, not as a page keydown.
+    let toggled: any = null
+    harness.dispatchRuntimeMessage(
+      { type: 'dondownload:overlay-toggle' },
+      (value: any) => {
+        toggled = value
+      }
+    )
+    expect(toggled).toEqual({ ok: true })
     expect(harness.host.hidden).toBe(false)
-    expect(harness.document.activeElement).toBe(harness.trigger)
   })
 
   it('turns off through an explicit message and removes itself on the confirmed response', () => {
@@ -1228,6 +1235,63 @@ describe('overlay interaction in a minimal DOM', () => {
       origin: 'https://example.com'
     })
     expect(harness.host.parentNode).toBeNull()
+  })
+
+  it('toggles from the command and answers trusted popup source queries without page tab ids', () => {
+    harness = createHarness()
+    harness.video.currentSrc = 'https://cdn.example/movie-1080.mp4'
+    harness.video.paused = false
+    harness.video.readyState = 2
+    harness.video.videoWidth = 1920
+    harness.video.videoHeight = 1080
+
+    // Persistent floating icon: no pointer hover, just a playing player.
+    harness.mutationObserver.trigger()
+    harness.video.dispatch('playing', pointerEvent(harness.video, [harness.video]))
+    expect(harness.host.hidden).toBe(false)
+    expect(harness.trigger.hidden).toBe(false)
+
+    let toggled: any = null
+    harness.dispatchRuntimeMessage(
+      { type: 'dondownload:overlay-toggle' },
+      (value: any) => {
+        toggled = value
+      }
+    )
+    expect(toggled).toEqual({ ok: true })
+    expect(harness.panel.hidden).toBe(false)
+
+    let queried: any = null
+    harness.dispatchRuntimeMessage(
+      { type: 'dondownload:capture-query' },
+      (value: any) => {
+        queried = value
+      }
+    )
+    expect(queried).toMatchObject({
+      ok: true,
+      origin: 'https://example.com',
+      sources: [
+        {
+          filename: 'movie-1080.mp4',
+          container: 'mp4',
+          qualityLabel: '1080p',
+          current: true
+        }
+      ]
+    })
+    expect(JSON.stringify(queried.sources)).not.toContain('blob:')
+    expect(JSON.stringify(queried.sources)).not.toContain('m3u8')
+
+    let closed: any = null
+    harness.dispatchRuntimeMessage(
+      { type: 'dondownload:overlay-toggle' },
+      (value: any) => {
+        closed = value
+      }
+    )
+    expect(closed).toEqual({ ok: true })
+    expect(harness.panel.hidden).toBe(true)
   })
 })
 

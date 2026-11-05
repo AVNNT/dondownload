@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DonDownload Capture settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <span class="brand">DonDownload Capture</span>
+          <h1>Settings</h1>
+        </div>
+        <p class="lead">
+          Capture stays explicit by default. Only settings you approve here
+          change automatic behavior.
+        </p>
+      </header>
+
+      <section aria-labelledby="capture-heading">
+        <h2 id="capture-heading">Overlay and capture</h2>
+
+        <label class="toggle-row">
+          <input id="floating-trigger" type="checkbox" checked />
+          <span>
+            <strong>Floating video button</strong>
+            <span class="hint">
+              Show a small draggable DonDownload button on the active playing
+              video. On by default; it never appears outside an enabled site.
+            </span>
+          </span>
+        </label>
+
+        <label class="toggle-row">
+          <input id="handoff-notifications" type="checkbox" checked />
+          <span>
+            <strong>Hand-off feedback</strong>
+            <span class="hint">
+              Show a brief extension badge when an automatic hand-off is
+              confirmed or left running. It never steals focus.
+            </span>
+          </span>
+        </label>
+      </section>
+
+      <section aria-labelledby="handoff-heading">
+        <h2 id="handoff-heading">Automatic file hand-off</h2>
+        <p class="hint">
+          Off until you approve the optional <strong>downloads</strong>
+          permission. When enabled, the extension hands off only an HTTP(S)
+          ordinary file (zip, PDF, installer and similar). Video/audio,
+          manifests, segments, extension downloads and excluded sites are never
+          touched. The browser download is cancelled only after DonDownload
+          returns a durable receipt.
+        </p>
+        <p id="permission-state" class="state" role="status" aria-live="polite"></p>
+        <button id="request-downloads" type="button">
+          Allow automatic file hand-off
+        </button>
+        <label class="toggle-row">
+          <input id="automatic-handoff" type="checkbox" disabled />
+          <span>
+            <strong>Hand off new browser downloads</strong>
+            <span class="hint">
+              Enabled only after the downloads permission is granted.
+            </span>
+          </span>
+        </label>
+        <button id="remove-downloads" type="button" class="secondary" hidden>
+          Remove download permission
+        </button>
+        <p id="handoff-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="exclusions-heading">
+        <h2 id="exclusions-heading">Excluded sites</h2>
+        <p class="hint">
+          Enter an exact origin, for example <code>https://example.com</code>.
+          Downloads started on that exact origin are always left to the browser.
+        </p>
+        <form id="exclusion-form" class="inline-form">
+          <input
+            id="exclusion-origin"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            placeholder="https://example.com"
+            aria-label="Exact origin to exclude"
+          />
+          <button type="submit">Exclude</button>
+        </form>
+        <ul id="exclusion-list" class="origin-list"></ul>
+        <p id="exclusion-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="site-heading">
+        <h2 id="site-heading">Site access</h2>
+        <p id="site-target" class="hint">No page selected.</p>
+        <p id="site-state" class="state" role="status" aria-live="polite"></p>
+        <p id="site-hint" class="hint"></p>
+        <button id="enable-site" type="button" class="secondary" hidden>
+          Enable overlay on this site
+        </button>
+        <button id="disable-site" type="button" class="secondary" hidden>
+          Turn off overlay on this site
+        </button>
+        <p id="site-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="shortcut-heading">
+        <h2 id="shortcut-heading">Keyboard shortcut</h2>
+        <p class="hint">
+          This extension ships without a default shortcut, so it cannot conflict
+          with a page or browser hotkey. Set your own at
+          <code>chrome://extensions/shortcuts</code>. The command toggles the
+          overlay for the active tab.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

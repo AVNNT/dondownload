@@ -8,10 +8,13 @@ const extensionDir = path.join(process.cwd(), 'extension')
 interface ExtensionManifest {
   manifest_version: number
   permissions?: string[]
+  optional_permissions?: string[]
   host_permissions?: string[]
   optional_host_permissions?: string[]
   background?: { service_worker?: string; type?: string }
   action?: { default_popup?: string }
+  options_ui?: { page?: string; open_in_tab?: boolean }
+  commands?: Record<string, { description?: string; suggested_key?: unknown }>
   content_scripts?: unknown[]
 }
 
@@ -34,6 +37,8 @@ describe('browser extension manifest', () => {
     expect(manifest.content_scripts).toBeUndefined()
     expect(manifest.background?.service_worker).toBe('background.js')
     expect(manifest.action?.default_popup).toBe('popup.html')
+    expect(manifest.options_ui).toEqual({ page: 'options.html', open_in_tab: true })
+    expect(manifest.commands?.['toggle-overlay']?.suggested_key).toBeUndefined()
   })
 
   it('declares optional HTTP(S) host patterns but no always-on or all-sites access', async () => {
@@ -47,7 +52,7 @@ describe('browser extension manifest', () => {
     expect(raw).not.toContain('"host_permissions"')
   })
 
-  it('does not request downloads, webRequest, notifications or tab interception', async () => {
+  it('does not require downloads, webRequest, notifications or tab interception', async () => {
     const manifest = await readManifest()
     const requested = new Set(manifest.permissions ?? [])
     for (const forbidden of [
@@ -64,13 +69,26 @@ describe('browser extension manifest', () => {
     }
   })
 
+  it('declares the downloads API only as an optional permission', async () => {
+    const manifest = await readManifest()
+    expect([...(manifest.optional_permissions ?? [])]).toEqual(['downloads'])
+    expect(manifest.permissions ?? []).not.toContain('downloads')
+    expect(manifest.permissions ?? []).not.toContain('notifications')
+  })
+
   it('ships the popup, background worker, native client and overlay files', () => {
     for (const file of [
       'manifest.json',
       'background.js',
       'bridge.js',
+      'capture-settings.js',
+      'handoff-policy.js',
+      'handoff.js',
       'media-bridge.js',
       'media-contract.js',
+      'options.html',
+      'options.css',
+      'options.js',
       'popup.html',
       'popup.js',
       'popup.css',

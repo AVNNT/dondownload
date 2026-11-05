@@ -15,6 +15,8 @@ using System.Web.Script.Serialization;
 //
 // Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
+//   { "type": "queue-captured-source", "url": "https://cdn.example/clip.mp4" }
+//   { "type": "handoff-download", "url": "https://example.com/files/report.zip" }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv" }
 //   { "type": "media-status", "jobId": "..." }
@@ -41,6 +43,7 @@ internal static class NativeHost
     private const string MediaStatusOperation = "media-status";
     private const string CancelMediaOperation = "cancel-media";
     private const string QueueCapturedSourceOperation = "queue-captured-source";
+    private const string HandoffDownloadOperation = "handoff-download";
     private const string StateFileName = "native-bridge.json";
     // aria2 may need up to ~12 seconds to start on the first add. The host
     // still fails promptly when the loopback port is closed.
@@ -62,6 +65,12 @@ internal static class NativeHost
         new Regex("^[A-Z][A-Z0-9_]{1,63}$", RegexOptions.CultureInvariant);
     private static readonly Regex ProgressiveExtensionPattern =
         new Regex("\\.(mp4|webm|m4v|mov|ogv|mkv)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex HandoffExtensionPattern =
+        new Regex("\\.(7z|apk|bin|bz2|csv|deb|dmg|doc|docx|epub|exe|gz|img|iso|jar|json|md|msi|odp|ods|odt|pkg|pdf|ppt|pptx|rar|rpm|sqlite|tar|tgz|txt|whl|xls|xlsx|xz|zip|zst)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex DownloadIdPattern =
+        new Regex("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly string[] MediaJobStatuses = new string[]
     {
@@ -209,6 +218,10 @@ internal static class NativeHost
         if (type == QueueCapturedSourceOperation)
         {
             return HandleQueueCapturedSourceMessage(message);
+        }
+        if (type == HandoffDownloadOperation)
+        {
+            return HandleHandoffDownloadMessage(message);
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
@@ -384,6 +397,63 @@ internal static class NativeHost
             body.Add("filename", filename);
         }
         return ForwardCapturedSource(body);
+    }
+
+    private static Dictionary<string, object> HandleHandoffDownloadMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "url" }, new string[] { "filename" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only handoff-download messages containing type, url and an optional filename are accepted.");
+        }
+
+        string normalizedUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["url"] as string, out normalizedUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        string filename = null;
+        if (message.ContainsKey("filename"))
+        {
+            filename = message["filename"] as string;
+            if (!IsSafeCapturedFilename(filename))
+            {
+                return Error("INVALID_MESSAGE", "The hand-off filename is invalid.");
+            }
+        }
+
+        bool supported = false;
+        try
+        {
+            supported = HandoffExtensionPattern.IsMatch(
+                new Uri(normalizedUrl).AbsolutePath);
+        }
+        catch (Exception)
+        {
+            return Error("INVALID_URL", "That does not look like a valid URL.");
+        }
+        if (!supported && filename != null)
+        {
+            supported = HandoffExtensionPattern.IsMatch(filename);
+        }
+        if (!supported)
+        {
+            return Error(
+                "HANDOFF_UNSUPPORTED_FILE",
+                "Automatic hand-off only accepts a supported non-media file.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("url", normalizedUrl);
+        if (filename != null)
+        {
+            body.Add("filename", filename);
+        }
+        return ForwardHandoff(body);
     }
 
     private static bool IsSafeCapturedFilename(string filename)
@@ -776,6 +846,164 @@ internal static class NativeHost
 
             return ParseAppResponse(responseText);
         }
+    }
+
+    private static Dictionary<string, object> ForwardHandoff(
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(
+                state,
+                "/handoff-download",
+                BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseDurableHandoffAppResponse(responseText);
+        }
+    }
+
+    private static Dictionary<string, object> ParseDurableHandoffAppResponse(
+        string responseText)
+    {
+        object parsed;
+        try
+        {
+            parsed = Serializer.DeserializeObject(responseText);
+        }
+        catch (Exception)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid response.");
+        }
+
+        Dictionary<string, object> response = parsed as Dictionary<string, object>;
+        if (response == null || !response.ContainsKey("ok"))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        object okValue = response["ok"];
+        if (okValue is bool && (bool)okValue)
+        {
+            if (!HasExactKeys(
+                response,
+                new string[] { "ok", "accepted", "operation", "durable", "receipt" },
+                new string[0]))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+            }
+            if (!(response["accepted"] is bool) || !((bool)response["accepted"]))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload did not accept the hand-off.");
+            }
+            if (!(response["durable"] is bool) || !((bool)response["durable"]))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload did not confirm durable storage.");
+            }
+            if ((response["operation"] as string) != HandoffDownloadOperation)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned a mismatched response.");
+            }
+
+            Dictionary<string, object> receipt =
+                response["receipt"] as Dictionary<string, object>;
+            if (receipt == null ||
+                !HasExactKeys(receipt, new string[] { "downloadId", "persistedAt" }, new string[0]))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid receipt.");
+            }
+            string downloadId = receipt["downloadId"] as string;
+            if (downloadId == null || !DownloadIdPattern.IsMatch(downloadId))
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid receipt.");
+            }
+            long persistedAt;
+            try
+            {
+                persistedAt = Convert.ToInt64(receipt["persistedAt"], CultureInfo.InvariantCulture);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid receipt.");
+            }
+            if (persistedAt <= 0)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid receipt.");
+            }
+
+            return response;
+        }
+
+        if (!(okValue is bool))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        return ParseAppResponse(responseText);
     }
 
     private static Dictionary<string, object> ParseMediaAppResponse(

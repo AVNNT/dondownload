@@ -16,7 +16,7 @@
   var MIN_VIDEO_HEIGHT = 68
   var PANEL_WIDTH = 292
   var PANEL_HEIGHT_ESTIMATE = 258
-  var SHORTCUT_LABEL = 'Alt+Shift+D'
+  var SHORTCUT_LABEL = 'chrome://extensions/shortcuts'
   var MEDIA_SIZE_UNKNOWN = 'Size unknown'
 
   function isFiniteNumber(value) {
@@ -239,10 +239,27 @@
   }
 
   /**
+   * Display-only quality label from the playing element's decoded dimensions.
+   * This is called only after an exact downloadable currentSrc was already
+   * proven; dimensions are never used as source proof.
+   */
+  function qualityLabelForDimensions(width, height) {
+    if (
+      typeof height !== 'number' ||
+      !Number.isFinite(height) ||
+      height <= 0 ||
+      height > 100000
+    ) {
+      return null
+    }
+    return Math.round(height) + 'p'
+  }
+
+  /**
    * Classify one media element's current playback source. Dimensions, segment
    * URLs and resource timing are deliberately not used as proof.
    *
-   * input: { currentSrc, paused, readyState, ended, error }
+   * input: { currentSrc, paused, readyState, ended, error, videoWidth, videoHeight }
    * result: { kind: 'none' | 'not-playing' | 'unsupported' | 'verified', ... }
    */
   function evaluatePlaybackSource(input) {
@@ -302,7 +319,19 @@
       url: url,
       container: extension,
       filename: capturedSourceFilename(url, extension),
-      currentSrc: raw
+      currentSrc: raw,
+      width:
+        typeof input.videoWidth === 'number' && input.videoWidth > 0
+          ? Math.round(input.videoWidth)
+          : null,
+      height:
+        typeof input.videoHeight === 'number' && input.videoHeight > 0
+          ? Math.round(input.videoHeight)
+          : null,
+      qualityLabel: qualityLabelForDimensions(
+        input.videoWidth,
+        input.videoHeight
+      )
     }
   }
 
@@ -322,6 +351,9 @@
       url: candidate.url,
       filename: candidate.filename,
       container: candidate.container,
+      width: candidate.width,
+      height: candidate.height,
+      qualityLabel: candidate.qualityLabel,
       current: true
     })
     for (var index = 0; index < previous.length; index += 1) {
@@ -331,6 +363,9 @@
         url: entry.url,
         filename: entry.filename,
         container: entry.container,
+        width: entry.width,
+        height: entry.height,
+        qualityLabel: entry.qualityLabel,
         current: false
       })
       if (next.length >= limit) break
@@ -758,11 +793,11 @@
     return Object.freeze({
       title: 'Video options for this page',
       detail:
-        'This panel shows only a progressive file that this exact player actually played. It never reads cookies, request headers or DRM data, and segmented Media Source or manifest playback is shown as unsupported rather than guessed. The explicit page analyzer remains available as a fallback.',
+        'Only a supported progressive file that this exact player actually played is shown here. It never reads request headers, cookies or DRM data. The explicit yt-dlp fallback lives in the DonDownload popup or Media tab.',
       actionLabel: 'Analyze page with yt-dlp (fallback)',
       analyzingLabel: 'Analyzing…',
       optionsHint:
-        'Nothing is downloaded until you choose a detected source or a verified analyzer option.',
+        'Nothing is downloaded until you choose a detected source.',
       disableLabel: 'Turn off overlay on this site',
       shortcutLabel: SHORTCUT_LABEL
     })

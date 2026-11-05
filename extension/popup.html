@@ -10,46 +10,41 @@
     <main>
       <header>
         <span class="brand">DonDownload</span>
-        <span class="pill">manual capture</span>
+        <span class="pill">capture</span>
       </header>
 
-      <p class="lead">Send this page's HTTP(S) address to the desktop app.</p>
-
-      <div class="url-row">
-        <code id="page-url">Reading the active tab…</code>
-      </div>
-
-      <button id="send" type="button" disabled>Download with DonDownload</button>
-      <button id="download-again" type="button" class="secondary" hidden>
-        Download again
-      </button>
-
-      <p id="status" class="status" role="status" aria-live="polite"></p>
-
-      <section class="overlay-section" aria-labelledby="overlay-heading">
-        <div class="overlay-head">
-          <h2 id="overlay-heading">Video overlay</h2>
-          <span id="overlay-state" class="overlay-state">Checking…</span>
+      <section aria-labelledby="detected-heading">
+        <div class="section-head">
+          <h2 id="detected-heading">Detected on this tab</h2>
+          <span id="detected-state" class="section-state">Checking…</span>
         </div>
-        <p id="overlay-hint" class="overlay-hint">
-          Optional. Adds a small DonDownload button when you hover a video on
-          this site. Enabling asks for access to this exact origin only. Choose
-          Analyze to see verified options and reported file sizes; a download is
-          queued only when you pick one.
+        <div id="capture-list" class="capture-list" aria-live="polite"></div>
+        <p id="capture-empty" class="muted">
+          Play a video on an enabled site. Only a progressive source this exact
+          player actually played is listed; nothing is sniffed or guessed.
         </p>
-        <button id="overlay-enable" type="button" class="secondary" disabled>
-          Enable on this site
+      </section>
+
+      <section class="manual-section" aria-labelledby="manual-heading">
+        <h2 id="manual-heading">Manual page capture</h2>
+        <div class="url-row">
+          <code id="page-url">Reading the active tab…</code>
+        </div>
+        <button id="send" type="button" disabled>Download this page</button>
+        <button id="download-again" type="button" class="secondary" hidden>
+          Download again
         </button>
-        <button id="overlay-disable" type="button" class="secondary" hidden>
-          Turn off on this site
-        </button>
-        <p id="overlay-status" class="status" role="status" aria-live="polite"></p>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
       </section>
 
       <footer>
-        Nothing is captured automatically. DonDownload accepts this while its
-        window is hidden in the tray. Site access is granted only for an exact
-        origin you choose.
+        <button id="open-options" type="button" class="link-button">
+          Settings &amp; site access
+        </button>
+        <p class="muted">
+          Automatic browser hand-off is off until you grant its download
+          permission in Settings. The desktop app never takes focus.
+        </p>
       </footer>
     </main>
 

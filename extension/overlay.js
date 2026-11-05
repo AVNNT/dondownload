@@ -1,8 +1,7 @@
 // Optional, per-site video overlay. Injected only after the user grants the
-// exact origin from the extension popup. The content script never reads video
-// source URLs, cookies or playback state. It asks the background worker to
-// analyze the trusted tab URL on an explicit click and renders only verified
-// analysis options returned by the native bridge.
+// exact origin from the extension popup or options page. The content script
+// observes only an actual playing element's currentSrc after playback; it never
+// reads request headers, cookies, MSE segments, resource timing or DRM data.
 
 ;(function () {
   'use strict'
@@ -51,6 +50,11 @@
     panelOpen: false,
     hideTimer: 0,
     repositionPending: false,
+    floatingEnabled: true,
+    settingsListener: null,
+    triggerOffset: null,
+    drag: null,
+    suppressTriggerClick: false,
     mutationObserver: null,
     resizeObserver: null,
     runtimeListener: null,
@@ -67,6 +71,7 @@
       navigationUrl: location.href,
       players: [],
       buttons: [],
+      rowCleanups: [],
       queueing: false,
       queueToken: 0
     }
@@ -444,16 +449,31 @@
     status.setAttribute('role', 'status')
     status.setAttribute('aria-live', 'polite')
 
+    var panelNotice = createElement('p', 'panel-notice', copy.title)
+    var panelDetail = createElement('p', 'panel-detail', copy.detail)
+    // The normal panel is detected-source-first. The old technical notice and
+    // the explicit yt-dlp fallback stay available to older callers/tests but
+    // are not shown to users; the fallback lives in the popup/options/Media tab.
+    panelNotice.hidden = true
+    panelDetail.hidden = true
+    analyzeButton.hidden = true
+    var fallbackOptions = options
+    fallbackOptions.hidden = false
+
     panel.appendChild(head)
-    panel.appendChild(createElement('p', 'panel-notice', copy.title))
-    panel.appendChild(createElement('p', 'panel-detail', copy.detail))
+    panel.appendChild(panelNotice)
+    panel.appendChild(panelDetail)
     panel.appendChild(sourceSection)
     panel.appendChild(analyzeButton)
     panel.appendChild(mediaResults)
     panel.appendChild(options)
     panel.appendChild(status)
     panel.appendChild(
-      createElement('p', 'shortcut', 'Keyboard: ' + copy.shortcutLabel + ' shows this button.')
+      createElement(
+        'p',
+        'shortcut',
+        'Set a shortcut at ' + copy.shortcutLabel + '.'
+      )
     )
 
     shadow.appendChild(trigger)
@@ -485,13 +505,20 @@
     state.disableButton = disableButton
     state.status = status
 
-    on(trigger, 'pointerdown', stopPointerEvent)
+    on(trigger, 'pointerdown', beginTriggerDrag)
     on(trigger, 'click', function (event) {
       stopPlayerEvent(event)
+      if (state.suppressTriggerClick) {
+        state.suppressTriggerClick = false
+        return
+      }
       togglePanel()
     })
     on(trigger, 'pointerenter', cancelHide)
     on(trigger, 'pointerleave', scheduleHide)
+    on(document, 'pointermove', moveTriggerDrag, true)
+    on(document, 'pointerup', endTriggerDrag, true)
+    on(document, 'pointercancel', endTriggerDrag, true)
 
     on(panel, 'pointerdown', stopPointerEvent)
     // Isolate panel clicks from page player handlers without cancelling the
@@ -552,6 +579,190 @@
     if (typeof event.preventDefault === 'function') event.preventDefault()
   }
 
+  function clampNumber(value, minimum, maximum) {
+    return Math.min(Math.max(value, minimum), maximum)
+  }
+
+  function storageFor(area) {
+    if (!chrome || !chrome.storage) return null
+    return chrome.storage[area] || null
+  }
+
+  function installSettingsListener() {
+    if (!chrome || !chrome.storage || !chrome.storage.onChanged) return
+    if (typeof chrome.storage.onChanged.addListener !== 'function') return
+    state.settingsListener = function (changes, area) {
+      if (area !== 'local' || !changes || !changes.dondownloadCaptureSettings) return
+      var settings = changes.dondownloadCaptureSettings.newValue
+      state.floatingEnabled = !settings || settings.floatingTriggerEnabled !== false
+      if (state.floatingEnabled) syncFloatingTrigger()
+      else if (!state.panelOpen) hideNow()
+    }
+    chrome.storage.onChanged.addListener(state.settingsListener)
+  }
+
+  function restoreCaptureSettings() {
+    var local = storageFor('local')
+    if (!local || typeof local.get !== 'function') return
+    try {
+      local.get('dondownloadCaptureSettings', function (stored) {
+        if (chrome && chrome.runtime && chrome.runtime.lastError) return
+        var settings = stored && stored.dondownloadCaptureSettings
+        state.floatingEnabled = !settings || settings.floatingTriggerEnabled !== false
+        if (
+          !state.floatingEnabled &&
+          !state.panelOpen &&
+          state.activeVideo &&
+          !shouldKeepVisible()
+        ) {
+          hideNow()
+        }
+        if (state.floatingEnabled) syncFloatingTrigger()
+      })
+    } catch {
+      // Default-on floating icon remains usable without storage.
+    }
+  }
+
+  function restoreTriggerOffsets() {
+    var local = storageFor('local')
+    if (!local || typeof local.get !== 'function') return
+    try {
+      local.get('dondownloadTriggerOffsets', function (stored) {
+        if (chrome && chrome.runtime && chrome.runtime.lastError) return
+        var offsets = stored && stored.dondownloadTriggerOffsets
+        if (!offsets || typeof offsets !== 'object') return
+        var value = offsets[location.origin]
+        if (!value || typeof value !== 'object') return
+        if (
+          typeof value.x !== 'number' ||
+          typeof value.y !== 'number' ||
+          !Number.isFinite(value.x) ||
+          !Number.isFinite(value.y)
+        ) {
+          return
+        }
+        state.triggerOffset = {
+          x: clampNumber(value.x, 0, 1),
+          y: clampNumber(value.y, 0, 1)
+        }
+        position()
+      })
+    } catch {
+      // A missing saved position only means the default placement is used.
+    }
+  }
+
+  function saveTriggerOffset(offset) {
+    state.triggerOffset = offset
+    var local = storageFor('local')
+    if (!local || typeof local.set !== 'function') return
+    try {
+      local.get('dondownloadTriggerOffsets', function (stored) {
+        if (chrome && chrome.runtime && chrome.runtime.lastError) return
+        var offsets =
+          stored && stored.dondownloadTriggerOffsets &&
+          typeof stored.dondownloadTriggerOffsets === 'object'
+            ? Object.assign({}, stored.dondownloadTriggerOffsets)
+            : {}
+        offsets[location.origin] = offset
+        local.set({ dondownloadTriggerOffsets: offsets }, function () {
+          if (chrome && chrome.runtime && chrome.runtime.lastError) return
+        })
+      })
+    } catch {
+      // Position is a convenience; the icon still works with local memory.
+    }
+  }
+
+  function beginTriggerDrag(event) {
+    // Do not preventDefault: the follow-up click remains native and is
+    // suppressed only when an actual drag occurred.
+    stopPropagationOnly(event)
+    if (!state.activeVideo) return
+    state.suppressTriggerClick = false
+    state.drag = {
+      startX: typeof event.clientX === 'number' ? event.clientX : 0,
+      startY: typeof event.clientY === 'number' ? event.clientY : 0,
+      moved: false
+    }
+  }
+
+  function moveTriggerDrag(event) {
+    if (!state.drag || !state.activeVideo) return
+    if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return
+    var dx = event.clientX - state.drag.startX
+    var dy = event.clientY - state.drag.startY
+    if (!state.drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return
+    state.drag.moved = true
+    state.suppressTriggerClick = true
+    var rect = state.activeVideo.getBoundingClientRect()
+    if (!rect || rect.width <= 0 || rect.height <= 0) return
+    state.triggerOffset = {
+      x: clampNumber((event.clientX - rect.left) / rect.width, 0, 1),
+      y: clampNumber((event.clientY - rect.top) / rect.height, 0, 1)
+    }
+    position()
+  }
+
+  function endTriggerDrag() {
+    if (!state.drag) return
+    var moved = state.drag.moved
+    state.drag = null
+    if (moved && state.triggerOffset) saveTriggerOffset(state.triggerOffset)
+  }
+
+  function isPlayingVideo(video) {
+    return Boolean(
+      video &&
+        video.paused === false &&
+        typeof video.readyState === 'number' &&
+        video.readyState >= 2 &&
+        !video.error
+    )
+  }
+
+  function largestPlayingVideo() {
+    if (typeof document.querySelectorAll !== 'function') return null
+    var videos = document.querySelectorAll('video')
+    var best = null
+    var bestArea = 0
+    for (var index = 0; index < videos.length; index += 1) {
+      var video = videos[index]
+      if (!isPlayingVideo(video)) continue
+      var result = usable(video)
+      if (!result.usable) continue
+      var rect = video.getBoundingClientRect()
+      var area = rect.width * rect.height
+      if (area > bestArea) {
+        bestArea = area
+        best = video
+      }
+    }
+    return best
+  }
+
+  /**
+   * A persistent floating icon follows the largest usable playing player, even
+   * when the pointer is not hovering. Hover remains useful before playback.
+   */
+  function syncFloatingTrigger() {
+    if (state.disabled || !state.floatingEnabled || state.panelOpen) return
+    var video = largestPlayingVideo()
+    if (!video) {
+      if (state.activeVideo && !isPlayingVideo(state.activeVideo)) hideNow()
+      return
+    }
+    if (video !== state.activeVideo) showFor(video)
+    else if (state.trigger && !state.trigger.hidden) position()
+  }
+
+  function shouldKeepVisible() {
+    if (state.panelOpen) return true
+    if (!state.activeVideo) return false
+    return state.floatingEnabled && isPlayingVideo(state.activeVideo)
+  }
+
   function setMediaStatus(text, kind) {
     if (!state.status) return
     state.status.textContent = text || ''
@@ -584,9 +795,12 @@
   function resetCaptureForNavigation() {
     state.capture.queueToken += 1
     state.capture.navigationUrl = location.href
+    releaseCapturePlayers()
     state.capture.players = []
     state.capture.buttons = []
+    state.capture.rowCleanups = []
     state.capture.queueing = false
+    state.triggerOffset = null
     // A fallback analysis also belongs to the previous document/page. Clear it
     // so its opaque option IDs can never be applied to a new SPA page.
     state.media.token += 1
@@ -594,13 +808,58 @@
     state.media.status = 'idle'
     resetMediaResults()
     if (state.analyzeButton) {
-      state.analyzeButton.hidden = false
+      state.analyzeButton.hidden = true
       state.analyzeButton.textContent = copy.actionLabel
       state.analyzeButton.disabled = false
     }
     setMediaStatus('', '')
+    hideNow()
     renderCapturedSources()
+    restoreTriggerOffsets()
     installSourceObservers()
+  }
+
+  function releaseCapturePlayers() {
+    for (var pIndex = 0; pIndex < state.capture.players.length; pIndex += 1) {
+      var player = state.capture.players[pIndex]
+      if (!player) continue
+      if (observedVideos && player.video) observedVideos.delete(player.video)
+      var cleanups = player.cleanups || []
+      for (var cIndex = 0; cIndex < cleanups.length; cIndex += 1) {
+        try {
+          cleanups[cIndex]()
+        } catch {
+          // The video may already be detached.
+        }
+      }
+      player.cleanups = []
+      player.video = null
+      player.sources = []
+      player.unsupported = null
+    }
+  }
+
+  function pruneDisconnectedPlayers() {
+    var kept = []
+    for (var index = 0; index < state.capture.players.length; index += 1) {
+      var player = state.capture.players[index]
+      if (!player || !player.video || player.video.isConnected === false) {
+        if (player) {
+          if (observedVideos && player.video) observedVideos.delete(player.video)
+          var cleanups = player.cleanups || []
+          for (var cIndex = 0; cIndex < cleanups.length; cIndex += 1) {
+            try {
+              cleanups[cIndex]()
+            } catch {
+              // Best effort for a detached node.
+            }
+          }
+        }
+        continue
+      }
+      kept.push(player)
+    }
+    state.capture.players = kept
   }
 
   function maybeResetCaptureForNavigation() {
@@ -618,22 +877,44 @@
       sources: [],
       unsupported: null,
       lastSrc: '',
-      listening: false
+      listening: false,
+      cleanups: []
     }
     state.capture.players.push(player)
     if (observedVideos && observedVideos.has(video)) return
     if (observedVideos) observedVideos.add(video)
     player.listening = true
+
+    function listen(type, listener) {
+      if (typeof video.addEventListener !== 'function') return
+      video.addEventListener(type, listener)
+      player.cleanups.push(function () {
+        if (typeof video.removeEventListener === 'function') {
+          video.removeEventListener(type, listener)
+        }
+      })
+    }
+
     var check = function () {
       observePlayback(video)
+      if (state.floatingEnabled) syncFloatingTrigger()
     }
-    on(video, 'playing', check)
-    on(video, 'timeupdate', check)
-    on(video, 'loadeddata', check)
-    on(video, 'emptied', function () {
+    listen('playing', check)
+    listen('timeupdate', check)
+    listen('loadeddata', check)
+    listen('pause', check)
+    listen('ended', check)
+    listen('emptied', function () {
       var current = playerFor(video)
       if (!current) return
+      // Changing progressive quality normally emits emptied too. Keep the
+      // accumulated URLs until navigation/player removal proves a new identity.
       current.lastSrc = ''
+      current.sources = current.sources.map(function (source) {
+        return Object.assign({}, source, { current: false })
+      })
+      current.unsupported = null
+      if (video === state.activeVideo) renderCapturedSources()
     })
   }
 
@@ -664,7 +945,9 @@
       paused: video.paused,
       readyState: video.readyState,
       ended: video.ended,
-      error: video.error || null
+      error: video.error || null,
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight
     })
 
     if (result.kind === 'verified') {
@@ -683,6 +966,14 @@
   }
 
   function clearSourceList() {
+    for (var cleanupIndex = 0; cleanupIndex < state.capture.rowCleanups.length; cleanupIndex += 1) {
+      try {
+        state.capture.rowCleanups[cleanupIndex]()
+      } catch {
+        // The row may already be detached.
+      }
+    }
+    state.capture.rowCleanups = []
     if (!state.sourceList) return
     while (state.sourceList.children.length > 0) {
       state.sourceList.removeChild(state.sourceList.children[0])
@@ -729,23 +1020,30 @@
     copyNode.appendChild(
       createElement('span', 'source-title', source.filename)
     )
+    var details = []
+    if (source.qualityLabel) details.push(source.qualityLabel)
+    details.push(String(source.container || '').toUpperCase())
+    if (source.current) details.push('current playback')
     copyNode.appendChild(
-      createElement(
-        'span',
-        'source-detail',
-        String(source.container || '').toUpperCase() +
-          (source.current ? ' - current playback' : '')
-      )
+      createElement('span', 'source-detail', details.join(' · '))
     )
     row.appendChild(copyNode)
 
     var button = createElement('button', 'source-action', 'Download')
     button.type = 'button'
     button.disabled = state.capture.queueing
-    on(button, 'click', function (event) {
+    var onClick = function (event) {
       stopPlayerEvent(event)
       queueCapturedSource(source)
-    })
+    }
+    if (typeof button.addEventListener === 'function') {
+      button.addEventListener('click', onClick)
+      state.capture.rowCleanups.push(function () {
+        if (typeof button.removeEventListener === 'function') {
+          button.removeEventListener('click', onClick)
+        }
+      })
+    }
     row.appendChild(button)
     state.capture.buttons.push(button)
     state.sourceList.appendChild(row)
@@ -757,8 +1055,13 @@
     }
   }
 
-  function queueCapturedSource(source) {
-    if (state.disabled || state.capture.queueing || !source) return
+  function queueCapturedSource(source, done) {
+    if (state.disabled || state.capture.queueing || !source) {
+      if (typeof done === 'function') {
+        done({ ok: false, error: { code: 'NOT_AVAILABLE', message: 'No source is available.' } })
+      }
+      return
+    }
     var token = ++state.capture.queueToken
     state.capture.queueing = true
     setCaptureBusy(true)
@@ -771,12 +1074,20 @@
         filename: source.filename
       },
       function (response, runtimeError) {
-        if (token !== state.capture.queueToken || state.disabled) return
+        if (token !== state.capture.queueToken || state.disabled) {
+          if (typeof done === 'function') {
+            done({ ok: false, error: { code: 'REQUEST_CANCELLED', message: 'The request was cancelled.' } })
+          }
+          return
+        }
         state.capture.queueing = false
         setCaptureBusy(false)
 
         if (runtimeError) {
           setMediaStatus('The DonDownload background worker did not respond.', 'error')
+          if (typeof done === 'function') {
+            done({ ok: false, error: { code: 'BACKGROUND_UNAVAILABLE', message: 'The background worker did not respond.' } })
+          }
           return
         }
         if (!response || response.ok !== true) {
@@ -787,12 +1098,14 @@
             ),
             'error'
           )
+          if (typeof done === 'function') done(response || { ok: false })
           return
         }
 
         setMediaStatus('Added to DonDownload', 'success')
         closePanel(false)
         showAcceptedFeedback()
+        if (typeof done === 'function') done({ ok: true })
       }
     )
   }
@@ -1161,11 +1474,11 @@
   }
 
   function scheduleHide() {
-    if (state.panelOpen) return
+    if (state.panelOpen || shouldKeepVisible()) return
     cancelHide()
     state.hideTimer = window.setTimeout(function () {
       state.hideTimer = 0
-      if (state.panelOpen) return
+      if (state.panelOpen || shouldKeepVisible()) return
       hideNow()
     }, 320)
   }
@@ -1255,7 +1568,24 @@
       return
     }
 
-    var triggerRect = core.placeTrigger(state.activeVideo.getBoundingClientRect(), viewport())
+    var rect = state.activeVideo.getBoundingClientRect()
+    var triggerRect
+    if (
+      state.triggerOffset &&
+      typeof state.triggerOffset.x === 'number' &&
+      typeof state.triggerOffset.y === 'number' &&
+      rect.width > 0 &&
+      rect.height > 0
+    ) {
+      var maxLeft = Math.max(0, (window.innerWidth || document.documentElement.clientWidth || 0) - 30 - 8)
+      var maxTop = Math.max(0, (window.innerHeight || document.documentElement.clientHeight || 0) - 30 - 8)
+      triggerRect = {
+        left: clampNumber(rect.left + state.triggerOffset.x * rect.width, 8, maxLeft),
+        top: clampNumber(rect.top + state.triggerOffset.y * rect.height, 8, maxTop)
+      }
+    } else {
+      triggerRect = core.placeTrigger(rect, viewport())
+    }
     if (!triggerRect) {
       hideNow()
       return
@@ -1303,7 +1633,9 @@
     if (typeof MutationObserver !== 'function' || !document.documentElement) return
     state.mutationObserver = new MutationObserver(function () {
       maybeResetCaptureForNavigation()
+      pruneDisconnectedPlayers()
       installSourceObservers()
+      syncFloatingTrigger()
       if (!state.activeVideo) return
       var next = core.nextActiveVideo(state.activeVideo)
       if (!next) {
@@ -1392,6 +1724,16 @@
       chrome.runtime.onMessage.removeListener(state.runtimeListener)
     }
     state.runtimeListener = null
+    if (
+      state.settingsListener &&
+      chrome &&
+      chrome.storage &&
+      chrome.storage.onChanged &&
+      typeof chrome.storage.onChanged.removeListener === 'function'
+    ) {
+      chrome.storage.onChanged.removeListener(state.settingsListener)
+    }
+    state.settingsListener = null
     for (var index = 0; index < state.cleanup.length; index += 1) {
       try {
         state.cleanup[index]()
@@ -1402,8 +1744,10 @@
     state.cleanup = []
     state.activeVideo = null
     state.panelOpen = false
+    releaseCapturePlayers()
     state.capture.players = []
     state.capture.buttons = []
+    state.capture.rowCleanups = []
     state.capture.queueing = false
     state.capture.queueToken += 1
     state.media.token += 1
@@ -1475,16 +1819,23 @@
     scheduleReposition()
   }
 
-  function handleKeydown(event) {
-    if (state.disabled || event.defaultPrevented) return
-    if (!core.isOverlayShortcut(event)) return
-    if (core.isTypingTarget(event.target)) return
-    var video = largestUsableVideo()
-    if (!video) return
-    event.preventDefault()
-    event.stopPropagation()
+  function handleToggleCommand() {
+    if (state.disabled) return false
+    if (state.panelOpen) {
+      closePanel(true)
+      return true
+    }
+    var video =
+      (state.activeVideo && usable(state.activeVideo).usable
+        ? state.activeVideo
+        : null) ||
+      largestPlayingVideo() ||
+      largestUsableVideo()
+    if (!video) return false
     showFor(video)
+    openPanel()
     if (state.trigger) state.trigger.focus()
+    return true
   }
 
   function installListeners() {
@@ -1492,7 +1843,6 @@
     on(document, 'pointerout', handlePointerOut, true)
     on(document, 'pointerdown', handleDocumentPointerDown, true)
     on(document, 'fullscreenchange', handleFullscreenChange, true)
-    on(document, 'keydown', handleKeydown, true)
     on(window, 'popstate', function () {
       maybeResetCaptureForNavigation()
     })
@@ -1510,10 +1860,48 @@
     }
   }
 
+  function querySourceList() {
+    var player = playerFor(state.activeVideo)
+    if (!player) {
+      var playing = largestPlayingVideo()
+      player = playing ? playerFor(playing) : null
+    }
+    if (!player) return []
+    return player.sources.map(function (source) {
+      return {
+        url: source.url,
+        filename: source.filename,
+        container: source.container,
+        qualityLabel: source.qualityLabel || null,
+        current: source.current === true
+      }
+    })
+  }
+
+  function downloadQueriedSource(url, done) {
+    var player = playerFor(state.activeVideo)
+    if (!player) {
+      var playing = largestPlayingVideo()
+      player = playing ? playerFor(playing) : null
+    }
+    if (!player || typeof url !== 'string') {
+      done({ ok: false, error: { code: 'CAPTURE_NOT_FOUND', message: 'That source is no longer available.' } })
+      return
+    }
+    for (var index = 0; index < player.sources.length; index += 1) {
+      if (player.sources[index] && player.sources[index].url === url) {
+        queueCapturedSource(player.sources[index], done)
+        return
+      }
+    }
+    done({ ok: false, error: { code: 'CAPTURE_NOT_FOUND', message: 'That source is no longer available.' } })
+  }
+
   function installRuntimeListener() {
     if (!chrome || !chrome.runtime || !chrome.runtime.onMessage) return
     if (typeof chrome.runtime.onMessage.addListener !== 'function') return
-    state.runtimeListener = function (message) {
+    state.runtimeListener = function (message, sender, sendResponse) {
+      var respond = typeof sendResponse === 'function' ? sendResponse : function () {}
       // An external revoke sends this to tracked tabs. Only the exact origin
       // that was revoked may tear down; a reused/stale tab id is harmless.
       if (
@@ -1522,6 +1910,18 @@
         message.origin === location.origin
       ) {
         teardown()
+      }
+      if (message && message.type === 'dondownload:overlay-toggle') {
+        respond({ ok: handleToggleCommand() })
+        return false
+      }
+      if (message && message.type === 'dondownload:capture-query') {
+        respond({ ok: true, origin: location.origin, sources: querySourceList() })
+        return false
+      }
+      if (message && message.type === 'dondownload:capture-download') {
+        downloadQueriedSource(message.url, respond)
+        return true
       }
       return false
     }
@@ -1553,6 +1953,9 @@
     observeMutations()
     installSourceObservers()
     installRuntimeListener()
+    installSettingsListener()
+    restoreCaptureSettings()
+    restoreTriggerOffsets()
     announceReady()
   } catch {
     // Fail closed: a broken overlay must never interfere with the page player.

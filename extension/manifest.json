@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "DonDownload Capture",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Send an explicit HTTP(S) page or right-clicked link to the DonDownload desktop app, with an optional per-site video overlay.",
   "minimum_chrome_version": "102",
   "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage"],
+  "optional_permissions": ["downloads"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
@@ -13,5 +14,14 @@
   "action": {
     "default_title": "Send this page to DonDownload",
     "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "toggle-overlay": {
+      "description": "Show or hide the DonDownload overlay for the active video"
+    }
   }
 }

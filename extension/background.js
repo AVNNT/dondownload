@@ -21,6 +21,7 @@ import {
   queueCapturedSourceForSender,
   queueMediaForSender
 } from './media-bridge.js'
+import { handleCreatedDownload, installDownloadsListener } from './handoff.js'
 
 const MENU_ID = 'dondownload-link'
 const BADGE_CLEAR_MS = 4_000
@@ -144,8 +145,42 @@ async function reconcileOverlayRegistrations() {
 function installLifecycleListeners() {
   installContextMenu()
   void reconcileOverlayRegistrations()
+  installDownloadsSupport()
 }
 
+/**
+ * The downloads permission is optional and granted only from the options page
+ * on a user gesture. Until then `chrome.downloads` is absent, so this is a
+ * guarded no-op rather than a broken top-level listener.
+ */
+function installDownloadsSupport() {
+  installDownloadsListener(chrome, (item) => handleCreatedDownload(chrome, item))
+}
+
+async function toggleOverlayOnActiveTab() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+    const tab = Array.isArray(tabs) ? tabs[0] : null
+    if (!tab || !Number.isInteger(tab.id) || tab.id < 0) return
+    await chrome.tabs.sendMessage(tab.id, { type: 'dondownload:overlay-toggle' })
+  } catch {
+    // The active tab may be a browser page, an opted-out site or have no
+    // content script. A command is not an error and never opens a window.
+  }
+}
+
+// Evaluate this at worker start as well as after a grant. Service-worker
+// suspension/recreation re-runs the module, and permissions.onAdded covers a
+// grant that happened while the worker was alive but the API was not yet
+// exposed.
+installDownloadsSupport()
+
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener((command) => {
+    if (command !== 'toggle-overlay') return
+    void toggleOverlayOnActiveTab()
+  })
+}
 chrome.runtime.onInstalled.addListener(installLifecycleListeners)
 chrome.runtime.onStartup.addListener(installLifecycleListeners)
 
@@ -153,6 +188,7 @@ chrome.runtime.onStartup.addListener(installLifecycleListeners)
 // closed by the browser's permission prompt. These top-level listeners let the
 // service worker finish the exact-origin registration and injection anyway.
 chrome.permissions.onAdded.addListener((permissions) => {
+  installDownloadsSupport()
   void handlePermissionsAdded(chrome, permissions).catch(() => undefined)
 })
 

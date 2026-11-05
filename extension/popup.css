@@ -201,3 +201,106 @@ footer {
   margin-top: 14px;
   padding-top: 10px;
 }
+
+.section-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.section-head h2,
+.manual-section h2 {
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.section-state {
+  border: 1px solid #2c2c31;
+  border-radius: 999px;
+  color: #a1a1aa;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.capture-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.capture-row {
+  align-items: center;
+  background: #0c0c0e;
+  border: 1px solid #242429;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  padding: 7px 8px;
+}
+
+.capture-copy {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.capture-title {
+  color: #f4f4f5;
+  display: block;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-detail {
+  color: #8b8b93;
+  display: block;
+  font-size: 10px;
+  margin-top: 1px;
+}
+
+button.capture-action {
+  flex: none;
+  font-size: 10.5px;
+  padding: 5px 8px;
+  width: auto;
+}
+
+.manual-section {
+  border-top: 1px solid #1b1b1f;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.manual-section h2 {
+  margin-bottom: 8px;
+}
+
+.muted {
+  color: #8b8b93;
+  font-size: 10.5px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+}
+
+button.link-button {
+  background: transparent;
+  color: #d4d4d8;
+  font-size: 11.5px;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  width: auto;
+}
+
+button.link-button:hover {
+  color: #fff;
+}

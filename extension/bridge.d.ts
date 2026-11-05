@@ -1,8 +1,10 @@
 export const NATIVE_HOST: string
 export const QUEUE_MESSAGE_TYPE: string
 export const CAPTURED_SOURCE_MESSAGE_TYPE: string
+export const DURABLE_HANDOFF_MESSAGE_TYPE: string
 export const MAX_URL_LENGTH: number
 export const MAX_CAPTURED_FILENAME_LENGTH: number
+export const HANDOFF_TIMEOUT_MS: number
 
 export interface BridgeFailure {
   ok: false
@@ -72,6 +74,15 @@ export type AnalyzeMediaResult =
 
 export type QueueMediaResult = { ok: true; job: MediaJobDto } | BridgeFailure
 
+export interface DurableHandoffReceiptDto {
+  downloadId: string
+  persistedAt: number
+}
+
+export type DurableHandoffResult =
+  | { ok: true; durable: true; receipt: DurableHandoffReceiptDto }
+  | BridgeFailure
+
 export function normalizeSupportedUrl(value: unknown): UrlResult
 export function normalizeCapturedSource(
   rawUrl: unknown,
@@ -81,6 +92,11 @@ export function sendQueueCapturedSource(
   rawUrl: unknown,
   rawFilename?: unknown
 ): Promise<{ ok: true } | BridgeFailure>
+export function sendDurableHandoff(
+  rawUrl: unknown,
+  rawFilename?: unknown,
+  options?: { timeoutMs?: number }
+): Promise<DurableHandoffResult>
 export function sendQueueDownload(
   rawUrl: unknown,
   options?: { force?: boolean }

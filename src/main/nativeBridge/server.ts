@@ -14,6 +14,12 @@ import {
   parseCapturedSourceInput
 } from '@shared/capturedSource'
 import {
+  DURABLE_HANDOFF_CHANNEL,
+  DURABLE_HANDOFF_ROUTE,
+  parseDurableHandoffInput,
+  parseDurableHandoffReceipt
+} from '@shared/durableHandoff'
+import {
   MEDIA_BRIDGE_ROUTES,
   MEDIA_BRIDGE_ROUTE_OPERATIONS,
   parseMediaAnalyzeRequest,
@@ -98,6 +104,14 @@ function safeErrorMessage(message: string): string {
 /** The only manager capability the bridge is allowed to use. */
 export interface BridgeDownloadManager {
   add(input: unknown): Promise<unknown>
+  /**
+   * Additive strict hand-off capability. When absent, automatic hand-off is
+   * reported unavailable so the browser keeps its own download.
+   */
+  addDurable?(input: unknown): Promise<{
+    downloadId: string
+    persistedAt: number
+  }>
 }
 
 export interface NativeBridgeOptions {
@@ -279,6 +293,7 @@ export async function startNativeBridge(
     if (
       route !== BRIDGE_ROUTE &&
       route !== CAPTURED_SOURCE_ROUTE &&
+      route !== DURABLE_HANDOFF_ROUTE &&
       !isMediaRoute(route)
     ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -302,6 +317,7 @@ export async function startNativeBridge(
     if (
       route !== BRIDGE_ROUTE &&
       route !== CAPTURED_SOURCE_ROUTE &&
+      route !== DURABLE_HANDOFF_ROUTE &&
       options.mediaBridge === undefined
     ) {
       request.resume()
@@ -350,6 +366,11 @@ export async function startNativeBridge(
       parsed = JSON.parse(raw.toString('utf8'))
     } catch {
       sendError(response, 400, 'INVALID_JSON', 'The bridge request is not valid JSON.')
+      return
+    }
+
+    if (route === DURABLE_HANDOFF_ROUTE) {
+      await handleDurableHandoffRequest(parsed, response)
       return
     }
 
@@ -443,6 +464,75 @@ export async function startNativeBridge(
       ok: true,
       accepted: true,
       operation: CAPTURED_SOURCE_CHANNEL
+    })
+  }
+
+  /**
+   * Additive strict durability route for automatic browser hand-off. It is not
+   * the manual/captured acceptance path: success includes a receipt that was
+   * written and read back by SQLite. Any failure leaves the browser's own
+   * transfer running because this route never touches the downloads API.
+   */
+  async function handleDurableHandoffRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    let input
+    try {
+      input = parseDurableHandoffInput(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    const addDurable = options.manager.addDurable
+    if (typeof addDurable !== 'function') {
+      sendError(
+        response,
+        503,
+        'HANDOFF_UNAVAILABLE',
+        'Strict durable hand-off is not available in this DonDownload build.'
+      )
+      return
+    }
+
+    try {
+      await assertPublicTarget(input.url, options.publicTargetLookup)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Durable hand-off target rejected (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    let acceptance: { downloadId: string; persistedAt: number }
+    try {
+      const raw = await addDurable.call(options.manager, input)
+      if (!raw || typeof raw !== 'object') {
+        throw new AppError('HANDOFF_RESPONSE_INVALID', 'The hand-off receipt is invalid.')
+      }
+      const receipt = parseDurableHandoffReceipt(raw)
+      acceptance = receipt
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not durably hand off a download (${info.code}).`)
+      const status =
+        info.code === 'DUPLICATE_DOWNLOAD' || info.code.endsWith('_DUPLICATE')
+          ? 409
+          : 503
+      sendError(response, status, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: DURABLE_HANDOFF_CHANNEL,
+      durable: true,
+      receipt: acceptance
     })
   }
 

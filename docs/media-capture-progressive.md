@@ -44,8 +44,9 @@ was performed for this note.
   inside the already user-approved exact-origin content script; no new host
   permission, `webRequest`, `tabs`, cookies, downloads API or broad grant was
   added.
-- Automatic browser handoff, capture options and keyboard shortcuts are next
-  checkpoint work, not part of this change.
+- Automatic browser handoff, capture options and keyboard shortcuts are
+  implemented in the following checkpoint; see `automatic-browser-handoff.md`.
+  This note remains the record of the currentSrc-only overlay checkpoint.
 - Quality/resolution labels are not inferred. A progressive URL may be replaced
   by the player on a quality switch; each exact URL remains a separate row and
   the current one is marked. No 1080p/720p label is invented.

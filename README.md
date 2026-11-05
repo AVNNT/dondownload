@@ -91,18 +91,22 @@ legal advice.
 
 The `extension/` folder is a Chromium-compatible Manifest V3 extension (verified
 locally with Helium 0.20.3.1 / Chromium 156.0.8078.79) that sends an explicitly
-chosen HTTP(S) URL to the running desktop app. It is **manual capture only**:
+chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
 
 - Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The
   optional 2B overlay adds `scripting`, `storage` (session-only pending state)
   plus declared `optional_host_permissions`, but there are still no required
-  host permissions and no always-on content scripts. There are no `downloads`,
-  `webRequest`, `notifications`, `cookies`, history or `tabs` permissions.
+  host permissions and no always-on content scripts. `downloads` is an optional
+  permission requested only from the options page on a user gesture; there are
+  no required `downloads`, `webRequest`, `notifications`, `cookies`, history or
+  `tabs` permissions.
 - The popup has an explicit **Download with DonDownload** action for the active
-  page.
+  page, lists progressive sources reported by that tab's own content script,
+  and links to the separate settings page.
 - Right-clicking a link shows **Download with DonDownload**.
-- It never observes, changes or cancels browser downloads, never intercepts
-  requests, and never captures automatically.
+- It never intercepts network requests. Playback capture is opt-in per site. Automatic
+  browser hand-off is off until the optional downloads permission is approved,
+  and the browser's download is cancelled only after a durable desktop receipt.
 - The 2B video overlay is off by default for every site. See
   [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b-ui-only).
 - The toolbar badge shows `OK` only after the desktop app has accepted the URL;
@@ -419,13 +423,17 @@ made.
   the content script's own ready announcement. This is best effort: a tab that
   was never tracked loses the overlay on its next reload, because the
   registration is already gone.
-- There is **no** `downloads`, `webRequest`, `webRequestBlocking`, `cookies`,
-  history, `tabs` or notifications permission. The overlay does not sniff
-  network traffic, read `src`/`currentSrc`/`srcObject`, decode media, call
-  `play()`/`pause()`, or touch DRM, authentication or CAPTCHAs.
-- The overlay only observes the page DOM (video element geometry, hover and
-  focus events). It does not read video source URLs, durations, formats or
-  playback state.
+- The required permissions contain **no** `downloads`, `webRequest`,
+  `webRequestBlocking`, `cookies`, history, `tabs` or notifications permission.
+  `downloads` is optional and requested only from the options page on a direct
+  user gesture. The overlay does not sniff network traffic, read `srcObject`,
+  decode media, call `play()`/`pause()`, or touch DRM, authentication or
+  CAPTCHAs.
+- The overlay observes only an actual playing video element's `currentSrc` after
+  playback starts. It does not read request headers, cookies, response headers
+  or MSE segment traffic. A `blob:`/Media Source or HLS/DASH source is reported
+  as unsupported rather than guessed. See
+  `docs/automatic-browser-handoff.md` for the currentSrc-only limitation.
 
 **Tradeoff:** Chromium's optional-permission model cannot declare "any exact
 origin the user might choose later" without declaring broad optional patterns
@@ -445,8 +453,10 @@ was verified against that pattern. No port-stripped or broader fallback is used.
 
 ### What the overlay does
 
-- Shows a 30 × 30 px OLED-black button at the video's top-right corner on
-  hover, leaving native player controls (usually at the bottom) available.
+- Shows a 30 × 30 px OLED-black floating button on the active playing video,
+  also usable on hover, leaving native player controls (usually at the bottom)
+  available. The button can be dragged and remembers its relative position per
+  origin.
 - Uses an open **Shadow DOM** with isolated CSS, so page styles and overlay
   styles do not leak into each other.
 - Handles dynamically inserted and removed videos through DOM event delegation
@@ -457,15 +467,14 @@ was verified against that pattern. No port-stripped or broader fallback is used.
   using the overlay does not toggle play/pause or trigger player shortcuts. A
   page that installs its own capture-phase document listener before the overlay
   could still observe the event, as with any in-page UI.
-- **Keyboard:** `Alt+Shift+D` shows the button for the largest visible video and
-  focuses it. `Escape` closes the panel and returns focus to the button. The
-  shortcut is ignored while typing in an input, textarea, select or editable
-  region.
+- **Keyboard:** no default shortcut is declared, so it cannot conflict with a
+  page or browser hotkey. Set one at `chrome://extensions/shortcuts`; the
+  command toggles the overlay for the active tab. `Escape` closes the panel and
+  returns focus to the button.
 - Respects `prefers-reduced-motion: reduce` by removing transitions.
-- The expanded panel contains only truthful state: a disabled **Download video
-  (unavailable)** control, a statement that formats/qualities/DRM are not
-  handled, a hint to use the existing manual page capture, and **Turn off
-  overlay on this site**.
+- The expanded panel shows only a progressive source that this exact player
+  actually played, with one Download action per row; the explicit yt-dlp
+  fallback lives in the popup/options/manual Media tab, not in the normal panel.
 - Existing manual popup/right-click HTTP(S) capture and the exact-origin Native
   Messaging bridge are unchanged.
 
@@ -479,25 +488,25 @@ the extension. These steps assume the local Helium setup described above.
    expected ID and no new required site access.
 2. Open a normal `http://` or `https://` page that contains a video. The overlay
    is off until you opt in.
-3. Open the DonDownload popup. Under **Video overlay**, confirm the state is
-   **Off**, then click **Enable on this site** and accept the browser's prompt
-   for that exact site. The browser closes the action popup while its permission
-   prompt is open; accepting the prompt still enables the current tab through
-   the extension worker. Reopen the popup and confirm **On** only when the
-   overlay is actually ready on the current tab. If it says **Not ready**,
-   reload the page and reopen the popup.
-4. Hover the video. A small **DD** button should appear at its top-right. The
-   video must not start or pause because of the hover or button click.
-5. Click **DD**. The panel must say video downloading, format detection and
-   quality choices are unavailable, must not offer formats/qualities, and must
-   not report a fake success. Close it with `Escape` or by clicking outside.
-6. With the video visible, press `Alt+Shift+D`; the button should appear and
-   receive focus without starting playback.
-7. Click **Turn off overlay on this site** in the panel, or use the popup's
-   **Turn off on this site** action. The button should disappear, and
-   `chrome://extensions` site access for that origin should no longer show a
+3. Open the DonDownload popup, then choose **Settings & site access**. Under
+   **Site access**, confirm the state is **Site access off**, then click
+   **Enable overlay on this site** and accept the browser's prompt for that
+   exact site. Reload the page if needed, then reopen Settings to confirm
+   **Overlay on** only when it was actually verified. If it says not verified,
+   reload the page and check again.
+4. Hover or start the video. A small **DD** button should follow the active
+   playing player. The video must not start or pause because of the hover or
+   button click.
+5. Click **DD**. The compact panel lists only detected progressive sources; pick
+   one only if you want to queue it. Close it with `Escape` or by clicking
+   outside.
+6. If you set a command shortcut at `chrome://extensions/shortcuts`, it should
+   toggle the panel for the active tab without starting playback.
+7. Click **Turn off overlay on this site** in the panel, or use the options
+   page's **Turn off overlay on this site** action. The button should disappear,
+   and `chrome://extensions` site access for that origin should no longer show a
    grant. Reload the page and confirm the overlay does not return. If either
-   removal fails, the popup must show an error, not the success message.
+   removal fails, the options page must show an error, not the success message.
 8. To check the external-revoke path, enable the site again, keep the page open,
    then remove that origin's site access from `chrome://extensions`. The overlay
    on the open page should disappear without a reload when that tab was tracked;
@@ -640,10 +649,11 @@ Key properties:
   window, then validates URL, file name and download IDs in the main process.
 - Only `http:` and `https:` URLs are accepted. Embedded URL credentials and
   control characters are rejected.
-- The browser extension's capture path is manual-only: it has no `downloads` or
-  `webRequest` permission and sends only an explicitly chosen URL over native
-  messaging.
-- The 2B overlay is opt-in per exact origin, UI-only, and never extracts media.
+- The browser extension's capture path is manual by default. It never requires
+  the `downloads` permission; optional automatic hand-off is off until the user
+  approves it and only handles supported non-media files after a durable desktop
+  receipt.
+- The overlay is opt-in per exact origin and captures supported progressive sources.
   It has no required host permissions and no always-on content script.
 - The native messaging host validates framing, size, schema and URL before
   forwarding a URL to the desktop bridge; diagnostics never include URLs.
@@ -906,12 +916,15 @@ git-ignored; compile it with `npm run build:native-host`.
   current app session alive only until **Quit DonDownload** is chosen or the
   user signs out/restarts. If the tray cannot be created, closing the window
   quits as it did before so the app cannot become unreachable.
-- The browser extension's capture path is manual-only. It does not detect
-  downloads, intercept requests, or change browser download settings.
-- The 2B video overlay is **UI-only** and off by default per site. It cannot
-  download, extract, decode or choose formats/qualities for video, does not read
-  media source URLs, and does not bypass DRM, authentication or CAPTCHAs. Its
-  panel says so and has no fake success.
+- The browser extension's capture path is manual by default. It does not
+  intercept requests or change browser download settings. Optional automatic
+  hand-off requires the user to grant `downloads`, applies only to supported
+  non-media files, and leaves the browser transfer running on any uncertainty.
+- The 2B video overlay is **opt-in per exact origin** and off by default per
+  site. It observes only an actual playing element's `currentSrc` after
+  playback; it does not sniff network traffic, read request headers/cookies,
+  decode media, or bypass DRM, authentication or CAPTCHAs. Segmented Media
+  Source and HLS/DASH playback are reported as unsupported rather than guessed.
 - The overlay is registered for the top frame of the exact granted origin only.
   Videos inside cross-origin iframes are not covered, and restricted pages such
   as `chrome://`, `edge://`, the Chrome Web Store and `file://` are ineligible.

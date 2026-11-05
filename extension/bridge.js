@@ -8,12 +8,15 @@ import {
   isOpaqueMediaId,
   parseMediaBridgeResponse
 } from './media-contract.js'
+import { normalizeHandoffFile } from './handoff-policy.js'
 
 export const NATIVE_HOST = 'com.dondownload.bridge'
 export const QUEUE_MESSAGE_TYPE = 'queue-download'
 export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
+export const DURABLE_HANDOFF_MESSAGE_TYPE = 'handoff-download'
 export const MAX_URL_LENGTH = 4096
 export const MAX_CAPTURED_FILENAME_LENGTH = 180
+export const HANDOFF_TIMEOUT_MS = 25_000
 
 const PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
@@ -222,6 +225,136 @@ export function sendQueueCapturedSource(rawUrl, rawFilename) {
             return
           }
           finish({ ok: true })
+        }
+      )
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+function invalidDurableResponse() {
+  return {
+    ok: false,
+    error: {
+      code: 'HANDOFF_RECEIPT_INVALID',
+      message: 'The durable hand-off receipt was not valid. The browser download was left running.'
+    }
+  }
+}
+
+function validReceipt(receipt) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null
+  const keys = Object.keys(receipt)
+  if (
+    keys.length !== 2 ||
+    !Object.prototype.hasOwnProperty.call(receipt, 'downloadId') ||
+    !Object.prototype.hasOwnProperty.call(receipt, 'persistedAt')
+  ) {
+    return null
+  }
+  if (
+    typeof receipt.downloadId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      receipt.downloadId
+    )
+  ) {
+    return null
+  }
+  if (
+    typeof receipt.persistedAt !== 'number' ||
+    !Number.isSafeInteger(receipt.persistedAt) ||
+    receipt.persistedAt < 1
+  ) {
+    return null
+  }
+  return { downloadId: receipt.downloadId, persistedAt: receipt.persistedAt }
+}
+
+/**
+ * Strict automatic hand-off. Resolves ok only when the native host returned an
+ * accepted, durable receipt after a verified SQLite write. Every other outcome
+ * (bridge unavailable, timeout, malformed response, duplicate or persistence
+ * failure) is ok:false so the caller keeps the browser download running.
+ */
+export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
+  const normalized = normalizeHandoffFile(rawUrl, rawFilename)
+  if (!normalized.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: normalized.code, message: normalized.message }
+    })
+  }
+  const configured =
+    options && typeof options.timeoutMs === 'number' ? options.timeoutMs : 0
+  const timeoutMs =
+    Number.isFinite(configured) && configured > 0
+      ? Math.min(configured, 120_000)
+      : HANDOFF_TIMEOUT_MS
+
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      finish({
+        ok: false,
+        error: {
+          code: 'HANDOFF_TIMEOUT',
+          message: 'DonDownload did not confirm the hand-off in time. The browser download was left running.'
+        }
+      })
+    }, timeoutMs)
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST,
+        {
+          type: DURABLE_HANDOFF_MESSAGE_TYPE,
+          url: normalized.url,
+          ...(normalized.filename === undefined
+            ? {}
+            : { filename: normalized.filename })
+        },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          if (runtimeError) {
+            finish({ ok: false, error: describeNativeError(runtimeError.message) })
+            return
+          }
+          if (
+            !response ||
+            response.ok !== true ||
+            response.accepted !== true ||
+            response.durable !== true ||
+            response.operation !== DURABLE_HANDOFF_MESSAGE_TYPE
+          ) {
+            if (response && response.ok === false) {
+              finish({ ok: false, error: describeResponseError(response) })
+              return
+            }
+            finish(invalidDurableResponse())
+            return
+          }
+          const receipt = validReceipt(response.receipt)
+          if (receipt === null) {
+            finish(invalidDurableResponse())
+            return
+          }
+          finish({ ok: true, durable: true, receipt })
         }
       )
     } catch (error) {

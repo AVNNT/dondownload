@@ -601,6 +601,7 @@ function rowToBatchItemRecord(
 export class DownloadDatabase {
   private readonly db: DatabaseSync
   private readonly upsertStatement: StatementSync
+  private readonly durableRowStatement: StatementSync
   private readonly selectAllStatement: StatementSync
   private readonly deleteStatement: StatementSync
   private readonly downloadControlsStatement: StatementSync
@@ -660,6 +661,9 @@ export class DownloadDatabase {
       this.selectAllStatement = this.db.prepare(`
         SELECT * FROM downloads ORDER BY created_at DESC, updated_at DESC
       `)
+      this.durableRowStatement = this.db.prepare(
+        'SELECT 1 AS persisted FROM downloads WHERE id = ?'
+      )
       this.deleteStatement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
       this.downloadControlsStatement = this.db.prepare(`
         UPDATE downloads
@@ -821,6 +825,36 @@ export class DownloadDatabase {
       this.runUpsert(entry)
     } catch (error) {
       throw databaseError('Could not save download history', error)
+    }
+  }
+
+  /**
+   * Strict acceptance write for the automatic browser hand-off. Unlike save(),
+   * this switches WAL to FULL durability for the single row, then reads the row
+   * back. Only a verified row may become a durable receipt; callers must never
+   * cancel the browser's own transfer on a thrown error.
+   */
+  saveDurable(entry: DownloadSaveEntry): void {
+    this.assertOpen()
+    try {
+      this.db.exec('PRAGMA synchronous = FULL')
+      try {
+        this.runUpsert(entry)
+        const row = this.durableRowStatement.get(entry.record.id) as
+          | Record<string, unknown>
+          | undefined
+        if (!row || row.persisted !== 1) {
+          throw new Error('The download row was not readable after the write.')
+        }
+      } finally {
+        try {
+          this.db.exec('PRAGMA synchronous = NORMAL')
+        } catch {
+          // The connection may be unusable; the original error is more useful.
+        }
+      }
+    } catch (error) {
+      throw databaseError('Could not durably save download history', error)
     }
   }
 
