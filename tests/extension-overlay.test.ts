@@ -434,6 +434,9 @@ describe('video detection and placement policy', () => {
     expect(
       core.describeMediaError({ code: 'SOMETHING_ELSE', message: 'Nope.' }, 'Fallback')
     ).toBe('Nope.')
+    expect(
+      core.describeMediaError({ code: 'constructor', message: 'Unexpected error.' }, 'Fallback')
+    ).toBe('Unexpected error.')
     expect(core.describeMediaError(null, 'Fallback')).toBe('Fallback')
   })
 })

@@ -36,6 +36,8 @@ function videoOption(overrides: Record<string, unknown> = {}): Record<string, un
     hasAudio: true,
     requiresMerge: true,
     filesizeBytes: 10_000,
+    estimatedBytes: null,
+    sizeIsEstimate: false,
     ...overrides
   }
 }
@@ -54,6 +56,8 @@ function audioOption(overrides: Record<string, unknown> = {}): Record<string, un
     hasAudio: true,
     requiresMerge: false,
     filesizeBytes: null,
+    estimatedBytes: null,
+    sizeIsEstimate: false,
     ...overrides
   }
 }

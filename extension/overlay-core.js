@@ -418,7 +418,9 @@
         'DonDownload could not write the output file. Check the download folder.'
     }
 
-    var hint = hints[code]
+    // Error codes cross the native messaging boundary; don't let inherited
+    // object properties such as "constructor" or "toString" act as hints.
+    var hint = Object.prototype.hasOwnProperty.call(hints, code) ? hints[code] : null
     if (!hint || message.toLowerCase().indexOf(hint.toLowerCase()) !== -1) {
       return message
     }
