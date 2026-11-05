@@ -16,6 +16,18 @@ export const PROGRESS_MARKER = 'DONDOWNLOAD_PROGRESS'
 export const CONCURRENT_FRAGMENTS = 4
 
 /**
+ * Bundled yt-dlp builds ship curl_cffi impersonation targets. Adding the flag
+ * is only safe after the engine has verified that the active yt-dlp path lists
+ * a Chrome target; an older or swapped build must run without it.
+ */
+export const IMPERSONATE_TARGET = 'chrome'
+
+function withImpersonation(args: string[], impersonate: boolean): string[] {
+  if (!impersonate) return args
+  return ['--impersonate', IMPERSONATE_TARGET, ...args]
+}
+
+/**
  * Machine-readable progress. `info.format_id` lets the engine add the bytes of
  * the separate video and audio streams instead of reporting only the stream
  * that is currently downloading. Fragment fields cover HLS/DASH downloads
@@ -36,19 +48,26 @@ function withJsRuntime(args: string[], denoPath?: string | null): string[] {
   return [...args.slice(0, separator), ...runtimeArgs, ...args.slice(separator)]
 }
 
-export function buildAnalyzeArgs(url: string, denoPath?: string | null): string[] {
+export function buildAnalyzeArgs(
+  url: string,
+  denoPath?: string | null,
+  impersonate = false
+): string[] {
   return withJsRuntime(
-    [
-      '--ignore-config',
-      '--no-plugin-dirs',
-      '--no-playlist',
-      '--no-warnings',
-      '--skip-download',
-      '--dump-single-json',
-      '--no-cache-dir',
-      '--',
-      url
-    ],
+    withImpersonation(
+      [
+        '--ignore-config',
+        '--no-plugin-dirs',
+        '--no-playlist',
+        '--no-warnings',
+        '--skip-download',
+        '--dump-single-json',
+        '--no-cache-dir',
+        '--',
+        url
+      ],
+      impersonate
+    ),
     denoPath
   )
 }
@@ -105,6 +124,8 @@ export interface DownloadArgumentInput {
   referer?: string
   userAgent?: string
   cookie?: string
+  /** Verified curl_cffi Chrome impersonation support for this yt-dlp build. */
+  impersonate?: boolean
 }
 
 /**
@@ -116,7 +137,8 @@ export interface DownloadArgumentInput {
  */
 export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
   const args = withJsRuntime(
-    [
+    withImpersonation(
+      [
       '--ignore-config',
       '--no-plugin-dirs',
       '--no-playlist',
@@ -138,7 +160,9 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
       input.formatSelector,
       '--output',
       input.outputTemplate
-    ],
+      ],
+      input.impersonate === true
+    ),
     input.denoPath
   )
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CONCURRENT_FRAGMENTS,
   PROGRESS_TEMPLATE,
+  buildAnalyzeArgs,
   buildDownloadArgs,
   parseProgressLine
 } from '../src/main/media/args'
@@ -61,6 +62,31 @@ describe('buildDownloadArgs HLS and fragment downloads', () => {
     expect(remuxed).not.toContain('--merge-output-format')
     expect(remuxed[remuxed.length - 2]).toBe('--')
     expect(remuxed[remuxed.length - 1]).toBe(sourceUrl)
+  })
+})
+
+describe('build*Args impersonation', () => {
+  it('adds the verified Chrome target before the fixed arguments', () => {
+    const analyze = buildAnalyzeArgs(sourceUrl, null, true)
+    expect(analyze.slice(0, 2)).toEqual(['--impersonate', 'chrome'])
+    expect(analyze[analyze.length - 2]).toBe('--')
+
+    const download = buildDownloadArgs({
+      sourceUrl,
+      formatSelector: '22',
+      outputTemplate: 'video.%(ext)s',
+      mergeOutputFormat: null,
+      remuxOutputFormat: null,
+      ffmpegLocation: null,
+      impersonate: true
+    })
+    expect(download.slice(0, 2)).toEqual(['--impersonate', 'chrome'])
+    expect(download[download.length - 2]).toBe('--')
+  })
+
+  it('omits the flag when support was not verified', () => {
+    expect(buildAnalyzeArgs(sourceUrl)).not.toContain('--impersonate')
+    expect(args({ mergeOutputFormat: null })).not.toContain('--impersonate')
   })
 })
 

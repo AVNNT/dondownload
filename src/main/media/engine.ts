@@ -256,6 +256,8 @@ interface Toolchain {
   ytdlpPath: string | null
   ffmpegPath: string | null
   denoPath: string | null
+  /** True only when the active yt-dlp build lists a Chrome impersonate target. */
+  impersonate: boolean
 }
 
 interface ActiveDownload {
@@ -841,6 +843,10 @@ export function createMediaEngine(
   // interrupted jobs terminal and never resumes them.
   const activeStagingDirs = new Set<string>()
   const outputDirLocks = new Map<string, Promise<void>>()
+  // Impersonation support is probed once per yt-dlp path *and* version: the
+  // verified updater may swap the executable, and an older build does not know
+  // `--list-impersonate-targets` at all.
+  const impersonationSupport = new Map<string, boolean>()
 
   function withOutputDirLock<T>(
     directory: string,
@@ -1020,6 +1026,30 @@ export function createMediaEngine(
     }
   }
 
+  async function probeImpersonation(
+    ytdlpPath: string,
+    version: string | null
+  ): Promise<boolean> {
+    const key = `${ytdlpPath}\u0000${version ?? ''}`
+    const cached = impersonationSupport.get(key)
+    if (cached !== undefined) return cached
+
+    let supported = false
+    try {
+      const result = await runTrackedCapturedProcess(
+        ytdlpPath,
+        ['--ignore-config', '--list-impersonate-targets'],
+        { timeoutMs: TOOL_PROBE_TIMEOUT_MS, maxOutputBytes: 64 * 1024 }
+      )
+      supported =
+        result.code === 0 && /^\s*Chrome(?:-|\s)/im.test(result.stdout)
+    } catch {
+      supported = false
+    }
+    impersonationSupport.set(key, supported)
+    return supported
+  }
+
   async function resolveToolchain(): Promise<Toolchain> {
     const locationOptions = { env, platform, cwd, managedToolsDir }
     const ytdlp = await locateMediaTool('ytdlp', locationOptions)
@@ -1036,7 +1066,8 @@ export function createMediaEngine(
         },
         ytdlpPath: null,
         ffmpegPath: null,
-        denoPath: null
+        denoPath: null,
+        impersonate: false
       }
     }
 
@@ -1055,10 +1086,15 @@ export function createMediaEngine(
         },
         ytdlpPath: null,
         ffmpegPath: null,
-        denoPath: null
+        denoPath: null,
+        impersonate: false
       }
     }
 
+    const impersonate = await probeImpersonation(
+      ytdlp.path,
+      ytdlpProbe.version
+    )
     const ffmpeg = await locateMediaTool('ffmpeg', locationOptions)
     const deno = await locateMediaTool('deno', locationOptions)
     let ffmpegPath: string | null = null
@@ -1100,7 +1136,8 @@ export function createMediaEngine(
       },
       ytdlpPath: ytdlp.path,
       ffmpegPath,
-      denoPath: deno.path
+      denoPath: deno.path,
+      impersonate
     }
   }
 
@@ -1210,7 +1247,7 @@ export function createMediaEngine(
     try {
       result = await runTrackedCapturedProcess(
         toolchain.ytdlpPath,
-        buildAnalyzeArgs(normalized, toolchain.denoPath),
+        buildAnalyzeArgs(normalized, toolchain.denoPath, toolchain.impersonate),
         {
           timeoutMs: analysisTimeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
@@ -1835,6 +1872,7 @@ export function createMediaEngine(
       remuxOutputFormat: outputChoice.remuxOutputFormat,
       ffmpegLocation: needsFfmpeg ? toolchain.ffmpegPath : null,
       denoPath: toolchain.denoPath,
+      impersonate: toolchain.impersonate,
       ...directHeaders
     })
 

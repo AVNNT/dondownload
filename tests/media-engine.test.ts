@@ -52,6 +52,8 @@ interface HarnessOptions {
   withFfmpeg?: boolean
   ytdlpProbeOk?: boolean
   ffmpegProbeOk?: boolean
+  /** False emulates an older yt-dlp that does not list impersonate targets. */
+  impersonateSupported?: boolean
   analyzeJson?: unknown
   analyzeCode?: number
   analyzeStdout?: string
@@ -262,6 +264,22 @@ async function makeHarness(options: HarnessOptions = {}) {
           target.kill()
           target.close(1)
         }
+        child.close(0)
+      })
+      return child
+    }
+
+    if (args.includes('--list-impersonate-targets')) {
+      queueMicrotask(() => {
+        if (options.impersonateSupported === false) {
+          child.stderr.write('no such option: --list-impersonate-targets')
+          child.close(2)
+          return
+        }
+        child.stdout.write(
+          'Client          OS           Source\n' +
+            'Chrome-136      Macos-15     curl_cffi\n'
+        )
         child.close(0)
       })
       return child
@@ -1542,6 +1560,8 @@ describe('media engine subprocess arguments and progress', () => {
 
     const outputTemplate = argValue(download.args, '--output') as string
     expect(analyzeCall?.args).toEqual([
+      '--impersonate',
+      'chrome',
       '--ignore-config',
       '--no-plugin-dirs',
       '--no-playlist',
@@ -1553,6 +1573,8 @@ describe('media engine subprocess arguments and progress', () => {
       SOURCE_URL
     ])
     expect(download.args).toEqual([
+      '--impersonate',
+      'chrome',
       '--ignore-config',
       '--no-plugin-dirs',
       '--no-playlist',
@@ -1577,6 +1599,86 @@ describe('media engine subprocess arguments and progress', () => {
       harness.ffmpegFile,
       '--',
       SOURCE_URL
+    ])
+  })
+
+  it('omits impersonation when the active yt-dlp does not list a Chrome target', async () => {
+    const harness = await makeHarness({
+      impersonateSupported: false,
+      download: (call) => call.child.close(1)
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const failure = harness.engine
+      .download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+      .then(
+        () => null,
+        (error: unknown) => error
+      )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    expect(await failure).toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    const download = downloadCall(harness.calls)
+    expect(analyzeCall?.args).not.toContain('--impersonate')
+    expect(download.args).not.toContain('--impersonate')
+    expect(
+      harness.calls.filter((call) =>
+        call.args.includes('--list-impersonate-targets')
+      )
+    ).toHaveLength(1)
+  })
+
+  it('probes and caches impersonation support once per yt-dlp path and version', async () => {
+    const harness = await makeHarness({
+      impersonateSupported: true,
+      download: (call) => call.child.close(1)
+    })
+    await harness.engine.analyze(SOURCE_URL)
+    const second = await harness.engine.analyze(SOURCE_URL)
+    const failure = harness.engine
+      .download(
+        downloadRequest(
+          second.analysisId,
+          second.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+      .then(
+        () => null,
+        (error: unknown) => error
+      )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    expect(await failure).toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+
+    expect(
+      harness.calls.filter((call) =>
+        call.args.includes('--list-impersonate-targets')
+      )
+    ).toHaveLength(1)
+    const analyzeCalls = harness.calls.filter((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    expect(analyzeCalls).toHaveLength(2)
+    for (const call of analyzeCalls) {
+      expect(call.args.slice(0, 2)).toEqual(['--impersonate', 'chrome'])
+    }
+    expect(downloadCall(harness.calls).args.slice(0, 2)).toEqual([
+      '--impersonate',
+      'chrome'
     ])
   })
 
