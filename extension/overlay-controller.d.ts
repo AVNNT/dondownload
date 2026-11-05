@@ -95,4 +95,5 @@ export function describeOverlayStatus(input: {
   granted?: boolean
   ready?: boolean
   site?: string
+  shortcut?: string
 }): OverlayStatus

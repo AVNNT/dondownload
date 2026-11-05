@@ -675,6 +675,15 @@ export function describeOverlayStatus(input) {
     input && typeof input.site === 'string' && input.site.length > 0
       ? input.site
       : 'this site'
+  // The browser shortcut is user-configurable. Callers that know the current
+  // value pass it in; without one the copy points at the browser settings page
+  // instead of naming a shortcut the user may not have.
+  const shortcut =
+    input &&
+    typeof input.shortcut === 'string' &&
+    input.shortcut.trim().length > 0
+      ? input.shortcut.trim()
+      : null
 
   if (!available) {
     return {
@@ -697,7 +706,11 @@ export function describeOverlayStatus(input) {
       state: 'on',
       label: 'On',
       tone: 'on',
-      hint: `Overlay is on for ${site}. A floating button follows the active playing video; a detected progressive source can be downloaded directly. Set a browser shortcut at chrome://extensions/shortcuts. Access stays limited to this exact origin.`
+      hint: `Overlay is on for ${site}. A floating button follows the active playing video; a detected progressive source can be downloaded directly. ${
+        shortcut === null
+          ? 'Set a browser shortcut at chrome://extensions/shortcuts.'
+          : `Press ${shortcut} to show or hide the overlay.`
+      } Choose Analyze to see verified options and reported file sizes; a download is queued only when you pick one, and access stays limited to this exact origin.`
     }
   }
   return {

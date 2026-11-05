@@ -159,37 +159,46 @@ describe('extension wiring guardrails', () => {
   const extensionDir = path.join(process.cwd(), 'extension')
   const background = readFileSync(path.join(extensionDir, 'background.js'), 'utf8')
   const popup = readFileSync(path.join(extensionDir, 'popup.js'), 'utf8')
+  const options = readFileSync(path.join(extensionDir, 'options.js'), 'utf8')
   const overlay = readFileSync(path.join(extensionDir, 'overlay.js'), 'utf8')
   const controller = readFileSync(
     path.join(extensionDir, 'overlay-controller.js'),
     'utf8'
   )
 
-  it('registers and removes only the origin requested from the popup click', () => {
-    for (const source of [background, popup, overlay, controller]) {
+  it('registers and removes only the exact origin chosen for the site', () => {
+    for (const source of [background, popup, options, overlay, controller]) {
       expect(source).not.toContain('<all_urls>')
       expect(source).not.toContain('*://*/*')
     }
 
-    expect(popup).toContain('originToMatchPattern(pageOrigin)')
-    expect(popup).toContain('chrome.permissions.request({ origins: [pattern] }')
+    // The popup no longer owns the host grant: it only hands the active tab's
+    // exact origin to the options page and never requests an origin itself.
+    expect(popup).toContain(
+      'rememberOptionsTarget(chrome, { tabId: activeTabId, origin: pageOrigin })'
+    )
+    expect(popup).not.toContain('chrome.permissions.request')
+    // The options page asks for one canonical pattern derived from the origin
+    // the user chose, directly from the enable button's click handler.
+    expect(options).toContain('originToMatchPattern(site.origin)')
+    expect(options).toContain('chrome.permissions.request({ origins: [pattern] }')
+    expect(options).toContain('rememberPendingEnable(chrome, site.origin, site.tabId)')
     expect(controller).toContain('overlayRegistrationForOrigin(origin)')
     expect(controller).toContain('chromeApi.scripting.registerContentScripts')
     expect(controller).toContain('chromeApi.scripting.unregisterContentScripts')
     expect(controller).toContain('chromeApi.permissions.remove')
-    // The permission prompt closes the action popup, so the grant is finished
-    // from a top-level permissions.onAdded listener in the worker.
+    // The permission prompt can close the originating page, so the grant is
+    // finished from a top-level permissions.onAdded listener in the worker.
     expect(background).toContain('chrome.permissions.onAdded.addListener')
     expect(background).toContain('handlePermissionsAdded(chrome, permissions)')
     expect(background).toContain('handleOverlayReady(chrome, message, sender)')
     expect(background).toContain('chrome.tabs.onRemoved.addListener')
-    expect(popup).toContain('rememberPendingEnable(chrome, pageOrigin, activeTabId)')
     // Success requires both the registration and the verified page overlay.
-    expect(popup).toContain('response.registered === true')
-    expect(popup).toContain('response.injected === true')
+    expect(options).toContain('response.registered === true')
+    expect(options).toContain('response.injected === true')
     // Disable success requires verified removal of both the grant and the
     // registration, not just a resolved message.
-    expect(popup).toContain('overlayRemovalConfirmed(response)')
+    expect(options).toContain('overlayRemovalConfirmed(response)')
     expect(controller).toContain('registrationIsAbsent')
     expect(controller).toContain('permissions.contains({ origins: [pattern] })')
     // External revoke teardown is origin-scoped on both sides.

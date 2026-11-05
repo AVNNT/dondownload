@@ -507,7 +507,15 @@ describe('popup overlay status copy', () => {
   })
 
   it('reports On only when the registration and the page overlay are both verified', () => {
-    const status = describeOverlayStatus({ available: true, granted: true, ready: true, site: 'example.com' })
+    const status = describeOverlayStatus({
+      available: true,
+      granted: true,
+      ready: true,
+      site: 'example.com',
+      // The browser shortcut is user-configurable, so the caller supplies the
+      // value that is actually configured for this profile.
+      shortcut: 'Alt+Shift+D'
+    })
     expect(status.state).toBe('on')
     expect(status.label).toBe('On')
     expect(status.hint).toContain('Overlay is on for example.com')
@@ -518,6 +526,13 @@ describe('popup overlay status copy', () => {
     expect(status.hint).toContain('only when you pick one')
     expect(status.hint).toContain('exact origin')
     expect(status.hint).not.toMatch(/does not download|no download|no format|milestone/i)
+  })
+
+  it('points at the browser shortcut settings when none is configured', () => {
+    const status = describeOverlayStatus({ available: true, granted: true, ready: true, site: 'example.com' })
+    expect(status.state).toBe('on')
+    expect(status.hint).toContain('chrome://extensions/shortcuts')
+    expect(status.hint).not.toContain('Alt+Shift+D')
   })
 
   it('never turns a bare permission grant into success', () => {
