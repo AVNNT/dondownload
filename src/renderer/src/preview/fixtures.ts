@@ -21,6 +21,10 @@ import type {
 import { normalizeMediaSourceUrl } from '@shared/media'
 import type { DownloadSettings } from '@shared/settings'
 import { parseDownloadSettings } from '@shared/settings'
+import {
+  defaultMediaToolSettings,
+  type MediaToolSettings
+} from '@shared/mediaTools'
 import type {
   AddDownloadInput,
   ApiResult,
@@ -82,6 +86,7 @@ export function createPreviewApi(
   let mediaJobs = seedMediaJobs(anchor)
   let batches = seedBatches(anchor)
   let settings = seedSettings()
+  let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
 
   const analyses = new Map<string, MediaAnalysis>()
   const previews = new Map<string, CollectionPreview>()
@@ -712,7 +717,35 @@ export function createPreviewApi(
         )
       }
       return ok(cloneSettings(settings))
-    }
+    },
+
+    getMediaToolSettings: async () => ok({ ...mediaToolSettings }),
+
+    updateMediaToolSettings: async (input: { autoUpdateYtdlp: boolean }) => {
+      mediaToolSettings = {
+        ...mediaToolSettings,
+        autoUpdateYtdlp: input.autoUpdateYtdlp
+      }
+      return ok({ ...mediaToolSettings })
+    },
+
+    getYtdlpUpdateState: async () =>
+      ok({
+        status: 'idle' as const,
+        currentVersion: '2026.10.26',
+        latestVersion: null,
+        message: null,
+        lastCheckedAt: mediaToolSettings.lastYtdlpCheckAt
+      }),
+
+    checkYtdlpUpdate: async () =>
+      ok({
+        status: 'up-to-date' as const,
+        currentVersion: '2026.10.26',
+        latestVersion: '2026.10.26',
+        message: 'Up to date.',
+        lastCheckedAt: now()
+      })
   }
 }
 

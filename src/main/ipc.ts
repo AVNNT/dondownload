@@ -17,12 +17,17 @@ import type {
   SmartBatchSubmitResult
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type {
+  MediaToolSettings,
+  YtdlpUpdateState
+} from '@shared/mediaTools'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
 import type { SettingsManager } from './settings/manager'
+import type { YtdlpUpdater } from './media/updater'
 import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
@@ -38,6 +43,8 @@ export interface IpcContext {
   batches?: BatchManager
   /** Additive Milestone 5A runtime download settings. */
   settings?: SettingsManager
+  /** Verified managed yt-dlp updater (optional until wired in index.ts). */
+  mediaUpdater?: YtdlpUpdater
   getWindow: () => BrowserWindow | null
 }
 
@@ -231,4 +238,33 @@ export function registerIpc(context: IpcContext): void {
     }
     return updated
   })
+
+  // Managed yt-dlp update channels. The updater performs only fixed HTTPS
+  // requests, verifies the SHA-256 sums and the new binary's own --version
+  // output, and returns renderer-safe state without URLs or paths.
+  const mediaUpdater = (): YtdlpUpdater => {
+    if (!context.mediaUpdater) {
+      throw new AppError(
+        'MEDIA_UPDATER_UNAVAILABLE',
+        'The yt-dlp updater is not available.'
+      )
+    }
+    return context.mediaUpdater
+  }
+
+  invoke<MediaToolSettings>(IPC.getMediaToolSettings, () =>
+    mediaUpdater().getSettings()
+  )
+
+  invoke<MediaToolSettings>(IPC.updateMediaToolSettings, (_event, input) =>
+    mediaUpdater().updateSettings(input)
+  )
+
+  invoke<YtdlpUpdateState>(IPC.getYtdlpUpdateState, () =>
+    mediaUpdater().getState()
+  )
+
+  invoke<YtdlpUpdateState>(IPC.checkYtdlpUpdate, () =>
+    mediaUpdater().check({ force: true })
+  )
 }

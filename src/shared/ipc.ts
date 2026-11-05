@@ -34,5 +34,11 @@ export const IPC = {
   // Milestone 5A runtime settings (additive). Both channels reuse the existing
   // trusted-sender wrapper; values are the exact-key download-settings DTO.
   getSettings: 'settings:get',
-  updateSettings: 'settings:update'
+  updateSettings: 'settings:update',
+  // Managed yt-dlp updater (additive). Settings persist separately from the
+  // aria2 download settings; state and manual checks never expose a URL/path.
+  getMediaToolSettings: 'media-tools:get-settings',
+  updateMediaToolSettings: 'media-tools:update-settings',
+  getYtdlpUpdateState: 'media-tools:ytdlp-state',
+  checkYtdlpUpdate: 'media-tools:ytdlp-check'
 } as const

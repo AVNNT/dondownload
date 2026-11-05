@@ -26,6 +26,10 @@ import type {
   SmartBatchSubmitResult
 } from '../shared/types'
 import type { DownloadSettings } from '../shared/settings'
+import type {
+  MediaToolSettings,
+  YtdlpUpdateState
+} from '../shared/mediaTools'
 
 const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
@@ -139,6 +143,22 @@ const api: DonDownloadApi = {
   updateSettings: (settings: DownloadSettings) =>
     ipcRenderer.invoke(IPC.updateSettings, settings) as Promise<
       ApiResult<DownloadSettings>
+    >,
+  getMediaToolSettings: () =>
+    ipcRenderer.invoke(IPC.getMediaToolSettings) as Promise<
+      ApiResult<MediaToolSettings>
+    >,
+  updateMediaToolSettings: (input: { autoUpdateYtdlp: boolean }) =>
+    ipcRenderer.invoke(IPC.updateMediaToolSettings, input) as Promise<
+      ApiResult<MediaToolSettings>
+    >,
+  getYtdlpUpdateState: () =>
+    ipcRenderer.invoke(IPC.getYtdlpUpdateState) as Promise<
+      ApiResult<YtdlpUpdateState>
+    >,
+  checkYtdlpUpdate: () =>
+    ipcRenderer.invoke(IPC.checkYtdlpUpdate) as Promise<
+      ApiResult<YtdlpUpdateState>
     >
 }
 

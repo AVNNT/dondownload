@@ -525,8 +525,8 @@ describe('download settings persistence', () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
 
-    expect(database.schemaVersion).toBe(8)
-    expect(SCHEMA_VERSION).toBe(8)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(SCHEMA_VERSION).toBe(9)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -914,7 +914,7 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(8)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
     expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
@@ -987,7 +987,7 @@ describe('v5 to v8 migration', () => {
     raw.close()
 
     const database = open(filePath)
-    expect(database.schemaVersion).toBe(8)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
     expect(database.loadSettings()).toEqual({
       maxConcurrentDownloads: 7,
       perHostConnections: 9,
@@ -1008,7 +1008,7 @@ describe('v5 to v8 migration', () => {
     close(database)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(8)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(columnNames(verify, 'downloads')).toEqual([
       ...DOWNLOAD_COLUMNS,
       'scheduled_at',
@@ -1054,7 +1054,7 @@ describe('v7 to v8 theme migration', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(SCHEMA_VERSION)
     expect(migrated.loadSettings()).toEqual({
       maxConcurrentDownloads: 9,
       perHostConnections: 7,
@@ -1065,7 +1065,7 @@ describe('v7 to v8 theme migration', () => {
     close(migrated)
 
     const verify = new DatabaseSync(filePath)
-    expect(userVersion(verify)).toBe(8)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(columnNames(verify, 'download_settings')).toContain('theme')
     expect(rowsOf(verify, 'download_settings')[0]).toMatchObject({
       max_concurrent_downloads: 9,

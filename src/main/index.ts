@@ -10,6 +10,7 @@ import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database
 import { DownloadManager } from './downloads/manager'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMediaEngine } from './media/engine'
+import { createYtdlpUpdater, type YtdlpUpdater } from './media/updater'
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
 import { SettingsManager } from './settings/manager'
@@ -46,6 +47,7 @@ let manager: DownloadManager | null = null
 let mediaJobs: MediaJobsManager | null = null
 let batches: BatchManager | null = null
 let settingsManager: SettingsManager | null = null
+let mediaUpdater: YtdlpUpdater | null = null
 let nativeBridge: NativeBridge | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
@@ -237,13 +239,31 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
     )
 
     const mediaDir = path.join(downloadDir, 'Media')
-    const mediaEngine = createMediaEngine()
+    const managedToolsDir = path.join(
+      app.getPath('userData'),
+      'tools',
+      'yt-dlp'
+    )
+    mediaUpdater = createYtdlpUpdater({
+      userDataPath: app.getPath('userData'),
+      appVersion: app.getVersion(),
+      store: database,
+      // Ordinary smoke verification must never perform background network
+      // work. A manual check remains available in the normal desktop app.
+      autoUpdateAllowed: smoke === null,
+      isJobActive: () => mediaJobs?.hasActiveJobs() ?? false
+    })
+    const mediaEngine = createMediaEngine({ managedToolsDir })
     mediaJobs = new MediaJobsManager({
       engine: mediaEngine,
       mediaDir,
       database,
       startAllowed: (now) => isAllowedAt(settings.getSettings(), now),
+      onExtractorFailure: () => mediaUpdater?.notifyExtractorFailure() ?? Promise.resolve(false),
       onUpdate: (snapshot) => {
+        // A deferred verified update becomes visible only after every active
+        // media job has settled; no executable is swapped mid-run.
+        mediaUpdater?.onJobsChanged()
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
         }
@@ -281,6 +301,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       mediaJobs,
       batches,
       settings,
+      mediaUpdater,
       getWindow: () => mainWindow
     })
 
@@ -495,6 +516,10 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
 
     void startServices()
 
+    // At most one background check per 24 hours. It never delays the window
+    // and is disabled entirely in smoke mode by the updater option above.
+    void mediaUpdater.autoCheck()
+
     app.on('activate', () => {
       // macOS Dock activation and Windows taskbar relaunches restore the same
       // hidden window instead of creating a duplicate.
@@ -567,6 +592,12 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
         // Media children are cancelled best-effort; the process must still quit.
       }
       mediaJobs = null
+      try {
+        mediaUpdater?.close()
+      } catch {
+        // Never block quitting on updater cleanup.
+      }
+      mediaUpdater = null
       try {
         manager?.flushPersistence()
       } catch {

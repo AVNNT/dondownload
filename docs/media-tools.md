@@ -45,9 +45,47 @@ package directory is user-scoped rather than machine-wide.
   require it. DonDownload locates an explicit `DONDOWNLOAD_DENO_PATH`, a
   packaged/app-local vendor copy, or a copy on `PATH`, and passes the located
   path to yt-dlp. It does not install or update Deno.
-- DonDownload does not download these tools at runtime. The Windows installer
-  packaging baseline can include locally staged vendor copies; see
-  [installer-packaging.md](installer-packaging.md).
+- DonDownload never modifies its bundled vendor copies after installation. The
+  Windows installer packaging baseline can include locally staged vendor
+  copies; see [installer-packaging.md](installer-packaging.md).
+- yt-dlp is the one exception that can be updated at runtime, because YouTube
+  extractor changes regularly break older releases. See the next section.
+
+## Runtime yt-dlp updates (verified managed copy)
+
+The bundled `resources/vendor/yt-dlp/yt-dlp.exe` is read-only to the app. When
+yt-dlp releases a newer version, DonDownload may place it at:
+
+```text
+<userData>/tools/yt-dlp/<version>/yt-dlp.exe
+```
+
+Resolution order per media job is:
+
+1. an explicit `DONDOWNLOAD_YTDLP_PATH` override;
+2. the newest managed version that is newer than the bundled version;
+3. the bundled vendor copy;
+4. `PATH`.
+
+Because the locator resolves once per job, an update never replaces the
+executable of a running download. If a media job is active, a verified update
+is held and activated after the job settles.
+
+The updater reads
+`https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest` with a
+`DonDownload/<app version>` user agent and no credentials. It only follows HTTPS
+redirects on `github.com`, `api.github.com`, `objects.githubusercontent.com`
+and `release-assets.githubusercontent.com`. It downloads `yt-dlp.exe` plus
+`SHA2-256SUMS`, enforces a 50 MB size cap, verifies the exact SHA-256, writes a
+temporary file, runs the new binary with `--version` (15 s timeout) and requires
+the expected release tag before an atomic rename activates it. Any failure
+keeps the current binary and reports a safe error.
+
+The automatic check runs at most once every 24 hours in the background and is
+controlled by **Keep yt-dlp up to date automatically** in Settings (default
+on). Manual checks are available from the same page. Smoke-test mode disables
+the automatic check entirely. At most two managed versions are retained; older
+ones are deleted only inside `<userData>/tools/yt-dlp`.
 
 ## Licensing
 

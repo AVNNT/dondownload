@@ -15,6 +15,10 @@ import type {
   MediaSnapshot
 } from './media'
 import type { DownloadControls, DownloadSettings } from './settings'
+import type {
+  MediaToolSettings,
+  YtdlpUpdateState
+} from './mediaTools'
 
 export type DownloadStatus =
   | 'queued'
@@ -250,4 +254,13 @@ export interface DonDownloadApi {
   updateSettings: (
     settings: DownloadSettings
   ) => Promise<ApiResult<DownloadSettings>>
+
+  // Managed yt-dlp updater. The update request only carries the automatic
+  // toggle; a check can report up-to-date, updated, deferred or a safe failure.
+  getMediaToolSettings: () => Promise<ApiResult<MediaToolSettings>>
+  updateMediaToolSettings: (input: {
+    autoUpdateYtdlp: boolean
+  }) => Promise<ApiResult<MediaToolSettings>>
+  getYtdlpUpdateState: () => Promise<ApiResult<YtdlpUpdateState>>
+  checkYtdlpUpdate: () => Promise<ApiResult<YtdlpUpdateState>>
 }

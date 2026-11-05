@@ -6,6 +6,10 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { formatSpeed } from '@shared/format'
+import type {
+  MediaToolSettings,
+  YtdlpUpdateState
+} from '@shared/mediaTools'
 import { applyRendererTheme } from '../theme'
 
 const THEME_LABEL: Record<AppTheme, string> = {
@@ -22,6 +26,34 @@ const THEME_DESCRIPTION: Record<AppTheme, string> = {
 
 const BYTES_PER_MB = 1_000_000
 const MAX_SPEED_MB = MAX_SPEED_LIMIT_BPS / BYTES_PER_MB
+
+function updateStatusLabel(state: YtdlpUpdateState | null): string {
+  if (!state) return 'Not checked yet'
+  switch (state.status) {
+    case 'idle':
+      return 'Not checked yet'
+    case 'checking':
+      return 'Checking…'
+    case 'up-to-date':
+      return 'Up to date'
+    case 'updating':
+      return 'Updating…'
+    case 'updated':
+      return state.currentVersion
+        ? `Updated to ${state.currentVersion}`
+        : 'Updated'
+    case 'deferred':
+      return state.latestVersion
+        ? `Update ready (${state.latestVersion}) — applies to the next media job`
+        : 'Update ready — applies to the next media job'
+    case 'failed':
+      return state.message ? `Failed: ${state.message}` : 'Failed'
+    case 'disabled':
+      return state.message ?? 'Automatic updates are off'
+    case 'throttled':
+      return 'Checked recently'
+  }
+}
 
 /**
  * Render the stored bytes/sec value in MB/s for humans without ever writing
@@ -47,6 +79,26 @@ export function SettingsSection(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [themePending, setThemePending] = useState(false)
+  const [mediaTools, setMediaTools] = useState<MediaToolSettings | null>(null)
+  const [updateState, setUpdateState] = useState<YtdlpUpdateState | null>(null)
+  const [updating, setUpdating] = useState(false)
+  const [mediaToolsError, setMediaToolsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void window.donDownload.getMediaToolSettings().then((result) => {
+      if (cancelled) return
+      if (result.ok) setMediaTools(result.value)
+      else setMediaToolsError(result.error.message)
+    })
+    void window.donDownload.getYtdlpUpdateState().then((result) => {
+      if (cancelled) return
+      if (result.ok) setUpdateState(result.value)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -168,6 +220,67 @@ export function SettingsSection(): JSX.Element {
         Math.max(0, Math.round(mb * BYTES_PER_MB))
       )
     })
+  }
+
+  const toggleAutoUpdate = async (checked: boolean): Promise<void> => {
+    setMediaToolsError(null)
+    setMediaTools((current) =>
+      current ? { ...current, autoUpdateYtdlp: checked } : current
+    )
+    try {
+      const result = await window.donDownload.updateMediaToolSettings({
+        autoUpdateYtdlp: checked
+      })
+      if (!result.ok) {
+        setMediaToolsError(result.error.message)
+        setMediaTools((current) =>
+          current ? { ...current, autoUpdateYtdlp: !checked } : current
+        )
+        return
+      }
+      setMediaTools(result.value)
+    } catch (error) {
+      setMediaToolsError(
+        error instanceof Error
+          ? error.message
+          : 'The yt-dlp update preference could not be saved.'
+      )
+      setMediaTools((current) =>
+        current ? { ...current, autoUpdateYtdlp: !checked } : current
+      )
+    }
+  }
+
+  const checkForUpdate = async (): Promise<void> => {
+    setUpdating(true)
+    setMediaToolsError(null)
+    setUpdateState((current) =>
+      current
+        ? { ...current, status: 'updating', message: null }
+        : {
+            status: 'updating',
+            currentVersion: null,
+            latestVersion: null,
+            message: null,
+            lastCheckedAt: null
+          }
+    )
+    try {
+      const result = await window.donDownload.checkYtdlpUpdate()
+      if (!result.ok) {
+        setMediaToolsError(result.error.message)
+        return
+      }
+      setUpdateState(result.value)
+    } catch (error) {
+      setMediaToolsError(
+        error instanceof Error
+          ? error.message
+          : 'The yt-dlp update check failed.'
+      )
+    } finally {
+      setUpdating(false)
+    }
   }
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -403,6 +516,76 @@ export function SettingsSection(): JSX.Element {
           </button>
         </div>
       </form>
+
+      <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
+        <legend className="px-1 text-[11px] font-medium text-zinc-400">
+          yt-dlp media tool
+        </legend>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <label className="flex min-w-0 items-start gap-2 text-xs text-zinc-300">
+            <input
+              type="checkbox"
+              checked={mediaTools?.autoUpdateYtdlp ?? true}
+              disabled={mediaTools === null}
+              onChange={(event) => {
+                void toggleAutoUpdate(event.currentTarget.checked)
+              }}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+            />
+            <span>
+              <span className="block font-medium">
+                Keep yt-dlp up to date automatically
+              </span>
+              <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                Checks at most once every 24 hours in the background. Updates
+                are verified against GitHub&apos;s SHA-256 sums and are applied
+                to the next media job, never under a running download.
+              </span>
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={() => void checkForUpdate()}
+            disabled={updating}
+            className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {updating ? 'Updating…' : 'Check for yt-dlp update'}
+          </button>
+        </div>
+        <dl className="mt-3 grid gap-1 text-[11px] text-zinc-400 sm:grid-cols-2">
+          <div className="flex gap-1">
+            <dt className="text-zinc-500">Current:</dt>
+            <dd className="text-zinc-300">
+              {updateState?.currentVersion ?? 'Unknown'}
+            </dd>
+          </div>
+          <div className="flex gap-1">
+            <dt className="text-zinc-500">Latest:</dt>
+            <dd className="text-zinc-300">
+              {updateState?.latestVersion ?? 'Not checked'}
+            </dd>
+          </div>
+          <div className="flex gap-1 sm:col-span-2">
+            <dt className="text-zinc-500">Status:</dt>
+            <dd
+              role={updateState?.status === 'failed' ? 'alert' : 'status'}
+              aria-live="polite"
+              className={
+                updateState?.status === 'failed'
+                  ? 'text-red-300'
+                  : 'text-zinc-300'
+              }
+            >
+              {updateStatusLabel(updateState)}
+            </dd>
+          </div>
+        </dl>
+        {mediaToolsError ? (
+          <p role="alert" className="mt-2 text-xs text-red-300">
+            {mediaToolsError}
+          </p>
+        ) : null}
+      </fieldset>
     </section>
   )
 }

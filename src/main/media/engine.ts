@@ -65,6 +65,7 @@ import type {
   InternalOutputChoice
 } from './formats'
 import { isFile, locateMediaTool } from './locator'
+import { looksLikeExtractorFailure } from './updater'
 import {
   ProcessAbortedError,
   ProcessOutputError,
@@ -185,6 +186,8 @@ export interface MediaEngineOptions {
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   cwd?: string
+  /** `<userData>/tools/yt-dlp`; managed copies newer than bundled win. */
+  managedToolsDir?: string | null
   spawn?: MediaSpawn
   lookup?: MediaLookup
   now?: () => number
@@ -717,6 +720,7 @@ export function createMediaEngine(
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
   const cwd = options.cwd ?? process.cwd()
+  const managedToolsDir = options.managedToolsDir ?? null
   const spawn = options.spawn ?? defaultMediaSpawn
   const lookup = options.lookup ?? defaultPublicTargetLookup
   const now = options.now ?? Date.now
@@ -937,7 +941,7 @@ export function createMediaEngine(
   }
 
   async function resolveToolchain(): Promise<Toolchain> {
-    const locationOptions = { env, platform, cwd }
+    const locationOptions = { env, platform, cwd, managedToolsDir }
     const ytdlp = await locateMediaTool('ytdlp', locationOptions)
     if (ytdlp.path === null) {
       const message = ytdlp.missingExplicit
@@ -1165,6 +1169,16 @@ export function createMediaEngine(
     }
 
     if (result.code !== 0) {
+      // A YouTube extractor change usually appears only in stderr. Mark that
+      // category without forwarding the raw output so the job manager can try
+      // a verified yt-dlp update before showing the generic failure.
+      if (looksLikeExtractorFailure(`${result.stderr}\n${result.stdout}`)) {
+        throw new AppError(
+          'MEDIA_ANALYSIS_EXTRACTOR_FAILED',
+          'yt-dlp could not understand this page. The site may have changed.',
+          'Try again after yt-dlp is updated.'
+        )
+      }
       throw new AppError(
         'MEDIA_ANALYSIS_FAILED',
         'yt-dlp could not analyze this page. The page may be unsupported, private, DRM-protected or require a sign-in.',

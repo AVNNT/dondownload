@@ -97,6 +97,11 @@ export interface MediaJobsManagerOptions {
    * allows starts so narrow tests and non-policy callers keep working.
    */
   startAllowed?: (now: number) => boolean
+  /**
+   * Called for an extractor-style analysis failure. It may run a verified
+   * yt-dlp update and resolves true when a newer binary was activated.
+   */
+  onExtractorFailure?: () => Promise<boolean>
 }
 
 export const MEDIA_INTERRUPTED_MESSAGE =
@@ -229,6 +234,9 @@ export class MediaJobsManager {
   private readonly now: () => number
   private readonly progressPersistIntervalMs: number
   private readonly startAllowed: (now: number) => boolean
+  private readonly onExtractorFailure:
+    | (() => Promise<boolean>)
+    | null
 
   private readonly jobs = new Map<string, ManagedMediaJob>()
   private readonly analyses = new Map<string, CachedMediaAnalysis>()
@@ -253,6 +261,7 @@ export class MediaJobsManager {
     this.progressPersistIntervalMs =
       options.progressPersistIntervalMs ?? PROGRESS_PERSIST_INTERVAL_MS
     this.startAllowed = options.startAllowed ?? (() => true)
+    this.onExtractorFailure = options.onExtractorFailure ?? null
 
     this.loadPersistedJobs()
   }
@@ -288,6 +297,25 @@ export class MediaJobsManager {
     try {
       raw = await this.engine.analyze(input.url)
     } catch (error) {
+      if (
+        this.onExtractorFailure !== null &&
+        error instanceof AppError &&
+        error.code === 'MEDIA_ANALYSIS_EXTRACTOR_FAILED'
+      ) {
+        let updated = false
+        try {
+          updated = await this.onExtractorFailure()
+        } catch {
+          // The update is best effort; the analysis failure is still reported.
+        }
+        if (updated) {
+          throw new AppError(
+            'MEDIA_ANALYSIS_EXTRACTOR_FAILED',
+            'yt-dlp was updated — try again.',
+            'The page was not analyzed with the old yt-dlp. Run the analysis again.'
+          )
+        }
+      }
       throw sanitizedEngineError(
         error,
         'MEDIA_ANALYSIS_FAILED',
@@ -515,6 +543,24 @@ export class MediaJobsManager {
    * start gate. The download manager's existing poll timer uses this to wake
    * the media manager; no separate media scheduler is created.
    */
+  /**
+   * True while an analysis or download is actually using yt-dlp. A queued job
+   * blocked by the start gate is not running, so a verified update may still be
+   * activated before that job begins.
+   */
+  hasActiveJobs(): boolean {
+    for (const job of this.jobs.values()) {
+      if (
+        job.record.status === 'analyzing' ||
+        job.record.status === 'downloading' ||
+        job.record.status === 'merging'
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
   hasPendingPolicyWork(): boolean {
     for (const job of this.jobs.values()) {
       if (job.record.status === 'queued' && job.awaitingPolicy) return true

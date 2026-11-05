@@ -30,6 +30,10 @@ import {
   type DownloadControls,
   type DownloadSettings
 } from '@shared/settings'
+import {
+  parseMediaToolSettings,
+  type MediaToolSettings
+} from '@shared/mediaTools'
 import { AppError } from '../errors'
 
 /**
@@ -39,7 +43,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -336,6 +340,26 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE download_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'oled'
         CHECK (theme IN ('oled', 'dark', 'light'));
     `
+  },
+  {
+    // Managed media-tool preferences are separate from download settings so an
+    // automatic updater check never rewrites aria2's global options. The single
+    // row defaults to keeping yt-dlp up to date, with no prior check timestamp.
+    version: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS media_tool_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        auto_update_ytdlp INTEGER NOT NULL DEFAULT 1
+          CHECK (auto_update_ytdlp IN (0, 1)),
+        last_ytdlp_check_at INTEGER
+          CHECK (last_ytdlp_check_at IS NULL OR last_ytdlp_check_at >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT OR IGNORE INTO media_tool_settings (
+        id, auto_update_ytdlp, last_ytdlp_check_at, updated_at
+      ) VALUES (1, 1, NULL, 0);
+    `
   }
 ]
 
@@ -474,6 +498,15 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
   })
 }
 
+function rowToMediaToolSettings(
+  row: Record<string, unknown>
+): MediaToolSettings {
+  return parseMediaToolSettings({
+    autoUpdateYtdlp: number(row, 'auto_update_ytdlp', 1) === 1,
+    lastYtdlpCheckAt: nullableNumber(row, 'last_ytdlp_check_at')
+  })
+}
+
 function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
   const id = text(row, 'id')
   const sourceUrl = text(row, 'source_url')
@@ -608,6 +641,8 @@ export class DownloadDatabase {
   private readonly downloadBlockReasonStatement: StatementSync
   private readonly settingsSelectStatement: StatementSync
   private readonly settingsUpsertStatement: StatementSync
+  private readonly mediaToolSettingsSelectStatement: StatementSync
+  private readonly mediaToolSettingsUpsertStatement: StatementSync
   private readonly mediaUpsertStatement: StatementSync
   private readonly mediaSelectAllStatement: StatementSync
   private readonly mediaDeleteStatement: StatementSync
@@ -692,6 +727,18 @@ export class DownloadDatabase {
           allowed_hours_start = excluded.allowed_hours_start,
           allowed_hours_end = excluded.allowed_hours_end,
           theme = excluded.theme,
+          updated_at = excluded.updated_at
+      `)
+      this.mediaToolSettingsSelectStatement = this.db.prepare(
+        'SELECT * FROM media_tool_settings WHERE id = 1'
+      )
+      this.mediaToolSettingsUpsertStatement = this.db.prepare(`
+        INSERT INTO media_tool_settings (
+          id, auto_update_ytdlp, last_ytdlp_check_at, updated_at
+        ) VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          auto_update_ytdlp = excluded.auto_update_ytdlp,
+          last_ytdlp_check_at = excluded.last_ytdlp_check_at,
           updated_at = excluded.updated_at
       `)
 
@@ -980,6 +1027,42 @@ export class DownloadDatabase {
       throw error instanceof AppError
         ? error
         : databaseError('Could not save download settings', error)
+    }
+  }
+
+  loadMediaToolSettings(): MediaToolSettings {
+    this.assertOpen()
+    try {
+      const row = this.mediaToolSettingsSelectStatement.get() as
+        | Record<string, unknown>
+        | undefined
+      if (!row) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not load media tool settings: the settings row is missing.'
+        )
+      }
+      return rowToMediaToolSettings(row)
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not load media tool settings', error)
+    }
+  }
+
+  saveMediaToolSettings(settings: MediaToolSettings): void {
+    this.assertOpen()
+    try {
+      const parsed = parseMediaToolSettings(settings)
+      this.mediaToolSettingsUpsertStatement.run(
+        parsed.autoUpdateYtdlp ? 1 : 0,
+        parsed.lastYtdlpCheckAt,
+        Date.now()
+      )
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not save media tool settings', error)
     }
   }
 
