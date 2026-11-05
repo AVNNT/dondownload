@@ -57,6 +57,9 @@ function errorHint(error) {
   if (code === 'DUPLICATE_DOWNLOAD') {
     return `${message} Choose Download again only if you want a second copy.`
   }
+  if (code === 'NATIVE_HOST_ERROR') {
+    return `${message} Start DonDownload (the tray icon is enough), then try again. If it is already running, re-register the native host.`
+  }
   return message
 }
 

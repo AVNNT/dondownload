@@ -14,6 +14,7 @@ interface CoreApi {
   BUTTON_SIZE: number
   EDGE_INSET: number
   SHORTCUT_LABEL: string
+  MEDIA_SIZE_UNKNOWN: string
   evaluateVideoCandidate: (
     candidate: {
       tagName?: string
@@ -57,13 +58,20 @@ interface CoreApi {
       container: string
       width: number | null
       height: number | null
+      filesizeBytes: number | null
+      estimatedBytes: number | null
+      sizeIsEstimate: boolean
     }>
     videoOptions: Array<{ optionId: string; label: string; kind: 'video' }>
     audioOptions: Array<{ optionId: string; label: string; kind: 'audio' }>
     bestVideoOptionId: string | null
     bestAudioOptionId: string | null
   } | null
+  formatMediaSize: (bytes: unknown, estimate?: boolean) => string
+  describeMediaDetails: (option: unknown) => string
+  describeMediaSize: (option: unknown) => string
   describeMediaOption: (option: unknown) => string
+  describeMediaError: (error: unknown, fallback?: string) => string
   formatDuration: (seconds: unknown) => string
   unavailableState: () => {
     title: string
@@ -298,6 +306,135 @@ describe('video detection and placement policy', () => {
     })
     expect(unsafe?.options).toEqual([])
     expect(unsafe?.bestVideoOptionId).toBeNull()
+  })
+
+  it('shows yt-dlp-reported sizes, estimate labels and unknown sizes', () => {
+    expect(core.formatMediaSize(null)).toBe('Size unknown')
+    expect(core.formatMediaSize(0)).toBe('Size unknown')
+    expect(core.formatMediaSize(1024 * 1024)).toBe('1.00 MB')
+    expect(core.formatMediaSize(1024 * 1024, true)).toBe('~1.00 MB estimated')
+    expect(core.describeMediaSize({ estimatedBytes: 0, filesizeBytes: 1024 })).toBe(
+      '1.00 KB'
+    )
+    expect(core.describeMediaSize({ estimatedBytes: null, filesizeBytes: null })).toBe(
+      'Size unknown'
+    )
+
+    const view = core.mediaView({
+      analysisId: 'analysis_1',
+      title: 'Verified title',
+      options: [
+        {
+          kind: 'video',
+          optionId: 'option_exact',
+          label: '1080p MP4',
+          container: 'mp4',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          videoCodec: 'avc1',
+          audioCodec: 'mp4a',
+          hasAudio: true,
+          requiresMerge: false,
+          filesizeBytes: 1024 * 1024,
+          estimatedBytes: 1024 * 1024,
+          sizeIsEstimate: false
+        },
+        {
+          kind: 'video',
+          optionId: 'option_estimate',
+          label: '720p MP4',
+          container: 'mp4',
+          width: 1280,
+          height: 720,
+          fps: 30,
+          videoCodec: 'avc1',
+          audioCodec: 'mp4a',
+          hasAudio: true,
+          requiresMerge: true,
+          filesizeBytes: null,
+          estimatedBytes: Math.round(1.5 * 1024 * 1024),
+          sizeIsEstimate: true
+        },
+        {
+          kind: 'video',
+          optionId: 'option_legacy',
+          label: '480p MP4',
+          container: 'mp4',
+          width: 854,
+          height: 480,
+          fps: 30,
+          videoCodec: 'avc1',
+          audioCodec: 'mp4a',
+          hasAudio: true,
+          requiresMerge: false,
+          filesizeBytes: 512 * 1024
+        },
+        {
+          kind: 'audio',
+          optionId: 'option_audio_unknown',
+          label: 'Audio only',
+          container: 'opus',
+          width: null,
+          height: null,
+          fps: null,
+          videoCodec: null,
+          audioCodec: 'opus',
+          hasAudio: true,
+          requiresMerge: false,
+          filesizeBytes: null,
+          estimatedBytes: null,
+          sizeIsEstimate: false
+        }
+      ],
+      bestVideoOptionId: 'option_estimate',
+      bestAudioOptionId: 'option_audio_unknown'
+    })
+
+    expect(view?.options[0]?.estimatedBytes).toBe(1024 * 1024)
+    expect(view?.options[0]?.sizeIsEstimate).toBe(false)
+    expect(view?.options[1]?.estimatedBytes).toBe(Math.round(1.5 * 1024 * 1024))
+    expect(view?.options[1]?.sizeIsEstimate).toBe(true)
+    expect(core.describeMediaSize(view?.videoOptions[0])).toBe('1.00 MB')
+    expect(core.describeMediaSize(view?.videoOptions[1])).toBe('~1.50 MB estimated')
+    // Older payloads without estimatedBytes still show their exact size.
+    expect(core.describeMediaSize(view?.videoOptions[2])).toBe('512 KB')
+    // A missing size is stated plainly, never replaced by an invented value.
+    expect(core.describeMediaSize(view?.audioOptions[0])).toBe('Size unknown')
+    expect(core.describeMediaOption(view?.videoOptions[0])).toContain('1080p · MP4')
+    expect(core.describeMediaOption(view?.videoOptions[0])).toContain('1.00 MB')
+    expect(core.describeMediaOption(null)).toBe('')
+  })
+
+  it('adds an actionable next step to stable media error codes', () => {
+    expect(
+      core.describeMediaError(
+        { code: 'MEDIA_TOOL_UNAVAILABLE', message: 'yt-dlp could not be started.' },
+        'Fallback'
+      )
+    ).toContain('yt-dlp is available')
+    expect(
+      core.describeMediaError(
+        { code: 'MEDIA_ANALYSIS_EXPIRED', message: 'Analysis expired.' },
+        'Fallback'
+      )
+    ).toContain('Analyze this page again')
+    expect(
+      core.describeMediaError(
+        { code: 'PERMISSION_REQUIRED', message: 'Site access is not granted.' },
+        'Fallback'
+      )
+    ).toContain('DonDownload popup')
+    expect(
+      core.describeMediaError(
+        { code: 'APP_NOT_RUNNING', message: 'DonDownload is not running.' },
+        'Fallback'
+      )
+    ).toContain('Start DonDownload')
+    expect(
+      core.describeMediaError({ code: 'SOMETHING_ELSE', message: 'Nope.' }, 'Fallback')
+    ).toBe('Nope.')
+    expect(core.describeMediaError(null, 'Fallback')).toBe('Fallback')
   })
 })
 
@@ -814,7 +951,9 @@ function fakeAnalysis(): any {
         audioCodec: 'mp4a',
         hasAudio: true,
         requiresMerge: true,
-        filesizeBytes: 10_000
+        filesizeBytes: 10_000,
+        estimatedBytes: 10_000,
+        sizeIsEstimate: false
       },
       {
         kind: 'video',
@@ -828,7 +967,9 @@ function fakeAnalysis(): any {
         audioCodec: 'mp4a',
         hasAudio: true,
         requiresMerge: true,
-        filesizeBytes: 8_000
+        filesizeBytes: null,
+        estimatedBytes: 8_000,
+        sizeIsEstimate: true
       },
       {
         kind: 'audio',
@@ -842,7 +983,9 @@ function fakeAnalysis(): any {
         audioCodec: 'opus',
         hasAudio: true,
         requiresMerge: false,
-        filesizeBytes: null
+        filesizeBytes: null,
+        estimatedBytes: null,
+        sizeIsEstimate: false
       }
     ],
     bestVideoOptionId: BEST_VIDEO_ID,
@@ -1083,12 +1226,14 @@ describe('overlay media flow', () => {
       type: 'dondownload:media-analyze'
     })
     expect(harness.analyzeButton.disabled).toBe(true)
+    expect(harness.panel.getAttribute('aria-busy')).toBe('true')
     expect(harness.status.textContent).toMatch(/Analyzing this page/)
     expect(harness.mediaResults.hidden).toBe(true)
 
     harness.flushMediaResponses()
 
     expect(harness.analyzeButton.disabled).toBe(false)
+    expect(harness.panel.getAttribute('aria-busy')).toBe('false')
     expect(harness.mediaResults.hidden).toBe(false)
     expect(harness.mediaTitle.textContent).toBe('Verified example media')
     expect(harness.bestVideoButton.hidden).toBe(false)
@@ -1099,7 +1244,90 @@ describe('overlay media flow', () => {
     expect(rendered).toContain('720p MP4 - H.264 + AAC')
     expect(rendered).toContain('Audio only - Opus')
     expect(rendered).toContain('1080p · MP4')
+    // Sizes come from the verified response. Exact values have no prefix, a
+    // merged/approximate value is labelled, and missing metadata stays plain.
+    expect(rendered).toContain('9.77 KB')
+    expect(rendered).toContain('~7.81 KB estimated')
+    expect(rendered).toContain('Size unknown')
+    expect(harness.bestVideoButton.textContent).toContain('9.77 KB')
+    expect(harness.bestAudioButton.textContent).toContain('Size unknown')
     expect(harness.status.textContent).toMatch(/Analysis ready/)
+    expect(harness.status.textContent).toMatch(/reported by yt-dlp/i)
+  })
+
+  it('keeps each quality size visible and does not queue from analysis alone', () => {
+    harness = createHarness({
+      analyzeResponse: { ok: true, analysis: fakeAnalysis() }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    // Analysis is a choice step: it must never queue a download by itself.
+    expect(
+      harness.sentMessages.filter((message) => message.type === 'dondownload:media-queue')
+    ).toEqual([])
+
+    const labels = collectByClass(harness.qualityList, 'quality-option')
+    const inputs = collectByClass(harness.qualityList, 'quality-input')
+    expect(labels).toHaveLength(2)
+    expect(inputs.map((input) => input.name)).toEqual([
+      'dondownload-quality',
+      'dondownload-quality'
+    ])
+    expect(harness.qualityFieldset.children[0]?.textContent).toMatch(
+      /Choose a video quality/
+    )
+
+    const exactText = JSON.stringify(collectText(labels[0]!))
+    const estimatedText = JSON.stringify(collectText(labels[1]!))
+    expect(exactText).toContain('9.77 KB')
+    expect(exactText).not.toContain('estimated')
+    expect(estimatedText).toContain('~7.81 KB estimated')
+  })
+
+  it('states Size unknown for a video option without reported metadata', () => {
+    const analysis = fakeAnalysis()
+    analysis.options[0] = {
+      ...analysis.options[0],
+      filesizeBytes: null,
+      estimatedBytes: null,
+      sizeIsEstimate: false
+    }
+    harness = createHarness({ analyzeResponse: { ok: true, analysis } })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    const rendered = JSON.stringify(collectText(harness.mediaResults))
+    expect(rendered).toContain('Size unknown')
+    expect(harness.bestVideoButton.textContent).toContain('Size unknown')
+  })
+
+  it('turns a native media tool failure into an actionable next step', () => {
+    harness = createHarness({
+      analyzeResponse: {
+        ok: false,
+        error: {
+          code: 'MEDIA_TOOL_UNAVAILABLE',
+          message: 'yt-dlp could not be started.'
+        }
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    expect(harness.status.textContent).toContain('yt-dlp could not be started.')
+    expect(harness.status.textContent).toContain('yt-dlp is available')
+    expect(harness.status.className).toBe('status error')
+    expect(harness.mediaResults.hidden).toBe(true)
   })
 
   it('queues the best video + audio option in one click', () => {

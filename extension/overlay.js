@@ -168,9 +168,12 @@
     '  padding: 6px 7px;',
     '}',
     '.quality-option:hover { border-color: #52525b; }',
+    '.quality-option:focus-within { border-color: #fff; outline: 2px solid #fff; outline-offset: 2px; }',
     '.quality-option input { accent-color: #f4f4f5; margin: 2px 0 0; }',
     '.quality-copy { display: block; min-width: 0; overflow-wrap: anywhere; }',
     '.quality-detail { color: #8b8b93; display: block; font-size: 10.5px; margin-top: 1px; }',
+    '.quality-size { color: #d4d4d8; display: block; font-size: 10.5px; font-variant-numeric: tabular-nums; margin-top: 1px; }',
+    '.quality-size.unknown { color: #8b8b93; }',
     '.options { border-top: 1px solid #1f1f23; margin-top: 12px; padding-top: 10px; }',
     '.options summary { color: #d4d4d8; cursor: pointer; font-size: 11.5px; font-weight: 650; }',
     '.options-hint { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 8px 0; }',
@@ -457,18 +460,6 @@
     state.status.className = kind ? 'status ' + kind : 'status'
   }
 
-  function responseErrorMessage(response, fallback) {
-    if (
-      response &&
-      response.error &&
-      typeof response.error.message === 'string' &&
-      response.error.message.trim().length > 0
-    ) {
-      return response.error.message
-    }
-    return fallback
-  }
-
   function sendRuntimeMessage(message, callback) {
     if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
       callback(null, { message: 'The DonDownload background worker is unavailable.' })
@@ -511,6 +502,7 @@
   }
 
   function setMediaBusy(busy) {
+    if (state.panel) state.panel.setAttribute('aria-busy', busy ? 'true' : 'false')
     if (state.analyzeButton) state.analyzeButton.disabled = busy
     if (state.bestVideoButton) state.bestVideoButton.disabled = busy
     if (state.bestAudioButton) state.bestAudioButton.disabled = busy
@@ -552,8 +544,15 @@
 
       var copyNode = createElement('span', 'quality-copy')
       copyNode.appendChild(createElement('span', '', option.label))
-      var detail = core.describeMediaOption(option)
+      var detail = core.describeMediaDetails(option)
       if (detail) copyNode.appendChild(createElement('span', 'quality-detail', detail))
+      var sizeLabel = core.describeMediaSize(option)
+      var sizeNode = createElement(
+        'span',
+        sizeLabel === core.MEDIA_SIZE_UNKNOWN ? 'quality-size unknown' : 'quality-size',
+        sizeLabel
+      )
+      copyNode.appendChild(sizeNode)
       label.appendChild(copyNode)
       state.qualityList.appendChild(label)
 
@@ -592,17 +591,26 @@
     }
     if (state.mediaMeta) state.mediaMeta.textContent = meta.join(' · ')
 
-    if (state.bestVideoButton) state.bestVideoButton.hidden = view.bestVideoOptionId === null
+    if (state.bestVideoButton) {
+      var bestVideoOption = optionById(view, view.bestVideoOptionId)
+      state.bestVideoButton.hidden = view.bestVideoOptionId === null
+      state.bestVideoButton.textContent = bestVideoOption
+        ? 'Download best video + audio · ' + core.describeMediaSize(bestVideoOption)
+        : 'Download best video + audio'
+    }
     if (state.bestAudioButton) {
       state.bestAudioButton.hidden = view.bestAudioOptionId === null
       var bestAudioOption = optionById(view, view.bestAudioOptionId)
       state.bestAudioButton.textContent = bestAudioOption
-        ? 'Download audio-only: ' + bestAudioOption.label
+        ? 'Download audio-only: ' + bestAudioOption.label + ' · ' + core.describeMediaSize(bestAudioOption)
         : 'Download audio only'
     }
     renderQualityOptions(view)
     setMediaBusy(false)
-    setMediaStatus('Analysis ready. Choose a verified option to queue.', 'info')
+    setMediaStatus(
+      'Analysis ready. Sizes are reported by yt-dlp; choose an option to queue.',
+      'info'
+    )
   }
 
   function analyzePage() {
@@ -613,18 +621,18 @@
     state.media.status = 'analyzing'
     resetMediaResults()
     state.analyzeButton.textContent = copy.analyzingLabel
-    state.analyzeButton.disabled = true
+    setMediaBusy(true)
     setMediaStatus('Analyzing this page…', 'info')
 
     sendRuntimeMessage({ type: MEDIA_ANALYZE }, function (response, runtimeError) {
       if (token !== state.media.token || state.disabled) return
       state.analyzeButton.textContent = copy.actionLabel
-      state.analyzeButton.disabled = false
+      setMediaBusy(false)
 
       if (runtimeError) {
         state.media.status = 'error'
         setMediaStatus(
-          'The page could not be analyzed. Start DonDownload and try again.',
+          'The DonDownload background worker did not respond. Reload this page, then try again.',
           'error'
         )
         return
@@ -632,8 +640,8 @@
       if (!response || response.ok !== true || !response.analysis) {
         state.media.status = 'error'
         setMediaStatus(
-          responseErrorMessage(
-            response,
+          core.describeMediaError(
+            response && response.error,
             'The page could not be analyzed. Try again in a moment.'
           ),
           'error'
@@ -691,7 +699,7 @@
         if (runtimeError) {
           state.media.status = 'error'
           setMediaStatus(
-            'The download could not be queued. Start DonDownload and try again.',
+            'The DonDownload background worker did not respond. Reload this page, then try again.',
             'error'
           )
           return
@@ -699,8 +707,8 @@
         if (!response || response.ok !== true || !response.job) {
           state.media.status = 'error'
           setMediaStatus(
-            responseErrorMessage(
-              response,
+            core.describeMediaError(
+              response && response.error,
               'The download could not be queued. Analyze the page again.'
             ),
             'error'
