@@ -326,24 +326,28 @@ export function createPreviewApi(
     }
 
     const batchId = nextId('preview-batch')
-    const items = selectedEntries.map((entry, position) =>
-      makeBatchItem({
+    const items = selectedEntries.map((entry, position) => {
+      const available = entry.availability === 'available'
+      const timestamp = now()
+      return makeBatchItem({
         id: nextId('preview-item'),
         batchId,
         position,
         kind: 'media',
-        status: 'queued',
+        status: available ? 'queued' : 'unavailable',
         title: entry.title,
         label: collectionItemLabel(preview, input.mediaQuality),
         childId: null,
         completedBytes: 0,
         totalBytes: null,
-        errorMessage: null,
-        createdAt: now(),
-        updatedAt: now(),
-        completedAt: null
+        errorMessage: available
+          ? null
+          : (entry.errorReason ?? 'This entry is not available.'),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: available ? null : timestamp
       })
-    )
+    })
     const batch = finalizeBatch({
       id: batchId,
       kind: preview.kind === 'playlist' ? 'media-playlist' : 'pixeldrain-list',
@@ -382,11 +386,16 @@ export function createPreviewApi(
   return {
     advanceDownloadFixture: () => {
       const item = downloads.find(
-        (download) => download.status === 'active' || download.status === 'queued'
+        (download) =>
+          download.status === 'active' ||
+          download.status === 'queued' ||
+          (download.status === 'waiting' && download.blockReason === null)
       )
-      if (!item) return 'No active or queued fixture download is available.'
+      if (!item) {
+        return 'No active, queued or unblocked waiting fixture download is available.'
+      }
 
-      if (item.status === 'queued') {
+      if (item.status === 'queued' || item.status === 'waiting') {
         item.status = 'active'
         item.blockReason = null
         item.completedBytes = Math.min(
@@ -484,7 +493,10 @@ export function createPreviewApi(
       const item = findDownload(id)
       if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
       if (item.status === 'paused') {
-        item.status = 'queued'
+        item.status = 'waiting'
+        item.errorMessage = null
+        item.completedAt = null
+        item.blockReason = null
         item.updatedAt = now()
       }
       return ok(emitDownloads())
@@ -507,9 +519,19 @@ export function createPreviewApi(
       const item = findDownload(id)
       if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
       if (item.status === 'error' || item.status === 'interrupted') {
+        // Recovering an interrupted transfer is not a new user attempt; an
+        // ordinary failed retry is. Both restart from a clean progress state.
+        const interruptedRecovery = item.status === 'interrupted'
+        item.gid = nextId('preview-gid')
         item.status = 'queued'
-        item.attempts += 1
+        item.completedBytes = 0
+        item.speedBps = 0
+        item.etaSeconds = null
         item.errorMessage = null
+        item.filePath = null
+        item.attempts = interruptedRecovery ? item.attempts : item.attempts + 1
+        item.completedAt = null
+        item.blockReason = null
         item.updatedAt = now()
       }
       return ok(emitDownloads())

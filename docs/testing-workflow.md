@@ -1,14 +1,33 @@
 # Testing workflow
 
-Last updated: 2026-11-04. This document describes the three test tiers and the
+Last updated: 2026-11-05. This document describes the three test tiers and the
 input-safety rules for verification work. It does not change the existing full
 suite: `npm test` still runs every Vitest test file.
+
+## Risk-based test selection
+
+Choose the smallest check that exercises the changed behavior; do not run
+`test:fast`, the full gate or a production build automatically for every edit.
+
+- **Small UI change:** run one focused test if it protects behavior, then one
+  meaningful interaction in the T3 sidebar preview. The preview uses isolated
+  fixtures; it does not verify Electron, aria2 or Helium integration.
+- **Backend change:** run one focused test against the affected component, using
+  the existing integration test when the real process boundary changed. Add a
+  failure/recovery check only when that path is relevant.
+- **Important cross-component change:** test the changed boundary and one
+  realistic workflow through it.
+- **Milestone/release checkpoint:** run the existing full suite once, plus the
+  build gate when the checkpoint requires a production build.
+
+Use the tier commands below when their broader scope is justified, and prefer a
+direct file filter for a narrower change.
 
 ## Three tiers
 
 | Tier | Command | Use when | What it runs |
 | --- | --- | --- | --- |
-| 1 — fast development | `npm run test:fast` | Routine edit/refactor loop; unit, component and policy changes | All hermetic unit/component tests. It excludes the compiled native-host process tests, the native-host registration script tests, the optional real-aria2 integration file, the local persistent-batch integration file and the two opt-in live provider files. |
+| 1 — fast development | `npm run test:fast` | A broad hermetic regression check is justified, such as shared behavior across subsystems | All hermetic unit/component tests. It excludes the compiled native-host process tests, the native-host registration script tests, the optional real-aria2 integration file, the local persistent-batch integration file and the two opt-in live provider files. |
 | 2 — focused integration | `npm run test:integration` | A change crosses a process, native-host framing/registration, aria2 or persistent-batch boundary | The compiled native-host process suite (including the 22 s timeout regression), the registration script suite, the optional real-aria2 integration file and the optional local persistent-batch integration file (skipped without `ARIA2_TEST_BINARY`). |
 | 3 — milestone gate | `npm run test:gate` | Before closing a milestone or checkpointing a release candidate | `npm test` (the full existing suite) followed by `npm run build` (typecheck plus Electron production build). Real-aria2 and live provider files skip themselves unless their environment is configured. |
 
