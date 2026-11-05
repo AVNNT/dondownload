@@ -73,14 +73,16 @@ describe('browser extension manifest', () => {
     }
   })
 
-  it('declares downloads and webRequest only as optional permissions', async () => {
+  it('declares downloads, webRequest and cookies only as optional permissions', async () => {
     const manifest = await readManifest()
     expect([...(manifest.optional_permissions ?? [])].sort()).toEqual([
+      'cookies',
       'downloads',
       'webRequest'
     ])
     expect(manifest.permissions ?? []).not.toContain('downloads')
     expect(manifest.permissions ?? []).not.toContain('webRequest')
+    expect(manifest.permissions ?? []).not.toContain('cookies')
     expect(manifest.permissions ?? []).not.toContain('notifications')
   })
 
@@ -116,6 +118,7 @@ describe('browser extension manifest', () => {
       'handoff.js',
       'media-bridge.js',
       'media-contract.js',
+      'media-sniffer.js',
       'options.html',
       'options.css',
       'options.js',

@@ -56,6 +56,70 @@
         </label>
       </section>
 
+      <section aria-labelledby="sniffing-heading">
+        <h2 id="sniffing-heading">Detected media</h2>
+        <p class="hint">
+          On a site where you enabled the overlay, DonDownload watches completed
+          HTTP(S) responses through the optional <strong>webRequest</strong>
+          permission and lists video/audio files, HLS and DASH manifests. It
+          never reads request headers, bodies or DRM data. Range requests to the
+          same file collapse to one row, HLS/DASH segments are hidden, and tiny
+          or obvious ad/tracker responses are ignored. YouTube keeps using the
+          yt-dlp page analysis because its range/SABR streams are not standalone
+          files.
+        </p>
+        <p id="sniffing-state" class="state" role="status" aria-live="polite"></p>
+        <label class="toggle-row">
+          <input id="media-sniffing" type="checkbox" checked />
+          <span>
+            <strong>Detect media on sites I enable</strong>
+            <span class="hint">
+              Needs the webRequest permission. Detection is limited to the exact
+              origins you enabled, unless all-site detection is on.
+            </span>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <input id="detect-all-sites" type="checkbox" />
+          <span>
+            <strong>Detect media on all sites</strong>
+            <span class="hint">
+              Off by default. Turning this on asks for the broad optional
+              http/https host permission, so any normal site can be sniffed.
+              Turn it off to remove that broad access.
+            </span>
+          </span>
+        </label>
+        <p id="sniffing-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="cookies-heading">
+        <h2 id="cookies-heading">Cookies for detected media</h2>
+        <p class="hint">
+          Off by default for every site. When you turn this on for one exact
+          origin, the extension reads that site's cookies for the media URL and
+          sends them with one download job so login-protected media can work.
+          The app passes them to aria2 or yt-dlp for that job only; they are
+          never written to the extension's or app's settings, database or logs.
+          Cookies can grant access to your account, so leave this off unless the
+          site needs it.
+        </p>
+        <p id="cookie-target" class="hint">No page selected.</p>
+        <label class="toggle-row">
+          <input id="site-cookies" type="checkbox" disabled />
+          <span>
+            <strong>Send my browser cookies for detected media on this site</strong>
+            <span class="hint">
+              Applies to the exact origin selected in Site access. Asking also
+              requests the optional <strong>cookies</strong> permission.
+            </span>
+          </span>
+        </label>
+        <p id="cookie-state" class="state" role="status" aria-live="polite"></p>
+        <ul id="cookie-list" class="origin-list"></ul>
+        <p id="cookie-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
       <section aria-labelledby="handoff-heading">
         <h2 id="handoff-heading">Automatic file hand-off</h2>
         <p class="hint">
@@ -93,9 +157,9 @@
           only Content-Type, Content-Range, Content-Length and Content-Encoding
           for an exact media response in an opted-in top-frame page. It never
           reads cookies, credentials, request headers, bodies or DRM data. It
-          does not make extra network requests. Without this evidence, an
-          extensionless <code>video/mp4</code> or <code>video/webm</code> source
-          is not queued.
+          does not make extra network requests; that permission alone does not
+          read cookies. Without this evidence, an extensionless
+          <code>video/mp4</code> or <code>video/webm</code> source is not queued.
         </p>
         <p id="network-state" class="state" role="status" aria-live="polite"></p>
         <button id="request-network" type="button">

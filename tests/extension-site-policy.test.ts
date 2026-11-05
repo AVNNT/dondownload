@@ -206,10 +206,10 @@ describe('extension wiring guardrails', () => {
     expect(overlay).toContain('message.origin === location.origin')
   })
 
-  it('does not use download, broad network interception or cookie APIs', () => {
-    // The optional response-evidence listener lives in network-evidence.js and
-    // is installed by background.js only after the user grants webRequest. The
-    // page-facing overlay and popup still never touch those APIs.
+  it('keeps page-facing code off download/network/cookie APIs and gates cookies behind the exact-origin opt-in', () => {
+    // The optional response-evidence and media-sniffer listeners live in the
+    // background/worker modules and run only after the user grants webRequest.
+    // The page-facing overlay and popup still never touch those APIs.
     for (const source of [popup, overlay, controller]) {
       for (const forbidden of [
         'chrome.downloads',
@@ -221,14 +221,20 @@ describe('extension wiring guardrails', () => {
         expect(source).not.toContain(forbidden)
       }
     }
-    for (const source of [background]) {
-      for (const forbidden of [
-        'chrome.cookies',
-        'chrome.history',
-        'chrome.tabs.captureVisibleTab'
-      ]) {
-        expect(source).not.toContain(forbidden)
-      }
+    for (const forbidden of [
+      'chrome.history',
+      'chrome.tabs.captureVisibleTab'
+    ]) {
+      expect(background).not.toContain(forbidden)
     }
+    // A cookie is read only after the exact origin is on the user's opt-in list
+    // and the optional cookies permission is present.
+    expect(background).toContain('cookieOptInOrigins.includes(origin)')
+    expect(background).toContain(
+      "permissions.contains({ permissions: ['cookies'] })"
+    )
+    expect(background.indexOf('cookieOptInOrigins.includes(origin)')).toBeLessThan(
+      background.indexOf('chrome.cookies.getAll')
+    )
   })
 })

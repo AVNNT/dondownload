@@ -15,6 +15,14 @@ export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
   automaticFileHandoff: false,
   handoffNotifications: true,
   networkObservation: false,
+  // NDM-style detection is active only on sites the user enabled. Turning it
+  // on for every site is a separate explicit switch that requires the broad
+  // optional host permission.
+  mediaSniffing: true,
+  detectAllSites: false,
+  // Exact origins where the user explicitly allowed browser cookies for
+  // detected media. Empty means no cookie is ever read.
+  cookieOptInOrigins: [],
   excludedOrigins: []
 })
 
@@ -34,6 +42,15 @@ export function normalizeCaptureSettings(value) {
       if (excludedOrigins.length >= MAX_EXCLUDED_ORIGINS) break
     }
   }
+  const cookieOptInOrigins = []
+  if (Array.isArray(source.cookieOptInOrigins)) {
+    for (const candidate of source.cookieOptInOrigins) {
+      const origin = originFromPageUrl(candidate)
+      if (origin === null || cookieOptInOrigins.includes(origin)) continue
+      cookieOptInOrigins.push(origin)
+      if (cookieOptInOrigins.length >= MAX_EXCLUDED_ORIGINS) break
+    }
+  }
   return {
     floatingTriggerEnabled:
       source.floatingTriggerEnabled !== false,
@@ -42,6 +59,9 @@ export function normalizeCaptureSettings(value) {
     // Off unless the user has explicitly enabled it after granting the
     // optional webRequest permission. A stored true is not enough on its own.
     networkObservation: source.networkObservation === true,
+    mediaSniffing: source.mediaSniffing !== false,
+    detectAllSites: source.detectAllSites === true,
+    cookieOptInOrigins,
     excludedOrigins
   }
 }

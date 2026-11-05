@@ -24,6 +24,9 @@
   var CAPTURE_QUEUE = 'dondownload:capture-queue'
   var NETWORK_EVIDENCE_REQUEST = 'dondownload:network-evidence-request'
   var NETWORK_EVIDENCE = 'dondownload:network-evidence'
+  var SNIFFED_QUERY = 'dondownload:sniffed-query'
+  var SNIFFED_QUEUE = 'dondownload:sniffed-queue'
+  var SNIFFED_CHANGED = 'dondownload:sniffed-changed'
 
   var state = {
     active: true,
@@ -35,6 +38,9 @@
     panel: null,
     analyzeButton: null,
     embedAnalyzeButton: null,
+    sniffedSection: null,
+    sniffedList: null,
+    sniffedEmpty: null,
     sourceSection: null,
     sourceList: null,
     sourceEmpty: null,
@@ -94,7 +100,12 @@
       rowCleanups: [],
       queuedUrls: [],
       queueing: false,
-      queueToken: 0
+      queueToken: 0,
+      sniffed: [],
+      sniffedQueued: [],
+      sniffedRowCleanups: [],
+      sniffedButtons: [],
+      sniffedToken: 0
     }
   }
 
@@ -201,7 +212,7 @@
     '.action.secondary:hover:not(:disabled) { background: #18181b; }',
     '.sources { border-top: 1px solid #1f1f23; margin-top: 10px; padding-top: 9px; }',
     '.sources-title { color: #d4d4d8; font-size: 11px; font-weight: 650; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.06em; }',
-    '.source-list { display: grid; gap: 5px; }',
+    '.source-list, .sniffed-list { display: grid; gap: 5px; }',
     '.source { align-items: center; background: #0b0b0c; border: 1px solid #2c2c2c; border-radius: 7px; display: flex; gap: 8px; padding: 6px 7px; }',
     '.source[data-current="true"] { border-color: #52525b; }',
     '.source-copy { min-width: 0; flex: 1; }',
@@ -210,7 +221,7 @@
     '.source-action { background: #f4f4f5; border: 1px solid #f4f4f5; border-radius: 6px; color: #09090b; cursor: pointer; flex: none; font: inherit; font-size: 10.5px; font-weight: 650; padding: 5px 8px; }',
     '.source-action:hover:not(:disabled) { background: #fff; }',
     '.source-action:disabled { cursor: not-allowed; opacity: 0.55; }',
-    '.source-empty { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 0; }',
+    '.source-empty, .sniffed-empty { color: #8b8b93; font-size: 11px; line-height: 1.5; margin: 0; }',
     '.source[data-unsupported="true"] { border-color: #52525b; }',
     '.source[data-unsupported="true"] .source-title { color: #fca5a5; }',
     '.source[data-unsupported="true"] .source-detail { color: #a1a1aa; white-space: normal; }',
@@ -431,6 +442,19 @@
     embedAnalyzeButton.type = 'button'
     embedAnalyzeButton.hidden = true
 
+    var sniffedSection = createElement('section', 'sources sniffed')
+    sniffedSection.appendChild(
+      createElement('p', 'sources-title', 'Detected media on this tab')
+    )
+    var sniffedList = createElement('div', 'sniffed-list')
+    var sniffedEmpty = createElement(
+      'p',
+      'sniffed-empty',
+      'Play or open media on this enabled site. Detected files, HLS and DASH streams appear here.'
+    )
+    sniffedSection.appendChild(sniffedList)
+    sniffedSection.appendChild(sniffedEmpty)
+
     var sourceSection = createElement('section', 'sources')
     sourceSection.appendChild(createElement('p', 'sources-title', 'Detected from playback'))
     var sourceList = createElement('div', 'source-list')
@@ -535,6 +559,7 @@
     panel.appendChild(head)
     panel.appendChild(panelNotice)
     panel.appendChild(panelDetail)
+    panel.appendChild(sniffedSection)
     panel.appendChild(sourceSection)
     panel.appendChild(analyzeButton)
     panel.appendChild(embedAnalyzeButton)
@@ -559,6 +584,9 @@
     state.shadow = shadow
     state.trigger = trigger
     state.panel = panel
+    state.sniffedSection = sniffedSection
+    state.sniffedList = sniffedList
+    state.sniffedEmpty = sniffedEmpty
     state.sourceSection = sourceSection
     state.sourceList = sourceList
     state.sourceEmpty = sourceEmpty
@@ -957,6 +985,11 @@
     state.capture.buttons = []
     state.capture.rowCleanups = []
     state.capture.queuedUrls = []
+    state.capture.sniffed = []
+    state.capture.sniffedQueued = []
+    state.capture.sniffedRowCleanups = []
+    state.capture.sniffedButtons = []
+    state.capture.sniffedToken += 1
     state.capture.queueing = false
     state.triggerOffset = null
     state.activeEmbed = null
@@ -1565,6 +1598,185 @@
     return { detected: false }
   }
 
+  function clearSniffedList() {
+    for (var cleanupIndex = 0; cleanupIndex < state.capture.sniffedRowCleanups.length; cleanupIndex += 1) {
+      try {
+        state.capture.sniffedRowCleanups[cleanupIndex]()
+      } catch {
+        // The row may already be detached.
+      }
+    }
+    state.capture.sniffedRowCleanups = []
+    state.capture.sniffedButtons = []
+    if (!state.sniffedList) return
+    while (state.sniffedList.children.length > 0) {
+      state.sniffedList.removeChild(state.sniffedList.children[0])
+    }
+  }
+
+  function sniffedQueueKey(entry, variant) {
+    return (entry.key || entry.url) + '|' + (variant ? variant.url : 'auto')
+  }
+
+  function sniffedQuality(entry, variant) {
+    if (variant) {
+      if (typeof variant.label === 'string' && variant.label.length > 0) {
+        return variant.label
+      }
+      if (typeof variant.height === 'number' && variant.height > 0) {
+        return variant.height + 'p'
+      }
+    }
+    if (entry.kind === 'hls') return 'HLS quality unknown'
+    if (entry.kind === 'dash') return 'DASH quality unknown'
+    return null
+  }
+
+  function refreshSniffedMedia() {
+    var token = ++state.capture.sniffedToken
+    sendRuntimeMessage({ type: SNIFFED_QUERY }, function (response, runtimeError) {
+      if (token !== state.capture.sniffedToken || state.disabled) return
+      if (runtimeError || !response || response.ok !== true) {
+        state.capture.sniffed = []
+      } else {
+        state.capture.sniffed = Array.isArray(response.media)
+          ? response.media
+          : []
+      }
+      if (state.panelOpen) renderCapturedSources()
+    })
+  }
+
+  function appendSniffedRow(entry, variant) {
+    var row = createElement('div', 'source')
+    row.setAttribute('data-sniffed', 'true')
+    var copyNode = createElement('span', 'source-copy')
+    var title =
+      typeof entry.title === 'string' && entry.title.length > 0
+        ? entry.title
+        : typeof entry.filename === 'string'
+          ? entry.filename
+          : 'Detected media'
+    copyNode.appendChild(createElement('span', 'source-title', title))
+    var details = []
+    if (entry.kind === 'hls') details.push('HLS')
+    else if (entry.kind === 'dash') details.push('DASH')
+    else {
+      var match = /\.([a-z0-9]{2,5})$/i.exec(
+        typeof entry.filename === 'string' ? entry.filename : ''
+      )
+      details.push(match ? match[1].toUpperCase() : 'FILE')
+    }
+    var quality = sniffedQuality(entry, variant)
+    if (quality) details.push(quality)
+    if (typeof entry.sizeBytes === 'number' && entry.sizeBytes > 0 && core.formatMediaSize) {
+      details.push(core.formatMediaSize(entry.sizeBytes, false))
+    }
+    if (typeof entry.sourceHost === 'string' && entry.sourceHost.length > 0) {
+      details.push(entry.sourceHost)
+    }
+    copyNode.appendChild(createElement('span', 'source-detail', details.join(' · ')))
+    row.appendChild(copyNode)
+
+    var button = createElement('button', 'source-action', 'Download')
+    button.type = 'button'
+    var key = sniffedQueueKey(entry, variant)
+    if (state.capture.sniffedQueued.indexOf(key) !== -1) {
+      button.textContent = 'Added ✓'
+      button.disabled = true
+    } else {
+      button.disabled = state.capture.queueing
+    }
+    var onClick = function (event) {
+      stopPlayerEvent(event)
+      queueSniffedMedia(entry, variant, key, button)
+    }
+    if (typeof button.addEventListener === 'function') {
+      button.addEventListener('click', onClick)
+      state.capture.sniffedRowCleanups.push(function () {
+        if (typeof button.removeEventListener === 'function') {
+          button.removeEventListener('click', onClick)
+        }
+      })
+    }
+    row.appendChild(button)
+    state.capture.sniffedButtons.push(button)
+    state.sniffedList.appendChild(row)
+  }
+
+  function renderSniffedMedia() {
+    if (!state.sniffedSection || !state.sniffedList) return 0
+    clearSniffedList()
+    var entries = Array.isArray(state.capture.sniffed) ? state.capture.sniffed : []
+    var rows = 0
+    for (var index = 0; index < entries.length; index += 1) {
+      var entry = entries[index]
+      if (!entry || typeof entry !== 'object') continue
+      var variants =
+        Array.isArray(entry.variants) && entry.variants.length > 0
+          ? entry.variants
+          : [null]
+      for (var variantIndex = 0; variantIndex < variants.length; variantIndex += 1) {
+        appendSniffedRow(entry, variants[variantIndex])
+        rows += 1
+      }
+    }
+    if (state.sniffedEmpty) state.sniffedEmpty.hidden = rows > 0
+    return rows
+  }
+
+  function queueSniffedMedia(entry, variant, key, button) {
+    if (
+      state.disabled ||
+      state.capture.queueing ||
+      !entry ||
+      state.capture.sniffedQueued.indexOf(key) !== -1
+    ) {
+      return
+    }
+    state.capture.queueing = true
+    setCaptureBusy(true)
+    button.disabled = true
+    button.textContent = 'Adding…'
+    setMediaStatus('Adding detected media…', 'info')
+
+    sendRuntimeMessage(
+      {
+        type: SNIFFED_QUEUE,
+        url: entry.url,
+        ...(variant ? { variantUrl: variant.url } : {})
+      },
+      function (response, runtimeError) {
+        state.capture.queueing = false
+        setCaptureBusy(false)
+        if (runtimeError) {
+          button.textContent = 'Download'
+          setMediaStatus('The DonDownload background worker did not respond.', 'error')
+          return
+        }
+        if (!response || response.ok !== true) {
+          button.textContent = 'Download'
+          setMediaStatus(
+            core.describeMediaError(
+              response && response.error,
+              'The detected media could not be queued.'
+            ),
+            'error'
+          )
+          return
+        }
+        if (state.capture.sniffedQueued.indexOf(key) === -1) {
+          state.capture.sniffedQueued.push(key)
+        }
+        button.textContent = 'Added ✓'
+        button.disabled = true
+        setMediaStatus('Added to DonDownload ✓ — downloading in the app', 'success')
+        closePanel(false)
+        showAcceptedFeedback()
+      }
+    )
+  }
+
   function clearSourceList() {
     for (var cleanupIndex = 0; cleanupIndex < state.capture.rowCleanups.length; cleanupIndex += 1) {
       try {
@@ -1583,6 +1795,7 @@
   function renderCapturedSources() {
     if (!state.sourceSection || !state.sourceList) return
     clearSourceList()
+    renderSniffedMedia()
     state.capture.buttons = []
 
     var player = playerFor(state.activeVideo)
@@ -1699,6 +1912,11 @@
       var button = state.capture.buttons[index]
       if (!button) continue
       button.disabled = busy || button.textContent === 'Added ✓'
+    }
+    for (var sniffedIndex = 0; sniffedIndex < state.capture.sniffedButtons.length; sniffedIndex += 1) {
+      var sniffedButton = state.capture.sniffedButtons[sniffedIndex]
+      if (!sniffedButton) continue
+      sniffedButton.disabled = busy || sniffedButton.textContent === 'Added ✓'
     }
   }
 
@@ -2423,6 +2641,7 @@
     // analysis starts now and the same button becomes the "Finding qualities…"
     // spinner. This never runs yt-dlp twice for the same settled page URL.
     ensurePrefetchForPanel()
+    refreshSniffedMedia()
     renderCapturedSources()
     if (prefetchInFlight() && state.status && !state.status.textContent) {
       setMediaStatus(copy.analyzingLabel, 'info')
@@ -2674,6 +2893,9 @@
     state.shadow = null
     state.trigger = null
     state.panel = null
+    state.sniffedSection = null
+    state.sniffedList = null
+    state.sniffedEmpty = null
     state.sourceSection = null
     state.sourceList = null
     state.sourceEmpty = null
@@ -2965,6 +3187,10 @@
       if (message && message.type === 'dondownload:capture-download') {
         downloadQueriedSource(message.url, respond)
         return true
+      }
+      if (message && message.type === SNIFFED_CHANGED) {
+        if (state.panelOpen) refreshSniffedMedia()
+        return false
       }
       if (message && message.type === NETWORK_EVIDENCE) {
         if (typeof message.url === 'string') {

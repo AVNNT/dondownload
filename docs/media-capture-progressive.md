@@ -1,5 +1,10 @@
 # Progressive playback capture checkpoint
 
+> Update: the product direction is now NDM-style detected-media sniffing on
+> enabled sites. See `docs/media-sniffing.md`. The progressive `currentSrc`
+> path, the yt-dlp analysis fallback and their security limits below still
+> apply and remain the YouTube path.
+
 Status: first verified checkpoint of the daily-use media capture path. No
 installer, release, push, registry change, desktop launch or real Helium session
 was performed for this note.

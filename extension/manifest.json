@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DonDownload Capture",
   "version": "0.3.0",
-  "description": "Send an explicit HTTP(S) page or right-clicked link to the DonDownload desktop app, with an optional per-site video overlay.",
+  "description": "Detect media on sites you enable and download it with DonDownload, with an optional per-site video overlay.",
   "minimum_chrome_version": "102",
   "icons": {
     "16": "icons/icon16.png",
@@ -11,7 +11,7 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage"],
-  "optional_permissions": ["downloads", "webRequest"],
+  "optional_permissions": ["downloads", "webRequest", "cookies"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

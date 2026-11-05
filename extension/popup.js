@@ -1,7 +1,16 @@
 import { normalizeCapturedSource, normalizeSupportedUrl, sendQueueDownload } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { rememberOptionsTarget } from './capture-settings.js'
-import { captureViewModel, formatOptionDetail, optionQueueKey } from './capture-view.js'
+import {
+  captureViewModel,
+  formatBytes,
+  formatOptionDetail,
+  optionQueueKey
+} from './capture-view.js'
+import {
+  MEDIA_SNIFFER_MESSAGE_TYPES,
+  sniffedFilename
+} from './media-sniffer.js'
 
 const sendButton = document.getElementById('send')
 const downloadAgainButton = document.getElementById('download-again')
@@ -19,6 +28,8 @@ let activeTabId = null
 let sending = false
 let polling = null
 let pollAttempts = 0
+let sniffedMedia = []
+let lastCaptureResponse = null
 const queuedKeys = new Set()
 
 function setStatus(kind, message) {
@@ -163,6 +174,115 @@ function queueSource(source, button) {
   )
 }
 
+function sniffedQualityLabel(entry, variant) {
+  if (variant) {
+    if (typeof variant.label === 'string' && variant.label.length > 0) {
+      return variant.label
+    }
+    if (typeof variant.height === 'number' && variant.height > 0) {
+      return `${variant.height}p`
+    }
+    if (typeof variant.bandwidth === 'number' && variant.bandwidth > 0) {
+      return `${Math.round(variant.bandwidth / 1000)} kbps`
+    }
+  }
+  if (entry.kind === 'hls') return 'HLS quality unknown'
+  if (entry.kind === 'dash') return 'DASH quality unknown'
+  return null
+}
+
+function sniffedKindLabel(entry) {
+  if (entry.kind === 'hls') return 'HLS'
+  if (entry.kind === 'dash') return 'DASH'
+  const filename = typeof entry.filename === 'string' ? entry.filename : ''
+  const match = /\.([a-z0-9]{2,5})$/i.exec(filename)
+  return match ? match[1].toUpperCase() : 'FILE'
+}
+
+function sniffedQueueKey(entry, variant) {
+  return `sniffed:${entry.key || entry.url}:${variant ? variant.url : 'auto'}`
+}
+
+function queueSniffed(entry, variant, button) {
+  if (sending || activeTabId === null) return
+  const key = sniffedQueueKey(entry, variant)
+  if (queuedKeys.has(key)) return
+  setStatus('', '')
+  setSending(true)
+  button.textContent = 'Adding…'
+  chrome.runtime.sendMessage(
+    {
+      type: MEDIA_SNIFFER_MESSAGE_TYPES.QUEUE,
+      tabId: activeTabId,
+      url: entry.url,
+      ...(variant ? { variantUrl: variant.url } : {})
+    },
+    (response) => {
+      const runtimeError = chrome.runtime.lastError
+      setSending(false)
+      if (runtimeError) {
+        button.textContent = 'Download'
+        setStatus('error', 'The background worker did not respond. Reopen the popup.')
+        return
+      }
+      if (!response || response.ok !== true) {
+        button.textContent = 'Download'
+        setStatus(
+          'error',
+          errorHint(response && response.error ? response.error : null)
+        )
+        return
+      }
+      queuedKeys.add(key)
+      markQueued(button)
+      setStatus('success', 'Added to DonDownload ✓ — downloading in the app')
+    }
+  )
+}
+
+function renderSniffed() {
+  let count = 0
+  for (const entry of sniffedMedia) {
+    if (!entry || typeof entry !== 'object') continue
+    const variants =
+      Array.isArray(entry.variants) && entry.variants.length > 0
+        ? entry.variants
+        : [null]
+    const displayTitle =
+      typeof entry.title === 'string' && entry.title.length > 0
+        ? entry.title
+        : sniffedFilename(entry)
+    const details = []
+    details.push(sniffedKindLabel(entry))
+    if (entry.sizeBytes !== null && typeof entry.sizeBytes === 'number') {
+      const size = formatBytes(entry.sizeBytes)
+      if (size) details.push(size)
+    }
+    if (typeof entry.sourceHost === 'string' && entry.sourceHost.length > 0) {
+      details.push(entry.sourceHost)
+    }
+    if (entry.active === true && entry.kind === 'hls') details.push('active')
+    for (const variant of variants) {
+      const label = sniffedQualityLabel(entry, variant)
+      if (label) details.push(label)
+      const rowDetails = details.join(' · ')
+      const queued = queuedKeys.has(sniffedQueueKey(entry, variant))
+      const row = appendRow(
+        displayTitle,
+        rowDetails,
+        queued ? 'Added ✓' : 'Download',
+        null,
+        { queued, disabled: queued }
+      )
+      row.button.addEventListener('click', () =>
+        queueSniffed(entry, variant, row.button)
+      )
+      count += 1
+    }
+  }
+  return count
+}
+
 function renderSources(sources) {
   const clean = []
   for (const source of Array.isArray(sources) ? sources : []) {
@@ -266,23 +386,25 @@ function renderEmptyMessage(model) {
   captureEmpty.hidden = false
   if (model.mode === 'streaming') {
     captureEmpty.textContent =
-      'This player streams video with Media Source, HLS or DASH. Qualities come from the verified DonDownload analysis, not from a guessed file.'
+      'This player streams video with Media Source, HLS or DASH. Qualities come from the verified DonDownload analysis, or from an HLS master playlist when it can be read without cookies.'
     return
   }
   if (model.mode === 'empty') {
     captureEmpty.textContent =
-      'No video was detected on this page yet. You can still analyze the page with yt-dlp.'
+      'No media was detected on this tab yet. Play or open a video/audio item, or analyze the page with yt-dlp.'
     return
   }
   captureEmpty.textContent =
-    'Play a video on an enabled site. Only a progressive source this exact player actually played is listed; nothing is sniffed or guessed.'
+    'Enable this site (or all-site detection) in Settings, then play or open media. Detected responses are listed here; cookies are read only after an exact-site opt-in.'
 }
 
 function renderCapture(response) {
   clearPolling()
+  lastCaptureResponse = response
   const model = captureViewModel(response)
   clearCaptureList()
 
+  const sniffedCount = renderSniffed()
   const sourceCount = renderSources(response && response.sources)
   if (model.mode === 'streaming') {
     if (model.analysis) {
@@ -299,7 +421,8 @@ function renderCapture(response) {
     model.detectedLabel,
     model.mode === 'empty' ? 'muted' : ''
   )
-  captureEmpty.hidden = sourceCount > 0 || model.mode === 'streaming'
+  captureEmpty.hidden =
+    sniffedCount > 0 || sourceCount > 0 || model.mode === 'streaming'
   if (!captureEmpty.hidden) renderEmptyMessage(model)
 
   findQualitiesButton.hidden = !(
@@ -334,6 +457,25 @@ function queryCapturedSources() {
         return
       }
       renderCapture(response)
+    }
+  )
+}
+
+function querySniffedMedia() {
+  if (activeTabId === null) {
+    sniffedMedia = []
+    return
+  }
+  chrome.runtime.sendMessage(
+    { type: MEDIA_SNIFFER_MESSAGE_TYPES.QUERY, tabId: activeTabId },
+    (response) => {
+      const runtimeError = chrome.runtime.lastError
+      if (runtimeError) return
+      sniffedMedia =
+        response && response.ok === true && Array.isArray(response.media)
+          ? response.media
+          : []
+      renderCapture(lastCaptureResponse)
     }
   )
 }
@@ -416,6 +558,7 @@ function loadActiveTab() {
     setStatus('', '')
     setSending(false)
     setDetectedState('Checking…', '')
+    querySniffedMedia()
     queryCapturedSources()
   })
 }

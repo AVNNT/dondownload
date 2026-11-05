@@ -24,6 +24,15 @@ const requestNetwork = document.getElementById('request-network')
 const removeNetwork = document.getElementById('remove-network')
 const networkState = document.getElementById('network-state')
 const networkStatus = document.getElementById('network-status')
+const mediaSniffing = document.getElementById('media-sniffing')
+const detectAllSites = document.getElementById('detect-all-sites')
+const sniffingState = document.getElementById('sniffing-state')
+const sniffingStatus = document.getElementById('sniffing-status')
+const siteCookies = document.getElementById('site-cookies')
+const cookieTarget = document.getElementById('cookie-target')
+const cookieState = document.getElementById('cookie-state')
+const cookieList = document.getElementById('cookie-list')
+const cookieStatus = document.getElementById('cookie-status')
 const exclusionForm = document.getElementById('exclusion-form')
 const exclusionOrigin = document.getElementById('exclusion-origin')
 const exclusionList = document.getElementById('exclusion-list')
@@ -38,6 +47,8 @@ const siteStatus = document.getElementById('site-status')
 let settings = normalizeCaptureSettings(null)
 let downloadsGranted = false
 let networkGranted = false
+let cookiesGranted = false
+let broadHostsGranted = false
 let site = null
 let siteGranted = false
 let siteReady = false
@@ -98,6 +109,101 @@ function renderNetworkState() {
   removeNetwork.hidden = false
 }
 
+function renderSniffingState() {
+  mediaSniffing.checked = settings.mediaSniffing === true
+  detectAllSites.checked = settings.detectAllSites === true
+  if (!networkGranted) {
+    sniffingState.textContent =
+      'webRequest permission is not granted, so no response can be detected yet.'
+  } else if (settings.detectAllSites === true && broadHostsGranted) {
+    sniffingState.textContent =
+      'Media detection is on for all normal http/https sites.'
+  } else {
+    sniffingState.textContent =
+      'Media detection is limited to exact origins you enabled.'
+  }
+  if (settings.detectAllSites === true && !broadHostsGranted) {
+    sniffingState.textContent =
+      'All-site detection needs the broad host permission. Turn it on again and accept the prompt.'
+  }
+
+  const origin = site === null ? null : site.origin
+  cookieTarget.textContent = origin === null ? 'No page selected.' : origin
+  siteCookies.disabled = origin === null
+  const optedIn =
+    origin !== null && settings.cookieOptInOrigins.includes(origin)
+  siteCookies.checked = optedIn && cookiesGranted
+  if (origin === null) {
+    cookieState.textContent = 'Select a site in Site access first.'
+  } else if (!optedIn) {
+    cookieState.textContent = 'Cookies are not sent for detected media on this site.'
+  } else if (!cookiesGranted) {
+    cookieState.textContent =
+      'This site is opted in, but the cookies permission is not granted, so no cookie is read.'
+  } else {
+    cookieState.textContent =
+      'Cookies will be sent for detected media on this exact origin only.'
+  }
+  renderCookieList()
+
+  if (settings.cookieOptInOrigins.length === 0) {
+    rereadCookieCheckbox()
+  }
+}
+
+function renderCookieList() {
+  while (cookieList.children.length > 0) {
+    cookieList.removeChild(cookieList.children[0])
+  }
+  if (settings.cookieOptInOrigins.length === 0) {
+    const empty = document.createElement('li')
+    empty.className = 'empty'
+    empty.textContent = 'No site sends cookies.'
+    cookieList.appendChild(empty)
+    return
+  }
+  for (const origin of settings.cookieOptInOrigins) {
+    const row = document.createElement('li')
+    const code = document.createElement('code')
+    code.textContent = origin
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'origin-remove'
+    remove.textContent = 'Remove'
+    remove.addEventListener('click', () => {
+      settings.cookieOptInOrigins = settings.cookieOptInOrigins.filter(
+        (value) => value !== origin
+      )
+      renderSniffingState()
+      saveSettings(`Cookies are no longer sent for ${origin}.`)
+      setStatus(cookieStatus, 'success', `Cookies are no longer sent for ${origin}.`)
+      void maybeRemoveCookiesPermission()
+    })
+    row.appendChild(code)
+    row.appendChild(remove)
+    cookieList.appendChild(row)
+  }
+}
+
+async function maybeRemoveCookiesPermission() {
+  if (settings.cookieOptInOrigins.length > 0) return
+  try {
+    await chrome.permissions.remove({ permissions: ['cookies'] })
+    cookiesGranted = false
+    renderSniffingState()
+  } catch {
+    // The toggle already prevents reads; a stale permission is not access.
+  }
+}
+
+function rereadCookieCheckbox() {
+  const origin = site === null ? null : site.origin
+  siteCookies.checked =
+    origin !== null &&
+    cookiesGranted &&
+    settings.cookieOptInOrigins.includes(origin)
+}
+
 function renderExclusions() {
   while (exclusionList.children.length > 0) {
     exclusionList.removeChild(exclusionList.children[0])
@@ -135,6 +241,7 @@ function renderSettings() {
   handoffNotifications.checked = settings.handoffNotifications !== false
   renderPermissionState()
   renderNetworkState()
+  renderSniffingState()
   renderExclusions()
 }
 
@@ -152,6 +259,28 @@ async function loadSettings() {
   } catch {
     networkGranted = false
   }
+  try {
+    cookiesGranted =
+      (await chrome.permissions.contains({ permissions: ['cookies'] })) === true
+  } catch {
+    cookiesGranted = false
+  }
+  try {
+    broadHostsGranted =
+      (await chrome.permissions.contains({
+        origins: ['http://*/*', 'https://*/*']
+      })) === true
+  } catch {
+    broadHostsGranted = false
+  }
+  if (!broadHostsGranted && settings.detectAllSites === true) {
+    settings.detectAllSites = false
+    void writeCaptureSettings(chrome, settings)
+  }
+  if (!cookiesGranted && settings.cookieOptInOrigins.length > 0) {
+    settings.cookieOptInOrigins = []
+    void writeCaptureSettings(chrome, settings)
+  }
   if (!downloadsGranted) {
     const changed = settings.automaticFileHandoff === true
     settings.automaticFileHandoff = false
@@ -163,6 +292,39 @@ async function loadSettings() {
     if (changed) void writeCaptureSettings(chrome, settings)
   }
   renderSettings()
+}
+
+function applyCookieOptIn(origin) {
+  if (!settings.cookieOptInOrigins.includes(origin)) {
+    settings.cookieOptInOrigins.push(origin)
+  }
+  saveSettings(`Cookies will be sent for detected media on ${origin}.`)
+  renderSniffingState()
+  setStatus(cookieStatus, 'success', `Cookies will be sent for detected media on ${origin}.`)
+}
+
+function requestCookiesForSite(origin) {
+  try {
+    chrome.permissions.request({ permissions: ['cookies'] }, (granted) => {
+      const runtimeError = chrome.runtime.lastError
+      if (runtimeError || granted !== true) {
+        cookiesGranted = false
+        renderSniffingState()
+        setStatus(
+          cookieStatus,
+          'error',
+          'The cookies permission was not granted. No cookie is read.'
+        )
+        return
+      }
+      cookiesGranted = true
+      applyCookieOptIn(origin)
+    })
+  } catch {
+    cookiesGranted = false
+    renderSniffingState()
+    setStatus(cookieStatus, 'error', 'The cookies permission could not be requested.')
+  }
 }
 
 function setSiteState() {
@@ -211,6 +373,7 @@ async function loadSite() {
     }
   }
   setSiteState()
+  renderSniffingState()
   if (site !== null && siteGranted) requestSiteSync()
 }
 
@@ -376,6 +539,116 @@ removeNetwork.addEventListener('click', () => {
   } catch {
     setStatus(networkStatus, 'error', 'The webRequest permission could not be removed.')
   }
+})
+
+mediaSniffing.addEventListener('change', () => {
+  settings.mediaSniffing = mediaSniffing.checked
+  if (!mediaSniffing.checked) {
+    saveSettings('Media detection is off.')
+    renderSniffingState()
+    return
+  }
+  if (networkGranted) {
+    saveSettings('Media detection is on for sites you enable.')
+    renderSniffingState()
+    return
+  }
+  // Direct user-gesture request. No await may run before permissions.request.
+  try {
+    chrome.permissions.request({ permissions: ['webRequest'] }, (granted) => {
+      const runtimeError = chrome.runtime.lastError
+      networkGranted = granted === true
+      if (runtimeError || !networkGranted) {
+        settings.mediaSniffing = false
+        mediaSniffing.checked = false
+        renderSniffingState()
+        setStatus(
+          sniffingStatus,
+          'error',
+          'The webRequest permission was not granted. Media detection stays off.'
+        )
+        return
+      }
+      saveSettings('webRequest permission granted. Media detection is on.')
+      renderSniffingState()
+      setStatus(sniffingStatus, 'success', 'Media detection is on.')
+    })
+  } catch {
+    settings.mediaSniffing = false
+    mediaSniffing.checked = false
+    renderSniffingState()
+    setStatus(sniffingStatus, 'error', 'The webRequest permission could not be requested.')
+  }
+})
+
+detectAllSites.addEventListener('change', () => {
+  if (!detectAllSites.checked) {
+    settings.detectAllSites = false
+    saveSettings('All-site media detection is off; broad host access was removed.')
+    renderSniffingState()
+    setStatus(sniffingStatus, 'success', 'All-site media detection is off.')
+    try {
+      chrome.permissions.remove({
+        origins: ['http://*/*', 'https://*/*']
+      })
+    } catch {
+      // The preference already prevents sniffing; removal is best effort.
+    }
+    return
+  }
+  try {
+    chrome.permissions.request(
+      { origins: ['http://*/*', 'https://*/*'] },
+      (granted) => {
+        const runtimeError = chrome.runtime.lastError
+        broadHostsGranted = granted === true
+        if (runtimeError || !broadHostsGranted) {
+          settings.detectAllSites = false
+          detectAllSites.checked = false
+          renderSniffingState()
+          setStatus(
+            sniffingStatus,
+            'error',
+            'Broad host access was not granted. All-site detection stays off.'
+          )
+          return
+        }
+        settings.detectAllSites = true
+        if (!networkGranted) settings.mediaSniffing = true
+        saveSettings('All-site media detection is on.')
+        renderSniffingState()
+        setStatus(sniffingStatus, 'success', 'All-site media detection is on.')
+      }
+    )
+  } catch {
+    settings.detectAllSites = false
+    detectAllSites.checked = false
+    renderSniffingState()
+    setStatus(sniffingStatus, 'error', 'Broad host access could not be requested.')
+  }
+})
+
+siteCookies.addEventListener('change', () => {
+  if (site === null) {
+    siteCookies.checked = false
+    return
+  }
+  const origin = site.origin
+  if (siteCookies.checked) {
+    if (!cookiesGranted) {
+      requestCookiesForSite(origin)
+      return
+    }
+    applyCookieOptIn(origin)
+    return
+  }
+  settings.cookieOptInOrigins = settings.cookieOptInOrigins.filter(
+    (value) => value !== origin
+  )
+  saveSettings(`Cookies are no longer sent for ${origin}.`)
+  renderSniffingState()
+  setStatus(cookieStatus, 'success', `Cookies are no longer sent for ${origin}.`)
+  void maybeRemoveCookiesPermission()
 })
 
 requestDownloads.addEventListener('click', () => {

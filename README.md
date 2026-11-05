@@ -428,18 +428,31 @@ video capture have not been verified for this checkpoint.
   registration is already gone.
 - The required permissions contain **no** `downloads`, `webRequest`,
   `webRequestBlocking`, `cookies`, history, `tabs` or notifications permission.
-  `downloads` and `webRequest` are optional and requested only from the options
-  page on a direct user gesture. The overlay does not sniff arbitrary traffic,
-  read `srcObject`, decode media, call `play()`/`pause()`, or touch DRM,
-  authentication or CAPTCHAs.
-- The overlay observes an actual playing video element's `currentSrc` after
-  playback starts. With the separate optional `webRequest` grant, the worker may
-  attach exact response evidence (status, Content-Type, Content-Range,
-  Content-Length, Content-Encoding) for that same URL in an opted-in top frame.
-  It does not read request headers, cookies, credentials, bodies or MSE segment
-  traffic. A `blob:`/Media Source or HLS/DASH source is reported as unsupported
-  rather than guessed. See `docs/automatic-browser-handoff.md` for the
-  currentSrc-only limitation and the evidence limits.
+  `downloads`, `webRequest` and `cookies` are optional and requested only from
+  the options page on a direct user gesture. Media detection runs **only** on
+  exact origins the user enabled, or on all sites only after the separate
+  all-sites switch and broad optional host grant. It observes response metadata
+  (URL, status, Content-Type/Length/Range), never request headers, bodies,
+  credentials, DRM data or MSE segment content.
+- On an enabled site the worker lists detected video/audio files and HLS/DASH
+  manifests in the toolbar popup and overlay. Range requests to the same file
+  collapse to one row, segments are hidden, small/tracker responses are ignored,
+  and a master HLS playlist is preferred over its variants. The user picks a
+  row or HLS variant and one click queues it. YouTube keeps using the yt-dlp
+  page analysis because its range/SABR streams are not standalone files.
+- The overlay also observes an actual playing video element's `currentSrc`
+  after playback starts. With the separate optional `webRequest` grant, the
+  worker may attach exact response evidence (status, Content-Type,
+  Content-Range, Content-Length, Content-Encoding) for that same URL in an
+  opted-in top frame. A `blob:`/Media Source or HLS/DASH source is reported as
+  unsupported rather than guessed. See `docs/automatic-browser-handoff.md` and
+  `docs/media-capture-progressive.md` for the evidence limits.
+- **Cookies are off by default for every site.** The options page has a
+  per-exact-origin opt-in that also requests the optional `cookies` permission.
+  Only then does the worker read that site's cookies for the detected media URL
+  and attach a `Cookie` header to one download job. The app passes it to aria2
+  or yt-dlp for that job only and never persists or logs it. Leaving the toggle
+  off means no cookie is ever read.
 
 **Tradeoff:** Chromium's optional-permission model cannot declare "any exact
 origin the user might choose later" without declaring broad optional patterns
