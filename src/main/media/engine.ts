@@ -507,7 +507,16 @@ function buildPlaylistEntryDraft(
   }
 }
 
-function buildOutputBase(title: string, jobId: string): string {
+/**
+ * Every download runs inside its own hidden staging directory below the
+ * selected output folder. The job ID keeps concurrent downloads of the same
+ * title apart while only yt-dlp intermediates live there; the visible final
+ * file is moved to the output folder without any bracketed ID.
+ */
+const STAGING_DIR_PREFIX = '.dondownload-'
+const MAX_FINAL_NAME_ATTEMPTS = 1_000
+
+function buildStem(title: string, maximum: number): string {
   let stem: string
   try {
     stem = sanitizeFilename(title)
@@ -517,13 +526,102 @@ function buildOutputBase(title: string, jobId: string): string {
 
   stem = stem
     .replace(/[. ]+$/g, '')
-    .slice(0, MAX_BASE_LENGTH)
+    .slice(0, maximum)
     .replace(/[. ]+$/g, '')
-  if (stem.length === 0) stem = 'media'
+  return stem.length === 0 ? 'media' : stem
+}
 
-  const jobPart =
-    jobId.replace(/[^A-Za-z0-9]/g, '').slice(0, 32) || 'job'
-  return `${stem} [${jobPart}]`
+/** Visible final file name: the sanitized title, never the job ID. */
+function buildOutputBase(title: string): string {
+  return buildStem(title, MAX_BASE_LENGTH)
+}
+
+function jobPathPart(jobId: string): string {
+  // Keep hyphens/underscores so distinct opaque job IDs stay distinct after
+  // sanitizing, while never allowing path separators into the staging name.
+  return jobId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 36) || 'job'
+}
+
+function stagingDirName(jobId: string): string {
+  return `${STAGING_DIR_PREFIX}${jobPathPart(jobId)}`
+}
+
+/**
+ * Keep the whole `staging/<title>.%(ext)s` template within the historical
+ * filename budget so long titles do not grow Windows paths past the limit.
+ */
+function buildStagingBase(title: string, stagingDirectory: string): string {
+  const available =
+    MAX_BASE_LENGTH - path.basename(stagingDirectory).length - 1
+  return buildStem(title, Math.max(1, Math.min(MAX_BASE_LENGTH, available)))
+}
+
+function finalExtension(filePath: string, fallbackExt: string): string {
+  const extension = path.extname(filePath)
+  return /^\.[A-Za-z0-9]{1,16}$/.test(extension)
+    ? extension
+    : `.${fallbackExt}`
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  try {
+    await fs.lstat(candidate)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+/**
+ * Move a finished download out of staging without ever replacing an existing
+ * file. A hard link is an atomic same-volume reservation (EEXIST on collision);
+ * volumes without hard-link support fall back to a check-then-rename loop,
+ * because Windows rename would otherwise overwrite the destination.
+ */
+async function moveToUniqueFinalPath(
+  stagingFile: string,
+  outputDir: string,
+  base: string,
+  fallbackExt: string
+): Promise<string> {
+  const extension = finalExtension(stagingFile, fallbackExt)
+
+  for (let index = 1; index <= MAX_FINAL_NAME_ATTEMPTS; index += 1) {
+    const suffix = index === 1 ? '' : ` (${index})`
+    const candidate = path.join(outputDir, `${base}${suffix}${extension}`)
+    if (!isInsideDirectory(outputDir, candidate)) {
+      throw new AppError(
+        'MEDIA_OUTPUT_UNAVAILABLE',
+        'The download path is not inside the selected folder.'
+      )
+    }
+
+    try {
+      await fs.link(stagingFile, candidate)
+      await fs.unlink(stagingFile).catch(() => undefined)
+      return candidate
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+      // Unsupported cross-device/privileged links fall through to rename.
+    }
+
+    if (await pathExists(candidate)) continue
+    try {
+      await fs.rename(stagingFile, candidate)
+      return candidate
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST' || code === 'EPERM' || code === 'EACCES') continue
+      throw error
+    }
+  }
+
+  throw new AppError(
+    'MEDIA_DOWNLOAD_FAILED',
+    'A unique output file name could not be chosen.',
+    'Remove some old files from the download folder and try again.'
+  )
 }
 
 async function prepareOutputDir(value: unknown): Promise<string> {
@@ -607,17 +705,10 @@ async function findFinalFile(
   return withStats[0]?.candidate ?? null
 }
 
-/** Remove only this job's named artifacts after its explicit size cap is hit. */
-async function removeJobArtifacts(directory: string, base: string): Promise<void> {
-  const root = path.resolve(directory)
-  const prefix = `${base}.`
-  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue
-    const candidate = path.resolve(root, entry.name)
-    if (path.dirname(candidate) !== root) continue
-    await fs.unlink(candidate).catch(() => undefined)
-  }
+/** Remove a staging directory and everything yt-dlp left in it. */
+async function removeStagingArtifacts(stagingDir: string): Promise<void> {
+  const resolved = path.resolve(stagingDir)
+  await fs.rm(resolved, { recursive: true, force: true }).catch(() => undefined)
 }
 
 export function createMediaEngine(
@@ -660,6 +751,66 @@ export function createMediaEngine(
   // child; shutdown also needs to know when the run promise has settled so a
   // late finalize/progress callback cannot race persistence close.
   const downloadTasks = new Set<Promise<unknown>>()
+  // Staging directories owned by in-flight downloads in this process. Stale
+  // `.dondownload-*` directories left by a previous run are removed lazily when
+  // the next download targets the same output folder; recovery marks those
+  // interrupted jobs terminal and never resumes them.
+  const activeStagingDirs = new Set<string>()
+  const outputDirLocks = new Map<string, Promise<void>>()
+
+  function withOutputDirLock<T>(
+    directory: string,
+    task: () => Promise<T>
+  ): Promise<T> {
+    const previous = outputDirLocks.get(directory) ?? Promise.resolve()
+    const run = previous.then(task, task)
+    outputDirLocks.set(
+      directory,
+      run.then(
+        () => undefined,
+        () => undefined
+      )
+    )
+    return run
+  }
+
+  async function prepareStagingDir(
+    outputDir: string,
+    stagingDir: string
+  ): Promise<void> {
+    const resolvedStaging = path.resolve(stagingDir)
+    activeStagingDirs.add(resolvedStaging)
+    try {
+      await withOutputDirLock(outputDir, async () => {
+        const entries = await fs
+          .readdir(outputDir, { withFileTypes: true })
+          .catch(() => [])
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !entry.name.startsWith(STAGING_DIR_PREFIX)) {
+            continue
+          }
+          const candidate = path.resolve(outputDir, entry.name)
+          if (!isInsideDirectory(outputDir, candidate)) continue
+          if (candidate !== resolvedStaging && activeStagingDirs.has(candidate)) {
+            continue
+          }
+          // Only private staging directories are ever removed here.
+          await removeStagingArtifacts(candidate)
+        }
+        await fs.mkdir(resolvedStaging, { recursive: true })
+      })
+    } catch (error) {
+      activeStagingDirs.delete(resolvedStaging)
+      throw error
+    }
+  }
+
+  async function discardStagingDir(stagingDir: string): Promise<void> {
+    const resolved = path.resolve(stagingDir)
+    activeStagingDirs.delete(resolved)
+    await removeStagingArtifacts(resolved)
+  }
+
 
   // Captured subprocesses (tool probes and analyses) must be terminable during
   // shutdown, because those calls are not represented by a managed download.
@@ -1488,17 +1639,6 @@ export function createMediaEngine(
     if (pending.cancelRequested) {
       throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
     }
-    const base = buildOutputBase(analysis.title, jobId)
-    const outputTemplate = path.join(
-      outputDir,
-      `${escapeOutputTemplate(base)}.%(ext)s`
-    )
-    if (!isInsideDirectory(outputDir, outputTemplate)) {
-      throw new AppError(
-        'MEDIA_OUTPUT_UNAVAILABLE',
-        'The download path is not inside the selected folder.'
-      )
-    }
 
     const formatSelector = outputChoice.formatIds.join('+')
     if (!SAFE_SELECTOR.test(formatSelector)) {
@@ -1506,6 +1646,32 @@ export function createMediaEngine(
         'MEDIA_OPTION_INVALID',
         'The selected format is no longer valid. Analyze the page again.'
       )
+    }
+
+    const base = buildOutputBase(analysis.title)
+    const stagingDir = path.join(outputDir, stagingDirName(jobId))
+    if (!isInsideDirectory(outputDir, stagingDir)) {
+      throw new AppError(
+        'MEDIA_OUTPUT_UNAVAILABLE',
+        'The download path is not inside the selected folder.'
+      )
+    }
+    const stagingBase = buildStagingBase(analysis.title, stagingDir)
+    const outputTemplate = path.join(
+      stagingDir,
+      `${escapeOutputTemplate(stagingBase)}.%(ext)s`
+    )
+    if (!isInsideDirectory(stagingDir, outputTemplate)) {
+      throw new AppError(
+        'MEDIA_OUTPUT_UNAVAILABLE',
+        'The download path is not inside the selected folder.'
+      )
+    }
+
+    await prepareStagingDir(outputDir, stagingDir)
+    if (pending.cancelRequested) {
+      await discardStagingDir(stagingDir)
+      throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
     }
 
     const needsFfmpeg =
@@ -1629,22 +1795,28 @@ export function createMediaEngine(
 
         if (outcome === 'success') {
           try {
-            const finalPath = await findFinalFile(
-              outputDir,
-              base,
+            const stagedPath = await findFinalFile(
+              stagingDir,
+              stagingBase,
               outputChoice.outputExt
             )
-            if (finalPath === null) throw new Error('missing output')
-            const stat = await fs.stat(finalPath)
+            if (stagedPath === null) throw new Error('missing output')
+            const stat = await fs.stat(stagedPath)
             if (!stat.isFile()) throw new Error('not a file')
             if (maxBytes !== null && stat.size > maxBytes) {
               sizeCapExceeded = true
-              await removeJobArtifacts(outputDir, base)
               throw new AppError(
                 'MEDIA_SIZE_CAP_EXCEEDED',
                 'The media output exceeded the configured per-job size limit.'
               )
             }
+            const finalPath = await moveToUniqueFinalPath(
+              stagedPath,
+              outputDir,
+              base,
+              outputChoice.outputExt
+            )
+            await discardStagingDir(stagingDir)
             emit(
               mergingSeen ? 'merging' : 'downloading',
               stat.size,
@@ -1654,6 +1826,7 @@ export function createMediaEngine(
             )
             resolve({ filePath: finalPath, totalBytes: stat.size })
           } catch (error) {
+            await discardStagingDir(stagingDir)
             reject(
               error instanceof AppError
                 ? error
@@ -1667,12 +1840,12 @@ export function createMediaEngine(
           return
         }
 
+        await discardStagingDir(stagingDir)
         if (outcome === 'cancelled') {
           reject(
             new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
           )
         } else if (sizeCapExceeded) {
-          await removeJobArtifacts(outputDir, base)
           reject(new AppError('MEDIA_SIZE_CAP_EXCEEDED', 'The media output exceeded the configured per-job size limit.'))
         } else {
           reject(

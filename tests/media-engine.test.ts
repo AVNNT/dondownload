@@ -181,6 +181,18 @@ function outputBase(call: SpawnCall): string {
   return template.replace(/\.%\(ext\)s$/, '')
 }
 
+function stagingDirOf(call: SpawnCall): string {
+  return path.dirname(outputBase(call))
+}
+
+function finalPathFor(
+  harness: { downloadDir: string },
+  title = 'Example video',
+  ext = 'mp4'
+): string {
+  return path.join(harness.downloadDir, `${title}.${ext}`)
+}
+
 function downloadOutputExt(call: SpawnCall, fallback = 'mp4'): string {
   return argValue(call.args, '--merge-output-format') ?? fallback
 }
@@ -407,6 +419,7 @@ async function startDownload(
   promise: Promise<MediaDownloadResult>
   updates: MediaDownloadProgress[]
   child: FakeChild
+  stagedPath: string
   finalPath: string
 }> {
   const analysis = await harness.engine.analyze(SOURCE_URL)
@@ -423,11 +436,13 @@ async function startDownload(
     harness.calls.some((call) => call.args.includes('--format'))
   )
   const call = downloadCall(harness.calls)
+  const extension = downloadOutputExt(call)
   return {
     promise,
     updates,
     child: call.child,
-    finalPath: `${outputBase(call)}.${downloadOutputExt(call)}`
+    stagedPath: `${outputBase(call)}.${extension}`,
+    finalPath: finalPathFor(harness, 'Example video', extension)
   }
 }
 
@@ -1637,19 +1652,20 @@ describe('media engine subprocess arguments and progress', () => {
     })
 
     const ext = downloadOutputExt(call)
-    const finalPath = `${base}.${ext}`
-    await fs.writeFile(finalPath, Buffer.from('merged'))
+    const stagedPath = `${base}.${ext}`
+    await fs.writeFile(stagedPath, Buffer.from('merged'))
     child.close(0)
 
+    const expectedPath = finalPathFor(harness, 'Example video', ext)
     const result = await promise
-    expect(result.filePath).toBe(finalPath)
+    expect(result.filePath).toBe(expectedPath)
     expect(result.totalBytes).toBe(6)
     expect(updates.at(-1)).toMatchObject({
       status: 'merging',
       completedBytes: 6,
       totalBytes: 6,
       speedBps: 0,
-      filePath: finalPath
+      filePath: expectedPath
     })
   })
 
@@ -1739,16 +1755,17 @@ describe('media engine subprocess arguments and progress', () => {
     const settlement = promise.then(() => null, error => error)
     await waitFor(() => harness.calls.some(call => call.args.includes('--format')))
     const call = downloadCall(harness.calls)
-    const finalPath = `${outputBase(call)}.${downloadOutputExt(call)}`
-    await fs.writeFile(finalPath, Buffer.from('oversize'))
+    const stagedPath = `${outputBase(call)}.${downloadOutputExt(call)}`
+    await fs.writeFile(stagedPath, Buffer.from('oversize'))
     call.child.close(0)
     expect(await settlement).toMatchObject({ code: 'MEDIA_SIZE_CAP_EXCEEDED' })
-    await expect(fs.stat(finalPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await fs.readdir(harness.downloadDir)).toEqual([])
   })
 
   it('detects a post-processing marker split across stdout chunks', async () => {
     const harness = await makeHarness({ download: () => undefined })
-    const { promise, updates, child, finalPath } = await startDownload(harness)
+    const { promise, updates, child, stagedPath, finalPath } = await startDownload(harness)
 
     child.stdout.write('DONDOWNLOAD_PROGRESS|100|1000|NA|50|137\n')
     child.stdout.write('[Merger] Merging for')
@@ -1765,7 +1782,7 @@ describe('media engine subprocess arguments and progress', () => {
       totalBytes: 1_500
     })
 
-    await fs.writeFile(finalPath, Buffer.from('merged'))
+    await fs.writeFile(stagedPath, Buffer.from('merged'))
     child.close(0)
     await promise
     expect(updates.at(-1)).toMatchObject({
@@ -1776,13 +1793,13 @@ describe('media engine subprocess arguments and progress', () => {
 
   it('detects a trailing post-processing marker without a newline at close', async () => {
     const harness = await makeHarness({ download: () => undefined })
-    const { promise, updates, child, finalPath } = await startDownload(harness)
+    const { promise, updates, child, stagedPath, finalPath } = await startDownload(harness)
 
     child.stdout.write('[Merger] Merging formats into "ignored"')
     await tick()
     expect(updates.some((update) => update.status === 'merging')).toBe(false)
 
-    await fs.writeFile(finalPath, Buffer.from('merged'))
+    await fs.writeFile(stagedPath, Buffer.from('merged'))
     child.close(0)
     await promise
     expect(updates.at(-1)).toMatchObject({
@@ -1801,13 +1818,13 @@ describe('media engine subprocess arguments and progress', () => {
 
     for (const testCase of cases) {
       const harness = await makeHarness({ download: () => undefined })
-      const { promise, updates, child, finalPath } = await startDownload(harness)
+      const { promise, updates, child, stagedPath } = await startDownload(harness)
 
       child[testCase.stream].write(testCase.line)
       await tick()
       expect(updates.at(-1)?.status).toBe('merging')
 
-      await fs.writeFile(finalPath, Buffer.from('merged'))
+      await fs.writeFile(stagedPath, Buffer.from('merged'))
       child.close(0)
       await promise
     }
@@ -1928,14 +1945,16 @@ describe('media engine subprocess arguments and progress', () => {
     const call = downloadCall(harness.calls)
     const template = argValue(call.args, '--output') as string
 
-    expect(path.dirname(template)).toBe(harness.downloadDir)
+    expect(path.dirname(path.dirname(template))).toBe(harness.downloadDir)
+    expect(path.basename(path.dirname(template))).toMatch(/^\.dondownload-/)
     expect(path.basename(template)).not.toContain('..')
     expect(path.basename(template)).not.toContain('\\')
     expect(path.basename(template)).not.toContain('/')
     expect(path.basename(template)).not.toContain(':')
     expect(path.basename(template)).not.toContain('?')
     expect(path.basename(template)).not.toContain('"')
-    expect(path.basename(template)).toContain(JOB_ID.replace(/-/g, ''))
+    expect(path.basename(template)).not.toContain('[')
+    expect(path.basename(template)).not.toContain(JOB_ID.replace(/-/g, ''))
     expect(template).toContain('100%%')
     expect(template).toContain('.%(ext)s')
 
@@ -1944,13 +1963,15 @@ describe('media engine subprocess arguments and progress', () => {
 })
 
 describe('media engine cancellation and failure cleanup', () => {
-  it('cancels a running download, kills the tree and preserves partial files', async () => {
+  it('cancels a running download, kills the tree and removes only its staging directory', async () => {
     const harness = await makeHarness({
       download: () => undefined,
       cancellationGraceMs: 50
     })
     const analysis = await harness.engine.analyze(SOURCE_URL)
     const optionId = analysis.bestVideoOptionId as string
+    const unrelated = path.join(harness.downloadDir, 'keep-me.txt')
+    await fs.writeFile(unrelated, 'keep')
 
     const promise = harness.engine.download(
       downloadRequest(analysis.analysisId, optionId, harness.downloadDir),
@@ -1960,8 +1981,8 @@ describe('media engine cancellation and failure cleanup', () => {
       harness.calls.some((call) => call.args.includes('--format'))
     )
     const call = downloadCall(harness.calls)
-    const base = outputBase(call)
-    const partialPath = `${base}.part`
+    const stagingDir = stagingDirOf(call)
+    const partialPath = `${outputBase(call)}.part`
     await fs.writeFile(partialPath, 'partial bytes')
 
     harness.engine.cancel(JOB_ID)
@@ -1973,7 +1994,9 @@ describe('media engine cancellation and failure cleanup', () => {
     await expect(promise).rejects.toMatchObject({
       code: 'MEDIA_DOWNLOAD_CANCELLED'
     })
-    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe('partial bytes')
+    await expect(fs.stat(stagingDir)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.readFile(unrelated, 'utf8')).resolves.toBe('keep')
+    expect(await fs.readdir(harness.downloadDir)).toEqual(['keep-me.txt'])
   })
 
   it('honours cancellation requested before the child process starts', async () => {
@@ -2079,6 +2102,7 @@ describe('media engine cancellation and failure cleanup', () => {
       harness.calls.some((call) => call.args.includes('--format'))
     )
     const call = downloadCall(harness.calls)
+    const stagingDir = stagingDirOf(call)
     const partialPath = `${outputBase(call)}.part`
     await fs.writeFile(partialPath, 'partial bytes')
 
@@ -2111,9 +2135,7 @@ describe('media engine cancellation and failure cleanup', () => {
     await expect(promise).rejects.toMatchObject({
       code: 'MEDIA_DOWNLOAD_CANCELLED'
     })
-    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe(
-      'partial bytes'
-    )
+    await expect(fs.stat(stagingDir)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('cancelAll stays bounded when a cancelled download child never closes', async () => {
@@ -2134,6 +2156,7 @@ describe('media engine cancellation and failure cleanup', () => {
       harness.calls.some((call) => call.args.includes('--format'))
     )
     const call = downloadCall(harness.calls)
+    const stagingDir = stagingDirOf(call)
     const partialPath = `${outputBase(call)}.part`
     await fs.writeFile(partialPath, 'partial bytes')
     // Simulate a process tree that ignores termination and never emits close.
@@ -2146,9 +2169,7 @@ describe('media engine cancellation and failure cleanup', () => {
     await expect(promise).rejects.toMatchObject({
       code: 'MEDIA_DOWNLOAD_CANCELLED'
     })
-    await expect(fs.readFile(partialPath, 'utf8')).resolves.toBe(
-      'partial bytes'
-    )
+    await expect(fs.stat(stagingDir)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('cancelAll bounds its wait when a pending download never settles', async () => {
@@ -2193,7 +2214,7 @@ describe('media engine cancellation and failure cleanup', () => {
     expect(settled).toBe(false)
   })
 
-  it('preserves partial artifacts on failure and redacts errors', async () => {
+  it('removes only staging artifacts on failure and redacts errors', async () => {
     const harness = await makeHarness({
       download: (call, { base }) => {
         void (async () => {
@@ -2224,10 +2245,7 @@ describe('media engine cancellation and failure cleanup', () => {
     expect((error as Error).message).not.toContain('https://')
 
     const remaining = await fs.readdir(harness.downloadDir)
-    const base = path.basename(outputBase(downloadCall(harness.calls)))
-    expect(remaining.sort()).toEqual(
-      ['keep-me.txt', `${base}.part`, `${base}.f137.mp4`].sort()
-    )
+    expect(remaining).toEqual(['keep-me.txt'])
   })
 
   it('fails and cleans up when yt-dlp exits successfully without an output file', async () => {
@@ -2247,5 +2265,173 @@ describe('media engine cancellation and failure cleanup', () => {
       )
     ).rejects.toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
     expect(await fs.readdir(harness.downloadDir)).toEqual([])
+  })
+})
+
+describe('media engine staging and final naming', () => {
+  it('saves the final file as the sanitized title without the job id', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({ title: 'I Got My FAVORITE Synergy' }),
+      download: () => undefined
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const promise = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir
+      ),
+      () => undefined
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const call = downloadCall(harness.calls)
+    await fs.writeFile(`${outputBase(call)}.mp4`, Buffer.from('media'))
+    call.child.close(0)
+
+    const result = await promise
+    const expected = path.join(
+      harness.downloadDir,
+      'I Got My FAVORITE Synergy.mp4'
+    )
+    expect(result.filePath).toBe(expected)
+    expect(path.basename(result.filePath)).not.toMatch(/\[[^\]]+\]/)
+    expect(await fs.readdir(harness.downloadDir)).toEqual([
+      'I Got My FAVORITE Synergy.mp4'
+    ])
+  })
+
+  it('appends a numeric suffix instead of overwriting an existing file', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const existing = path.join(harness.downloadDir, 'Example video.mp4')
+    await fs.writeFile(existing, 'existing')
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const promise = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir
+      ),
+      () => undefined
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const call = downloadCall(harness.calls)
+    await fs.writeFile(`${outputBase(call)}.mp4`, Buffer.from('new'))
+    call.child.close(0)
+
+    const result = await promise
+    expect(result.filePath).toBe(
+      path.join(harness.downloadDir, 'Example video (2).mp4')
+    )
+    await expect(fs.readFile(existing, 'utf8')).resolves.toBe('existing')
+    await expect(fs.readFile(result.filePath, 'utf8')).resolves.toBe('new')
+  })
+
+  it('keeps two concurrent same-title downloads distinct', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const jobIds = ['job-one', 'job-two']
+    const promiseA = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir,
+        { jobId: jobIds[0] }
+      ),
+      () => undefined
+    )
+    const promiseB = harness.engine.download(
+      downloadRequest(
+        analysis.analysisId,
+        analysis.bestVideoOptionId as string,
+        harness.downloadDir,
+        { jobId: jobIds[1] }
+      ),
+      () => undefined
+    )
+
+    await waitFor(
+      () =>
+        harness.calls.filter((call) => call.args.includes('--format')).length ===
+        2
+    )
+    const calls = harness.calls.filter((call) =>
+      call.args.includes('--format')
+    )
+    expect(calls).toHaveLength(2)
+    await fs.writeFile(`${outputBase(calls[0]!)}.mp4`, Buffer.from('first'))
+    await fs.writeFile(`${outputBase(calls[1]!)}.mp4`, Buffer.from('second'))
+
+    calls[0]!.child.close(0)
+    calls[1]!.child.close(0)
+    const results = await Promise.all([promiseA, promiseB])
+
+    const expectedPaths = [
+      path.join(harness.downloadDir, 'Example video.mp4'),
+      path.join(harness.downloadDir, 'Example video (2).mp4')
+    ]
+    expect(results.map((entry) => entry.filePath).sort()).toEqual(
+      [...expectedPaths].sort()
+    )
+    const contents = await Promise.all(
+      expectedPaths.map((entry) => fs.readFile(entry, 'utf8'))
+    )
+    expect(contents.sort()).toEqual(['first', 'second'])
+  })
+
+  it('cleans stale staging directories without touching other files', async () => {
+    const harness = await makeHarness({
+      download: (call) => call.child.close(1)
+    })
+    const stale = path.join(harness.downloadDir, '.dondownload-oldjob')
+    await fs.mkdir(stale, { recursive: true })
+    await fs.writeFile(path.join(stale, 'stale.part'), 'stale')
+    await fs.writeFile(path.join(harness.downloadDir, 'keep-me.txt'), 'keep')
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    await expect(
+      harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+
+    expect(await fs.readdir(harness.downloadDir)).toEqual(['keep-me.txt'])
+  })
+
+  it('keeps long-title staging templates within the filename budget', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({ title: 'Long title '.repeat(40) }),
+      download: (call) => call.child.close(1)
+    })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    await expect(
+      harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir
+        ),
+        () => undefined
+      )
+    ).rejects.toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+
+    const template = argValue(
+      downloadCall(harness.calls).args,
+      '--output'
+    ) as string
+    const relative = path.relative(
+      harness.downloadDir,
+      template.replace(/\.%\(ext\)s$/, '')
+    )
+    expect(relative.length).toBeLessThanOrEqual(100)
   })
 })
