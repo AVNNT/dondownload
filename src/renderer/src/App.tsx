@@ -76,7 +76,13 @@ import {
   type ActionPlanEntry,
   type RowActionId
 } from './lib/actions'
-import { extractDroppedUrl, routeDroppedUrl } from './lib/dnd'
+import {
+  IDLE_DRAG_ORIGIN,
+  extractDroppedUrl,
+  reduceDragOrigin,
+  routeDroppedUrl,
+  type DragOriginState
+} from './lib/dnd'
 import { applyRendererTheme } from './theme'
 import appLogo from './assets/logo.svg'
 
@@ -147,8 +153,29 @@ export default function App(): JSX.Element {
   const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
   const dragDepth = useRef(0)
+  const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
   const addSequence = useRef(0)
   const openedExtensionScans = useRef<Set<string>>(new Set())
+
+  // Track drags that start inside the window (logo, selected text, table rows).
+  // Their payload is internal UI data and must never open the Add dialog, while
+  // drops dragged in from a browser or another app still work.
+  useEffect(() => {
+    const onDragStart = (): void => {
+      dragOrigin.current = reduceDragOrigin(dragOrigin.current, 'dragstart')
+    }
+    const onDragEnd = (): void => {
+      dragOrigin.current = reduceDragOrigin(dragOrigin.current, 'dragend')
+      dragDepth.current = 0
+      setDragActive(false)
+    }
+    window.addEventListener('dragstart', onDragStart)
+    window.addEventListener('dragend', onDragEnd)
+    return () => {
+      window.removeEventListener('dragstart', onDragStart)
+      window.removeEventListener('dragend', onDragEnd)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -704,6 +731,7 @@ export default function App(): JSX.Element {
   }, [allRows, runPlan])
 
   const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>): void => {
+    if (dragOrigin.current.internal) return
     if (!event.dataTransfer.types.includes('text/uri-list') &&
         !event.dataTransfer.types.includes('text/plain')) {
       return
@@ -714,6 +742,7 @@ export default function App(): JSX.Element {
   }, [])
 
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>): void => {
+    if (dragOrigin.current.internal) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }, [])
@@ -726,8 +755,11 @@ export default function App(): JSX.Element {
   const handleDrop = useCallback(
     (event: DragEvent<HTMLDivElement>): void => {
       event.preventDefault()
+      const wasInternal = dragOrigin.current.internal
+      dragOrigin.current = reduceDragOrigin(dragOrigin.current, 'drop')
       dragDepth.current = 0
       setDragActive(false)
+      if (wasInternal) return
       const url = extractDroppedUrl({
         uriList: event.dataTransfer.getData('text/uri-list'),
         text: event.dataTransfer.getData('text/plain')
@@ -764,9 +796,10 @@ export default function App(): JSX.Element {
             src={appLogo}
             alt=""
             aria-hidden="true"
+            draggable={false}
             className="h-9 w-9 shrink-0 rounded-[10px] border border-white/10"
           />
-          <div className="min-w-0">
+          <div className="min-w-0 select-none">
             <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-50">
               DonDownload
             </h1>

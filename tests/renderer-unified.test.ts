@@ -41,8 +41,10 @@ import {
   type ActionApi
 } from '../src/renderer/src/lib/actions'
 import {
+  IDLE_DRAG_ORIGIN,
   extractDroppedUrl,
   isLikelyMediaUrl,
+  reduceDragOrigin,
   routeDroppedUrl
 } from '../src/renderer/src/lib/dnd'
 
@@ -528,6 +530,79 @@ describe('drag and drop routing', () => {
       extractDroppedUrl({ text: '  check this https://example.com/a.bin, thanks ' })
     ).toBe('https://example.com/a.bin')
     expect(extractDroppedUrl({ text: 'no link here' })).toBeNull()
+  })
+
+  it('rejects SVG data URIs from uri-list and plain text', () => {
+    const dataUri =
+      'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22%3E%3C/svg%3E'
+    expect(extractDroppedUrl({ uriList: dataUri })).toBeNull()
+    expect(extractDroppedUrl({ text: dataUri })).toBeNull()
+    expect(
+      extractDroppedUrl({
+        uriList: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+      })
+    ).toBeNull()
+  })
+
+  it('rejects raw SVG markup text', () => {
+    expect(
+      extractDroppedUrl({
+        text: '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/x.png"/></svg>'
+      })
+    ).toBeNull()
+    expect(
+      extractDroppedUrl({ text: '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>' })
+    ).toBeNull()
+  })
+
+  it('ignores non-web schemes and markup, including data/blob/file/about', () => {
+    for (const value of [
+      'blob:https://example.com/1234',
+      'file:///C:/secret.zip',
+      'javascript:alert(1)',
+      'about:blank'
+    ]) {
+      expect(extractDroppedUrl({ uriList: value })).toBeNull()
+      expect(extractDroppedUrl({ text: value })).toBeNull()
+    }
+  })
+
+  it('extracts an HTTP URL that is the whole uri-list line or plain text', () => {
+    expect(
+      extractDroppedUrl({ uriList: '  https://example.com/file.zip  \r\n' })
+    ).toBe('https://example.com/file.zip')
+    expect(extractDroppedUrl({ text: 'https://example.com/file.zip' })).toBe(
+      'https://example.com/file.zip'
+    )
+    expect(
+      extractDroppedUrl({ text: 'check this https://example.com/file.zip out' })
+    ).toBe('https://example.com/file.zip')
+  })
+
+  it('rejects a uri-list line that only contains a URL mid-string', () => {
+    expect(
+      extractDroppedUrl({ uriList: 'see https://example.com/file.zip for details' })
+    ).toBeNull()
+    expect(
+      extractDroppedUrl({ uriList: 'note: https://example.com/file.zip' })
+    ).toBeNull()
+  })
+
+  it('tracks internal drags so window drops can ignore them', () => {
+    let state = IDLE_DRAG_ORIGIN
+    expect(state.internal).toBe(false)
+
+    state = reduceDragOrigin(state, 'dragstart')
+    expect(state.internal).toBe(true)
+
+    // External drops are unaffected while no internal drag is in flight.
+    expect(IDLE_DRAG_ORIGIN.internal).toBe(false)
+
+    state = reduceDragOrigin(state, 'drop')
+    expect(state.internal).toBe(false)
+
+    state = reduceDragOrigin(reduceDragOrigin(state, 'dragstart'), 'dragend')
+    expect(state.internal).toBe(false)
   })
 
   it('routes known media pages to the analyzer and direct files to Quick Add', () => {
