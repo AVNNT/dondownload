@@ -42,5 +42,11 @@ export const IPC = {
   getMediaToolSettings: 'media-tools:get-settings',
   updateMediaToolSettings: 'media-tools:update-settings',
   getYtdlpUpdateState: 'media-tools:ytdlp-state',
-  checkYtdlpUpdate: 'media-tools:ytdlp-check'
+  checkYtdlpUpdate: 'media-tools:ytdlp-check',
+  // Zero-config browser extension bridge registration (additive). Status
+  // values are non-sensitive; folder actions never accept a renderer path.
+  getBrowserExtensionStatus: 'browser-extension:get-status',
+  repairBrowserExtension: 'browser-extension:repair',
+  openBrowserExtensionFolder: 'browser-extension:open-folder',
+  copyBrowserExtensionFolderPath: 'browser-extension:copy-folder-path'
 } as const

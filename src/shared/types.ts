@@ -19,6 +19,7 @@ import type {
   MediaToolSettings,
   YtdlpUpdateState
 } from './mediaTools'
+import type { BrowserExtensionStatus } from './browserExtension'
 
 export type DownloadStatus =
   | 'queued'
@@ -278,4 +279,11 @@ export interface DonDownloadApi {
   }) => Promise<ApiResult<MediaToolSettings>>
   getYtdlpUpdateState: () => Promise<ApiResult<YtdlpUpdateState>>
   checkYtdlpUpdate: () => Promise<ApiResult<YtdlpUpdateState>>
+
+  // Zero-config browser bridge registration. Repair re-runs the same
+  // manifest/registry logic used at startup; folder actions are fixed-path.
+  getBrowserExtensionStatus: () => Promise<ApiResult<BrowserExtensionStatus>>
+  repairBrowserExtension: () => Promise<ApiResult<BrowserExtensionStatus>>
+  openBrowserExtensionFolder: () => Promise<ApiResult<null>>
+  copyBrowserExtensionFolderPath: () => Promise<ApiResult<null>>
 }

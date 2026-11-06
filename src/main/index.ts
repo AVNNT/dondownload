@@ -21,6 +21,13 @@ import {
   shouldQuitWhenAllWindowsClosed
 } from './lifecycle'
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
+import {
+  createNativeHostRegistrar,
+  createNodeFileSystem,
+  createRegExeRegistry,
+  unregisterNativeHost,
+  type NativeHostRegistrar
+} from './nativeHost/registration'
 import { createAppTray, type AppTray } from './tray'
 import { createMainWindow } from './window'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
@@ -49,6 +56,7 @@ let batches: BatchManager | null = null
 let settingsManager: SettingsManager | null = null
 let mediaUpdater: YtdlpUpdater | null = null
 let nativeBridge: NativeBridge | null = null
+let nativeHostRegistrar: NativeHostRegistrar | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
 /** The orderly flush/stop/close sequence is running; never run it twice. */
@@ -117,6 +125,26 @@ if (smokeConfig.enabled) {
   }
 }
 
+/**
+ * Paths for zero-config native messaging registration. Evaluated only after
+ * Electron is ready, so appData/appPath are final (including dev vs packaged).
+ */
+function createRegistrationDependencies() {
+  return {
+    appDataPath: app.getPath('appData'),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    execPath: process.execPath,
+    platform: process.platform,
+    registry: createRegExeRegistry(),
+    fileSystem: createNodeFileSystem(),
+    logger: (message: string) => console.error(message)
+  }
+}
+
+const unregisterRequested = process.argv.includes('--unregister-native-host')
+
 function isMainWindowVisible(): boolean {
   return Boolean(
     mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
@@ -171,7 +199,18 @@ function hideMainWindow(): void {
   refreshTray()
 }
 
-if (!smokeConfig.enabled || smokeConfig.ok) {
+if (unregisterRequested) {
+  // Installer cleanup mode. This runs before any single-instance lock, window,
+  // tray or bridge so it can never be swallowed by an already-running app.
+  // The helper leaves dev registrations pointing at the repository alone.
+  app.whenReady().then(async () => {
+    const result = await unregisterNativeHost(createRegistrationDependencies())
+    if (result.lastError !== null) {
+      console.error(`Browser extension cleanup failed: ${result.lastError}`)
+    }
+    app.exit(0)
+  })
+} else if (!smokeConfig.enabled || smokeConfig.ok) {
   // Smoke verification uses an isolated userData directory, so it must not
   // compete with (or focus) an already-running normal desktop instance.
   const hasSingleInstanceLock =
@@ -327,6 +366,18 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       }
     })
 
+    // Native messaging registration is zero-config for the packaged and dev
+    // apps. Ordinary and interactive smoke sessions skip it so they never write
+    // the real per-user manifest or registry.
+    const skipBrowserRegistration =
+      smoke !== null ||
+      process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1' ||
+      process.env.DONDOWNLOAD_SMOKE_TEST === '1'
+    if (!skipBrowserRegistration) {
+      nativeHostRegistrar = createNativeHostRegistrar(createRegistrationDependencies())
+      void nativeHostRegistrar.repair()
+    }
+
     registerIpc({
       manager,
       aria2,
@@ -334,6 +385,7 @@ if (!smokeConfig.enabled || smokeConfig.ok) {
       batches,
       settings,
       mediaUpdater,
+      browserExtension: nativeHostRegistrar ?? undefined,
       getWindow: () => mainWindow
     })
 

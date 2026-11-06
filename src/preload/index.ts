@@ -30,6 +30,7 @@ import type {
   MediaToolSettings,
   YtdlpUpdateState
 } from '../shared/mediaTools'
+import type { BrowserExtensionStatus } from '../shared/browserExtension'
 
 const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
@@ -163,6 +164,22 @@ const api: DonDownloadApi = {
   checkYtdlpUpdate: () =>
     ipcRenderer.invoke(IPC.checkYtdlpUpdate) as Promise<
       ApiResult<YtdlpUpdateState>
+    >,
+  getBrowserExtensionStatus: () =>
+    ipcRenderer.invoke(IPC.getBrowserExtensionStatus) as Promise<
+      ApiResult<BrowserExtensionStatus>
+    >,
+  repairBrowserExtension: () =>
+    ipcRenderer.invoke(IPC.repairBrowserExtension) as Promise<
+      ApiResult<BrowserExtensionStatus>
+    >,
+  openBrowserExtensionFolder: () =>
+    ipcRenderer.invoke(IPC.openBrowserExtensionFolder) as Promise<
+      ApiResult<null>
+    >,
+  copyBrowserExtensionFolderPath: () =>
+    ipcRenderer.invoke(IPC.copyBrowserExtensionFolderPath) as Promise<
+      ApiResult<null>
     >
 }
 

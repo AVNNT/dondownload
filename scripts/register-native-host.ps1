@@ -23,8 +23,10 @@ should work (comma-separated) in a single registration. Unregistering Helium
 removes the shared key, so re-register Chrome afterwards if you still need it.
 
 .PARAMETER ExtensionId
-One or more exact unpacked-extension IDs (32 characters, a-p). Pass every
-browser's ID when they differ.
+One or more exact unpacked-extension IDs (32 characters, a-p). Defaults to
+DonDownload's fixed extension ID (mikinloaillialkiannpcejdbmfbljhm), which is
+pinned by extension/manifest.json. Pass other IDs only for an advanced or
+legacy setup; every browser's ID must be included when they differ.
 
 .PARAMETER Browser
 Chrome, Edge, Helium, or Both. Both means Chrome + Edge (the historical
@@ -51,15 +53,15 @@ Print the resolved browser registry keys and manifest path as JSON and exit
 without writing anything. Useful for checking Helium's shared-key mapping.
 
 .EXAMPLE
-# Helium (verified local browser):
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 -Browser Helium -ExtensionId efakbfgkcnfjpomeejapmhpaihompngo
+# Helium (verified local browser), using the fixed extension ID:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 -Browser Helium
 
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 -Unregister -Browser Both
 #>
 [CmdletBinding()]
 param(
-    [string[]]$ExtensionId,
+    [string[]]$ExtensionId = @('mikinloaillialkiannpcejdbmfbljhm'),
     [ValidateSet('Chrome', 'Edge', 'Helium', 'Both')]
     [string]$Browser = 'Both',
     [string]$HostPath,

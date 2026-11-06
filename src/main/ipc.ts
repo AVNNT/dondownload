@@ -1,5 +1,7 @@
-import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import path from 'node:path'
 import { IPC } from '@shared/ipc'
+import type { BrowserExtensionStatus } from '@shared/browserExtension'
 import type {
   MediaAnalysis,
   MediaJob,
@@ -28,6 +30,7 @@ import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
 import type { SettingsManager } from './settings/manager'
 import type { YtdlpUpdater } from './media/updater'
+import type { NativeHostRegistrar } from './nativeHost/registration'
 import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
@@ -45,6 +48,8 @@ export interface IpcContext {
   settings?: SettingsManager
   /** Verified managed yt-dlp updater (optional until wired in index.ts). */
   mediaUpdater?: YtdlpUpdater
+  /** Zero-config browser bridge registration. */
+  browserExtension?: NativeHostRegistrar
   getWindow: () => BrowserWindow | null
 }
 
@@ -272,4 +277,54 @@ export function registerIpc(context: IpcContext): void {
   invoke<YtdlpUpdateState>(IPC.checkYtdlpUpdate, () =>
     mediaUpdater().check({ force: true })
   )
+
+  // Zero-config browser extension registration. The renderer never supplies a
+  // path: both folder actions resolve the one fixed extension directory and
+  // reject anything that is not exactly it.
+  const browserExtension = (): NativeHostRegistrar => {
+    if (!context.browserExtension) {
+      throw new AppError(
+        'BROWSER_EXTENSION_UNAVAILABLE',
+        'Browser extension registration is not available.'
+      )
+    }
+    return context.browserExtension
+  }
+
+  const exactExtensionFolder = (): string => {
+    const folder = path.resolve(browserExtension().extensionFolder())
+    // The registrar builds this from Electron's own resources/app path, never
+    // from renderer input. Reject a malformed value rather than opening it.
+    if (!path.isAbsolute(folder) || path.basename(folder).toLowerCase() !== 'extension') {
+      throw new AppError(
+        'BROWSER_EXTENSION_FOLDER_INVALID',
+        'The browser extension folder is not valid.'
+      )
+    }
+    return folder
+  }
+
+  invoke<BrowserExtensionStatus>(IPC.getBrowserExtensionStatus, () =>
+    browserExtension().getStatus()
+  )
+
+  invoke<BrowserExtensionStatus>(IPC.repairBrowserExtension, () =>
+    browserExtension().repair()
+  )
+
+  invoke<null>(IPC.openBrowserExtensionFolder, async () => {
+    const failure = await shell.openPath(exactExtensionFolder())
+    if (failure) {
+      throw new AppError(
+        'BROWSER_EXTENSION_FOLDER_UNAVAILABLE',
+        'The browser extension folder could not be opened.'
+      )
+    }
+    return null
+  })
+
+  invoke<null>(IPC.copyBrowserExtensionFolderPath, () => {
+    clipboard.writeText(exactExtensionFolder())
+    return null
+  })
 }

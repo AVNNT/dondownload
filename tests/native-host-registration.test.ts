@@ -84,6 +84,16 @@ describeWindows('native host registration manifest', () => {
     expect(manifest.allowed_origins.join(',')).not.toContain('*')
   })
 
+  it('defaults to the fixed extension ID when none is passed', () => {
+    const result = runScript(['-PrintManifest', '-HostPath', hostPath])
+
+    expect(result.status).toBe(0)
+    const manifest = JSON.parse(result.stdout) as Manifest
+    expect(manifest.allowed_origins).toEqual([
+      'chrome-extension://mikinloaillialkiannpcejdbmfbljhm/'
+    ])
+  })
+
   it('supports separate exact Chrome and Edge extension IDs', () => {
     const first = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     const second = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'

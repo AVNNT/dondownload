@@ -13,3 +13,16 @@
   StrCpy $isForceMachineInstall "0"
   StrCpy $isForceCurrentInstall "1"
 !macroend
+
+; Uninstall cleanup: the app removes its current-user native messaging manifest
+; and the Chrome/Helium and Edge registry keys, but only when that manifest
+; points inside this installation. ExecWait keeps the uninstaller from deleting
+; the executable while cleanup is still running. A dev registration pointing at
+; a repository is intentionally left alone.
+!macro customUnInstall
+  IfFileExists "$INSTDIR\DonDownload.exe" dondownloadUnregisterNativeHost 0
+  Goto dondownloadUnregisterNativeHostDone
+  dondownloadUnregisterNativeHost:
+  ExecWait '"$INSTDIR\DonDownload.exe" --unregister-native-host'
+  dondownloadUnregisterNativeHostDone:
+!macroend
