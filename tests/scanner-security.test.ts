@@ -99,6 +99,39 @@ describe('bounded scanner page fetch', () => {
     expect(seen).toHaveLength(1)
   })
 
+  it('reports an unreachable host as unresolved, not as a private page', async () => {
+    const failingLookup: PublicTargetLookup = async () => {
+      const error = new Error('getaddrinfo ENOTFOUND forum.example.org') as Error & {
+        code: string
+      }
+      error.code = 'ENOTFOUND'
+      throw error
+    }
+
+    await expect(
+      fetchScanPage(
+        { url: 'http://forum.example.org/thread', accept: 'html' },
+        { lookup: failingLookup, connectLookup }
+      )
+    ).rejects.toMatchObject({
+      code: 'SCAN_TARGET_UNRESOLVED',
+      message: "Couldn't reach that site. Check the address or your internet connection."
+    })
+  })
+
+  it('still rejects a host that resolves to a private address', async () => {
+    const lookup: PublicTargetLookup = async () => [
+      { address: '10.0.0.1', family: 4 }
+    ]
+
+    await expect(
+      fetchScanPage(
+        { url: 'http://forum.example.org/thread', accept: 'html' },
+        { lookup, connectLookup }
+      )
+    ).rejects.toMatchObject({ code: 'SCAN_TARGET_NOT_PUBLIC' })
+  })
+
   it('caps the HTML body and rejects non-HTML responses', async () => {
     const { port } = await listen((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/html' })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type JSX } from 'react'
+import { Fragment, useEffect, useRef, type JSX } from 'react'
 import { SHORTCUT_HELP } from '../lib/shortcuts'
 import { useWheelScrollLock } from '../lib/useWheelScrollLock'
 import { Icon } from './Icon'
@@ -115,14 +115,25 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }): JSX.Eleme
                       {entry.label}
                     </dt>
                     <dd className="flex shrink-0 items-center gap-1">
-                      {entry.keys.map((value) => (
-                        <kbd
-                          key={value}
-                          className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-px font-sans text-[10.5px] font-medium leading-4 text-zinc-400"
-                        >
-                          {value}
-                        </kbd>
-                      ))}
+                      {[entry.keys, ...(entry.alt ?? [])].map(
+                        (combo, comboIndex) => (
+                          <Fragment key={combo.join('+')}>
+                            {comboIndex > 0 ? (
+                              <span className="px-0.5 text-[10.5px] text-zinc-500">
+                                or
+                              </span>
+                            ) : null}
+                            {combo.map((value) => (
+                              <kbd
+                                key={value}
+                                className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-px font-sans text-[10.5px] font-medium leading-4 text-zinc-400"
+                              >
+                                {value}
+                              </kbd>
+                            ))}
+                          </Fragment>
+                        )
+                      )}
                     </dd>
                   </div>
                 ))}

@@ -161,7 +161,10 @@ describe('SHORTCUT_HELP', () => {
     )
     expect(labels.length).toBeGreaterThan(10)
     const keys = SHORTCUT_HELP.flatMap((section) =>
-      section.entries.flatMap((entry) => entry.keys)
+      section.entries.flatMap((entry) => [
+        ...entry.keys,
+        ...(entry.alt ?? []).flat()
+      ])
     )
     for (const expected of [
       'Ctrl',
@@ -183,5 +186,14 @@ describe('SHORTCUT_HELP', () => {
     ]) {
       expect(keys).toContain(expected)
     }
+  })
+
+  it('lists search downloads once with both key combinations', () => {
+    const search = SHORTCUT_HELP.flatMap((section) => section.entries).filter(
+      (entry) => entry.label === 'Search downloads'
+    )
+    expect(search).toHaveLength(1)
+    expect(search[0]?.keys).toEqual(['Ctrl', 'F'])
+    expect(search[0]?.alt).toEqual([['/']])
   })
 })

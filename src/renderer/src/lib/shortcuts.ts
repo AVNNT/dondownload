@@ -130,6 +130,8 @@ export function firstHttpUrl(text: string): string | null {
 
 export interface ShortcutHelpEntry {
   keys: string[]
+  /** Additional key sets that do the same thing, shown after an "or". */
+  alt?: string[][]
   label: string
 }
 
@@ -147,8 +149,7 @@ export const SHORTCUT_HELP: readonly ShortcutHelpSection[] = [
       { keys: ['Ctrl', 'V'], label: 'Add the link on your clipboard' },
       { keys: ['Ctrl', ','], label: 'Open settings' },
       { keys: ['Ctrl', 'B'], label: 'Show batches' },
-      { keys: ['Ctrl', 'F'], label: 'Search downloads' },
-      { keys: ['/'], label: 'Search downloads' },
+      { keys: ['Ctrl', 'F'], alt: [['/']], label: 'Search downloads' },
       { keys: ['?'], label: 'Show this list' }
     ]
   },

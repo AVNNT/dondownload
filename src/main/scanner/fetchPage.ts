@@ -313,7 +313,13 @@ export async function fetchScanPage(
     let addresses
     try {
       addresses = await resolvePublicTargetAddresses(current, options.lookup)
-    } catch {
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === 'MEDIA_TARGET_UNRESOLVED') {
+        throw failure(
+          'SCAN_TARGET_UNRESOLVED',
+          "Couldn't reach that site. Check the address or your internet connection."
+        )
+      }
       throw failure(
         'SCAN_TARGET_NOT_PUBLIC',
         'Local and private network pages cannot be scanned.'
