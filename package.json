@@ -13,6 +13,7 @@
     "build:native-host": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-host.ps1",
     "stage:vendor": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/stage-vendor.ps1",
     "build:installer": "npm run build:native-host && npm run stage:vendor && npm run build && electron-builder --win nsis --x64",
+    "release:checksums": "node scripts/release-checksums.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",

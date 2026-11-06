@@ -238,6 +238,63 @@ the GPL-covered binaries (or provide a valid written offer), together with the
 license texts and build information. The local build described here does not
 include those source archives; it is a build-verification artifact.
 
+## Application updates
+
+The application can check GitHub Releases for a newer DonDownload installer.
+The source is deliberately opt-in: `src/shared/release.ts` exports
+`UPDATE_REPO`, and while it is `null` every update surface shows
+"Update source not configured" and no network request is made. Set it to a
+validated `{ owner, repo }` only when the repository and release assets are
+public.
+
+When configured, the main process:
+
+- requests `https://api.github.com/repos/{owner}/{repo}/releases/latest` with
+  `Accept: application/vnd.github+json` and
+  `User-Agent: DonDownload/<version>`, no cookies or credentials, a 15-second
+  timeout and a 1 MiB response cap;
+- ignores drafts and prereleases, requires a strict `vX.Y.Z`/`X.Y.Z` tag, and
+  offers the release only when it is strictly newer than `app.getVersion()`;
+- requires `DonDownload-<version>-x64-setup.exe` (version equal to the tag) and
+  `SHA256SUMS.txt`;
+- follows only HTTPS `github.com`, `objects.githubusercontent.com` and
+  `release-assets.githubusercontent.com` URLs, validating every redirect hop;
+- downloads through `<userData>/updates/<version>/<file>.partial`, caps the
+  installer at 600 MiB and requires the asset's declared size and SHA-256;
+- deletes the file on a checksum mismatch and removes older update directories;
+- checks automatically at most once per 24 hours and exposes a manual
+  "Check now" action. The "Check for app updates automatically" setting
+  defaults to ON;
+- installs only on an explicit "Restart and install" action, refuses while a
+  download or media job is active, re-verifies the hash, then starts the
+  per-user NSIS installer detached with `shell: false` before quitting.
+
+Release notes are shown as plain text only, truncated to 4 KiB.
+
+### Publishing an update
+
+1. Bump `version` in `package.json`.
+2. Build the installer:
+
+   ```powershell
+   npm run build:installer
+   ```
+
+3. Generate the checksum file for every `dist/DonDownload-*-setup.exe`:
+
+   ```powershell
+   npm run release:checksums
+   ```
+
+   This writes `dist/SHA256SUMS.txt` in `<sha256>  <filename>` format.
+4. Create a GitHub release whose tag matches the app version (`vX.Y.Z` or
+   `X.Y.Z`) and upload both:
+   - `dist/DonDownload-<version>-x64-setup.exe`
+   - `dist/SHA256SUMS.txt`
+
+5. Point `UPDATE_REPO` at that public repository. The installed app checks it
+   on the next startup at most once per 24 hours.
+
 ## Verification
 
 Expected checks:
@@ -293,7 +350,8 @@ testing as a manual step.
   the wiring. Rebuild the artifact after any source change before release.
 - ffprobe is staged but not invoked by the current application.
 - The installer is not code-signed. Public distribution requires signing.
-- No auto-update, publish provider or telemetry is configured.
+- No auto-update, publish provider or telemetry is configured. The application
+  updater exists but stays inert while `UPDATE_REPO` is `null`.
 - No installer icon/branding is supplied; electron-builder may use its default
   icon until branded assets are added.
 - GPL corresponding-source archives are not bundled or published by this
