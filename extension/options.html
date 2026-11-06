@@ -4,25 +4,27 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DonDownload Capture settings</title>
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <div>
-          <span class="brand">DonDownload Capture</span>
-          <h1>Settings</h1>
-        </div>
-        <p class="lead">
-          Capture stays explicit by default. Only settings you approve here
-          change automatic behavior.
-        </p>
+    <main class="page">
+      <header class="top">
+        <span class="logo" aria-hidden="true">
+          <svg class="i" viewBox="0 0 24 24">
+            <path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" />
+          </svg>
+        </span>
+        <h1>DonDownload extension</h1>
+        <span class="conn">
+          <span class="dot" aria-hidden="true"></span>
+          <span>Connected to the app</span>
+        </span>
       </header>
 
-      <section aria-labelledby="capture-heading">
+      <section class="group" aria-labelledby="capture-heading">
         <h2 id="capture-heading">Overlay and capture</h2>
-
-        <p class="hint">
+        <p class="lead">
           On a site where you enable the overlay, DonDownload may analyze the
           page with yt-dlp in the background when its player uses HLS, DASH or
           Media Source, so verified qualities are already there when you open
@@ -37,9 +39,9 @@
           <span>
             <strong>Floating video button</strong>
             <span class="hint">
-              Show a small DonDownload button as soon as a visible
-              video is attached or starts playing. On by default; it never
-              appears outside an enabled site.
+              Show a small DonDownload button as soon as a visible video is
+              attached or starts playing. On by default; it never appears
+              outside an enabled site.
             </span>
           </span>
         </label>
@@ -56,9 +58,9 @@
         </label>
       </section>
 
-      <section aria-labelledby="sniffing-heading">
+      <section class="group" aria-labelledby="sniffing-heading">
         <h2 id="sniffing-heading">Detected media</h2>
-        <p class="hint">
+        <p class="lead">
           On a site where you enabled the overlay, DonDownload watches completed
           HTTP(S) responses through the optional <strong>webRequest</strong>
           permission and lists video/audio files, HLS and DASH manifests. It
@@ -93,9 +95,9 @@
         <p id="sniffing-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="cookies-heading">
+      <section class="group" aria-labelledby="cookies-heading">
         <h2 id="cookies-heading">Cookies for detected media</h2>
-        <p class="hint">
+        <p class="lead">
           Off by default for every site. When you turn this on for one exact
           origin, the extension reads that site's cookies for the media URL and
           sends them with one download job so login-protected media can work.
@@ -104,7 +106,7 @@
           Cookies can grant access to your account, so leave this off unless the
           site needs it.
         </p>
-        <p id="cookie-target" class="hint">No page selected.</p>
+        <p id="cookie-target" class="state">No page selected.</p>
         <label class="toggle-row">
           <input id="site-cookies" type="checkbox" disabled />
           <span>
@@ -120,9 +122,9 @@
         <p id="cookie-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="handoff-heading">
+      <section class="group" aria-labelledby="handoff-heading">
         <h2 id="handoff-heading">Automatic file hand-off</h2>
-        <p class="hint">
+        <p class="lead">
           Off until you approve the optional <strong>downloads</strong>
           permission. When enabled, the extension hands off only an HTTP(S)
           ordinary file (zip, PDF, installer and similar). Video/audio,
@@ -131,7 +133,7 @@
           returns a durable receipt.
         </p>
         <p id="permission-state" class="state" role="status" aria-live="polite"></p>
-        <button id="request-downloads" type="button">
+        <button id="request-downloads" class="btn primary" type="button">
           Allow automatic file hand-off
         </button>
         <label class="toggle-row">
@@ -143,15 +145,15 @@
             </span>
           </span>
         </label>
-        <button id="remove-downloads" type="button" class="secondary" hidden>
+        <button id="remove-downloads" class="btn" type="button" hidden>
           Remove download permission
         </button>
         <p id="handoff-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="network-heading">
+      <section class="group" aria-labelledby="network-heading">
         <h2 id="network-heading">Playback response evidence (optional)</h2>
-        <p class="hint">
+        <p class="lead">
           Off by default. This requests the optional <strong>webRequest</strong>
           permission only from the button below. It observes response status and
           only Content-Type, Content-Range, Content-Length and Content-Encoding
@@ -162,7 +164,7 @@
           <code>video/mp4</code> or <code>video/webm</code> source is not queued.
         </p>
         <p id="network-state" class="state" role="status" aria-live="polite"></p>
-        <button id="request-network" type="button">
+        <button id="request-network" class="btn primary" type="button">
           Allow network response evidence
         </button>
         <label class="toggle-row">
@@ -174,50 +176,51 @@
             </span>
           </span>
         </label>
-        <button id="remove-network" type="button" class="secondary" hidden>
+        <button id="remove-network" class="btn" type="button" hidden>
           Remove network permission
         </button>
         <p id="network-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="exclusions-heading">
+      <section class="group" aria-labelledby="exclusions-heading">
         <h2 id="exclusions-heading">Excluded sites</h2>
-        <p class="hint">
+        <p class="lead">
           Enter an exact origin, for example <code>https://example.com</code>.
           Downloads started on that exact origin are always left to the browser.
         </p>
         <form id="exclusion-form" class="inline-form">
           <input
             id="exclusion-origin"
+            class="field"
             type="url"
             inputmode="url"
             autocomplete="off"
             placeholder="https://example.com"
             aria-label="Exact origin to exclude"
           />
-          <button type="submit">Exclude</button>
+          <button class="btn" type="submit">Exclude</button>
         </form>
         <ul id="exclusion-list" class="origin-list"></ul>
         <p id="exclusion-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="site-heading">
+      <section class="group" aria-labelledby="site-heading">
         <h2 id="site-heading">Site access</h2>
-        <p id="site-target" class="hint">No page selected.</p>
+        <p id="site-target" class="state">No page selected.</p>
         <p id="site-state" class="state" role="status" aria-live="polite"></p>
-        <p id="site-hint" class="hint"></p>
-        <button id="enable-site" type="button" class="secondary" hidden>
+        <p id="site-hint" class="lead"></p>
+        <button id="enable-site" class="btn primary" type="button" hidden>
           Enable overlay on this site
         </button>
-        <button id="disable-site" type="button" class="secondary" hidden>
+        <button id="disable-site" class="btn" type="button" hidden>
           Turn off overlay on this site
         </button>
         <p id="site-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="shortcut-heading">
+      <section class="group" aria-labelledby="shortcut-heading">
         <h2 id="shortcut-heading">Keyboard shortcut</h2>
-        <p class="hint">
+        <p class="lead">
           This extension ships without a default shortcut, so it cannot conflict
           with a page or browser hotkey. Set your own at
           <code>chrome://extensions/shortcuts</code>. The command toggles the

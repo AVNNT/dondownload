@@ -4,51 +4,56 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DonDownload Capture setup</title>
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="welcome.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <div>
-          <span class="brand">DonDownload Capture</span>
-          <h1>Welcome</h1>
-        </div>
-        <span class="pill">setup</span>
-      </header>
+    <main class="card">
+      <span class="logo" aria-hidden="true">
+        <svg class="i" viewBox="0 0 24 24">
+          <path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" />
+        </svg>
+      </span>
+      <h1>Set up DonDownload</h1>
+      <p class="lead">Two quick steps, then download videos and files from any page.</p>
 
-      <section id="connection" class="connection" aria-labelledby="connection-title">
+      <section id="connection" class="connection step" aria-labelledby="connection-title">
         <div class="connection-head">
-          <span id="connection-dot" class="dot" aria-hidden="true"></span>
+          <span id="connection-dot" class="conn-check" aria-hidden="true">
+            <svg class="i" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg>
+          </span>
           <h2 id="connection-title">Checking the desktop app…</h2>
         </div>
         <p id="connection-detail" class="lead">
           DonDownload is looking for the app and its native bridge.
         </p>
         <ol id="connection-steps" class="steps" hidden></ol>
-        <button id="retry" type="button" class="secondary">Retry</button>
+        <button id="retry" class="btn" type="button">Retry</button>
       </section>
 
-      <section id="grant" aria-labelledby="grant-title" hidden>
+      <section id="grant" class="step" aria-labelledby="grant-title" hidden>
         <h2 id="grant-title">Enable capture for one site</h2>
         <p id="grant-detail" class="lead"></p>
-        <button id="grant-button" type="button">Enable on this site</button>
-        <button id="grant-next" type="button" class="secondary" hidden>
+        <button id="grant-button" class="btn primary" type="button">
+          Enable on this site
+        </button>
+        <button id="grant-next" class="btn" type="button" hidden>
           Allow another site
         </button>
         <p id="grant-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="choices-title">
+      <section class="step" aria-labelledby="choices-title">
         <h2 id="choices-title">Where should capture work?</h2>
         <p class="lead">
           Downloads are always explicit. The optional overlay and media
           detection need site access. Start with the recommended setup for every
           normal site, or choose sites one at a time from the toolbar popup.
         </p>
-        <button id="enable-all-sites" type="button">
+        <button id="enable-all-sites" class="btn primary wide" type="button">
           Recommended: capture downloads and detect media everywhere
         </button>
-        <button id="choose-later" type="button" class="secondary">
+        <button id="choose-later" class="btn wide" type="button">
           Choose sites later
         </button>
         <p id="choices-status" class="status" role="status" aria-live="polite"></p>
