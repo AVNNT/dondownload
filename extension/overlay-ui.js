@@ -190,7 +190,69 @@
   ].join('\n')
 
   function usable(video) {
-    return core.evaluateVideoCandidate(ns.candidateFor(video), ns.viewport())
+    return core.evaluateVideoCandidate(videoCandidateFor(video), ns.viewport())
+  }
+
+
+  function clipsOverflow(value) {
+    return typeof value === 'string' && value.length > 0 && value !== 'visible'
+  }
+
+
+  function clipsContent(node) {
+    if (typeof getComputedStyle !== 'function') return false
+    var computed = getComputedStyle(node)
+    if (!computed) return false
+    return (
+      clipsOverflow(computed.overflow) ||
+      clipsOverflow(computed.overflowX) ||
+      clipsOverflow(computed.overflowY)
+    )
+  }
+
+
+  function parentElementOf(node) {
+    return node.parentElement || node.parentNode || null
+  }
+
+
+  // Every ancestor that clips the video, nearest first, up to (and including)
+  // the document element. The pure intersection lives in overlay-core.
+  function clipRectsFor(video) {
+    var rects = []
+    var node = parentElementOf(video)
+    var root = document.documentElement
+    while (node) {
+      if (clipsContent(node)) rects.push(node.getBoundingClientRect())
+      if (node === root) break
+      node = parentElementOf(node)
+    }
+    return rects
+  }
+
+
+  function videoCandidateFor(video) {
+    return {
+      tagName: video.tagName,
+      isConnected: video.isConnected,
+      hidden: video.hidden,
+      rect: ns.rectFor(video),
+      clipRects: clipRectsFor(video),
+      styles: ns.readStyles(video)
+    }
+  }
+
+
+  // The visible part of the video (or of the large clipping player container
+  // when the video rect is shifted out of view). Used for both visibility and
+  // placement so the trigger never lands on a clipped-away rect.
+  function anchorFor(video) {
+    var chosen = core.chooseAnchor({
+      rect: ns.rectFor(video),
+      clipRects: clipRectsFor(video),
+      viewport: ns.viewport()
+    })
+    return chosen.anchor
   }
 
 
@@ -810,8 +872,8 @@
       return
     }
 
-    var rect = state.activeVideo ? ns.rectFor(state.activeVideo) : target.getBoundingClientRect()
-    var triggerRect = core.placeTrigger(rect, ns.viewport())
+    var rect = state.activeVideo ? anchorFor(state.activeVideo) : target.getBoundingClientRect()
+    var triggerRect = rect ? core.placeTrigger(rect, ns.viewport()) : null
     if (!triggerRect) {
       hideNow()
       return
@@ -900,8 +962,8 @@
       var video = videos[index]
       var result = usable(video)
       if (!result.usable) continue
-      var rect = ns.rectFor(video)
-      var area = rect.width * rect.height
+      var rect = anchorFor(video)
+      var area = rect ? rect.width * rect.height : 0
       if (area > bestArea) {
         bestArea = area
         best = video
