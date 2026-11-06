@@ -69,5 +69,12 @@ export const IPC = {
   checkAppUpdate: 'app-update:check',
   installAppUpdate: 'app-update:install',
   setAppUpdateAutoCheck: 'app-update:set-auto-check',
-  appUpdateStateChanged: 'app-update:state-changed'
+  appUpdateStateChanged: 'app-update:state-changed',
+  // Smart Link Scanner phase 1 (additive). Starting/cancelling a scan never
+  // queues anything; only the explicit queue-selection channel can create
+  // downloads, and it accepts opaque session/item IDs only.
+  scanStart: 'scan:start',
+  scanCancel: 'scan:cancel',
+  scanUpdated: 'scan:updated',
+  scanQueueSelection: 'scan:queue-selection'
 } as const

@@ -50,6 +50,12 @@ import type {
   SmartBatchSubmitEntry,
   SmartBatchSubmitResult
 } from '@shared/types'
+import type {
+  ScanItem,
+  ScanQueueResult,
+  ScanSession,
+  ScanStartInput
+} from '@shared/scanner'
 import { normalizeHttpUrl } from '@shared/validation'
 
 const browserExtensionFixture: BrowserExtensionStatus = {
@@ -145,6 +151,7 @@ export function createPreviewApi(
   let desktopSettings: DesktopSettings = seedDesktopSettings()
   let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
   let appUpdateSettings: AppUpdateSettings = defaultAppUpdateSettings()
+  let scanSession: ScanSession | null = null
 
   const analyses = new Map<string, MediaAnalysis>()
   const previews = new Map<string, CollectionPreview>()
@@ -154,6 +161,7 @@ export function createPreviewApi(
   const mediaListeners = new Set<Listener<MediaSnapshot>>()
   const batchListeners = new Set<Listener<{ batches: Batch[] }>>()
   const appUpdateListeners = new Set<Listener<AppUpdateState>>()
+  const scanListeners = new Set<Listener<ScanSession>>()
 
   const nextId = (prefix: string): string => `${prefix}-${++sequence}`
 
@@ -466,6 +474,151 @@ export function createPreviewApi(
     const state = appUpdateState()
     for (const listener of appUpdateListeners) listener(state)
     return state
+  }
+
+  function seedScanItems(): ScanItem[] {
+    return [
+      {
+        id: 'preview-scan-video-page',
+        category: 'video',
+        kind: 'page-link',
+        name: 'EroScripts topic video',
+        hostname: 'youtube.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'found',
+        postNumber: 2,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-video',
+        category: 'video',
+        kind: 'file',
+        name: 'demo-clip.mp4',
+        hostname: 'cdn.example.com',
+        sizeBytes: 72_400_000,
+        verified: true,
+        status: 'ready',
+        postNumber: 2,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-funscript',
+        category: 'script',
+        kind: 'file',
+        name: 'x.roll.funscript',
+        hostname: 'discuss.example.com',
+        sizeBytes: 48_120,
+        verified: true,
+        status: 'ready',
+        postNumber: 4,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-audio',
+        category: 'audio',
+        kind: 'file',
+        name: 'ambience.mp3',
+        hostname: 'cdn.example.com',
+        sizeBytes: 6_200_000,
+        verified: true,
+        status: 'ready',
+        postNumber: 5,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-image',
+        category: 'image',
+        kind: 'file',
+        name: 'preview.jpg',
+        hostname: 'cdn.example.com',
+        sizeBytes: 420_000,
+        verified: true,
+        status: 'ready',
+        postNumber: 5,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-document',
+        category: 'document',
+        kind: 'file',
+        name: 'readme.pdf',
+        hostname: 'files.example.com',
+        sizeBytes: 1_240_000,
+        verified: true,
+        status: 'ready',
+        postNumber: 6,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-archive',
+        category: 'archive',
+        kind: 'file',
+        name: 'pack.zip',
+        hostname: 'files.example.com',
+        sizeBytes: 12_800_000,
+        verified: true,
+        status: 'ready',
+        postNumber: 7,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-signin',
+        category: 'other',
+        kind: 'file',
+        name: 'attachment.bin',
+        hostname: 'discuss.example.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'signin',
+        postNumber: 7,
+        author: 'demo-author'
+      }
+    ]
+  }
+
+  function emitScan(session: ScanSession): ScanSession {
+    scanSession = session
+    for (const listener of scanListeners) listener(session)
+    return session
+  }
+
+  function countersFor(items: readonly ScanItem[]): ScanSession['counters'] {
+    return {
+      found: items.filter((item) => item.status === 'found').length,
+      probing: items.filter((item) => item.status === 'probing').length,
+      ready: items.filter((item) => item.status === 'ready').length,
+      signin: items.filter((item) => item.status === 'signin').length,
+      unavailable: items.filter((item) => item.status === 'unavailable').length
+    }
+  }
+
+  function createScanSession(url: string): ScanSession {
+    let hostname = 'example.com'
+    try {
+      hostname = new URL(url).hostname
+    } catch {
+      // Validation already succeeded, so this is unreachable in practice.
+    }
+    const items = seedScanItems()
+    return {
+      sessionId: nextId('scan-session'),
+      status: 'scanning',
+      origin: 'paste',
+      hostname,
+      message: null,
+      signinRequired: false,
+      counters: countersFor(items),
+      progress: {
+        fetchedPages: 1,
+        totalItems: items.length,
+        queueableItems: items.filter((item) => item.kind === 'file').length
+      },
+      items,
+      removedItemIds: [],
+      revision: 1,
+      updatedAt: now()
+    }
   }
 
   return {
@@ -953,6 +1106,79 @@ export function createPreviewApi(
     onAppUpdateStateChanged: (listener) => {
       appUpdateListeners.add(listener)
       return () => appUpdateListeners.delete(listener)
+    },
+
+    startScan: async (input: ScanStartInput) => {
+      let url: string
+      try {
+        url = normalizeHttpUrl(input.url)
+      } catch (error) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          error instanceof Error ? error.message : 'Enter a page URL to scan.'
+        )
+      }
+      const created = createScanSession(url)
+      emitScan(created)
+      setTimeout(() => {
+        if (scanSession === null || scanSession.sessionId !== created.sessionId) {
+          return
+        }
+        if (scanSession.status !== 'scanning') return
+        emitScan({
+          ...scanSession,
+          status: 'done',
+          revision: scanSession.revision + 1,
+          updatedAt: now(),
+          items: []
+        })
+      }, 250)
+      return ok(created)
+    },
+
+    cancelScan: async (sessionId: string) => {
+      if (scanSession === null || scanSession.sessionId !== sessionId) {
+        return fail(PREVIEW_NOT_FOUND_CODE, 'That scan no longer exists.')
+      }
+      const cancelled: ScanSession = {
+        ...scanSession,
+        status: 'cancelled',
+        message: 'The scan was cancelled.',
+        revision: scanSession.revision + 1,
+        updatedAt: now(),
+        items: []
+      }
+      emitScan(cancelled)
+      return ok(cancelled)
+    },
+
+    queueScanSelection: async (
+      _sessionId: string,
+      itemIds: string[]
+    ): Promise<ApiResult<ScanQueueResult>> => {
+      if (scanSession === null) {
+        return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+      }
+      const selected = new Set(itemIds)
+      const queueable = scanSession.items.filter(
+        (item) => selected.has(item.id) && item.kind === 'file'
+      )
+      if (queueable.length === 0) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          'Select at least one downloadable file.'
+        )
+      }
+      return ok({
+        batch: batches[0] ?? null,
+        queuedItemIds: queueable.map((item) => item.id),
+        skipped: []
+      })
+    },
+
+    onScanUpdated: (listener) => {
+      scanListeners.add(listener)
+      return () => scanListeners.delete(listener)
     }
   }
 }

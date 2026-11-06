@@ -44,6 +44,12 @@ export interface PublicResourcePreflightInput {
   /** For an extensionless captured video: the exact allowed media type. */
   expectedMediaType?: 'video/mp4' | 'video/webm'
   /**
+   * Allow a video/audio/HTML/manifest response. The scanner uses this to learn
+   * what a candidate URL really serves; the existing hand-off path leaves it
+   * unset and therefore keeps accepting only non-media resources.
+   */
+  allowMedia?: boolean
+  /**
    * Opt-in browser headers for the exact download host. A Cookie is attached
    * only when the hop host still equals the initial input URL host; Referer and
    * User-Agent may follow a same-site redirect. Nothing is persisted.
@@ -62,12 +68,15 @@ export interface PublicResourcePreflightResult {
   finalUrl: string
   status: number
   contentType: string
+  /** Present only when the server explicitly named the download. */
+  contentDisposition: string | null
   totalBytes: number
 }
 
 interface HeaderResponse {
   status: number
   contentType: string | null
+  contentDisposition: string | null
   contentRange: string | null
   contentLength: string | null
   contentEncoding: string | null
@@ -236,6 +245,7 @@ function requestHeaders(
             finish({
               status,
               contentType: null,
+              contentDisposition: null,
               contentRange: null,
               contentLength: null,
               contentEncoding: null,
@@ -247,6 +257,10 @@ function requestHeaders(
           const result: HeaderResponse = {
             status,
             contentType: normalizeContentType(response.headers['content-type']),
+            contentDisposition:
+              typeof response.headers['content-disposition'] === 'string'
+                ? response.headers['content-disposition']
+                : null,
             contentRange:
               typeof response.headers['content-range'] === 'string'
                 ? response.headers['content-range']
@@ -329,7 +343,7 @@ function validateResponse(
     if (response.contentType !== input.expectedMediaType) {
       throw failure('The public resource is not the expected media type.')
     }
-  } else if (isMediaContentType(response.contentType)) {
+  } else if (isMediaContentType(response.contentType) && input.allowMedia !== true) {
     throw failure('Automatic hand-off only accepts non-media resources.')
   }
 
@@ -385,6 +399,7 @@ function validateResponse(
     finalUrl: input.url,
     status: response.status,
     contentType: response.contentType,
+    contentDisposition: response.contentDisposition,
     totalBytes
   }
 }

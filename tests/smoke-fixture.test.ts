@@ -63,6 +63,7 @@ describe('createSmokeFixturePreflight', () => {
         {
           status: 206,
           contentType: 'application/octet-stream',
+          contentDisposition: null,
           contentRange: 'bytes 0-0/11',
           contentLength: '1',
           contentEncoding: null,

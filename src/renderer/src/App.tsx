@@ -22,6 +22,7 @@ import type {
   MediaSnapshot
 } from '@shared/media'
 import type { AppUpdateState } from '@shared/appUpdate'
+import type { ScanSession } from '@shared/scanner'
 import { formatSpeed } from '@shared/format'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
@@ -83,12 +84,25 @@ interface AddRequest {
   tab: AddDialogTab
   url: string
   nonce: number
+  /** Extension-created scan session to seed the Scan page view. */
+  scanSessionId?: string
 }
 
 interface MenuState {
   x: number
   y: number
   rows: UnifiedRow[]
+}
+
+function mergeScanSession(
+  current: ScanSession | null,
+  update: ScanSession
+): ScanSession {
+  if (current === null || current.sessionId !== update.sessionId) return update
+  const items = new Map(current.items.map((item) => [item.id, item]))
+  for (const item of update.items) items.set(item.id, item)
+  for (const removed of update.removedItemIds) items.delete(removed)
+  return { ...update, items: [...items.values()] }
 }
 
 function runtimeLabel(aria2: Aria2State | null): string {
@@ -123,6 +137,7 @@ export default function App(): JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null)
+  const [scanSession, setScanSession] = useState<ScanSession | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -133,6 +148,7 @@ export default function App(): JSX.Element {
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
   const dragDepth = useRef(0)
   const addSequence = useRef(0)
+  const openedExtensionScans = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     let cancelled = false
@@ -160,6 +176,24 @@ export default function App(): JSX.Element {
     else setBanner(downloadResult.error)
     if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
     else if (downloadResult.ok) setBanner(mediaResult.error)
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.donDownload.onScanUpdated((session) => {
+      setScanSession((current) => mergeScanSession(current, session))
+      if (session.origin !== 'extension') return
+      if (openedExtensionScans.current.has(session.sessionId)) return
+      openedExtensionScans.current.add(session.sessionId)
+      // The extension explicitly asked the desktop to show this scan. Focus is
+      // handled in the main process; this opens the matching view once.
+      setAddRequest({
+        tab: 'scan',
+        url: '',
+        nonce: ++addSequence.current,
+        scanSessionId: session.sessionId
+      })
+    })
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -990,6 +1024,12 @@ export default function App(): JSX.Element {
           key={addRequest.nonce}
           tab={addRequest.tab}
           initialUrl={addRequest.url}
+          scanSession={
+            addRequest.scanSessionId !== undefined &&
+            scanSession?.sessionId === addRequest.scanSessionId
+              ? scanSession
+              : null
+          }
           busy={adding}
           onTabChange={(tab) =>
             setAddRequest((current) => (current ? { ...current, tab } : current))

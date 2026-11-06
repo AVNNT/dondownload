@@ -1,7 +1,7 @@
-import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload } from './bridge.js'
+import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload, sendScanPage } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
-import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy } from './capture-settings.js'
+import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
   popupConnectionLine,
   siteEnableLabel,
@@ -23,6 +23,7 @@ import {
 } from './media-sniffer.js'
 
 const sendButton = document.getElementById('send')
+const scanButton = document.getElementById('scan-page')
 const downloadAgainButton = document.getElementById('download-again')
 const statusElement = document.getElementById('status')
 const urlElement = document.getElementById('page-url')
@@ -47,6 +48,7 @@ let pageUrl = null
 let pageOrigin = null
 let activeTabId = null
 let sending = false
+let scanning = false
 let polling = null
 let pollAttempts = 0
 let sniffedMedia = []
@@ -63,6 +65,10 @@ function setSending(next) {
   sendButton.disabled = next || pageUrl === null
   sendButton.textContent = next ? 'Sending…' : 'Download this page'
   downloadAgainButton.disabled = next
+  if (scanButton !== null) {
+    scanButton.disabled = next || scanning || pageUrl === null
+    scanButton.textContent = scanning ? 'Opening scan…' : 'Scan this page with DonDownload'
+  }
 }
 
 function errorHint(error) {
@@ -714,8 +720,38 @@ async function sendPage(force) {
   }
 }
 
+async function scanPage() {
+  if (scanning || pageUrl === null) return
+  scanning = true
+  setSending(false)
+  setStatus('', 'Scanning this page in DonDownload…')
+  try {
+    // Cookies are read only when the exact page origin is already on the
+    // per-origin opt-in list and the optional cookies permission is granted.
+    const cookie = await readOptInCookieHeader(chrome, pageUrl, pageUrl)
+    const result = await sendScanPage(pageUrl, cookie)
+    if (result.ok) {
+      setStatus(
+        'success',
+        cookie === undefined
+          ? 'Scan opened in DonDownload. No browser cookies were sent; if the page needs a sign-in, allow cookies for this site and scan again.'
+          : 'Scan opened in DonDownload. Review the grouped results and choose files there.'
+      )
+      return
+    }
+    reportSendFailure(result.error)
+  } finally {
+    scanning = false
+    setSending(false)
+  }
+}
+
 sendButton.addEventListener('click', () => {
   void sendPage(false)
+})
+
+scanButton?.addEventListener('click', () => {
+  void scanPage()
 })
 
 downloadAgainButton.addEventListener('click', () => {

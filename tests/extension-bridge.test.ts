@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   NATIVE_HOST,
+  SCAN_PAGE_MESSAGE_TYPE,
   normalizeCapturedSource,
   sendAnalyzeMedia,
   sendQueueCapturedSource,
   sendQueueDownload,
-  sendQueueMedia
+  sendQueueMedia,
+  sendScanPage
 } from '../extension/bridge'
 
 const ANALYSIS_ID = 'analysis_0123456789abcdef'
@@ -306,6 +308,62 @@ describe('media native envelopes', () => {
     expect(result).toMatchObject({
       ok: false,
       error: { code: 'NATIVE_HOST_NOT_REGISTERED' }
+    })
+  })
+})
+
+describe('scan this page message', () => {
+  it('sends only the validated URL and an optional exact-host cookie', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, accepted: true }
+
+    const result = await sendScanPage(
+      '  https://discuss.example/t/topic/346779#post-4 ',
+      'auth=1; theme=dark'
+    )
+
+    expect(result).toEqual({ ok: true })
+    expect(fake.messages).toEqual([
+      {
+        host: NATIVE_HOST,
+        message: {
+          type: SCAN_PAGE_MESSAGE_TYPE,
+          url: 'https://discuss.example/t/topic/346779',
+          cookie: 'auth=1; theme=dark'
+        }
+      }
+    ])
+  })
+
+  it('never sends a cookie when the user has not opted in', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, accepted: true }
+
+    await sendScanPage('https://discuss.example/t/topic/346779')
+
+    expect(fake.messages[0]?.message).toEqual({
+      type: 'scan-page',
+      url: 'https://discuss.example/t/topic/346779'
+    })
+  })
+
+  it('rejects invalid URLs, cookies and unexpected native responses', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, accepted: true }
+
+    await expect(sendScanPage('file:///secret')).resolves.toMatchObject({
+      ok: false
+    })
+    await expect(
+      sendScanPage('https://discuss.example/t/topic/1', 'auth=1\r\nX: y')
+    ).resolves.toMatchObject({ ok: false })
+    expect(fake.messages).toHaveLength(0)
+
+    fake.response = { ok: true, accepted: false }
+    const rejected = await sendScanPage('https://discuss.example/t/topic/1')
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: { code: 'NATIVE_RESPONSE_INVALID' }
     })
   })
 })

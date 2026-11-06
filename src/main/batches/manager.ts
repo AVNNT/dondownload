@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
 import {
   MAX_BATCH_SOURCES,
+  MAX_BATCH_TITLE_LENGTH,
   MAX_COLLECTION_SELECTION,
   BATCH_MEDIA_QUALITIES,
   isActiveBatchItemStatus,
@@ -36,11 +37,12 @@ import type {
   AppSnapshot,
   BatchSnapshot,
   DownloadItem,
+  DownloadRequestHeaders,
   SmartBatchSubmitEntry,
   SmartBatchSubmitInput,
   SmartBatchSubmitResult
 } from '@shared/types'
-import { ValidationError } from '@shared/validation'
+import { ValidationError, sanitizeFilename } from '@shared/validation'
 import type {
   PixeldrainFileResolution,
   PixeldrainLink,
@@ -204,13 +206,21 @@ interface StoredPreview {
   > | null
 }
 
-interface DirectTarget {
+export interface DirectTarget {
   entryIndex: number
   itemId: string
   url: string
   kind: 'direct' | 'pixeldrain-file' | 'gofile'
   title: string
   label: string
+}
+
+/** Internal input for the explicit Smart Link Scanner queue path. */
+export interface BatchScanTarget {
+  url: string
+  title: string
+  filename?: string
+  requestHeaders?: DownloadRequestHeaders
 }
 
 /* ------------------------------------------------------------------------- *
@@ -473,6 +483,12 @@ export class BatchManager {
   private readonly batches = new Map<string, ManagedBatch>()
   private readonly previews = new Map<string, StoredPreview>()
   private readonly dirtyItems = new Map<string, BatchItemRecord>()
+  /**
+   * One-job scanner headers. Deliberately memory-only: a restart marks active
+   * items interrupted and never resumes them, so a Cookie can never touch disk.
+   */
+  private readonly scanRequestHeaders = new Map<string, DownloadRequestHeaders>()
+  private readonly scanFilenames = new Map<string, string>()
   private readonly idleWaiters: Array<() => void> = []
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -860,6 +876,147 @@ export class BatchManager {
     return batch
   }
 
+  /* ---------------------- scanner direct queue path ---------------------- */
+
+  /**
+   * Create one persisted direct-file batch from the scanner's explicit
+   * selection. This is not reachable from the renderer: the scanner resolves
+   * opaque item IDs, re-probes the URLs and passes normalized internal targets.
+   *
+   * `requestHeaders` (only an opted-in exact-host Cookie) is retained in memory
+   * for the one child job. It is never persisted, and a restart never resumes
+   * the item.
+   */
+  async createScanBatch(rawInput: unknown): Promise<Batch> {
+    this.assertOpen()
+    const record = asRecord(rawInput)
+    for (const key of Object.keys(record)) {
+      if (key !== 'title' && key !== 'targets') {
+        throw new ValidationError('The scan batch contains unsupported fields.')
+      }
+    }
+    if (
+      typeof record.title !== 'string' ||
+      record.title.trim().length === 0 ||
+      record.title.length > MAX_BATCH_TITLE_LENGTH
+    ) {
+      throw new ValidationError('The scan batch title is invalid.')
+    }
+    const rawTargets = record.targets
+    if (
+      !Array.isArray(rawTargets) ||
+      rawTargets.length === 0 ||
+      rawTargets.length > MAX_COLLECTION_SELECTION
+    ) {
+      throw new ValidationError('The scan batch selection is invalid.')
+    }
+
+    const targets: BatchScanTarget[] = rawTargets.map((rawTarget) => {
+      const target = asRecord(rawTarget)
+      for (const key of Object.keys(target)) {
+        if (
+          key !== 'url' &&
+          key !== 'title' &&
+          key !== 'filename' &&
+          key !== 'requestHeaders'
+        ) {
+          throw new ValidationError(
+            'A scan batch target contains unsupported fields.'
+          )
+        }
+      }
+      const url = normalizeBatchSourceUrl(target.url)
+      const title = cleanSafeText(target.title, MAX_BATCH_TITLE_LENGTH, 'Scanned file')
+      let filename: string | undefined
+      if (target.filename !== undefined) {
+        if (typeof target.filename !== 'string') {
+          throw new ValidationError('The scan batch filename is invalid.')
+        }
+        filename = sanitizeFilename(target.filename)
+      }
+      let requestHeaders: DownloadRequestHeaders | undefined
+      if (target.requestHeaders !== undefined) {
+        const headers = asRecord(target.requestHeaders)
+        for (const key of Object.keys(headers)) {
+          if (key !== 'cookie') {
+            throw new ValidationError(
+              'A scan batch header contains unsupported fields.'
+            )
+          }
+        }
+        const cookie = headers.cookie
+        if (
+          typeof cookie !== 'string' ||
+          cookie.length === 0 ||
+          cookie.length > 8192 ||
+          // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+          /[\u0000-\u001f\u007f]/.test(cookie)
+        ) {
+          throw new ValidationError('The scan batch cookie header is invalid.')
+        }
+        requestHeaders = { cookie }
+      }
+      return {
+        url,
+        title,
+        ...(filename === undefined ? {} : { filename }),
+        ...(requestHeaders === undefined ? {} : { requestHeaders })
+      }
+    })
+
+    const createdAt = this.now()
+    const batchId = newOpaqueId('batch')
+    const items = new Map<string, BatchItemRecord>()
+    for (const [position, target] of targets.entries()) {
+      const itemId = newOpaqueId('bitem')
+      items.set(itemId, {
+        id: itemId,
+        batchId,
+        position,
+        kind: 'download',
+        status: 'queued',
+        title: target.title,
+        label: 'Scanned file',
+        childId: null,
+        completedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+        sourceUrl: target.url,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null
+      })
+      if (target.requestHeaders !== undefined) {
+        this.scanRequestHeaders.set(itemId, target.requestHeaders)
+      }
+      if (target.filename !== undefined) {
+        this.scanFilenames.set(itemId, target.filename)
+      }
+    }
+
+    const batchRecord: BatchRecord = {
+      id: batchId,
+      kind: 'direct-urls',
+      title: cleanSafeText(record.title, MAX_BATCH_TITLE_LENGTH, 'Scanned page'),
+      status: 'queued',
+      sourceUrl: null,
+      mediaQuality: null,
+      maxBytesPerItem: null,
+      errorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null
+    }
+
+    const batch = this.insertBatch(batchRecord, [...items.values()])
+    this.recomputeBatch(batch)
+    this.persistBatchNow(batch)
+    this.schedulePump()
+    this.ensurePolling()
+    this.publish(true)
+    return this.toPublicBatch(batch)
+  }
+
   /* ---------------------- batch creation from a preview ---------------------- */
 
   async createCollectionBatch(rawInput: unknown): Promise<Batch> {
@@ -1080,6 +1237,8 @@ export class BatchManager {
     this.batches.delete(batch.record.id)
     for (const item of batch.items.values()) {
       this.dirtyItems.delete(item.id)
+      this.scanRequestHeaders.delete(item.id)
+      this.scanFilenames.delete(item.id)
     }
     this.removePersistedBatch(batch.record.id)
     this.stopPollingIfIdle()
@@ -1214,6 +1373,8 @@ export class BatchManager {
     }
 
     this.flushPersistence()
+    this.scanRequestHeaders.clear()
+    this.scanFilenames.clear()
     this.resolveIdleWaiters()
   }
 
@@ -1341,7 +1502,7 @@ export class BatchManager {
       }
 
       let targetUrl = sourceUrl
-      let filename: string | undefined
+      let filename: string | undefined = this.scanFilenames.get(item.id)
       let parsed: URL
       try {
         parsed = new URL(sourceUrl)
@@ -1360,7 +1521,10 @@ export class BatchManager {
 
       const snapshot = (await this.downloads.add({
         url: targetUrl,
-        ...(filename ? { filename } : {})
+        ...(filename ? { filename } : {}),
+        ...(this.scanRequestHeaders.has(item.id)
+          ? { requestHeaders: this.scanRequestHeaders.get(item.id) }
+          : {})
       })) as AppSnapshot
       if (!this.batches.has(batch.record.id)) {
         // The parent row was removed while `add` was in flight. The child row

@@ -347,6 +347,33 @@ describe('browser preview fixture adapter', () => {
     ).toBe(false)
   })
 
+  it('supports scan discovery and an explicit selection only', async () => {
+    const preview = api()
+    const started = await preview.startScan({
+      url: 'https://discuss.example/t/topic/346779'
+    })
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    expect(started.value.status).toBe('scanning')
+    expect(started.value.items.length).toBeGreaterThan(0)
+    expect(JSON.stringify(started.value)).not.toContain('https://')
+
+    const script = started.value.items.find(
+      (item) => item.category === 'script'
+    )
+    const queued = await preview.queueScanSelection(started.value.sessionId, [
+      script!.id
+    ])
+    expect(queued.ok).toBe(true)
+    if (!queued.ok) return
+    expect(queued.value.queuedItemIds).toEqual([script!.id])
+
+    const cancelled = await preview.cancelScan(started.value.sessionId)
+    expect(cancelled.ok).toBe(true)
+    if (!cancelled.ok) return
+    expect(cancelled.value.status).toBe('cancelled')
+  })
+
   it('persists validated settings including themes and allowed hours', async () => {
     const preview = api()
     const initial = await preview.getSettings()

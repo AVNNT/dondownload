@@ -18,6 +18,7 @@ using System.Web.Script.Serialization;
 //   { "type": "probe" }
 //   { "type": "queue-captured-source", "url": "https://cdn.example/clip.mp4" }
 //   { "type": "handoff-download", "url": "https://example.com/files/report.zip" }
+//   { "type": "scan-page", "url": "https://discuss.example/t/topic/123", "cookie": "..." }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
 //   { "type": "media-status", "jobId": "..." }
@@ -47,6 +48,7 @@ internal static class NativeHost
     private const string QueueCapturedSourceOperation = "queue-captured-source";
     private const string QueueSniffedMediaOperation = "queue-sniffed-media";
     private const string HandoffDownloadOperation = "handoff-download";
+    private const string ScanPageOperation = "scan-page";
     private const string StateFileName = "native-bridge.json";
     // aria2 may need up to ~12 seconds to start on the first add. The host
     // still fails promptly when the loopback port is closed.
@@ -238,6 +240,10 @@ internal static class NativeHost
         if (type == HandoffDownloadOperation)
         {
             return HandleHandoffDownloadMessage(message);
+        }
+        if (type == ScanPageOperation)
+        {
+            return HandleScanPageMessage(message);
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
@@ -676,6 +682,45 @@ internal static class NativeHost
             body.Add("expectedBytes", expectedBytes);
         }
         return ForwardSniffedMedia(body);
+    }
+
+    private static Dictionary<string, object> HandleScanPageMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "url" },
+            new string[] { "cookie" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only scan-page messages containing type, url and an optional cookie are accepted.");
+        }
+
+        string normalizedUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["url"] as string, out normalizedUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("url", normalizedUrl);
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
+        }
+        return ForwardScanPage(body);
     }
 
     private static bool IsSafeHeaderValue(string value, int maximum)
@@ -1263,6 +1308,85 @@ internal static class NativeHost
             request = CreateBridgeRequest(
                 state,
                 "/queue-sniffed-media",
+                BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseAppResponse(responseText);
+        }
+    }
+
+    private static Dictionary<string, object> ForwardScanPage(
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(
+                state,
+                "/scan-page",
                 BridgeTimeoutMilliseconds);
             byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
             request.ContentLength = payload.Length;

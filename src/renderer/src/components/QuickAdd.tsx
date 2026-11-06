@@ -1,6 +1,7 @@
-import { useState, type FormEvent, type JSX } from 'react'
+import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import type { DownloadControls } from '@shared/settings'
 import type { AddDownloadInput, ApiResult, AppSnapshot } from '@shared/types'
+import { isObviousDirectFileUrl } from '@shared/scanner'
 import { normalizeHttpUrl, sanitizeFilename } from '@shared/validation'
 
 interface QuickAddProps {
@@ -8,6 +9,8 @@ interface QuickAddProps {
   onAdd: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
   /** Prefills the URL field, used by the Add dialog and drag & drop. */
   initialUrl?: string
+  /** A pasted page URL can open the Scan page tab automatically. */
+  onScanSuggested?: (url: string) => void
 }
 
 const MAX_SPEED_MIB = 1024
@@ -65,7 +68,7 @@ function speedLimitPreview(speedMib: string): string | null {
   return `${Math.max(1, Math.round(value * BYTES_PER_MIB)).toLocaleString()} B/s`
 }
 
-export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.Element {
+export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: QuickAddProps): JSX.Element {
   const [url, setUrl] = useState(initialUrl ?? '')
   const [filename, setFilename] = useState('')
   const [startAt, setStartAt] = useState('')
@@ -77,6 +80,21 @@ export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.El
   )
 
   const speedPreview = speedLimitPreview(speedMib)
+
+  useEffect(() => {
+    if (!onScanSuggested) return
+    const raw = url.trim()
+    if (raw.length === 0) return
+    const timer = window.setTimeout(() => {
+      try {
+        const normalized = normalizeHttpUrl(raw)
+        if (!isObviousDirectFileUrl(normalized)) onScanSuggested(normalized)
+      } catch {
+        // Incomplete text is not a scan request.
+      }
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [onScanSuggested, url])
 
   function resetDuplicate(): void {
     setDuplicateInput(null)
