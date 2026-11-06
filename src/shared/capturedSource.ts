@@ -118,6 +118,7 @@ function readFilename(record: Record<string, unknown>): string | undefined {
     typeof raw !== 'string' ||
     raw.trim().length === 0 ||
     raw.length > MAX_CAPTURED_SOURCE_FILENAME_LENGTH * 2 ||
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     /[\u0000-\u001f\u007f]/.test(raw)
   ) {
     throw new ValidationError('The captured source filename is invalid.')

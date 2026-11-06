@@ -403,6 +403,7 @@
     if (typeof value !== 'string') return null
     var raw = value.trim()
     if (raw.length === 0 || raw.length > 4096) return null
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     if (/[\u0000-\u001f\u007f]/.test(raw)) return null
 
     var parsed
@@ -434,6 +435,7 @@
       return 'video.' + container
     }
     var base = decodedBasename(parsed.pathname)
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
       .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, '_')
       .replace(/\s+/g, ' ')
       .trim()
@@ -1180,9 +1182,11 @@
     unavailableState: unavailableState
   })
 
+  /* eslint-disable no-undef -- overlay-core.js also exports through CommonJS when loaded by Node tests */
   if (typeof module === 'object' && module && module.exports) {
     module.exports = api
   }
+  /* eslint-enable no-undef */
   if (typeof globalThis !== 'undefined') {
     globalThis.DonDownloadOverlayCore = api
   }

@@ -34,6 +34,7 @@ export function normalizeHttpUrl(value: unknown): string {
   if (raw.length > MAX_URL_LENGTH) {
     throw new ValidationError('The URL is too long (maximum 4096 characters).')
   }
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(raw)) {
     throw new ValidationError('The URL contains unsupported control characters.')
   }
@@ -105,7 +106,9 @@ export function sanitizeFilename(value: unknown): string {
     name = `_${name}`
   }
 
-  let { base, extension } = splitExtension(name)
+  const split = splitExtension(name)
+  let base = split.base
+  const extension = split.extension
 
   if (WINDOWS_RESERVED_NAME.test(base)) {
     base = `_${base}`
@@ -136,6 +139,7 @@ function readHeaderText(
     typeof value !== 'string' ||
     value.trim().length === 0 ||
     value.length > maximum ||
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     /[\u0000-\u001f\u007f]/.test(value)
   ) {
     throw new ValidationError('The request header value is invalid.')

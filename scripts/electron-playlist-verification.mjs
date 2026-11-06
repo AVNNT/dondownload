@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Real packaged Electron playlist preview and explicit one-entry selection. */
 import { spawn, execFileSync, spawnSync } from 'node:child_process'
-import { mkdir, writeFile, stat, readFile, readdir } from 'node:fs/promises'
+import { mkdir, writeFile, stat, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,6 @@ const screenshotDir = path.join(runDir, 'screenshots')
 const mediaDir = path.join(userData, 'smoke-downloads', 'Media')
 const port = 19343
 const playlistUrl = 'https://www.youtube.com/playlist?list=PLav47HAVZMjnTFVZL-aImCQIC0uLZtNCz'
-const title = '"Caminandes 2: Gran Dillama" - Blender Animated Short'
 const checks = []
 await mkdir(screenshotDir, { recursive: true })
 

@@ -416,11 +416,14 @@ async function ensureExtensionLoaded(browser, extensionPath, label) {
       extensionId = loaded && loaded.id
     } catch (loadError) {
       throw new Error(
-        `${label}: service worker did not appear (${initialError.message}) and Extensions.loadUnpacked failed: ${loadError.message}`
+        `${label}: service worker did not appear (${initialError.message}) and Extensions.loadUnpacked failed: ${loadError.message}`,
+        { cause: loadError }
       )
     }
     if (!extensionId) {
-      throw new Error(`${label}: Extensions.loadUnpacked returned no extension id`)
+      throw new Error(`${label}: Extensions.loadUnpacked returned no extension id`, {
+        cause: initialError
+      })
     }
     // An extension page is required to wake the MV3 service worker; it is kept
     // open for the rest of the run so the worker does not idle out.
@@ -1875,7 +1878,7 @@ async function clickConsent(browser, page) {
  * Follow consent/redirect hops on a real page. Every click happens inside the
  * fresh temporary profile through CDP; nothing is read from the user's browser.
  */
-async function settleRealPage(browser, page, predicate, timeoutMs, label) {
+async function settleRealPage(browser, page, predicate, timeoutMs, _label) {
   const deadline = Date.now() + timeoutMs
   let last = null
   let consentClicks = 0
@@ -2210,7 +2213,7 @@ async function queueSmallestQualityOnPage(page) {
   return { ...result, accepted }
 }
 
-async function runRealSites({ tempRoot, downloadsDir }) {
+async function runRealSites({ tempRoot }) {
   record(
     'R0',
     'Real-site mode is opt-in and requires the isolated app',
@@ -2349,7 +2352,7 @@ async function runRealSites({ tempRoot, downloadsDir }) {
       )
     }
 
-    const blocked = (title) => ({
+    const blocked = () => ({
       status: 'NOT-RUNNABLE',
       evidence: `native setup did not complete: ${setupError instanceof Error ? setupError.message : String(setupError)}`
     })
@@ -2634,7 +2637,7 @@ async function runRealSites({ tempRoot, downloadsDir }) {
         final.status === 'complete' &&
         fileExists &&
         stem === REAL_VIDEO_TITLE &&
-        !/[\[\]{}]/.test(base) &&
+        !/[[\]{}]/.test(base) &&
         progressObserved &&
         progressUpdates > 0 &&
         probe &&
@@ -2666,7 +2669,6 @@ async function runRealSites({ tempRoot, downloadsDir }) {
         beforeCapture && beforeCapture.response && beforeCapture.response.analysis
           ? beforeCapture.response.analysis.analysisId
           : null
-      const beforeProbe = await readProbe(ytPage)
       const beforeHref = await pageEvaluate(ytPage, 'location.href', { userGesture: false })
       const spaStartedAt = Date.now()
       const clicked = await pageEvaluate(
@@ -3242,7 +3244,7 @@ async function main() {
       'utf8'
     )
     const audioPath = path.join(mediaDir, 'tone.mp3')
-    const audioBytes = await generateAudio(FFMPEG, audioPath)
+    await generateAudio(FFMPEG, audioPath)
     const audio = fs.readFileSync(audioPath)
     server = await startFixtureServer({ clip, clip720, hlsRoot, audio })
     const { origin, nativeOrigin } = server
@@ -3681,7 +3683,9 @@ async function main() {
           'new Promise((resolve) => chrome.tabs.query({}, (value) => resolve(value.map((tab) => ({ id: tab.id, url: tab.url, active: tab.active })))))',
           { userGesture: false }
         )
-        throw new Error(`${error.message}; tabs=${JSON.stringify(tabs)}`)
+        throw new Error(`${error.message}; tabs=${JSON.stringify(tabs)}`, {
+          cause: error
+        })
       }
       const tab = hlsTab
       await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
@@ -3972,7 +3976,7 @@ async function main() {
         )
         nativeRun.manifestPath = manifestPath
         const manifest = writeNativeManifest(manifestPath, host.exe, workerB.id)
-        const registration = registerChromiumHost(manifestPath)
+        registerChromiumHost(manifestPath)
         // Chromium-branded builds read HKCU\Software\Chromium. Helium is built
         // from Chromium but may resolve a different registry root; probe the
         // temporary key before spending time on the isolated app. An unsupported
@@ -4077,7 +4081,7 @@ async function main() {
         )
       }
 
-      const blocked = (title) => ({
+      const blocked = () => ({
         status: 'NOT-RUNNABLE',
         evidence: `native setup did not complete: ${setupError instanceof Error ? setupError.message : String(setupError)}`
       })

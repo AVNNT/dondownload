@@ -108,6 +108,7 @@ export interface MediaBridgeTarget {
 }
 
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 function asPlainObject(value: unknown): Record<string, unknown> {

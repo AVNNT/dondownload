@@ -113,6 +113,7 @@ const PREVIEW_TTL_MS = 10 * 60_000
 const MAX_STORED_PREVIEWS = 8
 const UNSAFE_MESSAGE_TEXT =
   /(?:\b[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 /* ------------------------------------------------------------------------- *
@@ -278,6 +279,7 @@ function cleanSafeText(
   if (typeof value !== 'string') return fallback
   const cleaned = value
     .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -421,13 +423,6 @@ function safeMessageForBatch(error: unknown, fallback: string): string {
 function clampBytes(reported: unknown, fallback: number): number {
   if (typeof reported !== 'number' || !Number.isFinite(reported) || reported < 0) {
     return fallback
-  }
-  return Math.trunc(reported)
-}
-
-function nullableBytes(reported: unknown): number | null {
-  if (typeof reported !== 'number' || !Number.isFinite(reported) || reported < 0) {
-    return null
   }
   return Math.trunc(reported)
 }

@@ -3,7 +3,6 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import {
   CHROME_NATIVE_HOST_REGISTRY_KEY,
-  DONDOWNLOAD_NATIVE_HOST_ORIGIN,
   EDGE_NATIVE_HOST_REGISTRY_KEY,
   NATIVE_HOST_NAME,
   type BrowserExtensionBrowserStatus,

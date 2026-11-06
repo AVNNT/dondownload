@@ -6,7 +6,6 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import {
   APP_UPDATE_SUMS_NAME,
   MAX_APP_UPDATE_BYTES,
-  MAX_RELEASE_NOTES_BYTES,
   parseAppUpdateSettings,
   parseAppUpdateSettingsPatch,
   truncateReleaseNotes,

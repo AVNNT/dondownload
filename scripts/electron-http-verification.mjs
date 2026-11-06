@@ -2,7 +2,7 @@
 /** Real packaged Electron HTTP verification against small public fixtures. */
 import { createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -137,16 +137,6 @@ async function snapshot() {
   return cdp.evaluate('window.donDownload.getSnapshot()')
 }
 
-async function findFiles(directory) {
-  const result = []
-  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-    const target = path.join(directory, entry.name)
-    if (entry.isDirectory()) result.push(...await findFiles(target))
-    else result.push(target)
-  }
-  return result
-}
-
 async function startApp() {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
@@ -196,6 +186,7 @@ async function stopApp() {
   appProcess = null
 }
 
+// eslint-disable-next-line no-unused-vars -- kept for manual renderer-trace capture
 async function saveTrace() {
   await cdp.command('Tracing.end')
   const complete = await Promise.race([traceComplete, sleep(20_000).then(() => { throw new Error('Trace flush timeout') })])
@@ -298,7 +289,7 @@ async function run() {
   record('range-active-progress', { status: active.item.status, completedBytes: active.item.completedBytes, percent: active.percent, screenshot: path.join(screenshotDir, '04-range-active.png') })
   const countBeforeActiveRepeat = (await snapshot()).value.downloads.length
   await addUrl(rangeUrl)
-  const duplicate = await waitFor(
+  await waitFor(
     () => cdp.evaluate(`({text:document.body.innerText,again:[...document.querySelectorAll('button')].some(button=>button.innerText.includes('Download again'))})`),
     value => value.text.includes('already queued or downloading') && value.again,
     10_000,

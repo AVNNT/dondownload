@@ -302,7 +302,7 @@ async function cardState() {
 
 function readAria2Args() {
   const appPid = appProcess.pid
-  const ps = `$all = Get-CimInstance Win32_Process; $ids = [System.Collections.Generic.HashSet[int]]::new(); [void]$ids.Add(${appPid}); $changed = $true; while ($changed) { $changed = $false; foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $changed = $true } } }; $all | Where-Object { $ids.Contains([int]$_.ProcessId) -and $_.Name -match '^aria2c(\.exe)?$' } | Select-Object -First 1 -ExpandProperty CommandLine`
+  const ps = `$all = Get-CimInstance Win32_Process; $ids = [System.Collections.Generic.HashSet[int]]::new(); [void]$ids.Add(${appPid}); $changed = $true; while ($changed) { $changed = $false; foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $changed = $true } } }; $all | Where-Object { $ids.Contains([int]$_.ProcessId) -and $_.Name -match '^aria2c(.exe)?$' } | Select-Object -First 1 -ExpandProperty CommandLine`
   const commandLine = execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true }).trim()
   const port = /--rpc-listen-port=(\d+)/.exec(commandLine)?.[1]
   const secret = /--rpc-secret=([^\s]+)/.exec(commandLine)?.[1]

@@ -43,6 +43,7 @@ const SEGMENT_OR_MANIFEST_EXTENSIONS = Object.freeze([
   'm4s',
   'ts'
 ])
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 const CONTENT_TYPE_TOKEN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i
 

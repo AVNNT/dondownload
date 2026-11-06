@@ -42,7 +42,6 @@ const PROGRESSIVE_EXTENSIONS = Object.freeze([
   'wav'
 ])
 
-const MANIFEST_EXTENSIONS = Object.freeze(['m3u8', 'mpd'])
 const SEGMENT_EXTENSIONS = Object.freeze(['ts', 'm4s', 'm4f', 'cmfv', 'cmfa'])
 const AUDIO_EXTENSIONS = Object.freeze([
   'mp3',
@@ -73,6 +72,7 @@ const AD_HOSTS = Object.freeze([
 // them makes several range requests to the same resource collapse to one row.
 const RANGE_ONLY_PARAMS = Object.freeze(['range', 'rn', 'rbuf'])
 
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 const CONTENT_TYPE_TOKEN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i
@@ -210,6 +210,7 @@ function basenameForUrl(value) {
     const pathname = new URL(value).pathname
     const segment = pathname.split('/').filter(Boolean).pop() ?? ''
     const decoded = decodeURIComponent(segment)
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     return decoded.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180)
   } catch {
     return ''
@@ -237,15 +238,6 @@ export function guessMediaExtension(url, contentType) {
     return extension
   }
   return extensionForContentType(contentType)
-}
-
-function isManifestContentType(contentType) {
-  return (
-    contentType === 'application/vnd.apple.mpegurl' ||
-    contentType === 'application/x-mpegurl' ||
-    contentType === 'application/mpegurl' ||
-    contentType === 'application/dash+xml'
-  )
 }
 
 function isAudioContentType(contentType) {
@@ -938,6 +930,7 @@ function sanitizeFilenameBase(value, fallback) {
   const raw = typeof value === 'string' ? value : ''
   const cleaned = raw
     .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/[<>:"/\\|?*]/g, '_')
     .replace(/\s+/g, ' ')

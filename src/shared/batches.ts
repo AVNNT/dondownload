@@ -371,6 +371,7 @@ export interface CreateCollectionBatchInput {
 }
 
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 /** Reject URL- and path-shaped text from a supposedly safe error reason. */
 const UNSAFE_REASON_TEXT = /(?:\b[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i

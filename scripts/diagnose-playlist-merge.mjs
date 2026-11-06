@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Bounded reproduction of the previous 480p merge with sanitized tool logs. */
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 

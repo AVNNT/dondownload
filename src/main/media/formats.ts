@@ -182,6 +182,7 @@ function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const cleaned = value
     .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -353,6 +354,7 @@ function formatDuration(value: unknown): number | null {
 }
 
 function truncateLabel(value: string): string {
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
   if (clean.length === 0) return 'Media'
   return clean.slice(0, MAX_MEDIA_LABEL_LENGTH)

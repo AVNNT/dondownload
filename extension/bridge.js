@@ -26,6 +26,7 @@ export const HANDOFF_TIMEOUT_MS = 25_000
 
 const PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
 const COMPLETE_MEDIA_TYPES = ['video/mp4', 'video/webm']
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 /**
@@ -48,6 +49,7 @@ export function normalizeSupportedUrl(value) {
       message: `The URL is too long (maximum ${MAX_URL_LENGTH} characters).`
     }
   }
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(raw)) {
     return {
       ok: false,

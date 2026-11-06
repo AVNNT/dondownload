@@ -747,10 +747,12 @@ function PreviewCard({
   const [quality, setQuality] = useState<BatchMediaQuality>('best')
   const [maxMiB, setMaxMiB] = useState('')
   const [qualityError, setQualityError] = useState<string | null>(null)
+  /* eslint-disable react-hooks/set-state-in-effect -- stale availability/errors must be cleared when the selection changes */
   useEffect(() => {
     setAvailability(null)
     setQualityError(null)
   }, [selectedKey])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const analyzeSelected = async (): Promise<void> => {
     if (!selectedCount || checkingFormats) return

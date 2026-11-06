@@ -47,6 +47,7 @@ export interface SniffedMediaInput {
   expectedBytes?: number
 }
 
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 const MEDIA_EXTENSIONS = [
   'mp4',

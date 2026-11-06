@@ -46,6 +46,7 @@ const MAX_PROVIDER_ID_LENGTH = 32
 const PIXELDRAIN_ID = /^[A-Za-z0-9_-]{4,32}$/
 const PROVIDER_ERROR_CODE = /^[a-z0-9_]{1,64}$/
 const PROVIDER_AVAILABILITY = /^[a-z0-9_]*$/
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
 export const PIXELDRAIN_ERROR_CODES = [
@@ -477,6 +478,7 @@ function parseAvailability(value: unknown): string {
 function safeDisplayText(value: string, maximumLength: number): string {
   const cleaned = value
     .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

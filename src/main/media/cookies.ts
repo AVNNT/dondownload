@@ -63,7 +63,9 @@ function parseCookieHeader(header: string): CookiePair[] {
     if (
       !COOKIE_NAME.test(name) ||
       value.length > MAX_COOKIE_LINE_LENGTH ||
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
       /[\t\r\n\u0000]/.test(name) ||
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
       /[\t\r\n\u0000]/.test(value)
     ) {
       continue

@@ -229,6 +229,7 @@ function firstNonEmptyLine(text: string): string | null {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (line.length > 0) {
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
       return line.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 100)
     }
   }
@@ -407,6 +408,7 @@ export function sanitizeZipEntryName(name: string): string | null {
   const unified = name.replace(/\\/g, '/')
   if (unified.startsWith('/')) return null
   if (/^[A-Za-z]:/.test(unified)) return null
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(unified)) return null
 
   const segments = unified.split('/')

@@ -234,6 +234,7 @@ export default function App(): JSX.Element {
     return visibleRows.find((row) => row.key === selection.selected[0]) ?? null
   }, [visibleRows, selection])
 
+  /* eslint-disable react-hooks/set-state-in-effect -- focus and selection are derived from the filtered rows and must be reconciled after a filter change */
   useEffect(() => {
     if (visibleRows.length === 0) {
       if (focusedKey !== null) setFocusedKey(null)
@@ -247,10 +248,13 @@ export default function App(): JSX.Element {
   useEffect(() => {
     setSelection((current) => pruneSelection(visibleRows, current))
   }, [visibleRows])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
+  /* eslint-disable react-hooks/set-state-in-effect -- a filter change must close the row menu */
   useEffect(() => {
     setMenu(null)
   }, [page, category, statusFilter, query, sortKey, sortDirection])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (!focusedKey) return

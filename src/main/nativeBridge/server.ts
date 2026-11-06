@@ -103,6 +103,7 @@ function mediaErrorStatus(code: string): number {
  */
 function safeErrorMessage(message: string): string {
   const text = redactCookieHeader(message)
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .trim()
   if (

@@ -1,4 +1,4 @@
-import type { DownloadItem, DownloadStatus } from '@shared/types'
+import type { DownloadItem } from '@shared/types'
 import type { MediaJob } from '@shared/media'
 import { formatPercent } from '@shared/format'
 
@@ -202,16 +202,6 @@ const MIME_CATEGORIES: ReadonlyArray<[RegExp, ItemCategory]> = [
   [/zip|compressed|x-7z|x-rar|x-tar|gzip|x-bzip|x-xz|zstd/i, 'compressed'],
   [/executable|msdownload|msi|x-apple-diskimage|x-deb|x-rpm/i, 'programs']
 ]
-
-const STATUS_LABEL: Record<DownloadStatus, string> = {
-  queued: 'Queued',
-  active: 'Downloading',
-  waiting: 'Waiting',
-  paused: 'Paused',
-  complete: 'Complete',
-  error: 'Failed',
-  interrupted: 'Interrupted'
-}
 
 /** Lower-case extension of a filename or URL path, without the dot. */
 export function extensionOf(value: string): string {

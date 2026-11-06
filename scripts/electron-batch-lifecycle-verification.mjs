@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -257,7 +257,6 @@ try {
   }, batch => batch?.items.some(item => item.title.includes('retry') && item.status === 'error') && batch.items.some(item => item.title.includes('complete') && item.status === 'complete') && batch.items.some(item => item.title.includes('individual-cancel') && item.status === 'running' && item.completedBytes > 0), 60_000, 'Independent fail/complete/active children')
   await cdp.shot('01-direct-batch-active-progress.png')
   const activePartial = progressed
-  const successChildId = activePartial.items.find(item => item.title.includes('complete'))?.childId
   const downloadsBeforeCancel = await downloadSnapshot()
   if (!downloadsBeforeCancel.ok) throw new Error('Download snapshot failed before individual cancellation.')
   const partialChild = downloadsBeforeCancel.value.downloads.find(item => item.id === activePartial.items.find(item => item.id === individualItemId)?.childId)

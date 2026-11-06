@@ -89,6 +89,7 @@ export function MediaAnalyzer({
   const defaultOptionId = analysis ? defaultMediaQualityOptionId(analysis) : null
   const analysisId = analysis?.analysisId ?? null
 
+  /* eslint-disable react-hooks/set-state-in-effect -- selection and output format reset when the analysis changes */
   useEffect(() => {
     setSelectedOptionId(defaultOptionId)
     setOutputFormat('auto')
@@ -103,6 +104,7 @@ export function MediaAnalyzer({
   useEffect(() => {
     setOutputFormat((current) => normalizeOutputFormat(selectedOption, current))
   }, [selectedOption])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const availableOutputFormats = outputFormatsForOption(selectedOption)
   const selectedOutputFormat = normalizeOutputFormat(

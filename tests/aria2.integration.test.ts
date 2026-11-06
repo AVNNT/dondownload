@@ -4,7 +4,6 @@ import { promises as fs } from 'node:fs'
 import {
   createServer as createHttpServer,
   type IncomingMessage,
-  type Server,
   type ServerResponse
 } from 'node:http'
 import { createServer, type Socket } from 'node:net'

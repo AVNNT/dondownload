@@ -53,6 +53,7 @@ export function safeDetail(value: unknown, maximum = 500): string {
         ? value
         : String(value)
   const cleaned = text
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

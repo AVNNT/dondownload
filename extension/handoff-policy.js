@@ -51,6 +51,7 @@ export function originFromPageUrl(value) {
   if (typeof value !== 'string') return null
   const raw = value.trim()
   if (raw.length === 0 || raw.length > MAX_URL_LENGTH) return null
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null
   let parsed
   try {
@@ -92,6 +93,7 @@ export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}) {
   if (raw.length === 0 || raw.length > MAX_URL_LENGTH) {
     return { ok: false, code: 'UNSUPPORTED_URL', message: 'The download URL is not valid.' }
   }
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(raw)) {
     return { ok: false, code: 'UNSUPPORTED_URL', message: 'The download URL is not valid.' }
   }
@@ -120,6 +122,7 @@ export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}) {
       typeof rawFilename !== 'string' ||
       rawFilename.trim().length === 0 ||
       rawFilename.length > MAX_FILENAME_LENGTH * 2 ||
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
       /[\u0000-\u001f\u007f]/.test(rawFilename) ||
       /[\\/]/.test(rawFilename)
     ) {

@@ -17,6 +17,7 @@ export const MEDIA_OUTPUT_FORMATS = Object.freeze([
 
 const OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
 const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
 const JOB_STATUSES = new Set([
