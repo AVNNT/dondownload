@@ -514,6 +514,8 @@ if (unregisterRequested) {
       collectionEngine: mediaEngine,
       pixeldrain: createPixeldrainAdapter(),
       database,
+      scanMediaDir: mediaDir,
+      scanRootDir: downloadDir,
       onUpdate: (snapshot) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.batchSnapshotChanged, snapshot)
