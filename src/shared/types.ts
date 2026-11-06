@@ -19,6 +19,7 @@ import type {
   MediaToolSettings,
   YtdlpUpdateState
 } from './mediaTools'
+import type { AppUpdateState } from './appUpdate'
 
 export type DownloadStatus =
   | 'queued'
@@ -278,4 +279,16 @@ export interface DonDownloadApi {
   }) => Promise<ApiResult<MediaToolSettings>>
   getYtdlpUpdateState: () => Promise<ApiResult<YtdlpUpdateState>>
   checkYtdlpUpdate: () => Promise<ApiResult<YtdlpUpdateState>>
+
+  // Application self-update. State is renderer-safe and never carries an
+  // installer URL or path. Installing is only ever an explicit user action.
+  getAppUpdateState: () => Promise<ApiResult<AppUpdateState>>
+  checkAppUpdate: () => Promise<ApiResult<AppUpdateState>>
+  installAppUpdate: () => Promise<ApiResult<AppUpdateState>>
+  setAppUpdateAutoCheck: (input: {
+    autoCheck: boolean
+  }) => Promise<ApiResult<AppUpdateState>>
+  onAppUpdateStateChanged: (
+    listener: (state: AppUpdateState) => void
+  ) => () => void
 }

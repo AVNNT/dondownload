@@ -21,6 +21,7 @@ import type {
   MediaToolSettings,
   YtdlpUpdateState
 } from '@shared/mediaTools'
+import type { AppUpdateState } from '@shared/appUpdate'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
 import type { DownloadManager } from './downloads/manager'
@@ -28,6 +29,7 @@ import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
 import type { SettingsManager } from './settings/manager'
 import type { YtdlpUpdater } from './media/updater'
+import type { AppUpdateChecker } from './appUpdate/checker'
 import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
@@ -45,6 +47,8 @@ export interface IpcContext {
   settings?: SettingsManager
   /** Verified managed yt-dlp updater (optional until wired in index.ts). */
   mediaUpdater?: YtdlpUpdater
+  /** GitHub Releases application updater (optional until wired in index.ts). */
+  appUpdate?: AppUpdateChecker
   getWindow: () => BrowserWindow | null
 }
 
@@ -271,5 +275,30 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<YtdlpUpdateState>(IPC.checkYtdlpUpdate, () =>
     mediaUpdater().check({ force: true })
+  )
+
+  // Application self-update channels. The same trusted-sender wrapper applies.
+  // `check` may download and verify an installer; `install` can only launch the
+  // already-verified file and refuses while any job is active.
+  const appUpdate = (): AppUpdateChecker => {
+    if (!context.appUpdate) {
+      throw new AppError(
+        'APP_UPDATE_UNAVAILABLE',
+        'The application updater is not available.'
+      )
+    }
+    return context.appUpdate
+  }
+
+  invoke<AppUpdateState>(IPC.getAppUpdateState, () => appUpdate().getState())
+
+  invoke<AppUpdateState>(IPC.checkAppUpdate, () =>
+    appUpdate().check({ force: true })
+  )
+
+  invoke<AppUpdateState>(IPC.installAppUpdate, () => appUpdate().install())
+
+  invoke<AppUpdateState>(IPC.setAppUpdateAutoCheck, (_event, input) =>
+    appUpdate().setAutoCheck(input)
   )
 }

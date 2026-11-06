@@ -34,6 +34,10 @@ import {
   parseMediaToolSettings,
   type MediaToolSettings
 } from '@shared/mediaTools'
+import {
+  parseAppUpdateSettings,
+  type AppUpdateSettings
+} from '@shared/appUpdate'
 import { AppError } from '../errors'
 
 /**
@@ -43,7 +47,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -360,6 +364,26 @@ const MIGRATIONS: readonly Migration[] = [
         id, auto_update_ytdlp, last_ytdlp_check_at, updated_at
       ) VALUES (1, 1, NULL, 0);
     `
+  },
+  {
+    // Application updater preferences are also separate from download settings
+    // so a background check never rewrites aria2's global options. The single
+    // row defaults to automatic checks ON with no prior check timestamp.
+    version: 10,
+    sql: `
+      CREATE TABLE IF NOT EXISTS app_update_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        auto_check INTEGER NOT NULL DEFAULT 1
+          CHECK (auto_check IN (0, 1)),
+        last_check_at INTEGER
+          CHECK (last_check_at IS NULL OR last_check_at >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT OR IGNORE INTO app_update_settings (
+        id, auto_check, last_check_at, updated_at
+      ) VALUES (1, 1, NULL, 0);
+    `
   }
 ]
 
@@ -507,6 +531,15 @@ function rowToMediaToolSettings(
   })
 }
 
+function rowToAppUpdateSettings(
+  row: Record<string, unknown>
+): AppUpdateSettings {
+  return parseAppUpdateSettings({
+    autoCheck: number(row, 'auto_check', 1) === 1,
+    lastCheckedAt: nullableNumber(row, 'last_check_at')
+  })
+}
+
 function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
   const id = text(row, 'id')
   const sourceUrl = text(row, 'source_url')
@@ -643,6 +676,8 @@ export class DownloadDatabase {
   private readonly settingsUpsertStatement: StatementSync
   private readonly mediaToolSettingsSelectStatement: StatementSync
   private readonly mediaToolSettingsUpsertStatement: StatementSync
+  private readonly appUpdateSettingsSelectStatement: StatementSync
+  private readonly appUpdateSettingsUpsertStatement: StatementSync
   private readonly mediaUpsertStatement: StatementSync
   private readonly mediaSelectAllStatement: StatementSync
   private readonly mediaDeleteStatement: StatementSync
@@ -739,6 +774,18 @@ export class DownloadDatabase {
         ON CONFLICT(id) DO UPDATE SET
           auto_update_ytdlp = excluded.auto_update_ytdlp,
           last_ytdlp_check_at = excluded.last_ytdlp_check_at,
+          updated_at = excluded.updated_at
+      `)
+      this.appUpdateSettingsSelectStatement = this.db.prepare(
+        'SELECT * FROM app_update_settings WHERE id = 1'
+      )
+      this.appUpdateSettingsUpsertStatement = this.db.prepare(`
+        INSERT INTO app_update_settings (
+          id, auto_check, last_check_at, updated_at
+        ) VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          auto_check = excluded.auto_check,
+          last_check_at = excluded.last_check_at,
           updated_at = excluded.updated_at
       `)
 
@@ -1066,8 +1113,43 @@ export class DownloadDatabase {
     }
   }
 
-  loadMediaJobs(): MediaJobRecord[] {
+  loadAppUpdateSettings(): AppUpdateSettings {
     this.assertOpen()
+    try {
+      const row = this.appUpdateSettingsSelectStatement.get() as
+        | Record<string, unknown>
+        | undefined
+      if (!row) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not load app update settings: the settings row is missing.'
+        )
+      }
+      return rowToAppUpdateSettings(row)
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not load app update settings', error)
+    }
+  }
+
+  saveAppUpdateSettings(settings: AppUpdateSettings): void {
+    this.assertOpen()
+    try {
+      const parsed = parseAppUpdateSettings(settings)
+      this.appUpdateSettingsUpsertStatement.run(
+        parsed.autoCheck ? 1 : 0,
+        parsed.lastCheckedAt,
+        Date.now()
+      )
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not save app update settings', error)
+    }
+  }
+
+  loadMediaJobs(): MediaJobRecord[] {    this.assertOpen()
     try {
       const rows = this.mediaSelectAllStatement.all() as Record<string, unknown>[]
       const stored: MediaJobRecord[] = []

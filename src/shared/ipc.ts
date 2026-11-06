@@ -42,5 +42,12 @@ export const IPC = {
   getMediaToolSettings: 'media-tools:get-settings',
   updateMediaToolSettings: 'media-tools:update-settings',
   getYtdlpUpdateState: 'media-tools:ytdlp-state',
-  checkYtdlpUpdate: 'media-tools:ytdlp-check'
+  checkYtdlpUpdate: 'media-tools:ytdlp-check',
+  // Application self-update (additive). State is renderer-safe and never
+  // contains an installer URL or path. Installing is only an explicit action.
+  getAppUpdateState: 'app-update:get-state',
+  checkAppUpdate: 'app-update:check',
+  installAppUpdate: 'app-update:install',
+  setAppUpdateAutoCheck: 'app-update:set-auto-check',
+  appUpdateStateChanged: 'app-update:state-changed'
 } as const
