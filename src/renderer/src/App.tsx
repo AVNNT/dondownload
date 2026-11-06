@@ -13,8 +13,7 @@ import type {
   AddDownloadInput,
   ApiResult,
   AppErrorInfo,
-  AppSnapshot,
-  Aria2State
+  AppSnapshot
 } from '@shared/types'
 import type {
   MediaAnalysis,
@@ -23,28 +22,25 @@ import type {
 } from '@shared/media'
 import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
-import { formatSpeed } from '@shared/format'
+import { formatBytes, formatSpeed } from '@shared/format'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { SettingsSection } from './components/SettingsSection'
 import { BrowserExtensionSection } from './components/BrowserExtensionSection'
-import { Sidebar, type SidebarPage } from './components/Sidebar'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
 import { AddDialog, type AddDialogTab } from './components/AddDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ContextMenu } from './components/ContextMenu'
 import { DetailsPane } from './components/DetailsPane'
-import { Icon } from './components/Icon'
+import { Icon, type IconName } from './components/Icon'
 import {
   buildUnifiedRows,
-  categoryCounts as buildCategoryCounts,
   filterRows,
   runningCount,
   sortRows,
   statusCounts as buildStatusCounts,
   totalSpeed,
-  type CategoryId,
   type SortDirection,
   type SortKey,
   type StatusFilterId,
@@ -64,10 +60,9 @@ import {
 } from './lib/selection'
 import {
   buildContextActions,
+  canCopyLink,
   canPauseRow,
   canResumeRow,
-  canRetryRow,
-  clearCompletedConfirmation,
   deleteFileConfirmation,
   executeActionPlan,
   planBulkAction,
@@ -88,7 +83,8 @@ import {
   type DragOriginState
 } from './lib/dnd'
 import { applyRendererTheme } from './theme'
-import appLogo from './assets/logo.svg'
+
+type AppPage = 'library' | 'batches' | 'settings'
 
 interface AddRequest {
   tab: AddDialogTab
@@ -130,28 +126,11 @@ function mergeScanSessionList(
   )
 }
 
-function runtimeLabel(aria2: Aria2State | null): string {
-  if (!aria2) return 'Connecting…'
-  switch (aria2.status) {
-    case 'ready':
-      return aria2.version ? `aria2 ${aria2.version}` : 'aria2 connected'
-    case 'starting':
-      return 'Starting aria2…'
-    case 'unavailable':
-      return 'aria2 not found'
-    case 'error':
-      return 'aria2 stopped'
-    case 'stopped':
-      return 'aria2 offline'
-  }
-}
-
 export default function App(): JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [mediaSnapshot, setMediaSnapshot] = useState<MediaSnapshot | null>(null)
   const [banner, setBanner] = useState<AppErrorInfo | null>(null)
-  const [page, setPage] = useState<SidebarPage>('library')
-  const [category, setCategory] = useState<CategoryId>('all')
+  const [page, setPage] = useState<AppPage>('library')
   const [statusFilter, setStatusFilter] = useState<StatusFilterId>('all')
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('date')
@@ -163,14 +142,14 @@ export default function App(): JSX.Element {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null)
   const [scanSessions, setScanSessions] = useState<ScanSession[]>([])
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [batchCount, setBatchCount] = useState(0)
   const [dragActive, setDragActive] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [adding, setAdding] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [clipboardUrl, setClipboardUrl] = useState<string | null>(null)
   const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
-  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
+  const [showReleaseNotes, setShowReleaseNotes] = useState(false)
   const dragDepth = useRef(0)
   const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
   const addSequence = useRef(0)
@@ -206,6 +185,22 @@ export default function App(): JSX.Element {
     })
     const unsubscribe = window.donDownload.onAppUpdateStateChanged((state) => {
       if (!cancelled) setAppUpdate(state)
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  // A lightweight batch-count subscription only for the header badge. The
+  // Batches view itself owns its snapshot; this read never mutates anything.
+  useEffect(() => {
+    let cancelled = false
+    void window.donDownload.getBatchSnapshot().then((result) => {
+      if (!cancelled && result.ok) setBatchCount(result.value.batches.length)
+    })
+    const unsubscribe = window.donDownload.onBatchSnapshotChanged((snapshot) => {
+      if (!cancelled) setBatchCount(snapshot.batches.length)
     })
     return () => {
       cancelled = true
@@ -273,7 +268,6 @@ export default function App(): JSX.Element {
   useEffect(() => {
     const unsubscribe = window.donDownload.onRevealRow((key) => {
       setPage('library')
-      setCategory('all')
       setStatusFilter('all')
       setQuery('')
       setDetailsClosedFor(null)
@@ -335,14 +329,13 @@ export default function App(): JSX.Element {
     () => buildUnifiedRows(downloads, mediaJobs),
     [downloads, mediaJobs]
   )
-  const categoryCounts = useMemo(() => buildCategoryCounts(allRows), [allRows])
   const statusCounts = useMemo(
-    () => buildStatusCounts(allRows, category, query),
-    [allRows, category, query]
+    () => buildStatusCounts(allRows, 'all', query),
+    [allRows, query]
   )
   const filteredRows = useMemo(
-    () => filterRows(allRows, { category, status: statusFilter, query }),
-    [allRows, category, statusFilter, query]
+    () => filterRows(allRows, { category: 'all', status: statusFilter, query }),
+    [allRows, statusFilter, query]
   )
   const visibleRows = useMemo(
     () => sortRows(filteredRows, sortKey, sortDirection),
@@ -379,7 +372,7 @@ export default function App(): JSX.Element {
   /* eslint-disable react-hooks/set-state-in-effect -- a filter change must close the row menu */
   useEffect(() => {
     setMenu(null)
-  }, [page, category, statusFilter, query, sortKey, sortDirection])
+  }, [page, statusFilter, query, sortKey, sortDirection])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -757,16 +750,26 @@ export default function App(): JSX.Element {
     void runPlan(planBulkAction('resume-all', allRows))
   }, [allRows, runPlan])
 
-  const clearCompleted = useCallback((): void => {
-    const plan = planBulkAction('clear-completed', allRows)
-    if (plan.length === 0) return
-    setConfirm({
-      ...clearCompletedConfirmation(plan.length),
-      onConfirm: () => {
-        void runPlan(plan)
-      }
-    })
-  }, [allRows, runPlan])
+  const pauseRow = useCallback(
+    (row: UnifiedRow): void => {
+      void runPlan(planRowAction('pause', [row]))
+    },
+    [runPlan]
+  )
+
+  const resumeRow = useCallback(
+    (row: UnifiedRow): void => {
+      void runPlan(planRowAction('resume', [row]))
+    },
+    [runPlan]
+  )
+
+  const retryRow = useCallback(
+    (row: UnifiedRow): void => {
+      void runPlan(planRowAction('retry', [row]))
+    },
+    [runPlan]
+  )
 
   const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>): void => {
     if (dragOrigin.current.internal) return
@@ -811,13 +814,16 @@ export default function App(): JSX.Element {
   )
 
   const filtersActive =
-    query.trim().length > 0 || category !== 'all' || statusFilter !== 'all'
-  const completedCount = allRows.filter(
-    (row) => row.statusGroup === 'completed'
-  ).length
+    query.trim().length > 0 || statusFilter !== 'all'
   const activeDownloadCount = runningCount(allRows)
   const aggregateSpeed = totalSpeed(allRows)
+  const totalOnDisk = allRows.reduce((sum, row) => sum + row.completedBytes, 0)
+  const saveDir = snapshot?.downloads[0]?.dir ?? null
   const menuActions = menu ? buildContextActions(menu.rows) : []
+  const selectMode = selection.selected.length > 1
+  const allSelected =
+    visibleRows.length > 0 &&
+    visibleRows.every((row) => selection.selected.includes(row.key))
 
   return (
     <div
@@ -830,151 +836,193 @@ export default function App(): JSX.Element {
       <header className="window-app-header relative shrink-0 border-b border-white/[0.07] surface-app">
         <div aria-hidden="true" className="window-drag-region absolute left-0 top-0" />
         <div className="window-app-header-content relative z-10 flex h-14 items-center gap-3 px-4">
-          <img
-            src={appLogo}
-            alt=""
-            aria-hidden="true"
-            draggable={false}
-            className="h-9 w-9 shrink-0 rounded-[10px] border border-white/10"
-          />
-          <div className="min-w-0 select-none">
-            <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-100">
-              DonDownload
-            </h1>
-            <p className="truncate text-[11px] text-zinc-500">
-              Downloads &amp; media
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => setPage('library')}
+            className="flex shrink-0 items-center gap-2.5 select-none"
+            title={page === 'library' ? undefined : 'Back to downloads'}
+          >
+            <span
+              aria-hidden="true"
+              className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-accent-500 text-on-accent"
+            >
+              <Icon name="download" size={17} strokeWidth={2} />
+            </span>
+            {page === 'library' ? (
+              <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-100">
+                DonDownload
+              </h1>
+            ) : (
+              <span className="flex items-center gap-1 text-sm font-semibold text-zinc-100">
+                <Icon name="chevron-left" size={15} />
+                Downloads
+              </span>
+            )}
+          </button>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2">
             <div
               role="status"
-              title={runtimeLabel(aria2)}
-              className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-2.5 py-1 text-[11px] text-zinc-400"
+              className="flex items-center gap-1.5 px-1.5 text-[12.5px] text-zinc-400"
             >
-              <span
-                aria-hidden="true"
-                className={`h-1.5 w-1.5 rounded-full ${
-                  isReady
-                    ? 'bg-emerald-400'
-                    : aria2?.status === 'starting' || !aria2
-                      ? 'animate-pulse bg-amber-400'
-                      : 'bg-red-400'
-                }`}
-              />
-              <span className="hidden sm:inline">{runtimeLabel(aria2)}</span>
-              <span className="sm:hidden">
-                {isReady ? 'Ready' : aria2 ? 'Offline' : 'Connecting'}
-              </span>
+              {activeDownloadCount > 0 ? (
+                <>
+                  <Icon name="download" size={14} className="text-zinc-500" />
+                  <span className="font-semibold tabular-nums text-zinc-100">
+                    {formatSpeed(aggregateSpeed)}
+                  </span>
+                  <span className="hidden text-zinc-500 lg:inline">
+                    · {activeDownloadCount} active
+                  </span>
+                </>
+              ) : (
+                <span className="text-zinc-500">Idle</span>
+              )}
             </div>
+
+            <span aria-hidden="true" className="mx-1 h-5 w-px bg-white/10" />
+
+            <button
+              type="button"
+              onClick={() => setPage('batches')}
+              aria-current={page === 'batches' ? 'page' : undefined}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100"
+            >
+              <Icon name="layers" size={15} />
+              <span className="hidden lg:inline">Batches</span>
+              {batchCount > 0 ? (
+                <span className="rounded-full bg-zinc-700/70 px-1.5 text-[11px] font-medium leading-4 tabular-nums text-zinc-300">
+                  {batchCount}
+                </span>
+              ) : null}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPage('settings')}
+              aria-label="Settings"
+              title="Settings"
+              aria-current={page === 'settings' ? 'page' : undefined}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
+            >
+              <Icon name="settings" size={16} />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openAddDialog('direct')}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
+            >
+              <Icon name="plus" size={15} strokeWidth={2.2} />
+              Add
+            </button>
           </div>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <Sidebar
-          page={page}
-          category={category}
-          status={statusFilter}
-          categoryCounts={categoryCounts}
-          statusCounts={statusCounts}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
-          onSelectCategory={(next) => {
-            setPage('library')
-            setCategory(next)
-          }}
-          onSelectStatus={(next) => {
-            setPage('library')
-            setStatusFilter(next)
-          }}
-          onSelectPage={(next) => setPage(next)}
-        />
-
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col px-3 pb-0 pt-3 sm:px-4">
-          {banner ? (
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {banner ? (
+          <div className="mx-4 mt-2.5">
             <ErrorBanner banner={banner} onDismiss={() => setBanner(null)} />
-          ) : null}
+          </div>
+        ) : null}
 
-          {appUpdate?.status === 'ready' &&
-          appUpdate.canInstall &&
-          !appUpdateDismissed ? (
-            <div
-              role="status"
-              className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[11px] text-emerald-100"
-            >
-              <span className="min-w-0 flex-1">
-                DonDownload {appUpdate.latestVersion ?? 'update'} is ready to
-                install.
+        {appUpdate?.status === 'ready' && appUpdate.canInstall ? (
+          <div
+            role="status"
+            className="mx-4 mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-accent-400/30 bg-accent-400/[0.08] px-3 py-2 text-[12.5px]"
+          >
+            <span aria-hidden="true" className="flex shrink-0 text-accent-300">
+              <Icon name="refresh" size={15} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold text-zinc-100">
+                DonDownload {appUpdate.latestVersion ?? 'update'} is ready.
+              </span>{' '}
+              <span className="text-zinc-400">
+                Running downloads resume after the restart.
               </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              {appUpdate.releaseNotes ? (
+                <button
+                  type="button"
+                  onClick={() => setShowReleaseNotes((value) => !value)}
+                  className="h-7 rounded-md px-2.5 text-[11.5px] font-semibold text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100"
+                >
+                  What's new
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void installAppUpdate()}
-                className="h-7 rounded-md bg-accent-500 px-2.5 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
+                className="h-7 rounded-md bg-accent-500 px-2.5 text-[11.5px] font-semibold text-on-accent transition hover:bg-accent-400"
               >
-                Restart and install
+                Restart now
               </button>
-              <button
-                type="button"
-                onClick={() => setAppUpdateDismissed(true)}
-                className="h-7 rounded-md border border-emerald-300/20 px-2 text-[11px] text-emerald-200/80 transition hover:bg-emerald-300/10"
-              >
-                Not now
-              </button>
-            </div>
-          ) : null}
+            </span>
+            {showReleaseNotes && appUpdate.releaseNotes ? (
+              <pre className="w-full basis-full overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 font-mono text-[11.5px] leading-6 text-zinc-400">
+                {appUpdate.releaseNotes}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
 
-          {page === 'library' ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <Toolbar
-                query={query}
-                onQueryChange={setQuery}
-                sortKey={sortKey}
-                sortDirection={sortDirection}
-                onSortKeyChange={setSortKey}
-                onToggleSortDirection={() =>
-                  setSortDirection((direction) =>
-                    direction === 'asc' ? 'desc' : 'asc'
-                  )
-                }
-                runningCount={activeDownloadCount}
-                speedBps={aggregateSpeed}
-                completedCount={completedCount}
-                canPauseAll={allRows.some(canPauseRow)}
-                canResumeAll={allRows.some(canResumeRow)}
-                onAdd={() => openAddDialog('direct')}
-                onPauseAll={pauseAll}
-                onResumeAll={resumeAll}
-                onClearCompleted={clearCompleted}
+        {page === 'library' ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {aria2 && !isReady ? (
+              <RuntimeNotice
+                aria2={aria2}
+                restarting={restarting}
+                onRetry={() => {
+                  void handleRestart()
+                }}
               />
+            ) : null}
 
-              {visibleSelection.length > 1 ? (
-                <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-accent-400/20 bg-accent-400/[0.06] px-2.5 py-1.5">
-                  <span className="mr-1 text-[11px] font-medium text-accent-200">
-                    {visibleSelection.length} selected
-                  </span>
-                  <BulkButton
-                    label="Pause"
-                    disabled={!visibleSelection.some(canPauseRow)}
-                    onClick={() =>
-                      void runPlan(planRowAction('pause', visibleSelection))
-                    }
-                  />
-                  <BulkButton
-                    label="Resume"
-                    disabled={!visibleSelection.some(canResumeRow)}
-                    onClick={() =>
-                      void runPlan(planRowAction('resume', visibleSelection))
-                    }
-                  />
-                  <BulkButton
-                    label="Retry"
-                    disabled={!visibleSelection.some(canRetryRow)}
-                    onClick={() =>
-                      void runPlan(planRowAction('retry', visibleSelection))
-                    }
-                  />
-                  <BulkButton
+            {selectMode ? (
+              <div className="mx-2 mb-1 mt-2 flex items-center gap-1.5 rounded-xl border border-accent-400/30 bg-accent-400/[0.08] px-3 py-1.5">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={allSelected}
+                  aria-label="Select all visible downloads"
+                  onClick={handleSelectAll}
+                  className="grid h-4 w-4 place-items-center rounded border-[1.5px] border-accent-500 bg-accent-500 text-on-accent"
+                >
+                  <Icon name="check" size={11} strokeWidth={2.6} />
+                </button>
+                <span className="mr-2 text-[12.5px] font-semibold text-zinc-100">
+                  {selection.selected.length} selected
+                </span>
+                <SelectionBarButton
+                  icon="pause"
+                  label="Pause"
+                  disabled={!visibleSelection.some(canPauseRow)}
+                  onClick={() =>
+                    void runPlan(planRowAction('pause', visibleSelection))
+                  }
+                />
+                <SelectionBarButton
+                  icon="play"
+                  label="Resume"
+                  disabled={!visibleSelection.some(canResumeRow)}
+                  onClick={() =>
+                    void runPlan(planRowAction('resume', visibleSelection))
+                  }
+                />
+                <SelectionBarButton
+                  icon="link"
+                  label="Copy links"
+                  disabled={!visibleSelection.some(canCopyLink)}
+                  onClick={() =>
+                    void runPlan(planRowAction('copy-link', visibleSelection))
+                  }
+                />
+                <div className="ml-auto flex items-center gap-1">
+                  <SelectionBarButton
+                    icon="trash"
                     label="Remove"
                     danger
                     disabled={false}
@@ -983,15 +1031,90 @@ export default function App(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => setSelection(EMPTY_SELECTION)}
-                    className="ml-auto text-[11px] text-accent-200/70 transition hover:text-accent-100"
+                    aria-label="Clear selection"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
                   >
-                    Clear selection
+                    <Icon name="x" size={15} />
                   </button>
                 </div>
-              ) : null}
+              </div>
+            ) : (
+              <Toolbar
+                query={query}
+                onQueryChange={setQuery}
+                statusFilter={statusFilter}
+                onStatusFilterChange={setStatusFilter}
+                statusCounts={statusCounts}
+                sortKey={sortKey}
+                sortDirection={sortDirection}
+                onSortKeyChange={setSortKey}
+                onToggleSortDirection={() =>
+                  setSortDirection((direction) =>
+                    direction === 'asc' ? 'desc' : 'asc'
+                  )
+                }
+                canPauseAll={allRows.some(canPauseRow)}
+                canResumeAll={allRows.some(canResumeRow)}
+                onPauseAll={pauseAll}
+                onResumeAll={resumeAll}
+              />
+            )}
 
-              {aria2 && !isReady ? (
-                <div className="pb-3">
+            <DownloadTable
+              rows={visibleRows}
+              selection={selection}
+              focusedKey={focusedKey}
+              emptyState={
+                <LibraryEmptyState
+                  filtersActive={filtersActive}
+                  onAdd={() => openAddDialog('direct')}
+                  onClearFilters={() => {
+                    setQuery('')
+                    setStatusFilter('all')
+                  }}
+                />
+              }
+              onRowClick={handleRowClick}
+              onToggleRow={handleToggleRow}
+              onFocusRow={(row) => setFocusedKey(row.key)}
+              onOpenRow={openRow}
+              onShowInFolder={showRowInFolder}
+              onPauseRow={pauseRow}
+              onResumeRow={resumeRow}
+              onRetryRow={retryRow}
+              onContextMenu={handleContextMenu}
+              onKeyDown={handleTableKeyDown}
+            />
+
+            {showDetails && singleSelected ? (
+              <DetailsPane
+                row={singleSelected}
+                onClose={() => setDetailsClosedFor(singleSelected.key)}
+                onOpen={openRow}
+                onShowInFolder={showRowInFolder}
+              />
+            ) : null}
+
+            <footer className="flex shrink-0 items-center gap-4 border-t border-white/[0.07] px-4 py-1.5 text-[12px] text-zinc-500">
+              <span className="truncate">
+                {allRows.length}{' '}
+                {allRows.length === 1 ? 'download' : 'downloads'} ·{' '}
+                {formatBytes(totalOnDisk)} on disk
+              </span>
+              {saveDir ? (
+                <span className="ml-auto hidden truncate lg:inline">
+                  Saving to {saveDir}
+                </span>
+              ) : null}
+            </footer>
+          </div>
+        ) : null}
+
+        {page === 'batches' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <div className="mx-auto w-full max-w-3xl">
+              {aria2 ? (
+                <div className="mb-3">
                   <RuntimeNotice
                     aria2={aria2}
                     restarting={restarting}
@@ -1001,94 +1124,20 @@ export default function App(): JSX.Element {
                   />
                 </div>
               ) : null}
-
-              <DownloadTable
-                rows={visibleRows}
-                selection={selection}
-                focusedKey={focusedKey}
-                sortKey={sortKey}
-                sortDirection={sortDirection}
-                emptyState={
-                  <LibraryEmptyState
-                    filtersActive={filtersActive}
-                    onAdd={() => openAddDialog('direct')}
-                    onClearFilters={() => {
-                      setQuery('')
-                      setCategory('all')
-                      setStatusFilter('all')
-                    }}
-                  />
-                }
-                onSort={(key) => {
-                  if (key === sortKey) {
-                    setSortDirection((direction) =>
-                      direction === 'asc' ? 'desc' : 'asc'
-                    )
-                  } else {
-                    setSortKey(key)
-                    setSortDirection(key === 'name' ? 'asc' : 'desc')
-                  }
-                }}
-                onRowClick={handleRowClick}
-                onToggleRow={handleToggleRow}
-                onSelectAll={handleSelectAll}
-                onFocusRow={(row) => setFocusedKey(row.key)}
-                onOpenRow={openRow}
-                onContextMenu={handleContextMenu}
-                onKeyDown={handleTableKeyDown}
-              />
-
-              {showDetails && singleSelected ? (
-                <DetailsPane
-                  row={singleSelected}
-                  onClose={() => setDetailsClosedFor(singleSelected.key)}
-                  onOpen={openRow}
-                  onShowInFolder={showRowInFolder}
-                />
-              ) : null}
-
-              <div className="flex shrink-0 items-center justify-between gap-3 px-1 py-2 text-[11px] text-zinc-600">
-                <span className="truncate">
-                  Double-click to open · Right-click for actions · Ctrl/Shift-click
-                  to select
-                </span>
-                <span className="hidden shrink-0 sm:inline">
-                  {formatSpeed(aggregateSpeed)} total · history only, files stay on
-                  disk
-                </span>
-              </div>
+              <BatchSection />
             </div>
-          ) : null}
+          </div>
+        ) : null}
 
-          {page === 'batches' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto pb-8">
-              <div className="mx-auto w-full max-w-3xl">
-                {aria2 ? (
-                  <div className="mb-3">
-                    <RuntimeNotice
-                      aria2={aria2}
-                      restarting={restarting}
-                      onRetry={() => {
-                        void handleRestart()
-                      }}
-                    />
-                  </div>
-                ) : null}
-                <BatchSection />
-              </div>
+        {page === 'settings' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <div className="mx-auto w-full max-w-3xl">
+              <SettingsSection />
+              <BrowserExtensionSection />
             </div>
-          ) : null}
-
-          {page === 'settings' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto pb-8">
-              <div className="mx-auto w-full max-w-3xl">
-                <SettingsSection />
-                <BrowserExtensionSection />
-              </div>
-            </div>
-          ) : null}
-        </main>
-      </div>
+          </div>
+        ) : null}
+      </main>
 
       {addRequest ? (
         <AddDialog
@@ -1147,32 +1196,40 @@ export default function App(): JSX.Element {
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-4 left-1/2 z-[70] w-[min(92vw,520px)] -translate-x-1/2 rounded-xl border border-white/10 bg-[var(--surface-card)] px-3 py-2 text-[11px] text-zinc-200 shadow-xl shadow-black/50"
+          className="fixed bottom-11 right-4 z-[70] flex w-[min(92vw,420px)] items-center gap-3 rounded-xl border border-white/10 bg-[var(--surface-card)] p-3 shadow-xl shadow-black/50"
         >
-          <p className="truncate" title={clipboardUrl}>
-            <span className="font-medium text-zinc-100">Link on clipboard</span>
-            <span className="ml-2 text-zinc-400">{clipboardUrl}</span>
-          </p>
-          <div className="mt-2 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setClipboardUrl(null)}
-              className="h-7 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/5"
-            >
-              Dismiss
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const route = routeDroppedUrl(clipboardUrl)
-                setClipboardUrl(null)
-                if (route) openAddDialog(route.target, route.url)
-              }}
-              className="h-7 rounded-md bg-accent-500 px-2.5 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
-            >
-              Download
-            </button>
+          <span
+            aria-hidden="true"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-400/10 text-accent-300"
+          >
+            <Icon name="link" size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[12.5px] font-semibold text-zinc-100">
+              Link on clipboard
+            </p>
+            <p className="truncate text-[12px] text-zinc-500" title={clipboardUrl}>
+              {clipboardUrl}
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setClipboardUrl(null)}
+            className="h-[30px] shrink-0 rounded-md px-2.5 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
+          >
+            Ignore
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const route = routeDroppedUrl(clipboardUrl)
+              setClipboardUrl(null)
+              if (route) openAddDialog(route.target, route.url)
+            }}
+            className="h-[30px] shrink-0 rounded-md bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
+          >
+            Add
+          </button>
         </div>
       ) : null}
 
@@ -1180,9 +1237,7 @@ export default function App(): JSX.Element {
         <div
           role="status"
           aria-live="polite"
-          className={`fixed left-1/2 z-[70] -translate-x-1/2 rounded-full border border-white/10 bg-[var(--surface-card)] px-3 py-1.5 text-[11px] text-zinc-200 shadow-xl shadow-black/50 ${
-            clipboardUrl ? 'bottom-28' : 'bottom-4'
-          }`}
+          className="fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-white/10 bg-[var(--surface-card)] px-3 py-1.5 text-[11px] text-zinc-200 shadow-xl shadow-black/50"
         >
           {toast}
         </div>
@@ -1228,12 +1283,14 @@ function ErrorBanner({
   )
 }
 
-function BulkButton({
+function SelectionBarButton({
+  icon,
   label,
   disabled,
   danger = false,
   onClick
 }: {
+  icon: IconName
   label: string
   disabled: boolean
   danger?: boolean
@@ -1244,13 +1301,14 @@ function BulkButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`h-7 rounded-md border px-2 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${
         danger
-          ? 'border-red-400/25 text-red-300 hover:bg-red-400/10'
-          : 'border-white/10 text-zinc-300 hover:bg-white/5 hover:text-zinc-100'
+          ? 'text-red-400 hover:bg-red-400/10'
+          : 'text-zinc-200 hover:bg-white/5'
       }`}
     >
-      {label}
+      <Icon name={icon} size={15} />
+      <span className="hidden lg:inline">{label}</span>
     </button>
   )
 }
@@ -1264,40 +1322,62 @@ function LibraryEmptyState({
   onAdd: () => void
   onClearFilters: () => void
 }): JSX.Element {
-  return (
-    <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-6 py-10 text-center">
-      <div
-        aria-hidden="true"
-        className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-zinc-500"
-      >
-        <Icon name={filtersActive ? 'search' : 'download'} size={22} />
-      </div>
-      <p className="mt-3 text-sm font-medium text-zinc-300">
-        {filtersActive ? 'No matching downloads' : 'No downloads yet'}
-      </p>
-      <p className="mt-1 max-w-sm text-xs leading-5 text-zinc-500">
-        {filtersActive
-          ? 'Try a different search, category or status filter.'
-          : 'Add a direct HTTP(S) link or analyze a media page to get started. You can also drop a link anywhere on this window.'}
-      </p>
-      <div className="mt-4 flex items-center gap-2">
-        {filtersActive ? (
-          <button
-            type="button"
-            onClick={onClearFilters}
-            className="h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-300 transition hover:bg-white/5"
-          >
-            Clear filters
-          </button>
-        ) : null}
+  if (filtersActive) {
+    return (
+      <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-6 py-10 text-center">
+        <div
+          aria-hidden="true"
+          className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-zinc-500"
+        >
+          <Icon name="search" size={22} />
+        </div>
+        <p className="mt-3 text-sm font-medium text-zinc-300">
+          No matching downloads
+        </p>
+        <p className="mt-1 max-w-sm text-xs leading-5 text-zinc-500">
+          Try a different search or status filter.
+        </p>
         <button
           type="button"
-          onClick={onAdd}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
+          onClick={onClearFilters}
+          className="mt-4 h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-300 transition hover:bg-white/5"
         >
-          <Icon name="plus" size={13} strokeWidth={2.2} />
-          Add download
+          Clear filters
         </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full items-center justify-center px-6 py-10">
+      <div className="flex w-[520px] max-w-full flex-col items-center gap-3 text-center">
+        <div
+          aria-hidden="true"
+          className="flex h-14 w-14 items-center justify-center rounded-[14px] border border-white/10 bg-white/[0.03] text-accent-400"
+        >
+          <Icon name="download" size={26} />
+        </div>
+        <h2 className="text-lg font-semibold text-zinc-100">No downloads yet</h2>
+        <p className="text-[12.5px] text-zinc-400">
+          Paste a link, drop one here, or use the browser extension on any page.
+        </p>
+        <div className="mt-2 flex w-full flex-col items-center gap-3 rounded-xl border-[1.5px] border-dashed border-white/15 px-6 py-5 text-[12.5px] text-zinc-400">
+          <span>Drop links or files here</span>
+          <button
+            type="button"
+            onClick={onAdd}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
+          >
+            <Icon name="plus" size={14} strokeWidth={2.2} />
+            Add download
+          </button>
+        </div>
+        <div className="mt-1 flex items-center gap-1.5 text-[12px] text-zinc-500">
+          <span className="rounded border border-white/10 px-1.5 py-px text-[11px] text-zinc-500">
+            Ctrl V
+          </span>
+          paste a link anywhere
+        </div>
       </div>
     </div>
   )
