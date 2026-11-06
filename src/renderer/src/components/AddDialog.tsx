@@ -214,7 +214,7 @@ export function AddDialog({
             active={tab === 'scan'}
             onClick={() => onTabChange('scan')}
             icon="search"
-            label="Scan page"
+            label="Scan pages"
           />
         </div>
 
@@ -225,7 +225,7 @@ export function AddDialog({
               ? 'Direct link'
               : tab === 'media'
                 ? 'Media page'
-                : 'Scan page'
+                : 'Scan pages'
           }
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
         >
