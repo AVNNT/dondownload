@@ -35,6 +35,7 @@ import { DownloadTable } from './components/DownloadTable'
 import { AddDialog, type AddDialogTab } from './components/AddDialog'
 import { ScanSheet } from './components/ScanSheet'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
+import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ContextMenu } from './components/ContextMenu'
 import { DetailsPane } from './components/DetailsPane'
 import { Icon, type IconName } from './components/Icon'
@@ -89,6 +90,12 @@ import {
   type DragOriginState
 } from './lib/dnd'
 import { applyRendererTheme } from './theme'
+import {
+  firstHttpUrl,
+  isTypingTarget,
+  matchShortcut,
+  type ShortcutId
+} from './lib/shortcuts'
 
 type AppPage = 'library' | 'batches' | 'settings'
 
@@ -166,6 +173,7 @@ export default function App(): JSX.Element {
   const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [showReleaseNotes, setShowReleaseNotes] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const dragDepth = useRef(0)
   const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
   const addSequence = useRef(0)
@@ -556,6 +564,110 @@ export default function App(): JSX.Element {
   /** Opens the redesigned scan side sheet over the whole window. */
   const openScanSheet = useCallback((url = ''): void => {
     setAddRequest({ tab: 'scan', url, nonce: ++addSequence.current })
+  }, [])
+
+  /** Opens the Add dialog prefilled with a pasted link, routed like a drop. */
+  const openAddFromClipboardText = useCallback(
+    (text: string): boolean => {
+      const url = firstHttpUrl(text)
+      if (url === null) return false
+      const route = routeDroppedUrl(url)
+      if (route === null) return false
+      setClipboardUrl(null)
+      openAddDialog(route.target, route.url)
+      return true
+    },
+    [openAddDialog]
+  )
+
+  /**
+   * Global shortcuts. The matching rules live in lib/shortcuts so they can be
+   * unit-tested; this handler only performs the resulting action.
+   */
+  const handleShortcut = useCallback(
+    (shortcut: ShortcutId, text = ''): void => {
+      switch (shortcut) {
+        case 'add':
+          openAddDialog('direct')
+          return
+        case 'paste-add':
+          openAddFromClipboardText(text)
+          return
+        case 'settings':
+          setMenu(null)
+          setPage('settings')
+          return
+        case 'batches':
+          setMenu(null)
+          setPage('batches')
+          return
+        case 'focus-search':
+          setPage('library')
+          window.requestAnimationFrame(() => {
+            const input = document.querySelector<HTMLInputElement>(
+              'input[type="search"]'
+            )
+            input?.focus()
+            input?.select()
+          })
+          return
+        case 'shortcuts-help':
+          setMenu(null)
+          setShortcutsOpen(true)
+          return
+        case 'escape':
+          setPage('library')
+          return
+      }
+    },
+    [openAddDialog, openAddFromClipboardText]
+  )
+
+  // The window-level shortcut listener. It reads the latest UI state through
+  // an effect-synced ref so it never needs to be re-subscribed while the user
+  // types, and so render never touches a ref.
+  const shortcutContextRef = useRef<{
+    dialogOpen: boolean
+    menuOpen: boolean
+    page: AppPage
+  }>({ dialogOpen: false, menuOpen: false, page })
+  const handleShortcutRef = useRef(handleShortcut)
+
+  useEffect(() => {
+    shortcutContextRef.current = {
+      dialogOpen: addRequest !== null || confirm !== null || shortcutsOpen,
+      menuOpen: menu !== null,
+      page
+    }
+    handleShortcutRef.current = handleShortcut
+  })
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing) return
+      const shortcut = matchShortcut(event, {
+        ...shortcutContextRef.current,
+        isTyping: isTypingTarget(event.target as Element | null)
+      })
+      if (shortcut === null) return
+      event.preventDefault()
+      handleShortcutRef.current(shortcut)
+    }
+    const onPaste = (event: ClipboardEvent): void => {
+      const context = shortcutContextRef.current
+      if (context.dialogOpen || context.menuOpen) return
+      if (isTypingTarget(event.target as Element | null)) return
+      const text = event.clipboardData?.getData('text/plain') ?? ''
+      if (firstHttpUrl(text) === null) return
+      event.preventDefault()
+      handleShortcutRef.current('paste-add', text)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('paste', onPaste)
+    }
   }, [])
 
   const openRow = useCallback(
@@ -1007,7 +1119,7 @@ export default function App(): JSX.Element {
               onClick={() => setPage('batches')}
               aria-current={page === 'batches' ? 'page' : undefined}
               aria-label="Batches"
-              title="Batches"
+              title="Batches (Ctrl+B)"
               className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100"
             >
               <Icon name="layers" size={15} />
@@ -1023,7 +1135,7 @@ export default function App(): JSX.Element {
               type="button"
               onClick={() => setPage('settings')}
               aria-label="Settings"
-              title="Settings"
+              title="Settings (Ctrl+,)"
               aria-current={page === 'settings' ? 'page' : undefined}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
             >
@@ -1033,6 +1145,7 @@ export default function App(): JSX.Element {
             <button
               type="button"
               onClick={() => openAddDialog('direct')}
+              title="Add (Ctrl+N)"
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
             >
               <Icon name="plus" size={15} strokeWidth={2.2} />
@@ -1322,6 +1435,10 @@ export default function App(): JSX.Element {
         <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
       ) : null}
 
+      {shortcutsOpen ? (
+        <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+      ) : null}
+
       {dragActive ? (
         <div className="pointer-events-none fixed inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent-400/70 bg-accent-400/[0.08] backdrop-blur-[1px]">
           <div className="rounded-xl border border-accent-400/30 bg-accent-400/10 px-4 py-3 text-center">
@@ -1525,6 +1642,15 @@ function LibraryEmptyState({
           <span className="inline-flex items-center gap-1.5">
             <Icon name="puzzle" size={13} />
             browser extension
+          </span>
+          <span aria-hidden="true" className="text-zinc-600">
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-px text-[11px] font-medium text-zinc-400">
+              ?
+            </span>
+            for shortcuts
           </span>
         </div>
         <button

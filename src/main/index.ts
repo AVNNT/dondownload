@@ -52,6 +52,10 @@ import {
   type NativeHostRegistrar
 } from './nativeHost/registration'
 import { createAppTray, type AppTray } from './tray'
+import {
+  createTaskbarProgress,
+  type TaskbarProgressController
+} from './taskbar/progress'
 import { createMainWindow } from './window'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
 import {
@@ -86,6 +90,7 @@ let nativeBridge: NativeBridge | null = null
 let nativeHostRegistrar: NativeHostRegistrar | null = null
 let scanner: ScanSessionManager | null = null
 let scanQueue: ScanQueueService | null = null
+let taskbarProgress: TaskbarProgressController | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
 /** The orderly flush/stop/close sequence is running; never run it twice. */
@@ -422,6 +427,21 @@ if (unregisterRequested) {
     // crosses IPC; both the download manager and batch renames resolve it here.
     const manualMatchStore = new ManualMatchStore()
 
+    // Windows taskbar progress. The window is created further below, so the
+    // controller reads it through a getter; smoke/E2E runs never touch the
+    // shell taskbar. Updates are throttled inside the controller.
+    taskbarProgress = createTaskbarProgress({
+      enabled: smoke === null,
+      getWindow: () => (mainWindow === null ? null : mainWindow)
+    })
+    const updateTaskbarProgress = (): void => {
+      if (taskbarProgress === null) return
+      taskbarProgress.update({
+        downloads: manager?.getSnapshot().downloads ?? [],
+        mediaJobs: mediaJobs?.getMediaSnapshot().jobs ?? []
+      })
+    }
+
     manager = new DownloadManager(
       aria2,
       downloadDir,
@@ -430,6 +450,7 @@ if (unregisterRequested) {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.snapshotChanged, snapshot)
         }
+        updateTaskbarProgress()
       },
       database,
       {
@@ -504,6 +525,7 @@ if (unregisterRequested) {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
         }
+        updateTaskbarProgress()
       }
     })
 
@@ -1038,6 +1060,13 @@ if (unregisterRequested) {
         // The tray may already be gone.
       }
       appTray = null
+      // Clear any taskbar progress before the window goes away.
+      try {
+        taskbarProgress?.dispose()
+      } catch {
+        // The window may already be destroyed.
+      }
+      taskbarProgress = null
       // Mark the sequence complete immediately before the final internal
       // quit, so that this one request is allowed through.
       cleanupFinished = true
