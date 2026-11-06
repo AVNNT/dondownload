@@ -17,6 +17,10 @@ export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
 export const SNIFFED_MEDIA_MESSAGE_TYPE = 'queue-sniffed-media'
 export const DURABLE_HANDOFF_MESSAGE_TYPE = 'handoff-download'
 export const SCAN_PAGE_MESSAGE_TYPE = 'scan-page'
+export const SCAN_IMAGES_MESSAGE_TYPE = 'scan-images'
+export const MAX_SCAN_IMAGES = 1000
+export const MAX_IMAGE_ALT_LENGTH = 200
+export const MAX_PAGE_TITLE_LENGTH = 200
 export const MAX_URL_LENGTH = 4096
 export const MAX_CAPTURED_FILENAME_LENGTH = 180
 export const MAX_SNIFFED_TITLE_LENGTH = 500
@@ -1011,6 +1015,115 @@ export function sendScanPage(rawUrl, rawCookie) {
             response.ok !== true ||
             response.accepted !== true
           ) {
+            finish({
+              ok: false,
+              error:
+                response && response.ok === false
+                  ? describeResponseError(response)
+                  : {
+                      code: 'NATIVE_RESPONSE_INVALID',
+                      message: 'The DonDownload helper returned an unexpected response.'
+                    }
+            })
+            return
+          }
+          finish({ ok: true })
+        }
+      )
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+/**
+ * "Download images on this page". The list was collected on the live DOM, so
+ * this only forwards validated http(s) URLs plus the optional Pinterest 736x
+ * fallback. The desktop re-validates everything, re-checks the public-target
+ * policy and opens the picker; nothing is downloaded from here.
+ */
+export function sendScanImages(input) {
+  const page = normalizeSupportedUrl(input === null || typeof input !== 'object' ? '' : input.pageUrl)
+  if (!page.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: page.code, message: page.message }
+    })
+  }
+
+  const rawImages = Array.isArray(input.images) ? input.images : []
+  const images = []
+  const seen = new Set()
+  for (const rawImage of rawImages) {
+    if (images.length >= MAX_SCAN_IMAGES) break
+    if (rawImage === null || typeof rawImage !== 'object') continue
+    const url = normalizeSupportedUrl(rawImage.url)
+    if (!url.ok || seen.has(url.url)) continue
+    seen.add(url.url)
+    const entry = { url: url.url }
+    if (rawImage.fallbackUrl !== undefined) {
+      const fallback = normalizeSupportedUrl(rawImage.fallbackUrl)
+      if (fallback.ok && fallback.url !== url.url) entry.fallbackUrl = fallback.url
+    }
+    if (typeof rawImage.width === 'number' && Number.isFinite(rawImage.width) && rawImage.width > 0) {
+      entry.width = Math.round(rawImage.width)
+    }
+    if (typeof rawImage.height === 'number' && Number.isFinite(rawImage.height) && rawImage.height > 0) {
+      entry.height = Math.round(rawImage.height)
+    }
+    if (typeof rawImage.alt === 'string' && rawImage.alt.length > 0) {
+      entry.alt = rawImage.alt.slice(0, MAX_IMAGE_ALT_LENGTH)
+    }
+    images.push(entry)
+  }
+  if (images.length === 0) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'NO_IMAGES',
+        message: 'No downloadable images were found on this page.'
+      }
+    })
+  }
+
+  const title =
+    typeof input.pageTitle === 'string'
+      ? input.pageTitle.slice(0, MAX_PAGE_TITLE_LENGTH)
+      : ''
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST,
+        {
+          type: SCAN_IMAGES_MESSAGE_TYPE,
+          pageUrl: page.url,
+          pageTitle: title,
+          images
+        },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          if (runtimeError) {
+            finish({ ok: false, error: describeNativeError(runtimeError.message) })
+            return
+          }
+          if (!response || response.ok !== true || response.accepted !== true) {
             finish({
               ok: false,
               error:

@@ -29,6 +29,7 @@ import {
   type CollectionSelectionAvailability,
   type CreateCollectionBatchInput
 } from '@shared/batches'
+import { MAX_IMAGE_FOLDER_LENGTH } from '@shared/scanImages'
 import { isMediaOutputFormat } from '@shared/media'
 import type { SniffedMediaInput } from '@shared/sniffedMedia'
 import {
@@ -309,6 +310,12 @@ export interface BatchScanTarget {
   requestHeaders?: DownloadRequestHeaders
   /** Scanner item ID; used only to wire funscript pairings, never public. */
   scanItemId?: string
+  /**
+   * Retried once when `url` fails with a 403/404. Pinterest serves the same pin
+   * from `/originals/` with an unpredictable extension, so the extension also
+   * reports the 736x URL.
+   */
+  fallbackUrl?: string
 }
 
 /** Internal scanner video target with an opaque, fresh analysis selection. */
@@ -374,6 +381,35 @@ export function parseSmartBatchSubmitInput(
     return entry
   })
   return { urls }
+}
+
+/**
+ * One folder segment below the download root. Anything that could escape the
+ * root (separators, drive letters, `..`) is rejected instead of sanitized: the
+ * scanner derives the value from a page title, so a rejection is a bug.
+ */
+function parseBatchSubfolder(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new ValidationError('The scan batch folder is invalid.')
+  }
+  const cleaned = value
+    .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (
+    cleaned.length === 0 ||
+    cleaned.length > MAX_IMAGE_FOLDER_LENGTH ||
+    cleaned === '.' ||
+    cleaned === '..' ||
+    /[<>:"/|?*]/.test(cleaned) ||
+    /[.\s]$/.test(cleaned) ||
+    /^[A-Za-z]:/.test(cleaned)
+  ) {
+    throw new ValidationError('The scan batch folder is invalid.')
+  }
+  return cleaned
 }
 
 function newOpaqueId(prefix: string): string {
@@ -612,6 +648,10 @@ export class BatchManager {
   /** Redirect-resolved targets proven by the scanner probe, memory-only. */
   private readonly scanResolvedUrls = new Map<string, string>()
   private readonly scanFilenames = new Map<string, string>()
+  /** Memory-only 403/404 fallback URLs reported for image batch items. */
+  private readonly scanFallbacks = new Map<string, string>()
+  /** Memory-only per-item target folder (a single segment below the root). */
+  private readonly scanSubfolders = new Map<string, string>()
   /** Memory-only scanner video selections; never persisted. */
   private readonly scanMediaSelections = new Map<
     string,
@@ -1034,10 +1074,16 @@ export class BatchManager {
     this.assertOpen()
     const record = asRecord(rawInput)
     for (const key of Object.keys(record)) {
-      if (key !== 'title' && key !== 'targets') {
+      if (key !== 'title' && key !== 'targets' && key !== 'subfolder') {
         throw new ValidationError('The scan batch contains unsupported fields.')
       }
     }
+    // A single folder segment below the download root. The scanner derives it
+    // from the page title; it is never a path and never leaves the root.
+    const subfolder =
+      record.subfolder === undefined
+        ? undefined
+        : parseBatchSubfolder(record.subfolder)
     if (
       typeof record.title !== 'string' ||
       record.title.trim().length === 0 ||
@@ -1063,7 +1109,8 @@ export class BatchManager {
           key !== 'filename' &&
           key !== 'resolvedUrl' &&
           key !== 'requestHeaders' &&
-          key !== 'scanItemId'
+          key !== 'scanItemId' &&
+          key !== 'fallbackUrl'
         ) {
           throw new ValidationError(
             'A scan batch target contains unsupported fields.'
@@ -1105,13 +1152,18 @@ export class BatchManager {
         }
         requestHeaders = { cookie }
       }
+      let fallbackUrl: string | undefined
+      if (target.fallbackUrl !== undefined) {
+        fallbackUrl = normalizeBatchSourceUrl(target.fallbackUrl)
+      }
       if (target.scanItemId !== undefined) opaqueId(target.scanItemId)
       return {
         url,
         title,
         ...(filename === undefined ? {} : { filename }),
         ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
-        ...(requestHeaders === undefined ? {} : { requestHeaders })
+        ...(requestHeaders === undefined ? {} : { requestHeaders }),
+        ...(fallbackUrl === undefined || fallbackUrl === url ? {} : { fallbackUrl })
       }
     })
 
@@ -1145,6 +1197,12 @@ export class BatchManager {
       }
       if (target.filename !== undefined) {
         this.scanFilenames.set(itemId, target.filename)
+      }
+      if (target.fallbackUrl !== undefined) {
+        this.scanFallbacks.set(itemId, target.fallbackUrl)
+      }
+      if (subfolder !== undefined) {
+        this.scanSubfolders.set(itemId, subfolder)
       }
     }
 
@@ -2193,6 +2251,8 @@ export class BatchManager {
       this.scanRequestHeaders.delete(item.id)
       this.scanResolvedUrls.delete(item.id)
       this.scanFilenames.delete(item.id)
+      this.scanFallbacks.delete(item.id)
+      this.scanSubfolders.delete(item.id)
       this.scanMediaSelections.delete(item.id)
       this.scanSniffedMediaSelections.delete(item.id)
     }
@@ -2527,7 +2587,11 @@ export class BatchManager {
           pairing.externalVideo.token
         )) as AppSnapshot
       } else {
-        const pairedScriptDir = this.pairedScriptDirectory(batch, pairing)
+        // An image batch downloads into its own folder below the root; every
+        // other scanner item keeps the normal root or its paired folder.
+        const imageDir = this.imageBatchDirectory(batch, item)
+        const pairedScriptDir =
+          imageDir ?? this.pairedScriptDirectory(batch, pairing)
         snapshot = (pairedScriptDir === null
           ? await this.downloads.add(addInput)
           : await this.downloads.addScanFile!(addInput, pairedScriptDir)) as AppSnapshot
@@ -2762,6 +2826,7 @@ export class BatchManager {
     child: DownloadItem
   ): boolean {
     const nextStatus = statusFromDownload(child.status)
+    if (nextStatus === 'error' && this.retryWithFallback(item)) return true
     const total = child.totalBytes > 0 ? child.totalBytes : item.totalBytes
     let completed = clampBytes(child.completedBytes, item.completedBytes)
     if (total !== null) completed = Math.min(completed, total)
@@ -2782,6 +2847,26 @@ export class BatchManager {
       totalBytes: total,
       errorMessage: message
     })
+  }
+
+  /**
+   * Retry one image item with its fallback URL. Pinterest serves the same pin
+   * from `/originals/` with an unpredictable extension, so a 403/404 there is
+   * expected and the 736x URL is tried exactly once.
+   */
+  private retryWithFallback(item: BatchItemRecord): boolean {
+    const fallback = this.scanFallbacks.get(item.id)
+    if (fallback === undefined) return false
+    this.scanFallbacks.delete(item.id)
+    if (item.status !== 'running') return false
+    item.sourceUrl = fallback
+    item.childId = null
+    item.status = 'queued'
+    item.errorMessage = null
+    item.completedBytes = 0
+    item.updatedAt = this.now()
+    this.persistItemNow(item)
+    return true
   }
 
   private applyMediaChild(item: BatchItemRecord, child: MediaJob): boolean {
@@ -3045,6 +3130,29 @@ export class BatchManager {
     // A browser-matched direct file is downloaded into the normal root, so its
     // scripts must land in that same folder.
     return this.scanRootDir ?? this.scanMediaDir
+  }
+
+  /**
+   * Folder for one image batch item: `<download root>/<page title>`. The
+   * subfolder is a single validated segment, so the result always stays inside
+   * the scanner root. Returns null when the item has no subfolder.
+   */
+  private imageBatchDirectory(
+    batch: ManagedBatch,
+    item: BatchItemRecord
+  ): string | null {
+    const subfolder = this.scanSubfolders.get(item.id)
+    if (subfolder === undefined) return null
+    if (typeof this.downloads.addScanFile !== 'function') return null
+    const root = this.scanRootDir ?? this.scanMediaDir
+    if (root === null) return null
+    const directory = path.resolve(root, subfolder)
+    const relative = path.relative(path.resolve(root), directory)
+    if (relative.length === 0 || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null
+    }
+    if (relative.includes(path.sep)) return null
+    return directory
   }
 
   /* ------------------------------ aggregate ------------------------------ */

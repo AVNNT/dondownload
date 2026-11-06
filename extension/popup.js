@@ -39,6 +39,8 @@ import {
 const sendButton = document.getElementById('send')
 const scanButton = document.getElementById('scan-page')
 const scanButtonLabel = document.getElementById('scan-page-label')
+const scanImagesButton = document.getElementById('scan-images')
+const scanImagesLabel = document.getElementById('scan-images-label')
 const scanMany = document.getElementById('scan-many')
 const scanLinksInput = document.getElementById('scan-links')
 const scanLinksStatus = document.getElementById('scan-links-status')
@@ -76,6 +78,7 @@ let pageOrigin = null
 let activeTabId = null
 let sending = false
 let scanning = false
+let collectingImages = false
 let polling = null
 let pollAttempts = 0
 let sniffedMedia = []
@@ -98,6 +101,14 @@ function setSending(next) {
     scanButton.disabled = next || scanning || pageUrl === null
     if (scanButtonLabel !== null) {
       scanButtonLabel.textContent = scanning ? 'Opening scan…' : 'Scan this page'
+    }
+  }
+  if (scanImagesButton !== null) {
+    scanImagesButton.disabled = next || pageUrl === null
+    if (scanImagesLabel !== null) {
+      scanImagesLabel.textContent = collectingImages
+        ? 'Stop collecting images'
+        : 'Download images on this page'
     }
   }
   refreshScanLinks()
@@ -1115,9 +1126,94 @@ async function scanPage() {
   }
 }
 
+/**
+ * "Download images on this page". The collector is injected into the active tab
+ * (activeTab is enough), walks the live DOM, auto-scrolls while it counts, and
+ * reports its own floating counter with Stop/Send so a closed popup never loses
+ * the run. The list itself is forwarded by the background worker.
+ */
+const IMAGE_COLLECTOR_FILE = 'image-collector.js'
+
+function setCollectingImages(next) {
+  collectingImages = next
+  if (scanImagesButton !== null) {
+    scanImagesButton.disabled = sending || pageUrl === null
+  }
+  if (scanImagesLabel !== null) {
+    scanImagesLabel.textContent = next
+      ? 'Stop collecting images'
+      : 'Download images on this page'
+  }
+}
+
+async function startImageRun() {
+  if (activeTabId === null || pageUrl === null) return
+  setCollectingImages(true)
+  setStatus('', 'Scrolling the page to count images…')
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: activeTabId, allFrames: false },
+      files: [IMAGE_COLLECTOR_FILE],
+      injectImmediately: true
+    })
+    const started = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId, allFrames: false },
+      func: () => {
+        const api = globalThis.DonDownloadImageCollector
+        if (!api) return false
+        const previous = globalThis.__donDownloadImageRun
+        if (previous && typeof previous.stop === 'function') previous.stop()
+        globalThis.__donDownloadImageRun = api.startRun(document, window, {})
+        return true
+      }
+    })
+    const ok = Array.isArray(started) && started.some((entry) => entry && entry.result === true)
+    if (!ok) {
+      setCollectingImages(false)
+      setStatus('error', 'The page could not be read. Reload it and try again.')
+      return
+    }
+    setStatus('', 'Scrolling the page to count images. Press Stop in the page or here when you have enough.')
+  } catch {
+    setCollectingImages(false)
+    setStatus(
+      'error',
+      'This page cannot be read. Reload it (or open a normal http(s) page) and try again.'
+    )
+  }
+}
+
+async function stopImageRun() {
+  if (activeTabId === null) return
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: activeTabId, allFrames: false },
+      func: () => {
+        const run = globalThis.__donDownloadImageRun
+        if (run && typeof run.stop === 'function') run.stop()
+        return true
+      }
+    })
+  } catch {
+    // The tab may be gone; the run ends with it.
+  }
+  setCollectingImages(false)
+  setStatus('', 'Image collection stopped. Press Send in the page to open the picker.')
+}
+
+function toggleImageRun() {
+  if (collectingImages) {
+    void stopImageRun()
+    return
+  }
+  void startImageRun()
+}
+
 sendButton.addEventListener('click', () => {
   void sendPage(false)
 })
+
+scanImagesButton?.addEventListener('click', toggleImageRun)
 
 scanButton?.addEventListener('click', () => {
   void scanPage()
@@ -1220,6 +1316,29 @@ enableSiteButton.addEventListener('click', () => {  if (pageOrigin === null || a
 nativeFix.addEventListener('click', (event) => {
   event.preventDefault()
   chrome.tabs.create({ url: welcomeUrl(chrome) })
+})
+
+/**
+ * Progress and completion of an image run. The collector lives in the page, so
+ * these messages arrive whether or not this popup is still open; here they only
+ * keep the status line current. The background worker owns the native-host call.
+ */
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || typeof message !== 'object') return false
+  if (message.type === 'dondownload:images-progress') {
+    const count = typeof message.count === 'number' ? message.count : 0
+    setStatus('', count > 0 ? `${count} images found so far…` : 'Counting images…')
+    return false
+  }
+  if (message.type === 'dondownload:images-ready') {
+    setCollectingImages(false)
+    setStatus(
+      '',
+      'Opening the image picker in DonDownload. Choose the images you want there.'
+    )
+    return false
+  }
+  return false
 })
 
 window.addEventListener('unload', clearPolling)

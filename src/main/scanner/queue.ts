@@ -1,6 +1,7 @@
 import type { Batch } from '@shared/batches'
 import type { MediaAnalysis, MediaOutputFormat } from '@shared/media'
 import { MAX_SCAN_MESSAGE_LENGTH } from '@shared/scanner'
+import { imageFolderName } from '@shared/scanImages'
 import type {
   ScanQueueResult,
   ScanQueueSelectionError,
@@ -43,6 +44,11 @@ export interface ScanBatchTarget {
   }
   /** Internal scan item ID used only to wire funscript pairings. */
   scanItemId?: string
+  /**
+   * Second URL the batch manager tries when this one fails with a 403/404.
+   * Only images report one (Pinterest originals vs the 736x variant).
+   */
+  fallbackUrl?: string
 }
 
 /**
@@ -75,6 +81,8 @@ export interface ScanBatchPort {
   createScanBatch(input: {
     title: string
     targets: readonly ScanBatchTarget[]
+    /** Optional single folder below the download root for this batch. */
+    subfolder?: string
   }): Promise<Batch>
   /**
    * Mixed scanner batch: verified direct files and resolved videos share one
@@ -140,6 +148,14 @@ async function mapWithConcurrency<T, R>(
   )
   await Promise.all(runners)
   return results
+}
+
+/**
+ * True for a scan item that is a plain image reported by the extension. These
+ * are downloaded without a queue-time probe.
+ */
+function isImageTarget(target: ResolvedScanTarget): boolean {
+  return target.category === 'image' && target.kind === 'file'
 }
 
 function errorCode(error: unknown): string {
@@ -296,6 +312,12 @@ export class ScanQueueService {
         if (target.video !== undefined) {
           return { target, probe: null }
         }
+        // An image was observed in the live DOM by the extension, so there is
+        // nothing to verify: probing a thousand images would only add requests
+        // and would reject images behind a hot-link check.
+        if (isImageTarget(target)) {
+          return { target, probe: null }
+        }
         const probe = await (this.probeItem ?? probeScanItem)(
           {
             url: target.url,
@@ -328,6 +350,25 @@ export class ScanQueueService {
                 : 'This video could not be revalidated for download.'
           })
         }
+        continue
+      }
+
+      if (isImageTarget(target)) {
+        queued.push({
+          itemId: target.itemId,
+          file: {
+            url: target.url,
+            title: cleanTitle(target.name),
+            filename: target.name,
+            scanItemId: target.itemId,
+            ...(target.fallbackUrl === undefined
+              ? {}
+              : { fallbackUrl: target.fallbackUrl }),
+            ...(target.cookie === undefined
+              ? {}
+              : { requestHeaders: { cookie: target.cookie } })
+          }
+        })
         continue
       }
 
@@ -384,7 +425,9 @@ export class ScanQueueService {
       )
     }
 
-    const title = `Scan: ${cleanTitle(session.title ?? session.hostname)}`
+    const pageTitle = cleanTitle(session.title ?? session.hostname)
+    const imageSession = session.mode === 'images'
+    const title = `${imageSession ? 'Images' : 'Scan'}: ${pageTitle}`
     let batch: Batch
     if (videos.length > 0) {
       if (typeof this.batches.createScanMediaBatch !== 'function') {
@@ -408,7 +451,13 @@ export class ScanQueueService {
         ...(pairings.length === 0 ? {} : { pairings })
       })
     } else {
-      batch = await this.batches.createScanBatch({ title, targets: files })
+      batch = await this.batches.createScanBatch({
+        title,
+        targets: files,
+        // One image batch lands in its own folder named after the page, so a
+        // 500-image board never mixes with the normal download list.
+        ...(imageSession ? { subfolder: imageFolderName(pageTitle) } : {})
+      })
     }
 
     return {

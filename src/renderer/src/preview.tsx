@@ -2,7 +2,17 @@ import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import './styles.css'
-import { createPreviewApi } from './preview/fixtures'
+import {
+  createPreviewApi,
+  type PreviewFixtureControls
+} from './preview/fixtures'
+import type { DonDownloadApi } from '@shared/types'
+
+/**
+ * The fixture API is created in the module body below, before React mounts, so
+ * the automation effect can always reach it through this reference.
+ */
+let fixtureApi: (DonDownloadApi & PreviewFixtureControls) | null = null
 
 /** Runs the ?state/?theme/?overflow screenshot automation once on mount. */
 function Automation(): null {
@@ -25,8 +35,8 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * details|shortcuts|undo, optional ?theme=light|dark|oled, and ?overflow=1
- * renders a badge with the horizontal-overflow metrics.
+ * details|images|shortcuts|undo, optional ?theme=light|dark|oled, and
+ * ?overflow=1 renders a badge with the horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
   // React StrictMode runs effects twice in dev; the automation must run once.
@@ -134,6 +144,11 @@ function runPreviewAutomation(): void {
       await wait(400)
       if (!(await clickByText('Scan'))) return
     }
+    if (state === 'images') {
+      // The picker sheet is the extension image flow: one session, thumbnails.
+      fixtureApi?.openImageScanFixture()
+      await wait(400)
+    }
     if (state === 'details') {
       await wait(300)
       window.document
@@ -173,6 +188,7 @@ if (!import.meta.env.DEV) {
 } else {
   document.documentElement.dataset.preview = 'fixtures'
   const previewApi = createPreviewApi()
+  fixtureApi = previewApi
   window.donDownload = previewApi
 
   function FixtureControls() {

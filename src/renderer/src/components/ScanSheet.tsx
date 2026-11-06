@@ -1,6 +1,7 @@
 import { useEffect, useRef, type JSX } from 'react'
 import type { ScanSession } from '@shared/scanner'
 import { ScanPanel } from './ScanPanel'
+import { ScanImagePicker } from './ScanImagePicker'
 import { Icon } from './Icon'
 import { useWheelScrollLock } from '../lib/useWheelScrollLock'
 
@@ -27,6 +28,12 @@ export function ScanSheet({
 }: ScanSheetProps): JSX.Element {
   const sheetRef = useRef<HTMLDivElement | null>(null)
   useWheelScrollLock(sheetRef)
+  // An extension image run fills exactly one session; it gets the thumbnail
+  // picker instead of the discovery panel.
+  const imageSession =
+    sessions !== null && sessions.length === 1 && sessions[0]?.mode === 'images'
+      ? sessions[0]
+      : null
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -52,7 +59,9 @@ export function ScanSheet({
       <div className="no-drag absolute inset-y-0 right-0 flex w-full max-w-[780px] flex-col border-l border-white/10 bg-[var(--surface-app)] shadow-2xl shadow-black/60">
         <div className="window-drag-bar flex shrink-0 items-center gap-2.5 border-b border-white/[0.07] px-5 py-4 pr-[calc(2rem+100vw-env(titlebar-area-x,0px)-env(titlebar-area-width,100vw))]">
           <div className="min-w-0 flex-1">
-            <h1 className="text-base font-semibold text-zinc-100">Scan pages</h1>
+            <h1 className="text-base font-semibold text-zinc-100">
+              {imageSession === null ? 'Scan pages' : 'Download images'}
+            </h1>
             <p className="text-[12.5px] text-zinc-500">
               Nothing downloads until you click Download
             </p>
@@ -67,12 +76,20 @@ export function ScanSheet({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
-          <ScanPanel
-            initialUrl={url}
-            initialSessions={sessions}
-            disabled={disabled}
-            embedded
-          />
+          {imageSession === null ? (
+            <ScanPanel
+              initialUrl={url}
+              initialSessions={sessions}
+              disabled={disabled}
+              embedded
+            />
+          ) : (
+            <ScanImagePicker
+              session={imageSession}
+              disabled={disabled}
+              onClose={onClose}
+            />
+          )}
         </div>
       </div>
     </div>
