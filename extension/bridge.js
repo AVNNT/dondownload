@@ -16,6 +16,7 @@ export const PROBE_MESSAGE_TYPE = 'probe'
 export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
 export const SNIFFED_MEDIA_MESSAGE_TYPE = 'queue-sniffed-media'
 export const DURABLE_HANDOFF_MESSAGE_TYPE = 'handoff-download'
+export const SCAN_PAGE_MESSAGE_TYPE = 'scan-page'
 export const MAX_URL_LENGTH = 4096
 export const MAX_CAPTURED_FILENAME_LENGTH = 180
 export const MAX_SNIFFED_TITLE_LENGTH = 500
@@ -927,6 +928,92 @@ export function sendQueueDownload(rawUrl, options = {}) {
           }
           if (!response || response.ok !== true) {
             finish({ ok: false, error: describeResponseError(response) })
+            return
+          }
+          finish({ ok: true })
+        }
+      )
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+/**
+ * "Scan this page with DonDownload". Only a validated HTTP(S) URL and, when
+ * the user already opted in for that exact origin, the exact-host Cookie are
+ * sent. The desktop starts a discovery-only scan; this message never queues a
+ * download. The Cookie is never written to extension storage.
+ */
+export function sendScanPage(rawUrl, rawCookie) {
+  const normalized = normalizeSupportedUrl(rawUrl)
+  if (!normalized.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: normalized.code, message: normalized.message }
+    })
+  }
+
+  let cookie
+  if (rawCookie !== undefined && rawCookie !== null) {
+    cookie = normalizeHeaderText(rawCookie, MAX_COOKIE_HEADER_LENGTH)
+    if (cookie === null || /[\r\n]/.test(cookie)) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message: 'The browser cookie header is not valid.'
+        }
+      })
+    }
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST,
+        {
+          type: SCAN_PAGE_MESSAGE_TYPE,
+          url: normalized.url,
+          ...(cookie === undefined ? {} : { cookie })
+        },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          if (runtimeError) {
+            finish({ ok: false, error: describeNativeError(runtimeError.message) })
+            return
+          }
+          if (
+            !response ||
+            response.ok !== true ||
+            response.accepted !== true
+          ) {
+            finish({
+              ok: false,
+              error:
+                response && response.ok === false
+                  ? describeResponseError(response)
+                  : {
+                      code: 'NATIVE_RESPONSE_INVALID',
+                      message: 'The DonDownload helper returned an unexpected response.'
+                    }
+            })
             return
           }
           finish({ ok: true })
