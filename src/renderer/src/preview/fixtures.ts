@@ -15,6 +15,7 @@ import type {
   MediaAnalysis,
   MediaFormatOption,
   MediaJob,
+  MediaJobDetails,
   MediaQueueInput,
   MediaSnapshot
 } from '@shared/media'
@@ -166,6 +167,14 @@ export function createPreviewApi(
 
   const analyses = new Map<string, MediaAnalysis>()
   const previews = new Map<string, CollectionPreview>()
+  /** Normalized page URL per analysis, recovered for the details pane. */
+  const sourceUrlsByAnalysis = new Map<string, string>()
+  /**
+   * Display-only source URL/path per media job for the details pane,
+   * mirroring the scoped `getMediaJobDetails` accessor on the real backend.
+   */
+  const mediaDetails = seedMediaJobDetails()
+
   let sequence = 0
 
   const downloadListeners = new Set<Listener<AppSnapshot>>()
@@ -237,6 +246,7 @@ export function createPreviewApi(
 
     const analysis = seedAnalysis(nextId('preview-analysis'), url, now())
     analyses.set(analysis.analysisId, analysis)
+    sourceUrlsByAnalysis.set(analysis.analysisId, url)
     return ok(analysis)
   }
 
@@ -1216,10 +1226,21 @@ export function createPreviewApi(
         completedAt: null
       }
       mediaJobs.unshift(job)
+      mediaDetails.set(job.id, {
+        sourceUrl: sourceUrlsByAnalysis.get(analysis.analysisId) ?? null,
+        filePath: null
+      })
       return ok(emitMedia())
     },
 
     getMediaSnapshot: async () => ok(mediaSnapshot()),
+
+    getMediaJobDetails: async (jobId: string) => {
+      const details = mediaDetails.get(jobId)
+      return details !== undefined
+        ? ok({ ...details })
+        : fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+    },
 
     getMediaJob: async (jobId: string) => {
       const job = findMediaJob(jobId)
@@ -2052,8 +2073,63 @@ function seedDownloads(anchor: number): DownloadItem[] {
   ]
 }
 
-function seedMediaJobs(anchor: number): MediaJob[] {
-  const minute = 60_000
+/** Display-only details pane data keyed by the seeded media job IDs. */
+function seedMediaJobDetails(): Map<string, MediaJobDetails> {
+  return new Map<string, MediaJobDetails>([
+    [
+      'preview-media-downloading',
+      {
+        sourceUrl: 'https://videos.example.com/watch/deep-work-focus-session',
+        filePath: null
+      }
+    ],
+    [
+      'preview-media-merging',
+      {
+        sourceUrl: 'https://videos.example.com/watch/design-systems-in-practice',
+        filePath: null
+      }
+    ],
+    [
+      'preview-media-complete',
+      {
+        sourceUrl: 'https://audio.example.com/mixes/ambient-coding-mix',
+        filePath: 'Downloads/DonDownload/Ambient coding mix.m4a'
+      }
+    ],
+    [
+      'preview-media-error',
+      {
+        sourceUrl:
+          'https://videos.example.com/watch/conference-keynote-archive',
+        filePath: null
+      }
+    ],
+    [
+      'preview-media-queued-video',
+      {
+        sourceUrl: 'https://videos.example.com/watch/product-launch-keynote',
+        filePath: null
+      }
+    ],
+    [
+      'preview-media-starting',
+      {
+        sourceUrl: 'https://videos.example.com/watch/aerial-coastline-in-4k',
+        filePath: null
+      }
+    ],
+    [
+      'preview-media-queued-audio',
+      {
+        sourceUrl: 'https://audio.example.com/episodes/weekly-design-notes-12',
+        filePath: null
+      }
+    ]
+  ])
+}
+
+function seedMediaJobs(anchor: number): MediaJob[] {  const minute = 60_000
   const mib = 1024 * 1024
 
   return [

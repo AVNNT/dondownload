@@ -14,6 +14,10 @@ export const IPC = {
   queueMedia: 'media:queue',
   getMediaSnapshot: 'media:get-snapshot',
   getMediaJob: 'media:get-job',
+  // Display-only details for one media job, fetched on demand by the details
+  // pane. Scoped on purpose: bulk media DTOs still never carry a source URL
+  // or path. Uses the same trusted-sender wrapper.
+  getMediaJobDetails: 'media:get-job-details',
   cancelMedia: 'media:cancel',
   pauseMedia: 'media:pause',
   resumeMedia: 'media:resume',

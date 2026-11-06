@@ -3,10 +3,12 @@ import { ValidationError } from './validation'
 /**
  * Shared, renderer-safe media contracts for Milestone 3A.
  *
- * Nothing in this file may contain a page/source URL, disk path, request
+ * Bulk media DTOs never contain a page/source URL, disk path, request
  * headers, cookies, credentials, raw yt-dlp selectors or raw yt-dlp metadata.
  * Those values belong only to the internal persistence record below, which is
- * never sent over IPC.
+ * never sent over IPC. The single scoped exception is `MediaJobDetails`, an
+ * on-demand display accessor that recovers the persisted source URL and final
+ * output path of one exact job for the details pane; snapshots stay clean.
  */
 
 export const MEDIA_FORMAT_KINDS = ['video', 'audio'] as const
@@ -165,6 +167,18 @@ export interface MediaJob {
    * fixtures use it to demonstrate the thumbnail treatment.
    */
   thumbnailUrl?: string | null
+}
+
+/**
+ * On-demand, display-only details for one exact media job. The details pane
+ * fetches this when a media row is selected; the bulk `MediaJob` DTO and every
+ * snapshot above stay free of source URLs and paths.
+ */
+export interface MediaJobDetails {
+  /** Normalized page URL persisted with the job, or null when unavailable. */
+  sourceUrl: string | null
+  /** Final output path once the backend knows it, or null while unknown. */
+  filePath: string | null
 }
 
 export interface MediaToolState {

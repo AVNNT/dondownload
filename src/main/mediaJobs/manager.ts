@@ -13,6 +13,7 @@ import {
   type MediaAnalysis,
   type MediaFormatOption,
   type MediaJob,
+  type MediaJobDetails,
   type MediaJobRecord,
   type MediaJobStatus,
   type MediaOutputFormat,
@@ -324,6 +325,19 @@ export class MediaJobsManager {
 
   getMediaJob(rawId: unknown): MediaJob {
     return this.toMediaJob(this.requireJob(rawId))
+  }
+
+  /**
+   * Display-only details for one exact job, fetched on demand by the details
+   * pane. Unlike `MediaJob` publication above, this recovers the persisted
+   * sourceUrl verbatim and the output path once known; snapshots stay clean.
+   */
+  getMediaJobDetails(rawId: unknown): MediaJobDetails {
+    const job = this.requireJob(rawId)
+    return Object.freeze({
+      sourceUrl: job.record.sourceUrl,
+      filePath: job.record.filePath
+    })
   }
 
   /** Final output path of a completed job, for the scanner rename step. */

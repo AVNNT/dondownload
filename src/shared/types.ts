@@ -11,6 +11,7 @@ import type {
   AnalyzeMediaInput,
   MediaAnalysis,
   MediaJob,
+  MediaJobDetails,
   MediaQueueInput,
   MediaSnapshot
 } from './media'
@@ -261,6 +262,11 @@ export interface DonDownloadApi {
   queueMedia: (input: MediaQueueInput) => Promise<ApiResult<MediaSnapshot>>
   getMediaSnapshot: () => Promise<ApiResult<MediaSnapshot>>
   getMediaJob: (jobId: string) => Promise<ApiResult<MediaJob>>
+  /**
+   * Display-only details for one media job, fetched on demand by the details
+   * pane. The bulk media DTOs above stay free of source URLs and paths.
+   */
+  getMediaJobDetails: (jobId: string) => Promise<ApiResult<MediaJobDetails>>
   cancelMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   pauseMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   resumeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
