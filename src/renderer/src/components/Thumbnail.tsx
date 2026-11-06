@@ -14,20 +14,27 @@ export interface ThumbnailFallback {
 export function Thumbnail({
   src,
   title,
-  fallback
+  fallback,
+  size = 'sm'
 }: {
   src?: string
   title: string
   fallback: ThumbnailFallback
+  /** `card` is the larger 16:9 video-card treatment. */
+  size?: 'sm' | 'card'
 }): JSX.Element {
   const [failed, setFailed] = useState(false)
+  const box =
+    size === 'card'
+      ? 'h-14 w-24 rounded-lg'
+      : 'h-7 w-7 rounded-md'
 
   if (failed || src === undefined || src.length === 0) {
     return (
       <span
-        className={`flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] ${fallback.accent}`}
+        className={`flex shrink-0 items-center justify-center border border-white/10 bg-white/[0.03] ${box} ${fallback.accent}`}
       >
-        <Icon name={fallback.icon} size={15} />
+        <Icon name={fallback.icon} size={size === 'card' ? 22 : 15} />
       </span>
     )
   }
@@ -41,7 +48,7 @@ export function Thumbnail({
       referrerPolicy="no-referrer"
       draggable={false}
       onError={() => setFailed(true)}
-      className="h-7 w-7 rounded-md border border-white/10 object-cover"
+      className={`shrink-0 border border-white/10 object-cover ${box}`}
     />
   )
 }

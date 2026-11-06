@@ -7,9 +7,12 @@ import {
   type JSX
 } from 'react'
 import {
+  isQueueableScanItem,
   type ScanCategory,
   type ScanItem,
-  type ScanSession
+  type ScanQueueVideoOption,
+  type ScanSession,
+  type ScanVideoFormat
 } from '@shared/scanner'
 import type { AppErrorInfo } from '@shared/types'
 import { formatBytes } from '@shared/format'
@@ -55,28 +58,56 @@ const GROUPS: readonly GroupDefinition[] = [
 type FilterMode = 'all' | 'script-video'
 
 function isQueueable(item: ScanItem): boolean {
-  return (
-    item.kind === 'file' &&
-    item.category !== 'page' &&
-    item.status !== 'signin' &&
-    item.status !== 'unavailable'
-  )
+  return isQueueableScanItem(item)
 }
 
 function statusTone(status: ScanItem['status']): StatusTone {
   if (status === 'ready') return 'complete'
   if (status === 'probing') return 'active'
   if (status === 'signin') return 'warning'
-  if (status === 'unavailable') return 'failed'
+  if (status === 'unavailable' || status === 'protected') return 'failed'
+  if (status === 'tool-unavailable') return 'warning'
   return 'queued'
 }
 
 function statusLabel(status: ScanItem['status']): string {
-  if (status === 'ready') return 'Verified'
-  if (status === 'probing') return 'Checking'
+  if (status === 'ready') return 'Ready'
+  if (status === 'probing') return 'Resolving'
   if (status === 'signin') return 'Sign-in needed'
+  if (status === 'protected') return 'Protected'
   if (status === 'unavailable') return 'Unavailable'
+  if (status === 'tool-unavailable') return 'yt-dlp missing'
   return 'Found'
+}
+
+function formatDuration(seconds: number | null | undefined): string | null {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return null
+  }
+  const total = Math.floor(seconds)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  const pad = (value: number): string => value.toString().padStart(2, '0')
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(rest)}`
+    : `${minutes}:${pad(rest)}`
+}
+
+function itemSizeLabel(item: ScanItem): string {
+  if (item.sizeBytes === null) return 'Size unknown'
+  return `${item.sizeIsEstimate === true ? '≈ ' : ''}${formatBytes(item.sizeBytes)}`
+}
+
+function defaultVideoOptionId(item: ScanItem): string | null {
+  if (item.bestOptionId !== undefined && item.bestOptionId !== null) {
+    return item.bestOptionId
+  }
+  return item.formats?.[0]?.optionId ?? null
+}
+
+function isVideoCardItem(item: ScanItem): boolean {
+  return item.category === 'video' && item.kind === 'page-link'
 }
 
 function mergeUpdate(
@@ -103,25 +134,29 @@ function extensionOf(name: string): string | null {
 function selectionSize(items: readonly ScanItem[], selected: Set<string>): {
   bytes: number
   unknown: boolean
+  estimated: boolean
   count: number
 } {
   let bytes = 0
   let unknown = false
+  let estimated = false
   let count = 0
   for (const item of items) {
     if (!selected.has(item.id)) continue
     count += 1
     if (item.sizeBytes === null) unknown = true
     else bytes += item.sizeBytes
+    if (item.sizeIsEstimate === true) estimated = true
   }
-  return { bytes, unknown, count }
+  return { bytes, unknown, estimated, count }
 }
 
 function sizeLabel(items: readonly ScanItem[], selected: Set<string>): string {
-  const { bytes, unknown, count } = selectionSize(items, selected)
+  const { bytes, unknown, estimated, count } = selectionSize(items, selected)
   if (count === 0) return '0 B'
   if (bytes === 0 && unknown) return 'size unknown'
-  return unknown ? `${formatBytes(bytes)}+` : formatBytes(bytes)
+  const prefix = estimated ? '≈ ' : ''
+  return unknown ? `${prefix}${formatBytes(bytes)}+` : `${prefix}${formatBytes(bytes)}`
 }
 
 export function ScanPanel({
@@ -136,6 +171,7 @@ export function ScanPanel({
   const [starting, setStarting] = useState(false)
   const [queuing, setQueuing] = useState(false)
   const [selection, setSelection] = useState<Set<string>>(new Set())
+  const [videoChoices, setVideoChoices] = useState<Record<string, string>>({})
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
   const sessionIdRef = useRef<string | null>(initialSession?.sessionId ?? null)
@@ -289,14 +325,28 @@ export function ScanPanel({
     })
   }
 
-  const queueSelected = (): void => {
-    if (session === null || selectedItems.length === 0 || queuing) return
-    const ids = selectedItems.map((item) => item.id)
+  const queueItems = (ids: readonly string[]): void => {
+    if (session === null || ids.length === 0 || queuing) return
+    const selectedIds = new Set(ids)
+    const videoOptions: ScanQueueVideoOption[] = []
+    for (const item of items) {
+      if (!selectedIds.has(item.id) || !isVideoCardItem(item)) continue
+      const optionId =
+        videoChoices[item.id] ?? defaultVideoOptionId(item) ?? undefined
+      videoOptions.push({
+        itemId: item.id,
+        ...(optionId === undefined ? {} : { optionId })
+      })
+    }
     setQueuing(true)
     setError(null)
     setNotice(null)
     void window.donDownload
-      .queueScanSelection(session.sessionId, ids)
+      .queueScanSelection(
+        session.sessionId,
+        [...ids],
+        videoOptions.length > 0 ? videoOptions : undefined
+      )
       .then((result) => {
         setQueuing(false)
         if (!result.ok) {
@@ -309,7 +359,7 @@ export function ScanPanel({
             ? ` ${result.value.skipped.length} item(s) were skipped.`
             : ''
         setNotice(
-          `Queued ${result.value.queuedItemIds.length} file(s) in one batch.${skipped}`
+          `Queued ${result.value.queuedItemIds.length} item(s) in one batch.${skipped}`
         )
       })
       .catch((reason: unknown) => {
@@ -319,9 +369,13 @@ export function ScanPanel({
           message:
             reason instanceof Error
               ? reason.message
-              : 'The selected files could not be queued.'
+              : 'The selected items could not be queued.'
         })
       })
+  }
+
+  const queueSelected = (): void => {
+    queueItems(selectedItems.map((item) => item.id))
   }
 
   const scanning = session?.status === 'scanning'
@@ -535,7 +589,149 @@ export function ScanPanel({
                         {groupItems.map((item) => {
                           const queueableItem = isQueueable(item)
                           const selected = selection.has(item.id)
-                          const type = extensionOf(item.name) ?? group.label.slice(0, -1)
+                          const type =
+                            extensionOf(item.name) ?? group.label.slice(0, -1)
+
+                          if (isVideoCardItem(item)) {
+                            const chosen =
+                              videoChoices[item.id] ??
+                              defaultVideoOptionId(item) ??
+                              ''
+                            const reason =
+                              item.status === 'probing'
+                                ? 'Resolving formats…'
+                                : item.unavailableReason
+                            return (
+                              <li
+                                key={item.id}
+                                className={`px-3 py-2.5 ${
+                                  selected ? 'bg-emerald-400/[0.04]' : ''
+                                }`}
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`Select ${item.name}`}
+                                    checked={selected}
+                                    disabled={!queueableItem || disabled}
+                                    onChange={() => toggle(item.id)}
+                                    className="mt-2 h-3.5 w-3.5 shrink-0 accent-emerald-400 disabled:opacity-40"
+                                  />
+                                  <Thumbnail
+                                    size="card"
+                                    src={item.thumbnailUrl ?? undefined}
+                                    title={item.name}
+                                    fallback={{
+                                      icon: group.icon,
+                                      accent: group.accent
+                                    }}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <span
+                                        className="truncate text-[12px] font-medium text-zinc-200"
+                                        title={item.name}
+                                      >
+                                        {item.name}
+                                      </span>
+                                      {item.status === 'probing' ? (
+                                        <span
+                                          aria-hidden="true"
+                                          className="h-3 w-3 shrink-0 animate-spin rounded-full border border-zinc-500 border-t-transparent"
+                                        />
+                                      ) : null}
+                                      <StatusBadge
+                                        label={statusLabel(item.status)}
+                                        tone={statusTone(item.status)}
+                                      />
+                                    </div>
+                                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-500">
+                                      {formatDuration(item.durationSeconds) !==
+                                      null ? (
+                                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                                          {formatDuration(item.durationSeconds)}
+                                        </span>
+                                      ) : null}
+                                      {item.bestResolution ? (
+                                        <span className="font-medium text-zinc-300">
+                                          {item.bestResolution}
+                                        </span>
+                                      ) : null}
+                                      <span>{itemSizeLabel(item)}</span>
+                                      <span>·</span>
+                                      <span>{item.hostname}</span>
+                                      {item.postNumber !== null ? (
+                                        <>
+                                          <span>·</span>
+                                          <span>post #{item.postNumber}</span>
+                                        </>
+                                      ) : null}
+                                      {item.author !== null ? (
+                                        <>
+                                          <span>·</span>
+                                          <span className="truncate">
+                                            {item.author}
+                                          </span>
+                                        </>
+                                      ) : null}
+                                    </div>
+                                    {item.status === 'ready' &&
+                                    item.formats &&
+                                    item.formats.length > 0 ? (
+                                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                        <label className="sr-only" htmlFor={`quality-${item.id}`}>
+                                          Quality for {item.name}
+                                        </label>
+                                        <select
+                                          id={`quality-${item.id}`}
+                                          value={chosen}
+                                          onChange={(event) =>
+                                            setVideoChoices((current) => ({
+                                              ...current,
+                                              [item.id]: event.target.value
+                                            }))
+                                          }
+                                          disabled={disabled || queuing}
+                                          className="h-7 max-w-[16rem] rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-emerald-400/60 disabled:opacity-50"
+                                        >
+                                          {item.formats.map(
+                                            (format: ScanVideoFormat) => (
+                                              <option
+                                                key={format.optionId}
+                                                value={format.optionId}
+                                              >
+                                                {format.label}
+                                                {format.sizeBytes !== null
+                                                  ? ` · ${
+                                                      format.sizeIsEstimate
+                                                        ? '≈ '
+                                                        : ''
+                                                    }${formatBytes(format.sizeBytes)}`
+                                                  : ''}
+                                              </option>
+                                            )
+                                          )}
+                                        </select>
+                                        <button
+                                          type="button"
+                                          onClick={() => queueItems([item.id])}
+                                          disabled={disabled || queuing}
+                                          className="h-7 rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                          Download
+                                        </button>
+                                      </div>
+                                    ) : reason ? (
+                                      <p className="mt-1 text-[10.5px] leading-4 text-zinc-500">
+                                        {reason}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </li>
+                            )
+                          }
+
                           return (
                             <li
                               key={item.id}
@@ -574,11 +770,7 @@ export function ScanPanel({
                                   <span>·</span>
                                   <span>{item.hostname}</span>
                                   <span>·</span>
-                                  <span>
-                                    {item.sizeBytes === null
-                                      ? 'Size unknown'
-                                      : formatBytes(item.sizeBytes)}
-                                  </span>
+                                  <span>{itemSizeLabel(item)}</span>
                                   {item.postNumber !== null ? (
                                     <>
                                       <span>·</span>
@@ -592,12 +784,6 @@ export function ScanPanel({
                                     </>
                                   ) : null}
                                 </div>
-                                {item.kind === 'page-link' &&
-                                item.category === 'video' ? (
-                                  <p className="mt-0.5 text-[10.5px] text-zinc-500">
-                                    Page link · formats resolve in a later update
-                                  </p>
-                                ) : null}
                               </div>
                             </li>
                           )
@@ -613,7 +799,7 @@ export function ScanPanel({
           <div className="sticky bottom-0 -mx-3 flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-[var(--surface-app)] px-3 py-2">
             <p className="min-w-0 flex-1 text-[11px] leading-4 text-zinc-400">
               {selectedItems.length === 0
-                ? 'Select files to download. Videos on external pages are resolved later.'
+                ? 'Select files or videos to download. Nothing is queued until you choose it.'
                 : `${selectedItems.length} selected · ${selectionLabel}`}
             </p>
             <button
