@@ -29,6 +29,30 @@ function imageRequest(count = 3) {
   })
 }
 
+/**
+ * The real-world mismatch: the originals URL guesses `.png`, but the file the
+ * CDN serves (and the 736x fallback) is a JPEG.
+ */
+const MISMATCHED_HASH = 'b1c601cd17e1ff6cb11f91fb5a6029b0'
+const MISMATCHED_ORIGINAL = `https://${HOST}/originals/b1/c6/01/${MISMATCHED_HASH}.png`
+const MISMATCHED_FALLBACK = `https://${HOST}/736x/b1/c6/01/${MISMATCHED_HASH}.jpg`
+
+function mismatchedExtensionRequest() {
+  return parseScanImagesRequest({
+    pageUrl: PAGE_URL,
+    pageTitle: PAGE_TITLE,
+    images: [{ url: MISMATCHED_ORIGINAL, fallbackUrl: MISMATCHED_FALLBACK }]
+  })
+}
+
+function noFallbackRequest() {
+  return parseScanImagesRequest({
+    pageUrl: PAGE_URL,
+    pageTitle: PAGE_TITLE,
+    images: [{ url: MISMATCHED_ORIGINAL }]
+  })
+}
+
 function downloadRecord(url: string, id: string, dir: string): DownloadItem {
   return {
     id,
@@ -56,7 +80,9 @@ function createDownloads() {
   const records: DownloadItem[] = []
   const addCalls: Array<{ url: string; filename?: string }> = []
   const scanFileCalls: Array<{ url: string; directory: string }> = []
+  const removedIds: string[] = []
   let counter = 0
+  let removeError: Error | null = null
 
   function create(input: unknown, directory: string): AppSnapshot {
     const record = input as { url: string; filename?: string }
@@ -80,6 +106,7 @@ function createDownloads() {
     records,
     addCalls,
     scanFileCalls,
+    removedIds,
     add: vi.fn(async (input: unknown) => create(input, 'C:\\Downloads')),
     addScanFile: vi.fn(async (input: unknown, directory: string) => {
       scanFileCalls.push({
@@ -89,6 +116,16 @@ function createDownloads() {
       return create(input, directory)
     }),
     pause: vi.fn(async () => undefined),
+    remove: vi.fn(async (id: string) => {
+      removedIds.push(id)
+      if (removeError !== null) throw removeError
+      const index = records.findIndex((record) => record.id === id)
+      if (index >= 0) records.splice(index, 1)
+      return undefined
+    }),
+    failRemove(message: string): void {
+      removeError = new Error(message)
+    },
     getSnapshot: vi.fn(() => ({
       aria2: {
         status: 'ready' as const,
@@ -240,6 +277,106 @@ describe('image queue path', () => {
 
     expect(downloads.addCalls).toHaveLength(2)
     expect(downloads.addCalls[1]?.url).toContain('/736x/')
+  })
+
+  it('retries with the fallback file name and drops the failed first child', async () => {
+    const sessions = new ScanSessionManager({ onUpdate: () => undefined })
+    const downloads = createDownloads()
+    const batches = createBatchManager(downloads)
+    const queue = new ScanQueueService({
+      sessions,
+      batches,
+      probeItem: neverProbe
+    })
+
+    const session = sessions.startImages(mismatchedExtensionRequest())
+    const result = await queue.queueSelection(session.sessionId, [
+      session.items[0]!.id
+    ])
+    await batches.waitForIdle()
+    expect(downloads.addCalls[0]).toMatchObject({
+      url: MISMATCHED_ORIGINAL,
+      filename: `${MISMATCHED_HASH}.png`
+    })
+
+    downloads.failLast('The server sent a broken response.')
+    batches.refresh()
+    await batches.waitForIdle()
+
+    // The retry follows the fallback URL, including its real `.jpg` extension.
+    expect(downloads.addCalls).toHaveLength(2)
+    expect(downloads.addCalls[1]).toMatchObject({
+      url: MISMATCHED_FALLBACK,
+      filename: `${MISMATCHED_HASH}.jpg`
+    })
+    // The folder is unchanged by the retry.
+    expect(downloads.scanFileCalls[1]?.directory).toBe(
+      'C:\\Downloads\\Autumn outfit ideas'
+    )
+
+    // The failed first attempt no longer shows up as a separate download.
+    expect(downloads.removedIds).toEqual(['child_1'])
+    expect(downloads.records.map((record) => record.id)).toEqual(['child_2'])
+    const item = batches.getBatch(result.batch!.id).items[0]
+    expect(item).toMatchObject({ status: 'running', childId: 'child_2' })
+  })
+
+  it('still retries the fallback when the failed child cannot be removed', async () => {
+    const sessions = new ScanSessionManager({ onUpdate: () => undefined })
+    const downloads = createDownloads()
+    const batches = createBatchManager(downloads)
+    const queue = new ScanQueueService({
+      sessions,
+      batches,
+      probeItem: neverProbe
+    })
+
+    const session = sessions.startImages(mismatchedExtensionRequest())
+    const result = await queue.queueSelection(session.sessionId, [
+      session.items[0]!.id
+    ])
+    await batches.waitForIdle()
+
+    downloads.failRemove('the record is already gone')
+    downloads.failLast('The server sent a broken response.')
+    batches.refresh()
+    await batches.waitForIdle()
+
+    expect(downloads.removedIds).toEqual(['child_1'])
+    expect(downloads.addCalls).toHaveLength(2)
+    expect(downloads.addCalls[1]).toMatchObject({
+      url: MISMATCHED_FALLBACK,
+      filename: `${MISMATCHED_HASH}.jpg`
+    })
+    const item = batches.getBatch(result.batch!.id).items[0]
+    expect(item).toMatchObject({ status: 'running', childId: 'child_2' })
+  })
+
+  it('fails the item and removes nothing when there is no fallback', async () => {
+    const sessions = new ScanSessionManager({ onUpdate: () => undefined })
+    const downloads = createDownloads()
+    const batches = createBatchManager(downloads)
+    const queue = new ScanQueueService({
+      sessions,
+      batches,
+      probeItem: neverProbe
+    })
+
+    const session = sessions.startImages(noFallbackRequest())
+    const result = await queue.queueSelection(session.sessionId, [
+      session.items[0]!.id
+    ])
+    await batches.waitForIdle()
+
+    downloads.failLast('The server sent a broken response.')
+    batches.refresh()
+    await batches.waitForIdle()
+
+    expect(downloads.addCalls).toHaveLength(1)
+    expect(downloads.removedIds).toEqual([])
+    expect(downloads.records.map((record) => record.id)).toEqual(['child_1'])
+    const item = batches.getBatch(result.batch!.id).items[0]
+    expect(item).toMatchObject({ status: 'error', childId: 'child_1' })
   })
 })
 
