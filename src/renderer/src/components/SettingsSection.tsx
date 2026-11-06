@@ -1,7 +1,11 @@
-import { useEffect, useState, type FormEvent, type JSX } from 'react'
+import { useEffect, useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import {
   APP_THEMES,
   MAX_SPEED_LIMIT_BPS,
+  MAX_MAX_CONCURRENT_DOWNLOADS,
+  MAX_PER_HOST_CONNECTIONS,
+  MIN_MAX_CONCURRENT_DOWNLOADS,
+  MIN_PER_HOST_CONNECTIONS,
   type AppTheme,
   type DownloadSettings
 } from '@shared/settings'
@@ -17,21 +21,26 @@ import type {
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
 import { applyRendererTheme } from '../theme'
+import { Icon } from './Icon'
 
 const THEME_LABEL: Record<AppTheme, string> = {
-  oled: 'OLED black',
+  oled: 'OLED',
   dark: 'Dark',
   light: 'Light'
 }
 
-const THEME_DESCRIPTION: Record<AppTheme, string> = {
-  oled: 'Pure black surfaces',
-  dark: 'Soft near-black surfaces',
-  light: 'Light surfaces and dark text'
-}
-
 const BYTES_PER_MB = 1_000_000
 const MAX_SPEED_MB = MAX_SPEED_LIMIT_BPS / BYTES_PER_MB
+
+/* Reusable token-based control classes (see src/renderer/src/styles.css). */
+const BTN_PRIMARY =
+  'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400'
+const BTN_GHOST =
+  'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60'
+const FIELD =
+  'h-8 rounded-lg border border-white/10 surface-input px-2.5 text-xs text-zinc-100 outline-none transition focus:border-accent-400/50'
+const KBD =
+  'rounded border border-white/10 px-1 text-[10px] leading-4 text-zinc-500'
 
 function updateStatusLabel(state: YtdlpUpdateState | null): string {
   if (!state) return 'Not checked yet'
@@ -101,7 +110,8 @@ function appUpdateStatusLabel(state: AppUpdateState | null): string {
 /**
  * Render the stored bytes/sec value in MB/s for humans without ever writing
  * this rounded text back unless the user actually edits the field.
- */function speedInputValue(bytesPerSecond: number): string {
+ */
+function speedInputValue(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''
   const mb = bytesPerSecond / BYTES_PER_MB
   const rounded = Number(mb.toFixed(mb >= 1 ? 3 : 6))
@@ -113,7 +123,40 @@ function exactSpeedLabel(bytesPerSecond: number): string {
   return `${bytesPerSecond.toLocaleString()} B/s · ${formatSpeed(bytesPerSecond)}`
 }
 
-export function SettingsSection(): JSX.Element {
+function relativeChecked(timestamp: number | null | undefined): string | null {
+  if (timestamp === null || timestamp === undefined) return null
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000))
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  return `${Math.round(hours / 24)} d ago`
+}
+
+function ytdlpStatusInfo(state: YtdlpUpdateState | null): {
+  label: string
+  tone: 'ok' | 'warn' | 'err'
+} | null {
+  // "Working" only after a successful check. Before anything has been checked
+  // (no state yet, or idle) there is no known-good result, so render no pill.
+  if (!state || state.status === 'idle') return null
+  switch (state.status) {
+    case 'failed':
+      return { label: 'Failed', tone: 'err' }
+    case 'checking':
+      return { label: 'Checking…', tone: 'warn' }
+    case 'updating':
+      return { label: 'Updating…', tone: 'warn' }
+    default:
+      return { label: 'Working', tone: 'ok' }
+  }
+}
+
+export function SettingsSection({
+  onBack
+}: {
+  onBack?: () => void
+}): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [draft, setDraft] = useState<DownloadSettings | null>(null)
   const [speedInput, setSpeedInput] = useState('')
@@ -205,23 +248,29 @@ export function SettingsSection(): JSX.Element {
 
   if (!draft) {
     return (
-      <section
-        className="rounded-xl border border-white/10 surface-card p-4"
-        aria-labelledby="settings-heading"
-      >
-        <h2
-          id="settings-heading"
-          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
-        >
-          Download settings
-        </h2>
+      <div aria-labelledby="settings-heading" className="space-y-6">
+        <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
+          {onBack ? (
+            <button
+              type="button"
+              aria-label="Back"
+              onClick={onBack}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:text-zinc-100"
+            >
+              <Icon name="chevron-left" size={16} />
+            </button>
+          ) : null}
+          <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
+            Settings
+          </h1>
+        </header>
         <p
           role={error ? 'alert' : undefined}
-          className={`mt-3 text-xs ${error ? 'text-red-300' : 'text-zinc-500'}`}
+          className={`text-xs ${error ? 'text-red-400' : 'text-zinc-500'}`}
         >
           {error ?? 'Loading settings…'}
         </p>
-      </section>
+      </div>
     )
   }
 
@@ -485,509 +534,670 @@ export function SettingsSection(): JSX.Element {
   const desktopUnchanged =
     JSON.stringify(desktopSaved) === JSON.stringify(desktopDraft)
 
+  const appReady =
+    appUpdateState?.status === 'ready' && appUpdateState?.canInstall === true
+  const ytdlpStatus = ytdlpStatusInfo(updateState)
+  const checkedLabel = relativeChecked(updateState?.lastCheckedAt)
+
   return (
-    <section
-      className="rounded-xl border border-white/10 surface-card p-3 sm:p-4"
-      aria-labelledby="settings-heading"
-    >
-      <div className="mb-3">
-        <h2
-          id="settings-heading"
-          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
-        >
-          Download settings
-        </h2>
-        <p className="mt-1 text-xs leading-5 text-zinc-400">
-          Global limits apply immediately. Allowed hours use this computer&apos;s
-          local clock; active downloads are allowed to finish when the window
-          closes.
-        </p>
-      </div>
+    <div aria-labelledby="settings-heading" className="space-y-7">
+      <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
+        {onBack ? (
+          <button
+            type="button"
+            aria-label="Back"
+            onClick={onBack}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
+          >
+            <Icon name="chevron-left" size={16} />
+          </button>
+        ) : null}
+        <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
+          Settings
+        </h1>
+      </header>
 
-      <form onSubmit={(event) => void submit(event)} className="space-y-4">
-        <fieldset className="rounded-lg border border-white/10 surface-soft px-3 py-3">
-          <legend className="px-1 text-[11px] font-medium text-zinc-400">
-            Appearance
-          </legend>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {APP_THEMES.map((theme) => {
-              const selected = draft.theme === theme
-              return (
-                <label
-                  key={theme}
-                  className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 transition ${
-                    selected
-                      ? 'border-accent-400/40 surface-card text-zinc-100 ring-1 ring-inset ring-accent-400/20'
-                      : 'border-white/10 text-zinc-400 hover:border-white/20 hover:text-zinc-300'
-                  } ${
-                    themePending || saving
-                      ? 'cursor-not-allowed opacity-70'
-                      : ''
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="theme"
-                    value={theme}
-                    checked={selected}
-                    disabled={themePending || saving}
-                    onChange={() => {
-                      void changeTheme(theme)
-                    }}
-                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-xs font-medium">
-                      {THEME_LABEL[theme]}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
-                      {THEME_DESCRIPTION[theme]}
-                    </span>
-                  </span>
-                </label>
-              )
-            })}
-          </div>
-          <p className="mt-2 text-[11px] leading-4 text-zinc-500">
-            Switches immediately, including the native title bar, and is restored
-            the next time DonDownload starts. Downloads keep running.
-          </p>
-        </fieldset>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <label className="text-[11px] text-zinc-400">
-            Concurrent downloads
-            <input
-              aria-label="Concurrent downloads"
-              type="number"
-              min={1}
-              max={16}
-              step={1}
-              required
-              value={draft.maxConcurrentDownloads}
-              onChange={(event) =>
-                update({
-                  maxConcurrentDownloads: Number(event.currentTarget.value)
-                })
-              }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
-            />
-          </label>
-          <label className="text-[11px] text-zinc-400">
-            Connections per host
-            <input
-              aria-label="Connections per host"
-              type="number"
-              min={1}
-              max={16}
-              step={1}
-              required
-              value={draft.perHostConnections}
-              onChange={(event) =>
-                update({
-                  perHostConnections: Number(event.currentTarget.value)
-                })
-              }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
-            />
-          </label>
-          <label className="text-[11px] text-zinc-400">
-            Global speed limit (MB/s)
-            <input
-              aria-label="Global speed limit in MB per second"
-              aria-describedby="settings-speed-exact"
-              type="number"
-              min={0}
-              max={MAX_SPEED_MB}
-              step="any"
-              placeholder="Unlimited"
-              value={speedInput}
-              onChange={(event) => handleSpeedInput(event.currentTarget.value)}
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/50"
-            />
-            <span
-              id="settings-speed-exact"
-              className="mt-1 block min-h-8 break-words text-[11px] leading-4 text-zinc-400"
+      <section aria-labelledby="settings-downloads">
+        <SectionHeading
+          id="settings-downloads"
+          title="Downloads"
+          description="How many files download at once, and how fast."
+        />
+        <form onSubmit={(event) => void submit(event)}>
+          <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+            <SettingRow
+              title="Downloads at the same time"
+              description="Others wait in the queue."
             >
-              {speedInput.trim().length === 0
-                ? 'Unlimited'
-                : draft.globalSpeedLimitBps === 0
-                  ? 'Unlimited (0 B/s)'
-                  : `Stored exactly as ${exactSpeedLabel(
-                      draft.globalSpeedLimitBps
-                    )}`}
-            </span>
-          </label>
-        </div>
+              <Stepper
+                label="Downloads at the same time"
+                value={draft.maxConcurrentDownloads}
+                min={MIN_MAX_CONCURRENT_DOWNLOADS}
+                max={MAX_MAX_CONCURRENT_DOWNLOADS}
+                onChange={(value) => update({ maxConcurrentDownloads: value })}
+              />
+            </SettingRow>
 
-        <fieldset className="rounded-lg border border-white/10 surface-soft px-3 py-3">
-          <legend className="px-1 text-[11px] font-medium text-zinc-400">
-            Allowed download hours (local time)
-          </legend>
-          <label className="flex items-center gap-2 text-xs text-zinc-300">
-            <input
-              type="checkbox"
-              checked={draft.allowedHours.enabled}
-              onChange={(event) =>
-                updateAllowedHours({ enabled: event.currentTarget.checked })
+            <SettingRow
+              title="Connections per file"
+              description="More connections are usually faster, but some servers limit them."
+            >
+              <Stepper
+                label="Connections per file"
+                value={draft.perHostConnections}
+                min={MIN_PER_HOST_CONNECTIONS}
+                max={MAX_PER_HOST_CONNECTIONS}
+                onChange={(value) => update({ perHostConnections: value })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              title="Speed limit"
+              description="Applies to all downloads together."
+            >
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    aria-label="Global speed limit in MB per second"
+                    aria-describedby="settings-speed-exact"
+                    type="number"
+                    min={0}
+                    max={MAX_SPEED_MB}
+                    step="any"
+                    placeholder="Unlimited"
+                    value={speedInput}
+                    onChange={(event) => handleSpeedInput(event.currentTarget.value)}
+                    className={`${FIELD} w-[84px]`}
+                  />
+                  <span
+                    className="flex h-8 items-center gap-1 rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-300"
+                    aria-hidden="true"
+                  >
+                    MB/s
+                  </span>
+                </div>
+                <span
+                  id="settings-speed-exact"
+                  className="text-[11px] leading-4 text-zinc-500"
+                >
+                  {speedInput.trim().length === 0
+                    ? 'Unlimited'
+                    : draft.globalSpeedLimitBps === 0
+                      ? 'Unlimited (0 B/s)'
+                      : `Stored exactly as ${exactSpeedLabel(
+                          draft.globalSpeedLimitBps
+                        )}`}
+                </span>
+              </div>
+            </SettingRow>
+
+            <SettingRow
+              title="Only download during set hours"
+              description={
+                draft.allowedHours.enabled
+                  ? `Queued files wait for ${draft.allowedHours.start} – ${draft.allowedHours.end}. Running downloads finish.`
+                  : 'Limit new downloads to a set window. Running downloads finish.'
               }
-              className="h-3.5 w-3.5 accent-accent-400"
-            />
-            Only start new downloads inside this window
-          </label>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] text-zinc-400">
-              Start (inclusive)
+            >
               <input
                 aria-label="Allowed hours start"
                 type="time"
                 step={60}
                 value={draft.allowedHours.start}
+                disabled={!draft.allowedHours.enabled}
                 onChange={(event) =>
                   updateAllowedHours({ start: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
+                className={FIELD}
               />
-            </label>
-            <label className="text-[11px] text-zinc-400">
-              End (exclusive)
+              <span className="text-xs text-zinc-500">to</span>
               <input
                 aria-label="Allowed hours end"
                 type="time"
                 step={60}
                 value={draft.allowedHours.end}
+                disabled={!draft.allowedHours.enabled}
                 onChange={(event) =>
                   updateAllowedHours({ end: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
+                className={FIELD}
               />
-            </label>
+              <Switch
+                checked={draft.allowedHours.enabled}
+                label="Only download during set hours"
+                onChange={(checked) => updateAllowedHours({ enabled: checked })}
+              />
+            </SettingRow>
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-zinc-400">
-            An end before the start crosses midnight. Equal start and end mean
-            all day. Downloads already active keep running when the window
-            closes; queued and scheduled jobs wait for the next window.
-          </p>
-        </fieldset>
 
-        {error ? (
-          <p role="alert" className="text-xs text-red-300">
-            {error}
-          </p>
-        ) : null}
-        {message ? (
-          <p role="status" aria-live="polite" className="text-xs text-emerald-300">
-            {message}
-          </p>
-        ) : null}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] leading-4 text-zinc-500">
+              {unchanged
+                ? 'Settings match the saved values.'
+                : 'You have unsaved changes.'}
+            </p>
+            <button
+              type="submit"
+              disabled={saving || unchanged}
+              className={BTN_PRIMARY}
+            >
+              {saving ? 'Saving…' : 'Save settings'}
+            </button>
+          </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
-          <p className="text-[11px] leading-4 text-zinc-400">
-            {unchanged
-              ? 'Settings match the saved values.'
-              : 'You have unsaved changes.'}
-          </p>
-          <button
-            type="submit"
-            disabled={saving || unchanged}
-            className="min-h-9 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          {error ? (
+            <p role="alert" className="mt-2 text-xs text-red-400">
+              {error}
+            </p>
+          ) : null}
+          {message ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="mt-2 text-xs text-emerald-400"
+            >
+              {message}
+            </p>
+          ) : null}
+        </form>
+      </section>
+
+      <section aria-labelledby="settings-appearance">
+        <SectionHeading
+          id="settings-appearance"
+          title="Appearance"
+          description="Switches immediately. Downloads keep running."
+        />
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <div className="grid grid-cols-3 gap-2.5 p-4">
+            {APP_THEMES.map((theme) => (
+              <ThemeOption
+                key={theme}
+                theme={theme}
+                selected={draft.theme === theme}
+                disabled={themePending || saving}
+                onSelect={() => {
+                  void changeTheme(theme)
+                }}
+              />
+            ))}
+          </div>
+          <SettingRow
+            title="Interface size"
+            description={
+              <>
+                Use <kbd className={KBD}>Ctrl +</kbd> and{' '}
+                <kbd className={KBD}>Ctrl −</kbd> to change it.
+              </>
+            }
           >
-            {saving ? 'Saving…' : 'Save settings'}
-          </button>
+            <select
+              aria-label="Interface size"
+              form="desktop-settings-form"
+              value={desktopDraft.interfaceSizePercent}
+              onChange={(event) =>
+                setDesktopDraft((current) => ({
+                  ...current,
+                  interfaceSizePercent: Number(
+                    event.currentTarget.value
+                  ) as DesktopSettings['interfaceSizePercent']
+                }))
+              }
+              className="h-8 rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-100 outline-none transition focus:border-accent-400/50"
+            >
+              {INTERFACE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size}%
+                </option>
+              ))}
+            </select>
+          </SettingRow>
         </div>
-      </form>
+      </section>
 
-      <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
-        <legend className="px-1 text-[11px] font-medium text-zinc-400">
-          yt-dlp media tool
-        </legend>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <label className="flex min-w-0 items-start gap-2 text-xs text-zinc-300">
-            <input
-              type="checkbox"
+      <section aria-labelledby="settings-media-tool">
+        <SectionHeading
+          id="settings-media-tool"
+          title="Media tool"
+          description="Reads video pages and downloads streams. Updates are checked against the publisher's signatures."
+        />
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <SettingRow
+            title={`yt-dlp ${updateState?.currentVersion ?? 'Unknown'}`}
+            description={
+              <>
+                {updateStatusLabel(updateState)}
+                {checkedLabel ? ` · checked ${checkedLabel}` : ''}
+              </>
+            }
+          >
+            {ytdlpStatus ? (
+              <StatusPill label={ytdlpStatus.label} tone={ytdlpStatus.tone} />
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void checkForUpdate()}
+              disabled={updating}
+              className={BTN_GHOST}
+            >
+              {updating ? 'Updating…' : 'Check now'}
+            </button>
+          </SettingRow>
+          <SettingRow
+            title="Update automatically"
+            description="At most once a day. A new version is used from the next video, never mid-download."
+          >
+            <Switch
               checked={mediaTools?.autoUpdateYtdlp ?? true}
               disabled={mediaTools === null}
-              onChange={(event) => {
-                void toggleAutoUpdate(event.currentTarget.checked)
+              label="Update yt-dlp automatically"
+              onChange={(checked) => {
+                void toggleAutoUpdate(checked)
               }}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
             />
-            <span>
-              <span className="block font-medium">
-                Keep yt-dlp up to date automatically
-              </span>
-              <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
-                Checks at most once every 24 hours in the background. Updates
-                are verified against GitHub&apos;s SHA-256 sums and are applied
-                to the next media job, never under a running download.
-              </span>
-            </span>
-          </label>
-          <button
-            type="button"
-            onClick={() => void checkForUpdate()}
-            disabled={updating}
-            className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {updating ? 'Updating…' : 'Check for yt-dlp update'}
-          </button>
+          </SettingRow>
         </div>
-        <dl className="mt-3 grid gap-1 text-[11px] text-zinc-400 sm:grid-cols-2">
-          <div className="flex gap-1">
-            <dt className="text-zinc-500">Current:</dt>
-            <dd className="text-zinc-300">
-              {updateState?.currentVersion ?? 'Unknown'}
-            </dd>
-          </div>
-          <div className="flex gap-1">
-            <dt className="text-zinc-500">Latest:</dt>
-            <dd className="text-zinc-300">
-              {updateState?.latestVersion ?? 'Not checked'}
-            </dd>
-          </div>
-          <div className="flex gap-1 sm:col-span-2">
-            <dt className="text-zinc-500">Status:</dt>
-            <dd
-              role={updateState?.status === 'failed' ? 'alert' : 'status'}
-              aria-live="polite"
-              className={
-                updateState?.status === 'failed'
-                  ? 'text-red-300'
-                  : 'text-zinc-300'
-              }
-            >
-              {updateStatusLabel(updateState)}
-            </dd>
-          </div>
-        </dl>
         {mediaToolsError ? (
-          <p role="alert" className="mt-2 text-xs text-red-300">
+          <p role="alert" className="mt-2 text-xs text-red-400">
             {mediaToolsError}
           </p>
         ) : null}
-      </fieldset>
+      </section>
 
-      <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
-        <legend className="px-1 text-[11px] font-medium text-zinc-400">
-          App updates
-        </legend>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <label className="flex min-w-0 items-start gap-2 text-xs text-zinc-300">
-            <input
-              type="checkbox"
-              checked={appUpdateState?.autoCheck ?? true}
-              disabled={appUpdateState === null}
-              onChange={(event) => {
-                void toggleAppAutoCheck(event.currentTarget.checked)
-              }}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
-            />
-            <span>
-              <span className="block font-medium">
-                Check for app updates automatically
-              </span>
-              <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
-                At most once every 24 hours. Checks are disabled until an update
-                source is configured.
-              </span>
-            </span>
-          </label>
-          <div className="flex flex-wrap gap-2">
+      <section aria-labelledby="settings-startup">
+        <SectionHeading
+          id="settings-startup"
+          title="Startup"
+          description="What DonDownload does when it opens and while it runs."
+        />
+        <form
+          id="desktop-settings-form"
+          onSubmit={(event) => void saveDesktop(event)}
+        >
+          <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+            <SettingRow
+              title="Start when I sign in to Windows"
+              description="Opens minimised to the tray."
+            >
+              <Switch
+                checked={desktopDraft.launchAtLogin}
+                label="Start when I sign in to Windows"
+                onChange={(checked) =>
+                  setDesktopDraft((current) => ({
+                    ...current,
+                    launchAtLogin: checked
+                  }))
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              title="Resume unfinished downloads"
+              description="Downloads stopped when the app closed start again on launch."
+            >
+              <Switch
+                checked={desktopDraft.resumeInterruptedOnStartup}
+                label="Resume unfinished downloads"
+                onChange={(checked) =>
+                  setDesktopDraft((current) => ({
+                    ...current,
+                    resumeInterruptedOnStartup: checked
+                  }))
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              title="Notifications"
+              description="When a download finishes or fails. Not for every file in a batch."
+            >
+              <Switch
+                checked={desktopDraft.showNotifications}
+                label="Notifications"
+                onChange={(checked) =>
+                  setDesktopDraft((current) => ({
+                    ...current,
+                    showNotifications: checked
+                  }))
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              title="Watch the clipboard for links"
+              description="When you copy a link, DonDownload offers to add it. Nothing downloads on its own."
+            >
+              <Switch
+                checked={desktopDraft.watchClipboard}
+                label="Watch the clipboard for links"
+                onChange={(checked) =>
+                  setDesktopDraft((current) => ({
+                    ...current,
+                    watchClipboard: checked
+                  }))
+                }
+              />
+            </SettingRow>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] leading-4 text-zinc-500">
+              {desktopUnchanged
+                ? 'Desktop preferences match the saved values.'
+                : 'You have unsaved changes.'}
+            </p>
+            <button
+              type="submit"
+              disabled={desktopSaving || desktopUnchanged}
+              className={BTN_PRIMARY}
+            >
+              {desktopSaving ? 'Saving…' : 'Save preferences'}
+            </button>
+          </div>
+
+          {desktopError ? (
+            <p role="alert" className="mt-2 text-xs text-red-400">
+              {desktopError}
+            </p>
+          ) : null}
+          {desktopMessage ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="mt-2 text-xs text-emerald-400"
+            >
+              {desktopMessage}
+            </p>
+          ) : null}
+        </form>
+      </section>
+
+      <section aria-labelledby="settings-updates">
+        <SectionHeading
+          id="settings-updates"
+          title="Updates"
+          description={`DonDownload ${appUpdateState?.currentVersion ?? ''} · signed updates only.`}
+        />
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <SettingRow
+            title={
+              appReady
+                ? `DonDownload ${appUpdateState?.latestVersion ?? ''} is ready to install`
+                : 'App updates'
+            }
+            description={
+              appReady
+                ? 'Downloaded and verified. Running downloads resume after the restart.'
+                : appUpdateStatusLabel(appUpdateState)
+            }
+            accent={appReady}
+          >
             <button
               type="button"
               onClick={() => void checkForAppUpdate()}
               disabled={appUpdateBusy || !appUpdateState?.configured}
-              className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className={BTN_GHOST}
             >
               {appUpdateBusy && appUpdateState?.status === 'checking'
                 ? 'Checking…'
                 : 'Check now'}
             </button>
-            <button
-              type="button"
-              onClick={() => void installAppUpdate()}
-              disabled={
-                appUpdateBusy ||
-                appUpdateState?.status !== 'ready' ||
-                appUpdateState?.canInstall !== true
-              }
-              className="min-h-9 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-            >
-              Restart and install
-            </button>
-          </div>
+            {appReady ? (
+              <button
+                type="button"
+                onClick={() => void installAppUpdate()}
+                disabled={appUpdateBusy}
+                className={BTN_PRIMARY}
+              >
+                Restart and install
+              </button>
+            ) : null}
+          </SettingRow>
+          <SettingRow
+            title="Check for updates automatically"
+            description="At most once a day."
+          >
+            <Switch
+              checked={appUpdateState?.autoCheck ?? true}
+              disabled={appUpdateState === null}
+              label="Check for updates automatically"
+              onChange={(checked) => {
+                void toggleAppAutoCheck(checked)
+              }}
+            />
+          </SettingRow>
+          {appUpdateState?.releaseNotes ? (
+            <div className="px-4 py-3.5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Release notes
+              </p>
+              <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-4 text-zinc-400">
+                {appUpdateState.releaseNotes}
+              </p>
+            </div>
+          ) : null}
         </div>
-        <dl className="mt-3 grid gap-1 text-[11px] text-zinc-400 sm:grid-cols-2">
-          <div className="flex gap-1">
-            <dt className="text-zinc-500">Current:</dt>
-            <dd className="text-zinc-300">
-              {appUpdateState?.currentVersion ?? 'Unknown'}
-            </dd>
-          </div>
-          <div className="flex gap-1">
-            <dt className="text-zinc-500">Latest:</dt>
-            <dd className="text-zinc-300">
-              {appUpdateState?.latestVersion ?? 'Not checked'}
-            </dd>
-          </div>
-          <div className="flex gap-1 sm:col-span-2">
-            <dt className="text-zinc-500">Status:</dt>
-            <dd
-              role={appUpdateState?.status === 'failed' ? 'alert' : 'status'}
-              aria-live="polite"
-              className={
-                appUpdateState?.status === 'failed'
-                  ? 'text-red-300'
-                  : 'text-zinc-300'
-              }
-            >
-              {appUpdateStatusLabel(appUpdateState)}
-            </dd>
-          </div>
-        </dl>
-        {appUpdateState?.releaseNotes ? (
-          <div className="mt-3 rounded-lg border border-white/5 surface-card px-2.5 py-2">
-            <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500">
-              Release notes
-            </p>
-            <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-4 text-zinc-300">
-              {appUpdateState.releaseNotes}
-            </p>
-          </div>
-        ) : null}
         {appUpdateError ? (
-          <p role="alert" className="mt-2 text-xs text-red-300">
+          <p role="alert" className="mt-2 text-xs text-red-400">
             {appUpdateError}
           </p>
         ) : null}
-      </fieldset>
-
-      <form onSubmit={(event) => void saveDesktop(event)}>
-        <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
-          <legend className="px-1 text-[11px] font-medium text-zinc-400">
-            Desktop &amp; startup
-          </legend>
-          <div className="space-y-2">
-            <DesktopToggle
-              label="Resume interrupted downloads on startup"
-              description="Continues downloads that stopped mid-transfer with partial data. Paused jobs are never resumed."
-              checked={desktopDraft.resumeInterruptedOnStartup}
-              onChange={(checked) =>
-                setDesktopDraft((current) => ({
-                  ...current,
-                  resumeInterruptedOnStartup: checked
-                }))
-              }
-            />
-            <DesktopToggle
-              label="Show notifications"
-              description="Shows a Windows notification when a download or media job completes or fails."
-              checked={desktopDraft.showNotifications}
-              onChange={(checked) =>
-                setDesktopDraft((current) => ({
-                  ...current,
-                  showNotifications: checked
-                }))
-              }
-            />
-            <DesktopToggle
-              label="Watch clipboard for links"
-              description="Checks the clipboard every 1.5 seconds while DonDownload runs. Only a single http(s) link opens a Download / Dismiss prompt; nothing starts automatically."
-              checked={desktopDraft.watchClipboard}
-              onChange={(checked) =>
-                setDesktopDraft((current) => ({
-                  ...current,
-                  watchClipboard: checked
-                }))
-              }
-            />
-            <DesktopToggle
-              label="Start DonDownload when I sign in"
-              description="Uses the hidden-start flag. Only applies to an installed build, never to development runs."
-              checked={desktopDraft.launchAtLogin}
-              onChange={(checked) =>
-                setDesktopDraft((current) => ({
-                  ...current,
-                  launchAtLogin: checked
-                }))
-              }
-            />
-            <label className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
-              <span>
-                <span className="block font-medium">Interface size</span>
-                <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
-                  Ctrl+= and Ctrl+- step the scale; Ctrl+0 resets to 100%.
-                </span>
-              </span>
-              <select
-                aria-label="Interface size"
-                value={desktopDraft.interfaceSizePercent}
-                onChange={(event) =>
-                  setDesktopDraft((current) => ({
-                    ...current,
-                    interfaceSizePercent: Number(event.currentTarget.value) as DesktopSettings['interfaceSizePercent']
-                  }))
-                }
-                className="h-9 rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
-              >
-                {INTERFACE_SIZES.map((size) => (
-                  <option key={size} value={size}>
-                    {size}%
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {desktopError ? (
-            <p role="alert" className="mt-2 text-xs text-red-300">
-              {desktopError}
-            </p>
-          ) : null}
-          {desktopMessage ? (
-            <p role="status" aria-live="polite" className="mt-2 text-xs text-emerald-300">
-              {desktopMessage}
-            </p>
-          ) : null}
-          <div className="mt-3 flex items-center justify-end border-t border-white/5 pt-3">
-            <button
-              type="submit"
-              disabled={desktopSaving || desktopUnchanged}
-              className="min-h-9 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-            >
-              {desktopSaving ? 'Saving…' : 'Save desktop preferences'}
-            </button>
-          </div>
-        </fieldset>
-      </form>
-    </section>
+      </section>
+    </div>
   )
 }
 
-function DesktopToggle({
-  label,
-  description,
-  checked,
-  onChange
+function SectionHeading({
+  id,
+  title,
+  description
 }: {
-  label: string
-  description: string
-  checked: boolean
-  onChange: (checked: boolean) => void
+  id: string
+  title: string
+  description: ReactNode
 }): JSX.Element {
   return (
-    <label className="flex items-start gap-2 text-xs text-zinc-300">
+    <div className="mb-3">
+      <h2 id={id} className="text-base font-semibold text-zinc-100">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs leading-5 text-zinc-400">{description}</p>
+    </div>
+  )
+}
+
+function SettingRow({
+  title,
+  description,
+  accent = false,
+  children
+}: {
+  title: ReactNode
+  description?: ReactNode
+  accent?: boolean
+  children?: ReactNode
+}): JSX.Element {
+  return (
+    <div
+      className={`flex min-h-[62px] flex-wrap items-center gap-3 px-4 py-3.5 ${
+        accent ? 'bg-accent-500/10' : ''
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 font-semibold text-zinc-100">
+          {title}
+        </p>
+        {description ? (
+          <p className="mt-0.5 text-xs leading-4 text-zinc-500">{description}</p>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Switch({
+  checked,
+  disabled = false,
+  onChange,
+  label
+}: {
+  checked: boolean
+  disabled?: boolean
+  onChange: (checked: boolean) => void
+  label: string
+}): JSX.Element {
+  return (
+    <label
+      className={`relative inline-flex h-5 w-[34px] shrink-0 ${
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+      }`}
+    >
       <input
         type="checkbox"
+        role="switch"
+        aria-label={label}
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.checked)}
-        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
+        className="peer sr-only"
       />
-      <span className="min-w-0">
-        <span className="block font-medium">{label}</span>
-        <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
-          {description}
-        </span>
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--focus-ring)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--surface-card)] ${
+          checked ? 'bg-accent-500' : 'bg-zinc-800'
+        }`}
+      />
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute top-0.5 h-4 w-4 rounded-full transition-all ${
+          checked ? 'left-4 bg-white' : 'left-0.5 bg-zinc-500'
+        }`}
+      />
+    </label>
+  )
+}
+
+function Stepper({
+  value,
+  min,
+  max,
+  onChange,
+  label
+}: {
+  value: number
+  min: number
+  max: number
+  onChange: (value: number) => void
+  label: string
+}): JSX.Element {
+  return (
+    <div className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-lg border border-white/10">
+      <button
+        type="button"
+        aria-label={`${label}: decrease`}
+        onClick={() => onChange(Math.max(min, value - 1))}
+        disabled={value <= min}
+        className="w-8 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        −
+      </button>
+      <span className="w-12 select-none border-x border-white/10 text-center text-sm font-semibold leading-8 tabular-nums text-zinc-100">
+        {value}
+      </span>
+      <button
+        type="button"
+        aria-label={`${label}: increase`}
+        onClick={() => onChange(Math.min(max, value + 1))}
+        disabled={value >= max}
+        className="w-8 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+const THEME_PREVIEW: Record<
+  AppTheme,
+  { background: string; side: string; body: string; accent: string }
+> = {
+  // Fixed colorways copied from the mockup: each swatch previews that theme's
+  // own surfaces, so it must stay constant regardless of the active theme.
+  oled: { background: '#000000', side: '#141414', body: '#0a0a0a', accent: '#3b82f6' },
+  dark: { background: '#121214', side: '#1d1d21', body: '#18181b', accent: '#3b82f6' },
+  light: { background: '#fafafa', side: '#e6e6e8', body: '#ffffff', accent: '#2563eb' }
+}
+
+function ThemeOption({
+  theme,
+  selected,
+  disabled,
+  onSelect
+}: {
+  theme: AppTheme
+  selected: boolean
+  disabled: boolean
+  onSelect: () => void
+}): JSX.Element {
+  const preview = THEME_PREVIEW[theme]
+  return (
+    <label
+      className={`flex cursor-pointer flex-col gap-2 rounded-[10px] border p-2 transition ${
+        selected
+          ? 'border-accent-500 ring-[3px] ring-accent-500/10'
+          : 'border-white/10'
+      } ${disabled ? 'cursor-not-allowed opacity-70' : ''}`}
+    >
+      <input
+        type="radio"
+        name="theme"
+        value={theme}
+        checked={selected}
+        disabled={disabled}
+        onChange={onSelect}
+        className="sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className="grid h-[62px] grid-cols-[22px_1fr] gap-[5px] rounded-md border border-white/10 p-1.5"
+        style={{ background: preview.background }}
+      >
+        <span className="rounded-[3px]" style={{ background: preview.side }} />
+        <span
+          className="rounded-[3px]"
+          style={{
+            background: preview.body,
+            boxShadow: `inset 0 -14px 0 -10px ${preview.accent}`
+          }}
+        />
+      </span>
+      <span className="flex items-center justify-between px-0.5 font-semibold text-zinc-100">
+        {THEME_LABEL[theme]}
+        {selected ? (
+          <Icon name="check" size={14} className="text-accent-400" />
+        ) : null}
       </span>
     </label>
+  )
+}
+
+function StatusPill({
+  label,
+  tone
+}: {
+  label: string
+  tone: 'ok' | 'warn' | 'err'
+}): JSX.Element {
+  const toneText =
+    tone === 'ok' ? 'text-emerald-400' : tone === 'warn' ? 'text-amber-400' : 'text-red-400'
+  const toneDot =
+    tone === 'ok' ? 'bg-emerald-400' : tone === 'warn' ? 'bg-amber-400' : 'bg-red-400'
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${toneText}`}
+    >
+      <span aria-hidden="true" className={`h-[7px] w-[7px] rounded-full ${toneDot}`} />
+      {label}
+    </span>
   )
 }
