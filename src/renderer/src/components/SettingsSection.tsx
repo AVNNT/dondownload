@@ -1,7 +1,14 @@
-import { useEffect, useState, type FormEvent, type JSX, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type JSX,
+  type ReactNode
+} from 'react'
 import {
   APP_THEMES,
-  MAX_SPEED_LIMIT_BPS,
   MAX_MAX_CONCURRENT_DOWNLOADS,
   MAX_PER_HOST_CONNECTIONS,
   MIN_MAX_CONCURRENT_DOWNLOADS,
@@ -9,7 +16,6 @@ import {
   type AppTheme,
   type DownloadSettings
 } from '@shared/settings'
-import { formatSpeed } from '@shared/format'
 import {
   INTERFACE_SIZES,
   defaultDesktopSettings,
@@ -21,6 +27,19 @@ import type {
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
 import { applyRendererTheme } from '../theme'
+import {
+  HOURS_EQUAL_HINT,
+  MAX_SPEED_MB,
+  SAVED_HINT_MS,
+  TEXT_SAVE_DEBOUNCE_MS,
+  applyHoursEdit,
+  hoursConflict,
+  parseSpeedLimitMb,
+  settingsPayload,
+  speedInputValue,
+  speedLimitHelper,
+  toggleAllowedHours
+} from '../settingsAutoSave'
 import { Icon } from './Icon'
 
 const THEME_LABEL: Record<AppTheme, string> = {
@@ -29,16 +48,16 @@ const THEME_LABEL: Record<AppTheme, string> = {
   light: 'Light'
 }
 
-const BYTES_PER_MB = 1_000_000
-const MAX_SPEED_MB = MAX_SPEED_LIMIT_BPS / BYTES_PER_MB
-
 /* Reusable token-based control classes (see src/renderer/src/styles.css). */
 const BTN_PRIMARY =
   'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400'
 const BTN_GHOST =
   'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60'
 const FIELD =
-  'h-8 rounded-lg border border-white/10 surface-input px-2.5 text-xs text-zinc-100 outline-none transition focus:border-accent-400/50'
+  'h-8 rounded-lg border border-white/10 surface-input px-2.5 text-xs text-zinc-100 outline-none transition focus:border-accent-400/50 disabled:cursor-not-allowed disabled:opacity-50'
+const FIELD_INVALID = 'border-red-500/60 focus:border-red-400'
+const SELECT =
+  'h-8 rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-100 outline-none transition focus:border-accent-400/50 disabled:cursor-not-allowed disabled:opacity-50'
 const KBD =
   'rounded border border-white/10 px-1 text-[10px] leading-4 text-zinc-500'
 
@@ -107,22 +126,6 @@ function appUpdateStatusLabel(state: AppUpdateState | null): string {
   }
 }
 
-/**
- * Render the stored bytes/sec value in MB/s for humans without ever writing
- * this rounded text back unless the user actually edits the field.
- */
-function speedInputValue(bytesPerSecond: number): string {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''
-  const mb = bytesPerSecond / BYTES_PER_MB
-  const rounded = Number(mb.toFixed(mb >= 1 ? 3 : 6))
-  return String(rounded)
-}
-
-function exactSpeedLabel(bytesPerSecond: number): string {
-  if (bytesPerSecond <= 0) return 'Unlimited'
-  return `${bytesPerSecond.toLocaleString()} B/s · ${formatSpeed(bytesPerSecond)}`
-}
-
 function relativeChecked(timestamp: number | null | undefined): string | null {
   if (timestamp === null || timestamp === undefined) return null
   const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000))
@@ -152,17 +155,35 @@ function ytdlpStatusInfo(state: YtdlpUpdateState | null): {
   }
 }
 
-export function SettingsSection({
-  onBack
-}: {
-  onBack?: () => void
-}): JSX.Element {
+/**
+ * Transient auto-save indicator rendered next to a section title.
+ *
+ * `idle` renders nothing, so the heading never reserves space for a hint that
+ * is not there. `saved` fades out on its own; `error` stays until the next
+ * successful save or an explicit retry.
+ */
+type SaveState =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'saved' }
+  | { kind: 'error'; message: string }
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : fallback
+}
+
+export function SettingsSection(): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [draft, setDraft] = useState<DownloadSettings | null>(null)
   const [speedInput, setSpeedInput] = useState('')
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [speedError, setSpeedError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [downloadsSave, setDownloadsSave] = useState<SaveState>({
+    kind: 'idle'
+  })
+  const [desktopSave, setDesktopSave] = useState<SaveState>({ kind: 'idle' })
   const [themePending, setThemePending] = useState(false)
   const [mediaTools, setMediaTools] = useState<MediaToolSettings | null>(null)
   const [updateState, setUpdateState] = useState<YtdlpUpdateState | null>(null)
@@ -176,12 +197,22 @@ export function SettingsSection({
   const [desktopDraft, setDesktopDraft] = useState<DesktopSettings>(
     defaultDesktopSettings()
   )
-  const [desktopSaved, setDesktopSaved] = useState<DesktopSettings>(
-    defaultDesktopSettings()
-  )
-  const [desktopMessage, setDesktopMessage] = useState<string | null>(null)
-  const [desktopError, setDesktopError] = useState<string | null>(null)
-  const [desktopSaving, setDesktopSaving] = useState(false)
+
+  /** Latest saved download settings, readable from async callbacks. */
+  const savedRef = useRef<DownloadSettings | null>(null)
+  /** Latest draft, so a coalesced save always commits the newest values. */
+  const draftRef = useRef<DownloadSettings | null>(null)
+  const desktopDraftRef = useRef<DesktopSettings>(defaultDesktopSettings())
+
+  /** Serializes download-settings saves so an older round trip can never win. */
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const downloadsQueuedRef = useRef(false)
+  /** Serializes desktop-preference saves. */
+  const desktopChainRef = useRef<Promise<void>>(Promise.resolve())
+  const desktopQueuedRef = useRef(false)
+  const speedTimerRef = useRef<number | null>(null)
+  const savedFadeTimerRef = useRef<number | null>(null)
+  const desktopSavedFadeTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -211,13 +242,15 @@ export function SettingsSection({
   useEffect(() => {
     let cancelled = false
     const apply = (next: DesktopSettings): void => {
+      desktopDraftRef.current = next
       setDesktopDraft(next)
-      setDesktopSaved(next)
     }
     void window.donDownload.getDesktopSettings().then((result) => {
       if (cancelled) return
       if (result.ok) apply(result.value)
-      else setDesktopError(result.error.message)
+      else {
+        setDesktopSave({ kind: 'error', message: result.error.message })
+      }
     })
     const unsubscribe = window.donDownload.onDesktopSettingsChanged((next) => {
       if (!cancelled) apply(next)
@@ -234,11 +267,13 @@ export function SettingsSection({
       if (cancelled) return
       if (result.ok) {
         applyRendererTheme(result.value.theme)
+        savedRef.current = result.value
+        draftRef.current = result.value
         setSettings(result.value)
         setDraft(result.value)
         setSpeedInput(speedInputValue(result.value.globalSpeedLimitBps))
       } else {
-        setError(result.error.message)
+        setLoadError(result.error.message)
       }
     })
     return () => {
@@ -246,49 +281,209 @@ export function SettingsSection({
     }
   }, [])
 
-  if (!draft) {
-    return (
-      <div aria-labelledby="settings-heading" className="space-y-6">
-        <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
-          {onBack ? (
-            <button
-              type="button"
-              aria-label="Back"
-              onClick={onBack}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:text-zinc-100"
-            >
-              <Icon name="chevron-left" size={16} />
-            </button>
-          ) : null}
-          <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
-            Settings
-          </h1>
-        </header>
-        <p
-          role={error ? 'alert' : undefined}
-          className={`text-xs ${error ? 'text-red-400' : 'text-zinc-500'}`}
-        >
-          {error ?? 'Loading settings…'}
-        </p>
-      </div>
-    )
-  }
+  // Clear pending timers when the page unmounts; the debounced save has
+  // already been committed by the blur/blur-free path or is simply dropped.
+  useEffect(() => {
+    return () => {
+      if (speedTimerRef.current !== null) {
+        window.clearTimeout(speedTimerRef.current)
+        speedTimerRef.current = null
+      }
+      if (savedFadeTimerRef.current !== null) {
+        window.clearTimeout(savedFadeTimerRef.current)
+        savedFadeTimerRef.current = null
+      }
+      if (desktopSavedFadeTimerRef.current !== null) {
+        window.clearTimeout(desktopSavedFadeTimerRef.current)
+        desktopSavedFadeTimerRef.current = null
+      }
+    }
+  }, [])
 
-  const update = (patch: Partial<DownloadSettings>): void => {
-    setDraft((current) => (current ? { ...current, ...patch } : current))
-  }
+  const scheduleSavedFade = useCallback((): void => {
+    if (savedFadeTimerRef.current !== null) {
+      window.clearTimeout(savedFadeTimerRef.current)
+    }
+    savedFadeTimerRef.current = window.setTimeout(() => {
+      savedFadeTimerRef.current = null
+      setDownloadsSave((current) =>
+        current.kind === 'saved' ? { kind: 'idle' } : current
+      )
+    }, SAVED_HINT_MS)
+  }, [])
 
-  const updateAllowedHours = (
-    patch: Partial<DownloadSettings['allowedHours']>
-  ): void => {
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            allowedHours: { ...current.allowedHours, ...patch }
+  const scheduleDesktopSavedFade = useCallback((): void => {
+    if (desktopSavedFadeTimerRef.current !== null) {
+      window.clearTimeout(desktopSavedFadeTimerRef.current)
+    }
+    desktopSavedFadeTimerRef.current = window.setTimeout(() => {
+      desktopSavedFadeTimerRef.current = null
+      setDesktopSave((current) =>
+        current.kind === 'saved' ? { kind: 'idle' } : current
+      )
+    }, SAVED_HINT_MS)
+  }, [])
+
+  const clearSpeedTimer = useCallback((): void => {
+    if (speedTimerRef.current !== null) {
+      window.clearTimeout(speedTimerRef.current)
+      speedTimerRef.current = null
+    }
+  }, [])
+
+  /**
+   * Persist the newest draft. Saves are serialized: a second change while a
+   * round trip is in flight is coalesced into one follow-up save that reads
+   * the draft at the moment it starts, so the last value always wins.
+   */
+  const queueDownloadsSave = useCallback((): void => {
+    if (downloadsQueuedRef.current) return
+    downloadsQueuedRef.current = true
+    setDownloadsSave({ kind: 'saving' })
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      downloadsQueuedRef.current = false
+      const next = draftRef.current
+      if (!next) return
+      try {
+        const result = await window.donDownload.updateSettings(
+          settingsPayload(next, savedRef.current)
+        )
+        if (!result.ok) {
+          setDownloadsSave({ kind: 'error', message: result.error.message })
+          return
+        }
+        savedRef.current = result.value
+        setSettings(result.value)
+        // The theme is owned by its own immediate save; keep the draft's.
+        if (draftRef.current) {
+          draftRef.current = {
+            ...result.value,
+            theme: draftRef.current.theme
           }
-        : current
-    )
+        }
+        setDraft((current) =>
+          current ? { ...result.value, theme: current.theme } : result.value
+        )
+        setDownloadsSave({ kind: 'saved' })
+        scheduleSavedFade()
+      } catch (error) {
+        setDownloadsSave({
+          kind: 'error',
+          message: errorMessage(error, 'The settings could not be saved.')
+        })
+      }
+    })
+  }, [scheduleSavedFade])
+
+  const queueDesktopSave = useCallback((): void => {
+    if (desktopQueuedRef.current) return
+    desktopQueuedRef.current = true
+    setDesktopSave({ kind: 'saving' })
+    desktopChainRef.current = desktopChainRef.current.then(async () => {
+      desktopQueuedRef.current = false
+      const next = desktopDraftRef.current
+      try {
+        const result = await window.donDownload.updateDesktopSettings(next)
+        if (!result.ok) {
+          setDesktopSave({ kind: 'error', message: result.error.message })
+          return
+        }
+        setDesktopSave({ kind: 'saved' })
+        scheduleDesktopSavedFade()
+      } catch (error) {
+        setDesktopSave({
+          kind: 'error',
+          message: errorMessage(
+            error,
+            'The desktop preferences could not be saved.'
+          )
+        })
+      }
+    })
+  }, [scheduleDesktopSavedFade])
+
+  /**
+   * Apply a download-settings change and save it immediately. Used by steppers,
+   * toggles and the time fields, where there is no free-form text to validate.
+   */
+  const commitDownloads = useCallback(
+    (patch: Partial<DownloadSettings>): void => {
+      if (!draftRef.current) return
+      const next: DownloadSettings = { ...draftRef.current, ...patch }
+      draftRef.current = next
+      setDraft(next)
+      queueDownloadsSave()
+    },
+    [queueDownloadsSave]
+  )
+
+  const commitAllowedHours = useCallback(
+    (patch: Partial<DownloadSettings['allowedHours']>): void => {
+      if (!draftRef.current) return
+      commitDownloads({
+        allowedHours: { ...draftRef.current.allowedHours, ...patch }
+      })
+    },
+    [commitDownloads]
+  )
+
+  const commitDesktop = useCallback(
+    (patch: Partial<DesktopSettings>): void => {
+      const next: DesktopSettings = { ...desktopDraftRef.current, ...patch }
+      desktopDraftRef.current = next
+      setDesktopDraft(next)
+      queueDesktopSave()
+    },
+    [queueDesktopSave]
+  )
+
+  /**
+   * Flush a pending speed-limit edit. Returns false when the text is invalid;
+   * invalid text is never written to the draft or to the main process.
+   */
+  const commitSpeedInput = useCallback((): boolean => {
+    clearSpeedTimer()
+    const parsed = parseSpeedLimitMb(speedInput)
+    if (!parsed.ok) {
+      setSpeedError(parsed.hint)
+      return false
+    }
+    setSpeedError(null)
+    if (parsed.bps === savedRef.current?.globalSpeedLimitBps) {
+      // Nothing changed: drop any debounce that was still waiting.
+      return true
+    }
+    commitDownloads({ globalSpeedLimitBps: parsed.bps })
+    return true
+  }, [clearSpeedTimer, commitDownloads, speedInput])
+
+  const handleSpeedInput = (value: string): void => {
+    setSpeedInput(value)
+    const parsed = parseSpeedLimitMb(value)
+    setSpeedError(parsed.ok ? null : parsed.hint)
+    clearSpeedTimer()
+    if (!parsed.ok) return
+    speedTimerRef.current = window.setTimeout(() => {
+      speedTimerRef.current = null
+      if (parsed.bps === savedRef.current?.globalSpeedLimitBps) return
+      commitDownloads({ globalSpeedLimitBps: parsed.bps })
+    }, TEXT_SAVE_DEBOUNCE_MS)
+  }
+
+  const handleHoursChange = (patch: {
+    start?: string
+    end?: string
+  }): void => {
+    const current = draftRef.current?.allowedHours
+    if (!current) return
+    const next = applyHoursEdit(current, patch)
+    if (next) commitAllowedHours(next)
+  }
+
+  const handleHoursToggle = (enabled: boolean): void => {
+    const current = draftRef.current?.allowedHours
+    if (!current) return
+    commitAllowedHours(toggleAllowedHours(current, enabled))
   }
 
   /**
@@ -300,10 +495,9 @@ export function SettingsSection({
     if (!settings || settings.theme === theme || themePending) return
     const previousTheme = settings.theme
     setThemePending(true)
-    setError(null)
-    setMessage(null)
     applyRendererTheme(theme)
     setDraft((current) => (current ? { ...current, theme } : current))
+    if (draftRef.current) draftRef.current = { ...draftRef.current, theme }
 
     try {
       const result = await window.donDownload.updateSettings({
@@ -315,45 +509,48 @@ export function SettingsSection({
         setDraft((current) =>
           current ? { ...current, theme: previousTheme } : current
         )
-        setError(result.error.message)
+        if (draftRef.current) {
+          draftRef.current = { ...draftRef.current, theme: previousTheme }
+        }
+        setDownloadsSave({ kind: 'error', message: result.error.message })
         return
       }
       const saved = result.value
+      savedRef.current = saved
       setSettings(saved)
       setDraft((current) =>
         current ? { ...current, theme: saved.theme } : saved
       )
-      setMessage('Appearance saved and applied.')
+      if (draftRef.current) {
+        draftRef.current = { ...draftRef.current, theme: saved.theme }
+      }
+      setDownloadsSave({ kind: 'saved' })
+      scheduleSavedFade()
     } catch (error) {
       applyRendererTheme(previousTheme)
       setDraft((current) =>
         current ? { ...current, theme: previousTheme } : current
       )
-      setError(
-        error instanceof Error
-          ? error.message
-          : 'The appearance could not be saved.'
-      )
+      if (draftRef.current) {
+        draftRef.current = { ...draftRef.current, theme: previousTheme }
+      }
+      setDownloadsSave({
+        kind: 'error',
+        message: errorMessage(error, 'The appearance could not be saved.')
+      })
     } finally {
       setThemePending(false)
     }
   }
 
-  const handleSpeedInput = (value: string): void => {
-    setSpeedInput(value)
-    const trimmed = value.trim()
-    if (trimmed.length === 0) {
-      update({ globalSpeedLimitBps: 0 })
-      return
+  const retryDownloadsSave = (): void => {
+    if (draftRef.current && parseSpeedLimitMb(speedInput) !== null) {
+      queueDownloadsSave()
     }
-    const mb = Number(trimmed)
-    if (!Number.isFinite(mb) || mb < 0) return
-    update({
-      globalSpeedLimitBps: Math.min(
-        MAX_SPEED_LIMIT_BPS,
-        Math.max(0, Math.round(mb * BYTES_PER_MB))
-      )
-    })
+  }
+
+  const retryDesktopSave = (): void => {
+    queueDesktopSave()
   }
 
   const toggleAutoUpdate = async (checked: boolean): Promise<void> => {
@@ -491,79 +688,67 @@ export function SettingsSection({
     }
   }
 
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    setSaving(true)
-    setError(null)
-    setMessage(null)
-    try {
-      const result = await window.donDownload.updateSettings(draft)
-      if (!result.ok) {
-        setError(result.error.message)
-        return
-      }
-      setSettings(result.value)
-      setDraft(result.value)
-      setSpeedInput(speedInputValue(result.value.globalSpeedLimitBps))
-      setMessage('Settings saved and applied.')
-    } finally {
-      setSaving(false)
-    }
+  if (!draft) {
+    return (
+      <div aria-labelledby="settings-heading" className="space-y-6">
+        <header className="flex h-14 items-center border-b border-white/[0.07]">
+          <h1
+            id="settings-heading"
+            className="text-[15px] font-semibold text-zinc-100"
+          >
+            Settings
+          </h1>
+        </header>
+        <p
+          role={loadError ? 'alert' : undefined}
+          className={`text-xs ${loadError ? 'text-red-400' : 'text-zinc-500'}`}
+        >
+          {loadError ?? 'Loading settings…'}
+        </p>
+      </div>
+    )
   }
-
-  const saveDesktop = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    setDesktopSaving(true)
-    setDesktopError(null)
-    setDesktopMessage(null)
-    try {
-      const result = await window.donDownload.updateDesktopSettings(desktopDraft)
-      if (!result.ok) {
-        setDesktopError(result.error.message)
-        return
-      }
-      setDesktopDraft(result.value)
-      setDesktopSaved(result.value)
-      setDesktopMessage('Desktop preferences saved.')
-    } finally {
-      setDesktopSaving(false)
-    }
-  }
-
-  const unchanged = JSON.stringify(settings) === JSON.stringify(draft)
-  const desktopUnchanged =
-    JSON.stringify(desktopSaved) === JSON.stringify(desktopDraft)
 
   const appReady =
     appUpdateState?.status === 'ready' && appUpdateState?.canInstall === true
   const ytdlpStatus = ytdlpStatusInfo(updateState)
   const checkedLabel = relativeChecked(updateState?.lastCheckedAt)
 
+  const hoursEnabled = draft.allowedHours.enabled
+  const hoursEqual = hoursConflict(draft.allowedHours)
+  const speedHelper = speedLimitHelper(draft.globalSpeedLimitBps)
+
   return (
     <div aria-labelledby="settings-heading" className="space-y-7">
-      <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
-        {onBack ? (
-          <button
-            type="button"
-            aria-label="Back"
-            onClick={onBack}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
-          >
-            <Icon name="chevron-left" size={16} />
-          </button>
-        ) : null}
-        <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
+      <header className="flex h-14 items-center border-b border-white/[0.07]">
+        <h1
+          id="settings-heading"
+          className="text-[15px] font-semibold text-zinc-100"
+        >
           Settings
         </h1>
       </header>
 
-      <section aria-labelledby="settings-downloads">
+      <section aria-labelledby="settings-transfers">
         <SectionHeading
-          id="settings-downloads"
-          title="Downloads"
+          id="settings-transfers"
+          title="Transfers"
           description="How many files download at once, and how fast."
+          status={
+            <SaveStatus
+              state={downloadsSave}
+              onRetry={retryDownloadsSave}
+            />
+          }
         />
-        <form onSubmit={(event) => void submit(event)}>
+        {/* A form element keeps Enter inside a text field from submitting
+            anything: these fields save on their own via blur/debounce. */}
+        <form
+          onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault()
+            commitSpeedInput()
+          }}
+        >
           <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
             <SettingRow
               title="Downloads at the same time"
@@ -574,7 +759,9 @@ export function SettingsSection({
                 value={draft.maxConcurrentDownloads}
                 min={MIN_MAX_CONCURRENT_DOWNLOADS}
                 max={MAX_MAX_CONCURRENT_DOWNLOADS}
-                onChange={(value) => update({ maxConcurrentDownloads: value })}
+                onChange={(value) =>
+                  commitDownloads({ maxConcurrentDownloads: value })
+                }
               />
             </SettingRow>
 
@@ -587,46 +774,64 @@ export function SettingsSection({
                 value={draft.perHostConnections}
                 min={MIN_PER_HOST_CONNECTIONS}
                 max={MAX_PER_HOST_CONNECTIONS}
-                onChange={(value) => update({ perHostConnections: value })}
+                onChange={(value) =>
+                  commitDownloads({ perHostConnections: value })
+                }
               />
             </SettingRow>
 
             <SettingRow
               title="Speed limit"
               description="Applies to all downloads together."
-            >
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-2">
-                  <input
-                    aria-label="Global speed limit in MB per second"
-                    aria-describedby="settings-speed-exact"
-                    type="number"
-                    min={0}
-                    max={MAX_SPEED_MB}
-                    step="any"
-                    placeholder="Unlimited"
-                    value={speedInput}
-                    onChange={(event) => handleSpeedInput(event.currentTarget.value)}
-                    className={`${FIELD} w-[84px]`}
-                  />
-                  <span
-                    className="flex h-8 items-center gap-1 rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-300"
-                    aria-hidden="true"
-                  >
-                    MB/s
+              hint={
+                speedError ? (
+                  <span id="settings-speed-error" className="text-red-400">
+                    {speedError}
                   </span>
-                </div>
+                ) : speedHelper ? (
+                  <span id="settings-speed-helper">{speedHelper}</span>
+                ) : null
+              }
+            >
+              <div className="flex h-8 items-center gap-2">
+                <input
+                  aria-label="Global speed limit in MB per second"
+                  aria-invalid={speedError ? true : undefined}
+                  aria-describedby={
+                    speedError
+                      ? 'settings-speed-error'
+                      : speedHelper
+                        ? 'settings-speed-helper'
+                        : undefined
+                  }
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={MAX_SPEED_MB}
+                  step="any"
+                  placeholder="No limit"
+                  value={speedInput}
+                  onChange={(event) =>
+                    handleSpeedInput(event.currentTarget.value)
+                  }
+                  onBlur={() => {
+                    commitSpeedInput()
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitSpeedInput()
+                    }
+                  }}
+                  className={`${FIELD} w-28 tabular-nums ${
+                    speedError ? FIELD_INVALID : ''
+                  }`}
+                />
                 <span
-                  id="settings-speed-exact"
-                  className="text-[11px] leading-4 text-zinc-500"
+                  className="flex h-8 items-center rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-300"
+                  aria-hidden="true"
                 >
-                  {speedInput.trim().length === 0
-                    ? 'Unlimited'
-                    : draft.globalSpeedLimitBps === 0
-                      ? 'Unlimited (0 B/s)'
-                      : `Stored exactly as ${exactSpeedLabel(
-                          draft.globalSpeedLimitBps
-                        )}`}
+                  MB/s
                 </span>
               </div>
             </SettingRow>
@@ -634,71 +839,62 @@ export function SettingsSection({
             <SettingRow
               title="Only download during set hours"
               description={
-                draft.allowedHours.enabled
+                hoursEnabled
                   ? `Queued files wait for ${draft.allowedHours.start} – ${draft.allowedHours.end}. Running downloads finish.`
                   : 'Limit new downloads to a set window. Running downloads finish.'
               }
+              hint={
+                hoursEqual ? (
+                  <span id="settings-hours-error" className="text-red-400">
+                    {HOURS_EQUAL_HINT}
+                  </span>
+                ) : null
+              }
             >
-              <input
-                aria-label="Allowed hours start"
-                type="time"
-                step={60}
-                value={draft.allowedHours.start}
-                disabled={!draft.allowedHours.enabled}
-                onChange={(event) =>
-                  updateAllowedHours({ start: event.currentTarget.value })
-                }
-                className={FIELD}
-              />
-              <span className="text-xs text-zinc-500">to</span>
-              <input
-                aria-label="Allowed hours end"
-                type="time"
-                step={60}
-                value={draft.allowedHours.end}
-                disabled={!draft.allowedHours.enabled}
-                onChange={(event) =>
-                  updateAllowedHours({ end: event.currentTarget.value })
-                }
-                className={FIELD}
-              />
+              <div
+                className={`flex h-8 items-center gap-2 transition-opacity ${
+                  hoursEnabled ? '' : 'opacity-50'
+                }`}
+              >
+                <input
+                  aria-label="Allowed hours start"
+                  aria-invalid={hoursEqual ? true : undefined}
+                  aria-describedby={
+                    hoursEqual ? 'settings-hours-error' : undefined
+                  }
+                  type="time"
+                  step={60}
+                  value={draft.allowedHours.start}
+                  disabled={!hoursEnabled}
+                  onChange={(event) =>
+                    handleHoursChange({ start: event.currentTarget.value })
+                  }
+                  className={`${FIELD} ${hoursEqual ? FIELD_INVALID : ''}`}
+                />
+                <span className="text-xs text-zinc-500">to</span>
+                <input
+                  aria-label="Allowed hours end"
+                  aria-invalid={hoursEqual ? true : undefined}
+                  aria-describedby={
+                    hoursEqual ? 'settings-hours-error' : undefined
+                  }
+                  type="time"
+                  step={60}
+                  value={draft.allowedHours.end}
+                  disabled={!hoursEnabled}
+                  onChange={(event) =>
+                    handleHoursChange({ end: event.currentTarget.value })
+                  }
+                  className={`${FIELD} ${hoursEqual ? FIELD_INVALID : ''}`}
+                />
+              </div>
               <Switch
-                checked={draft.allowedHours.enabled}
+                checked={hoursEnabled}
                 label="Only download during set hours"
-                onChange={(checked) => updateAllowedHours({ enabled: checked })}
+                onChange={handleHoursToggle}
               />
             </SettingRow>
           </div>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11px] leading-4 text-zinc-500">
-              {unchanged
-                ? 'Settings match the saved values.'
-                : 'You have unsaved changes.'}
-            </p>
-            <button
-              type="submit"
-              disabled={saving || unchanged}
-              className={BTN_PRIMARY}
-            >
-              {saving ? 'Saving…' : 'Save settings'}
-            </button>
-          </div>
-
-          {error ? (
-            <p role="alert" className="mt-2 text-xs text-red-400">
-              {error}
-            </p>
-          ) : null}
-          {message ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="mt-2 text-xs text-emerald-400"
-            >
-              {message}
-            </p>
-          ) : null}
         </form>
       </section>
 
@@ -715,7 +911,7 @@ export function SettingsSection({
                 key={theme}
                 theme={theme}
                 selected={draft.theme === theme}
-                disabled={themePending || saving}
+                disabled={themePending}
                 onSelect={() => {
                   void changeTheme(theme)
                 }}
@@ -733,17 +929,15 @@ export function SettingsSection({
           >
             <select
               aria-label="Interface size"
-              form="desktop-settings-form"
               value={desktopDraft.interfaceSizePercent}
               onChange={(event) =>
-                setDesktopDraft((current) => ({
-                  ...current,
+                commitDesktop({
                   interfaceSizePercent: Number(
                     event.currentTarget.value
                   ) as DesktopSettings['interfaceSizePercent']
-                }))
+                })
               }
-              className="h-8 rounded-lg border border-white/10 surface-input px-2 text-xs font-semibold text-zinc-100 outline-none transition focus:border-accent-400/50"
+              className={SELECT}
             >
               {INTERFACE_SIZES.map((size) => (
                 <option key={size} value={size}>
@@ -809,104 +1003,54 @@ export function SettingsSection({
           id="settings-startup"
           title="Startup"
           description="What DonDownload does when it opens and while it runs."
+          status={
+            <SaveStatus state={desktopSave} onRetry={retryDesktopSave} />
+          }
         />
-        <form
-          id="desktop-settings-form"
-          onSubmit={(event) => void saveDesktop(event)}
-        >
-          <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
-            <SettingRow
-              title="Start when I sign in to Windows"
-              description="Opens minimised to the tray."
-            >
-              <Switch
-                checked={desktopDraft.launchAtLogin}
-                label="Start when I sign in to Windows"
-                onChange={(checked) =>
-                  setDesktopDraft((current) => ({
-                    ...current,
-                    launchAtLogin: checked
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow
-              title="Resume unfinished downloads"
-              description="Downloads stopped when the app closed start again on launch."
-            >
-              <Switch
-                checked={desktopDraft.resumeInterruptedOnStartup}
-                label="Resume unfinished downloads"
-                onChange={(checked) =>
-                  setDesktopDraft((current) => ({
-                    ...current,
-                    resumeInterruptedOnStartup: checked
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow
-              title="Notifications"
-              description="When a download finishes or fails. Not for every file in a batch."
-            >
-              <Switch
-                checked={desktopDraft.showNotifications}
-                label="Notifications"
-                onChange={(checked) =>
-                  setDesktopDraft((current) => ({
-                    ...current,
-                    showNotifications: checked
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow
-              title="Watch the clipboard for links"
-              description="When you copy a link, DonDownload offers to add it. Nothing downloads on its own."
-            >
-              <Switch
-                checked={desktopDraft.watchClipboard}
-                label="Watch the clipboard for links"
-                onChange={(checked) =>
-                  setDesktopDraft((current) => ({
-                    ...current,
-                    watchClipboard: checked
-                  }))
-                }
-              />
-            </SettingRow>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11px] leading-4 text-zinc-500">
-              {desktopUnchanged
-                ? 'Desktop preferences match the saved values.'
-                : 'You have unsaved changes.'}
-            </p>
-            <button
-              type="submit"
-              disabled={desktopSaving || desktopUnchanged}
-              className={BTN_PRIMARY}
-            >
-              {desktopSaving ? 'Saving…' : 'Save preferences'}
-            </button>
-          </div>
-
-          {desktopError ? (
-            <p role="alert" className="mt-2 text-xs text-red-400">
-              {desktopError}
-            </p>
-          ) : null}
-          {desktopMessage ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="mt-2 text-xs text-emerald-400"
-            >
-              {desktopMessage}
-            </p>
-          ) : null}
-        </form>
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <SettingRow
+            title="Start when I sign in to Windows"
+            description="Opens minimised to the tray."
+          >
+            <Switch
+              checked={desktopDraft.launchAtLogin}
+              label="Start when I sign in to Windows"
+              onChange={(checked) => commitDesktop({ launchAtLogin: checked })}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Resume unfinished downloads"
+            description="Downloads stopped when the app closed start again on launch."
+          >
+            <Switch
+              checked={desktopDraft.resumeInterruptedOnStartup}
+              label="Resume unfinished downloads"
+              onChange={(checked) =>
+                commitDesktop({ resumeInterruptedOnStartup: checked })
+              }
+            />
+          </SettingRow>
+          <SettingRow
+            title="Notifications"
+            description="When a download finishes or fails. Not for every file in a batch."
+          >
+            <Switch
+              checked={desktopDraft.showNotifications}
+              label="Notifications"
+              onChange={(checked) => commitDesktop({ showNotifications: checked })}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Watch the clipboard for links"
+            description="When you copy a link, DonDownload offers to add it. Nothing downloads on its own."
+          >
+            <Switch
+              checked={desktopDraft.watchClipboard}
+              label="Watch the clipboard for links"
+              onChange={(checked) => commitDesktop({ watchClipboard: checked })}
+            />
+          </SettingRow>
+        </div>
       </section>
 
       <section aria-labelledby="settings-updates">
@@ -984,39 +1128,98 @@ export function SettingsSection({
   )
 }
 
+/**
+ * Small, unobtrusive save indicator that lives next to a section title:
+ * "Saving…", a fading "Saved", or "Couldn't save — <reason>" with a retry.
+ */
+function SaveStatus({
+  state,
+  onRetry
+}: {
+  state: SaveState
+  onRetry: () => void
+}): JSX.Element | null {
+  if (state.kind === 'idle') return null
+  if (state.kind === 'error') {
+    return (
+      <span
+        role="status"
+        aria-live="polite"
+        className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-red-400"
+      >
+        <span className="truncate" title={`Couldn't save — ${state.message}`}>
+          {`Couldn't save — ${state.message}`}
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 rounded font-semibold underline underline-offset-2 transition hover:text-red-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
+        >
+          Retry
+        </button>
+      </span>
+    )
+  }
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      className={`text-[11px] leading-4 transition-opacity duration-500 ${
+        state.kind === 'saved'
+          ? 'text-emerald-400 opacity-100'
+          : 'text-zinc-500 opacity-100'
+      }`}
+    >
+      {state.kind === 'saved' ? 'Saved' : 'Saving…'}
+    </span>
+  )
+}
+
 function SectionHeading({
   id,
   title,
-  description
+  description,
+  status
 }: {
   id: string
   title: string
   description: ReactNode
+  status?: ReactNode
 }): JSX.Element {
   return (
     <div className="mb-3">
-      <h2 id={id} className="text-base font-semibold text-zinc-100">
-        {title}
-      </h2>
+      <div className="flex min-h-5 items-baseline justify-between gap-3">
+        <h2 id={id} className="text-base font-semibold text-zinc-100">
+          {title}
+        </h2>
+        {status ? <div className="shrink-0">{status}</div> : null}
+      </div>
       <p className="mt-0.5 text-xs leading-5 text-zinc-400">{description}</p>
     </div>
   )
 }
 
+/**
+ * One settings row: label and one-line description on the left, the control
+ * right-aligned, with the same height and padding everywhere. `hint` renders
+ * an optional inline message (validation or helper) under the description.
+ */
 function SettingRow({
   title,
   description,
+  hint,
   accent = false,
   children
 }: {
   title: ReactNode
   description?: ReactNode
+  hint?: ReactNode
   accent?: boolean
   children?: ReactNode
 }): JSX.Element {
   return (
     <div
-      className={`flex min-h-[62px] flex-wrap items-center gap-3 px-4 py-3.5 ${
+      className={`flex min-h-[62px] flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3.5 ${
         accent ? 'bg-accent-500/10' : ''
       }`}
     >
@@ -1026,6 +1229,9 @@ function SettingRow({
         </p>
         {description ? (
           <p className="mt-0.5 text-xs leading-4 text-zinc-500">{description}</p>
+        ) : null}
+        {hint ? (
+          <p className="mt-1 text-[11px] leading-4 text-zinc-500">{hint}</p>
         ) : null}
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">

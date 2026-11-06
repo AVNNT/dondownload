@@ -1379,7 +1379,7 @@ export default function App(): JSX.Element {
         {page === 'settings' ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="mx-auto w-full max-w-3xl">
-              <SettingsSection onBack={() => setPage('library')} />
+              <SettingsSection />
               <BrowserExtensionSection />
             </div>
           </div>
