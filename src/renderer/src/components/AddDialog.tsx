@@ -115,9 +115,9 @@ export function AddDialog({
   useWheelScrollLock(backdropRef)
 
   useEffect(() => {
-    const target = dialogRef.current?.querySelector<HTMLElement>(
-      'textarea, input, select, button'
-    )
+    // Focus the link textarea, not the close (X) button that precedes it.
+    const target =
+      dialogRef.current?.querySelector<HTMLTextAreaElement>('textarea')
     target?.focus()
   }, [])
 
@@ -426,7 +426,7 @@ export function AddDialog({
             type="button"
             onClick={onClose}
             aria-label="Close Add download dialog"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           >
             <Icon name="x" size={15} />
           </button>

@@ -45,6 +45,11 @@ interface ScanPanelProps {
   /** Extension-created sessions shown together in one multi-topic view. */
   initialSessions?: readonly ScanSession[] | null
   disabled?: boolean
+  /**
+   * Hosted inside the scan sheet, which already renders its own "Scan pages"
+   * heading: skip the panel's own card heading and page-level status rows.
+   */
+  embedded?: boolean
 }
 
 interface GroupDefinition {
@@ -237,7 +242,8 @@ function topicTitle(session: ScanSession): string {
 export function ScanPanel({
   initialUrl,
   initialSessions = null,
-  disabled = false
+  disabled = false,
+  embedded = false
 }: ScanPanelProps): JSX.Element {
   const seededSessions = useMemo<readonly ScanSession[]>(
     () => initialSessions ?? [],
@@ -1412,7 +1418,7 @@ export function ScanPanel({
     })()
 
     const scriptChipBase =
-      'mt-1.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-md border px-2 text-[12px] transition'
+      'mt-1.5 inline-flex h-6 max-w-full shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[12px] transition'
 
     return (
       <li
@@ -1487,7 +1493,7 @@ export function ScanPanel({
               }`}
             >
               <Icon name="alert" size={13} className="shrink-0 text-amber-300" />
-              <span className="truncate">
+              <span className="min-w-0 truncate">
                 <span className="font-semibold text-zinc-100">
                   {ambiguousCount} script set{ambiguousCount === 1 ? '' : 's'} could match
                 </span>
@@ -1520,7 +1526,7 @@ export function ScanPanel({
               ) : (
                 <Icon name="check" size={13} className="shrink-0 text-emerald-300" />
               )}
-              <span className="truncate">
+              <span className="min-w-0 truncate">
                 <span className="font-semibold text-zinc-100">
                   {pairingFiles.length} script{pairingFiles.length === 1 ? '' : 's'}
                 </span>
@@ -2104,11 +2110,17 @@ export function ScanPanel({
   }
 
   return (
-    <section aria-labelledby="scan-heading" className="flex h-full min-h-0 flex-col">
+    <section
+      aria-label={embedded ? 'Scan pages' : undefined}
+      aria-labelledby={embedded ? undefined : 'scan-heading'}
+      className="flex h-full min-h-0 flex-col"
+    >
       <div className="shrink-0 border-b border-white/[0.07] px-5 pb-3.5 pt-4">
-        <h2 id="scan-heading" className="sr-only">
-          Scan pages
-        </h2>
+        {embedded ? null : (
+          <h2 id="scan-heading" className="sr-only">
+            Scan pages
+          </h2>
+        )}
         <div className="flex items-start gap-2">
           <label className="sr-only" htmlFor="scan-url">
             Page URLs to scan, one per line

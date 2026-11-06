@@ -972,7 +972,7 @@ export default function App(): JSX.Element {
       </header>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {banner ? (
+        {banner && !addRequest ? (
           <div className="mx-4 mt-2.5">
             <ErrorBanner banner={banner} onDismiss={() => setBanner(null)} />
           </div>

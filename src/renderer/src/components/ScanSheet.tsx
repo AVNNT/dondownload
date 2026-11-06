@@ -71,6 +71,7 @@ export function ScanSheet({
             initialUrl={url}
             initialSessions={sessions}
             disabled={disabled}
+            embedded
           />
         </div>
       </div>
