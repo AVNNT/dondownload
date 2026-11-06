@@ -37,7 +37,12 @@ export interface VideoResolveInput {
 export interface VideoResolution {
   status: Extract<
     ScanItemStatus,
-    'ready' | 'signin' | 'protected' | 'unavailable' | 'tool-unavailable'
+    | 'ready'
+    | 'signin'
+    | 'protected'
+    | 'unavailable'
+    | 'tool-unavailable'
+    | 'browser-only'
   >
   title: string | null
   thumbnailUrl: string | null
@@ -69,6 +74,10 @@ const TOOL_REASON =
   'yt-dlp is not available, so video pages cannot be resolved. Install or update yt-dlp and scan again.'
 const SIGNIN_REASON =
   'This video needs a browser sign-in or age verification before it can be resolved.'
+export const BROWSER_ONLY_REASON =
+  "Can't be read automatically — open it in your browser."
+const BLOCKED_BROWSER_TEXT =
+  /(?:unsupported url|http error 403|403 forbidden|challenge-platform|cf[-_]?chl|cloudflare|attention required|access denied|bot (?:check|detection)|captcha|turnstile)/i
 const SIGNIN_CODES = new Set([
   'MEDIA_ANALYSIS_SIGNIN',
   'MEDIA_NEEDS_LOGIN',
@@ -309,6 +318,13 @@ export function classifyVideoError(
     throw new AppError('SCAN_CANCELLED', 'The scan was cancelled.')
   }
   const code = errorCode(error)
+  const message =
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message
+      : ''
   if (code === 'MEDIA_DRM_PROTECTED') {
     return { status: 'protected', reason: DRM_REASON }
   }
@@ -318,19 +334,22 @@ export function classifyVideoError(
   if (SIGNIN_CODES.has(code)) {
     return { status: 'signin', reason: SIGNIN_REASON }
   }
-  const message =
-    typeof error === 'object' &&
-    error !== null &&
-    'message' in error &&
-    typeof (error as { message?: unknown }).message === 'string'
-      ? (error as { message: string }).message
-      : ''
   if (
     code === 'MEDIA_ANALYSIS_FAILED' &&
     SIGNIN_TEXT.test(message) &&
     !GENERIC_ANALYSIS_TEXT.test(message)
   ) {
     return { status: 'signin', reason: SIGNIN_REASON }
+  }
+  // A likely video page that yt-dlp cannot read (unsupported extractor,
+  // Cloudflare/bot challenge or 403) is still useful to the user. Expose it as
+  // a browser-only card instead of failing silently. There is no retry: the
+  // resolver calls the analyzer exactly once per item.
+  if (code === 'MEDIA_UNSUPPORTED_MEDIA') {
+    return { status: 'browser-only', reason: BROWSER_ONLY_REASON }
+  }
+  if (BLOCKED_BROWSER_TEXT.test(message)) {
+    return { status: 'browser-only', reason: BROWSER_ONLY_REASON }
   }
   if (code === 'MEDIA_UNSUPPORTED_PLAYLIST') {
     return {
@@ -351,12 +370,6 @@ export function classifyVideoError(
     return {
       status: 'unavailable',
       reason: 'yt-dlp could not understand this video page. The site may have changed.'
-    }
-  }
-  if (code === 'MEDIA_UNSUPPORTED_MEDIA') {
-    return {
-      status: 'unavailable',
-      reason: 'No downloadable video or audio formats were found.'
     }
   }
   return {

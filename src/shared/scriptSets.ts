@@ -111,7 +111,7 @@ export function buildScanScriptSets(
       (item) =>
         item.category === 'video' &&
         item.kind === 'page-link' &&
-        item.status === 'ready'
+        (item.status === 'ready' || item.status === 'browser-only')
     )
     .map((item) => ({
       id: item.id,

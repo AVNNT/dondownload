@@ -46,7 +46,14 @@ export const SCAN_ITEM_STATUSES = [
   'signin',
   'protected',
   'unavailable',
-  'tool-unavailable'
+  'tool-unavailable',
+  /**
+   * A likely video page whose player cannot be read automatically (for
+   * example a Cloudflare challenge or an unsupported embed host). The card is
+   * visible so the user can open it in their browser, but it is never
+   * queueable and never treated as a direct file.
+   */
+  'browser-only'
 ] as const
 export type ScanItemStatus = (typeof SCAN_ITEM_STATUSES)[number]
 
@@ -193,6 +200,12 @@ export interface ScanItem {
   bestOptionId?: string | null
   /** Short, safe explanation for sign-in/protected/unavailable states. */
   unavailableReason?: string | null
+  /**
+   * True while a browser-only card waits for the extension to hand off the
+   * actual video from the page the user just opened. Main-only state exposed as
+   * a boolean; the page URL itself never enters this DTO.
+   */
+  browserMatchPending?: boolean
 }
 
 export interface ScanCounters {
@@ -664,6 +677,135 @@ export function parseScanQueueSelectionInput(
   }
 }
 
+/**
+ * Chosen scripts for a browser-only video. All values are opaque scan IDs or
+ * bounded display tokens; no URL, path or header is accepted.
+ */
+export interface ScanBrowserScriptSelection {
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
+}
+
+export interface ScanOpenInBrowserInput {
+  sessionId: string
+  itemId: string
+  /**
+   * Optional explicit script choice. When present, main remembers a pending
+   * pairing for this card's page until the extension hands off the video.
+   */
+  pairing?: ScanBrowserScriptSelection
+}
+
+export interface ScanManualMatchInput extends ScanBrowserScriptSelection {
+  sessionId: string
+  /** Video card, or null when the user starts from a script-set row. */
+  videoItemId: string | null
+}
+
+/** Renderer-safe result of a manual file match. Never contains a path. */
+export interface ScanManualMatchResult {
+  batchId: string
+  /** Display filename of the video the user picked. */
+  filename: string
+}
+
+function browserScriptSelection(
+  value: unknown,
+  subject: string
+): ScanBrowserScriptSelection {
+  const record = asPlainObject(value, subject)
+  exactKeys(
+    record,
+    ['setId', 'scriptItemIds', 'primaryVariant', 'rename'],
+    [],
+    subject
+  )
+  const setId = scriptSetId(record.setId)
+  const rawScripts = record.scriptItemIds
+  if (
+    !Array.isArray(rawScripts) ||
+    rawScripts.length === 0 ||
+    rawScripts.length > MAX_SCAN_SELECTION
+  ) {
+    throw new ValidationError(`The ${subject} has no scripts.`)
+  }
+  const scriptItemIds = rawScripts.map(parseScanItemId)
+  if (new Set(scriptItemIds).size !== scriptItemIds.length) {
+    throw new ValidationError('Duplicate scan script item identifier.')
+  }
+  let primaryVariant: string | null
+  if (record.primaryVariant === null) {
+    primaryVariant = null
+  } else {
+    primaryVariant = safeDisplayText(
+      record.primaryVariant,
+      32,
+      `${subject} primary variant`
+    ).toLowerCase()
+  }
+  return {
+    setId,
+    scriptItemIds,
+    primaryVariant,
+    rename: booleanValue(record, 'rename')
+  }
+}
+
+export function parseScanOpenInBrowserInput(
+  value: unknown
+): ScanOpenInBrowserInput {
+  const record = asPlainObject(value, 'scan open in browser')
+  exactKeys(
+    record,
+    ['sessionId', 'itemId'],
+    ['pairing'],
+    'scan open in browser'
+  )
+  return {
+    sessionId: parseScanSessionId(record.sessionId),
+    itemId: parseScanItemId(record.itemId),
+    ...(record.pairing === undefined
+      ? {}
+      : {
+          pairing: browserScriptSelection(
+            record.pairing,
+            'scan open in browser pairing'
+          )
+        })
+  }
+}
+
+export function parseScanManualMatchInput(
+  value: unknown
+): ScanManualMatchInput {
+  const record = asPlainObject(value, 'scan manual match')
+  exactKeys(
+    record,
+    ['sessionId', 'videoItemId', 'setId', 'scriptItemIds', 'primaryVariant', 'rename'],
+    [],
+    'scan manual match'
+  )
+  const selection = browserScriptSelection(
+    {
+      setId: record.setId,
+      scriptItemIds: record.scriptItemIds,
+      primaryVariant: record.primaryVariant,
+      rename: record.rename
+    },
+    'scan manual match'
+  )
+  return {
+    sessionId: parseScanSessionId(record.sessionId),
+    videoItemId:
+      record.videoItemId === null
+        ? null
+        : parseScanItemId(record.videoItemId),
+    ...selection
+  }
+}
+
 export function parseScanCounters(value: unknown): ScanCounters {
   const record = asPlainObject(value, 'scan counters')
   exactKeys(
@@ -1028,7 +1170,8 @@ export function parseScanItem(value: unknown): ScanItem {
       'sizeIsEstimate',
       'formats',
       'bestOptionId',
-      'unavailableReason'
+      'unavailableReason',
+      'browserMatchPending'
     ],
     'scan item'
   )
@@ -1146,6 +1289,9 @@ export function parseScanItem(value: unknown): ScanItem {
     ...(bestOptionId === undefined ? {} : { bestOptionId }),
     ...(Object.prototype.hasOwnProperty.call(record, 'unavailableReason')
       ? { unavailableReason: safeMessage(record.unavailableReason) }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'browserMatchPending')
+      ? { browserMatchPending: booleanValue(record, 'browserMatchPending') }
       : {})
   }
 }

@@ -1,13 +1,18 @@
 import { Parser } from 'htmlparser2'
+import { isLikelyVideoPageUrl } from './classify'
 import { resolveScanUrl } from './extract/url'
 
 /**
  * Pure, bounded follow policy for phase 2 discovery.
  *
  * A page link is followed only when it is likely to contain video: an iframe
- * embed, a well-known yt-dlp video host, or a same-site watch/video path or
- * video-looking link. Pagination, tag/category, login/account, cart/share and
- * `rel=nofollow` links are never followed. This module has no network access.
+ * embed, a well-known yt-dlp video host, a conservative single-video path, or
+ * a same-site video-looking link. Pagination, tag/category, login/account,
+ * cart/share and playlist links are never followed.
+ *
+ * Discourse adds `rel="nofollow ugc"` to every link a user writes. `nofollow`
+ * is therefore treated as a ranking hint (a lower score), not a hard block;
+ * only links that already look like a video are followed at all.
  */
 
 export const MAX_FOLLOW_CANDIDATES = 2000
@@ -41,7 +46,9 @@ const VIDEO_HOSTS = new Set([
   'soundcloud.com',
   'v.qq.com',
   'youku.com',
-  'media.ccc.de'
+  'media.ccc.de',
+  'hanime1.me',
+  'www.hanime1.me'
 ])
 
 /** Embeds that are never page content worth following. */
@@ -254,7 +261,8 @@ export function scoreFollowLink(input: {
   text?: string | null
 }): FollowDecision | null {
   const rel = (input.rel ?? '').toLowerCase()
-  if (rel.split(/\s+/).includes('nofollow')) return null
+  const nofollow = rel.split(/\s+/).includes('nofollow')
+  const penalty = nofollow ? 10 : 0
 
   let parsed: URL
   let base: URL
@@ -276,27 +284,33 @@ export function scoreFollowLink(input: {
   const sameSite =
     registrableDomain(host) === registrableDomain(base.hostname.toLowerCase())
   const videoHost = isKnownVideoHost(host)
-  const videoPath = VIDEO_PATH.test(parsed.pathname)
+  const likelyVideoPage = isLikelyVideoPageUrl(parsed.href)
+  const videoPath = likelyVideoPage || VIDEO_PATH.test(parsed.pathname)
   const text = cleanText(input.text)
   const videoText = text !== null && VIDEO_TEXT.test(text)
 
   if (input.isEmbed === true) {
     if (BLOCKED_IFRAME_HOSTS.has(host)) return null
-    if (videoHost) return { score: 100, reason: 'embed' }
-    if (sameSite && videoPath) return { score: 80, reason: 'embed' }
+    if (videoHost) return { score: 100 - penalty, reason: 'embed' }
+    if (sameSite && videoPath) return { score: 80 - penalty, reason: 'embed' }
     // Follow third-party iframes: a bare embed URL frequently looks like a
     // player but has no recognisable path.
-    return { score: 40, reason: 'embed' }
+    return { score: 40 - penalty, reason: 'embed' }
   }
 
   if (videoHost) {
     // A bare channel page is a listing, one level above the actual videos.
     if (parsed.pathname === '/' || parsed.pathname === '') return null
-    return { score: 90, reason: 'video-host' }
+    return { score: 90 - penalty, reason: 'video-host' }
   }
-  if (!sameSite) return null
-  if (videoPath) return { score: 70, reason: 'video-path' }
-  if (videoText) return { score: 50, reason: 'video-text' }
+  if (!sameSite) {
+    // A cross-site single-video path is a discovery candidate; pagination,
+    // login, listings and article links were already rejected above.
+    if (likelyVideoPage) return { score: 55 - penalty, reason: 'video-path' }
+    return null
+  }
+  if (videoPath) return { score: 70 - penalty, reason: 'video-path' }
+  if (videoText) return { score: 50 - penalty, reason: 'video-text' }
   return null
 }
 
