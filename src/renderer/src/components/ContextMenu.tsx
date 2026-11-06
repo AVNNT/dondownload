@@ -90,7 +90,7 @@ export function ContextMenu({
       aria-label="Download actions"
       onKeyDown={handleKeyDown}
       style={{ left, top }}
-      className="fixed z-50 w-[228px] rounded-xl border border-white/10 bg-[var(--surface-card)] p-1 shadow-2xl shadow-black/60"
+      className="no-drag fixed z-50 w-[228px] rounded-xl border border-white/10 bg-[var(--surface-card)] p-1 shadow-2xl shadow-black/60"
     >
       {actions.map((action) => (
         <div key={action.id}>

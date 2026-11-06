@@ -208,6 +208,57 @@
   padding-right: calc(
     1rem + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)
   );
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+/*
+ * Interactive controls inside a drag region must opt out, or clicks on them
+ * start a window drag. Non-interactive text (logo, status) stays draggable.
+ */
+.window-app-header-content
+  :is(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    [role='button'],
+    [role='tab'],
+    [role='menu'],
+    [contenteditable='true']
+  ) {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+/* A draggable bar (e.g. the scan sheet header) with no-drag controls. */
+.window-drag-bar {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.window-drag-bar
+  :is(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    [role='button'],
+    [role='tab'],
+    [role='menu'],
+    [contenteditable='true']
+  ) {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * Overlays (menus, dialogs, sheet backdrops) that can sit over the header
+ * must be no-drag, or clicking them would move the window instead.
+ */
+.no-drag {
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }

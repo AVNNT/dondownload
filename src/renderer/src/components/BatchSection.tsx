@@ -902,7 +902,7 @@ function BatchMenu({
           ? { visibility: 'hidden' }
           : { left: position.left, top: position.top }
       }
-      className="fixed z-40 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-xl shadow-black/40"
+      className="no-drag fixed z-40 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-xl shadow-black/40"
     >
       {items.map((item) => (
         <button
