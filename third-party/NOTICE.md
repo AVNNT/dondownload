@@ -20,8 +20,8 @@ installer then includes that directory as `resources/vendor/`.
 | --- | --- | --- | --- | --- | --- |
 | aria2 (`aria2c.exe`) | 1.37.0 | `vendor/aria2/aria2c.exe` | GPL-2.0-or-later | <https://aria2.github.io/> | <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2> |
 | yt-dlp (`yt-dlp.exe` plus `_internal/`) | 2026.10.26 | `vendor/yt-dlp/` (official one-folder build) | Unlicense, plus bundled third-party licenses | <https://github.com/yt-dlp/yt-dlp> | <https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz> |
-| FFmpeg (`ffmpeg.exe`) | 9.0.2 Gyan full build | `vendor/ffmpeg/ffmpeg.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
-| ffprobe (`ffprobe.exe`) | 9.0.2 Gyan full build | `vendor/ffmpeg/ffprobe.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
+| FFmpeg (`ffmpeg.exe`) | 9.0.2 Gyan essentials build | `vendor/ffmpeg/ffmpeg.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
+| ffprobe (`ffprobe.exe`) | 9.0.2 Gyan essentials build | `vendor/ffmpeg/ffprobe.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
 | Deno (`deno.exe`) | 2.9.8 | `vendor/deno/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
 
 The exact staged hashes, sizes, local source paths and license-file hashes are
@@ -56,13 +56,13 @@ authenticate the upstream origin or prove a reproducible build.
   archive the build recipe used to produce the standalone executable, or provide
   a written offer that covers it.
 
-## FFmpeg and ffprobe (Gyan full build)
+## FFmpeg and ffprobe (Gyan essentials build)
 
 - License: GPL-3.0-or-later. The GPLv3 text and the Gyan build README are
   included in `third-party/licenses/ffmpeg-GPLv3.txt` and
-  `third-party/licenses/ffmpeg-GYAN-BUILD-README.txt`.
+  `third-party/licenses/ffmpeg-GYAN-ESSENTIALS-BUILD-README.txt`.
 - The Gyan build README identifies the exact FFmpeg source commit
-  (`946fcce07b`), the build configuration and external assets. The full build
+  (`946fcce07b`) and the build configuration. The essentials build
   enables GPL-covered components; it is not an LGPL build.
 - A distributor must provide the complete corresponding source for the exact
   binary, including the build scripts and configuration needed to reproduce it,

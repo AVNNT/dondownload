@@ -123,17 +123,23 @@ $tools = @(
         TargetRelativePath   = 'ffmpeg\ffmpeg.exe'
         PathCommand          = 'ffmpeg'
         KnownPaths           = @(
+            # Gyan "essentials" build: about half the size of the full build and
+            # covers every muxer/codec DonDownload uses (mp4/mkv/webm merges,
+            # mp3/m4a/opus extraction, HLS over https). Extracted from
+            # https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip
+            # (SHA-256 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba).
+            (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'),
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe'
         )
-        License              = 'GPL-3.0-or-later (Gyan full build)'
+        License              = 'GPL-3.0-or-later (Gyan essentials build)'
         LicenseFiles         = @(
             'third-party\licenses\ffmpeg-GPLv3.txt',
-            'third-party\licenses\ffmpeg-GYAN-BUILD-README.txt'
+            'third-party\licenses\ffmpeg-GYAN-ESSENTIALS-BUILD-README.txt'
         )
         Upstream             = 'https://ffmpeg.org/'
         SourceVersion        = '9.0.2 / FFmpeg commit 946fcce07b'
         SourceArchive        = 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz'
-        Notice               = 'FFmpeg Gyan full build is GPLv3. See third-party/NOTICE.md for source-offer obligations.'
+        Notice               = 'FFmpeg Gyan essentials build is GPLv3. See third-party/NOTICE.md for source-offer obligations.'
     }
     [pscustomobject]@{
         Name                 = 'ffprobe'
@@ -145,17 +151,18 @@ $tools = @(
         TargetRelativePath   = 'ffmpeg\ffprobe.exe'
         PathCommand          = 'ffprobe'
         KnownPaths           = @(
+            (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffprobe.exe'),
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffprobe.exe'
         )
-        License              = 'GPL-3.0-or-later (Gyan full build)'
+        License              = 'GPL-3.0-or-later (Gyan essentials build)'
         LicenseFiles         = @(
             'third-party\licenses\ffmpeg-GPLv3.txt',
-            'third-party\licenses\ffmpeg-GYAN-BUILD-README.txt'
+            'third-party\licenses\ffmpeg-GYAN-ESSENTIALS-BUILD-README.txt'
         )
         Upstream             = 'https://ffmpeg.org/'
         SourceVersion        = '9.0.2 / FFmpeg commit 946fcce07b'
         SourceArchive        = 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz'
-        Notice               = 'ffprobe from the FFmpeg Gyan full build is GPLv3. See third-party/NOTICE.md.'
+        Notice               = 'ffprobe from the FFmpeg Gyan essentials build is GPLv3. See third-party/NOTICE.md.'
     }
     [pscustomobject]@{
         Name                 = 'deno'
