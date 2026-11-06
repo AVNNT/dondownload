@@ -144,4 +144,20 @@ describe('browser extension manifest', () => {
       expect(existsSync(path.join(extensionDir, file))).toBe(true)
     }
   })
+
+  it('puts the two compact scan actions side by side and the images action on its own row', async () => {
+    const html = await readFile(path.join(extensionDir, 'popup.html'), 'utf8')
+    const acts = html.slice(
+      html.indexOf('<div class="acts">'),
+      html.indexOf('<button id="download-again"')
+    )
+    const order = ['id="scan-page"', 'id="scan-many"', 'id="scan-images"'].map((marker) =>
+      acts.indexOf(marker)
+    )
+    expect(order).not.toContain(-1)
+    expect([...order].sort((left, right) => left - right)).toEqual(order)
+
+    const css = await readFile(path.join(extensionDir, 'popup.css'), 'utf8')
+    expect(css).toMatch(/#scan-images\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/)
+  })
 })

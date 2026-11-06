@@ -240,6 +240,13 @@ body {
   min-width: 0;
 }
 
+/* The images label is far longer than half the popup, so it gets its own row
+ * under the two compact actions instead of overflowing a 1fr column. */
+#scan-images {
+  grid-column: 1 / -1;
+  height: 36px;
+}
+
 .scan-many[open] {
   grid-column: 1 / -1;
 }
