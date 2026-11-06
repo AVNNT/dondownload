@@ -1,30 +1,86 @@
+import { formatBytes, formatEta, formatSpeed } from '@shared/format'
 import type { JSX } from 'react'
-import { formatBytes, formatSpeed } from '@shared/format'
-import type { UnifiedRow } from '../lib/unified'
+import type { StatusTone, UnifiedRow } from '../lib/unified'
 import { CATEGORY_LABELS } from '../lib/unified'
 import { canOpenRow, canShowRow } from '../lib/actions'
-import { CATEGORY_ACCENT, CATEGORY_ICON, Icon } from './Icon'
-import { StatusBadge } from './StatusBadge'
+import { CATEGORY_ACCENT, CATEGORY_ICON, Icon, type IconName } from './Icon'
 
-function localTime(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return '—'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return '—'
+const PILL_TONE: Record<StatusTone, string> = {
+  active: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
+  queued: 'border-white/10 bg-white/[0.04] text-zinc-300',
+  paused: 'border-zinc-600/70 bg-zinc-800/60 text-zinc-300',
+  complete: 'border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-300',
+  warning: 'border-amber-400/25 bg-amber-400/10 text-amber-300',
+  failed: 'border-red-400/30 bg-red-400/10 text-red-300'
+}
+
+const PILL_DOT: Record<StatusTone, string> = {
+  active: 'bg-accent-400',
+  queued: 'bg-zinc-500',
+  paused: 'bg-zinc-400',
+  complete: 'bg-emerald-400',
+  warning: 'bg-amber-400',
+  failed: 'bg-red-400'
+}
+
+function shortDateTime(value: number): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '—'
+  const time = date.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+  const today = new Date().toDateString()
+  if (date.toDateString() === today) return `Today ${time}`
+  const yesterday = new Date()
+  yesterday.setDate(yesterday.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Yesterday ${time}`
   }
+  return `${date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric'
+  })} ${time}`
+}
+
+/**
+ * Plain-language size/progress summary. Active rows keep their live speed and
+ * ETA; finished rows state when they landed; everything else shows bytes only.
+ */
+function progressLine(row: UnifiedRow): string {
+  const range =
+    row.sizeBytes !== null && row.sizeBytes > 0
+      ? `${formatBytes(row.completedBytes)} of ${formatBytes(row.sizeBytes)}`
+      : formatBytes(row.completedBytes)
+
+  if (row.statusGroup === 'active') {
+    if (row.speedBps > 0 && row.etaSeconds !== null) {
+      return `${range} · ${formatSpeed(row.speedBps)} · ${formatEta(row.etaSeconds)} left`
+    }
+    if (row.speedBps > 0) return `${range} · ${formatSpeed(row.speedBps)}`
+    return range
+  }
+  if (row.completedAt !== null) {
+    return `${range} · finished ${shortDateTime(row.completedAt)}`
+  }
+  if (row.scheduledAt !== null) {
+    return `Starts ${shortDateTime(row.scheduledAt)} · ${range}`
+  }
+  return range
 }
 
 export function DetailsPane({
   row,
   onClose,
   onOpen,
-  onShowInFolder
+  onShowInFolder,
+  onCopyLink
 }: {
   row: UnifiedRow
   onClose: () => void
   onOpen: (row: UnifiedRow) => void
   onShowInFolder: (row: UnifiedRow) => void
+  onCopyLink: (row: UnifiedRow) => void
 }): JSX.Element {
   const openable = canOpenRow(row)
   const showable = canShowRow(row)
@@ -34,14 +90,17 @@ export function DetailsPane({
       aria-label={`Details for ${row.title}`}
       className="mt-3 shrink-0 overflow-hidden rounded-xl border border-white/10 surface-card"
     >
-      <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-2">
+      <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-2.5">
         <span
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] ${CATEGORY_ACCENT[row.category]}`}
         >
           <Icon name={CATEGORY_ICON[row.category]} size={15} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-medium text-zinc-100" title={row.title}>
+          <p
+            className="truncate text-[13px] font-semibold text-zinc-100"
+            title={row.title}
+          >
             {row.title}
           </p>
           <p className="truncate text-[11px] text-zinc-500">
@@ -49,25 +108,16 @@ export function DetailsPane({
             {CATEGORY_LABELS[row.category]}
           </p>
         </div>
-        <StatusBadge label={row.statusLabel} tone={row.statusTone} />
+        <StatusPill label={row.statusLabel} tone={row.statusTone} />
         {openable ? (
           <button
             type="button"
             onClick={() => onOpen(row)}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-accent-400/25 px-2 text-[11px] font-medium text-accent-300 transition hover:bg-accent-400/10"
+            aria-label={`Open ${row.title}`}
+            title="Open file"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
           >
-            <Icon name="external" size={12} />
-            Open
-          </button>
-        ) : null}
-        {showable ? (
-          <button
-            type="button"
-            onClick={() => onShowInFolder(row)}
-            aria-label={`Show ${row.title} in folder`}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/10 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
-          >
-            <Icon name="folder" size={13} />
+            <Icon name="external" size={14} />
           </button>
         ) : null}
         <button
@@ -80,64 +130,48 @@ export function DetailsPane({
         </button>
       </div>
 
-      <dl className="grid max-h-36 gap-x-6 gap-y-1.5 overflow-y-auto px-3 py-2.5 text-[11px] leading-5 sm:grid-cols-2 xl:grid-cols-3 min-[901px]:max-h-52">
+      <div className="flex flex-col gap-1.5 px-3 py-2.5 text-[11.5px] text-zinc-400">
+        <p className="tabular-nums">{progressLine(row)}</p>
         {row.url ? (
-          <Detail label="Source URL" wide>
-            <span className="break-all text-zinc-300" title={row.url}>
+          <div className="flex min-w-0 items-center gap-2">
+            <Icon name="link" size={13} className="shrink-0 text-zinc-600" />
+            <span className="truncate" title={row.url}>
               {row.url}
             </span>
-          </Detail>
+            <IconAction
+              icon="copy"
+              label="Copy link"
+              onClick={() => onCopyLink(row)}
+            />
+          </div>
         ) : null}
         {row.download?.filePath ? (
-          <Detail label="Saved to" wide>
-            <span className="break-all text-zinc-300">
+          <div className="flex min-w-0 items-center gap-2">
+            {showable ? (
+              <Icon
+                name="folder"
+                size={13}
+                className="shrink-0 text-zinc-600"
+              />
+            ) : null}
+            <span className="truncate" title={row.download.filePath}>
               {row.download.filePath}
             </span>
-          </Detail>
+            {showable ? (
+              <IconAction
+                icon="folder"
+                label="Show in folder"
+                onClick={() => onShowInFolder(row)}
+              />
+            ) : null}
+          </div>
         ) : null}
-        <Detail label="Size">
-          <span className="tabular-nums text-zinc-300">
-            {formatBytes(row.completedBytes)}
-            {row.sizeBytes !== null ? ` / ${formatBytes(row.sizeBytes)}` : ''}
-          </span>
-        </Detail>
-        {row.connections !== null ? (
-          <Detail label="Connections / segments">
-            <span className="tabular-nums text-zinc-300">{row.connections}</span>
-          </Detail>
-        ) : row.source === 'media' ? (
-          <Detail label="Format">
-            <span className="text-zinc-300">{row.subtitle}</span>
-          </Detail>
+        {row.attempts !== null && row.attempts > 1 ? (
+          <p>
+            Retried {row.attempts - 1} {row.attempts - 1 === 1 ? 'time' : 'times'}
+          </p>
         ) : null}
-        {row.attempts !== null ? (
-          <Detail label="Attempts">
-            <span className="tabular-nums text-zinc-300">
-              {row.attempts} of {row.maxAttempts ?? '—'}
-            </span>
-          </Detail>
-        ) : null}
-        {row.scheduledAt !== null ? (
-          <Detail label="Scheduled">
-            <span className="text-zinc-300">{localTime(row.scheduledAt)}</span>
-          </Detail>
-        ) : null}
-        {row.speedLimitBps !== null ? (
-          <Detail label="Speed limit">
-            <span className="tabular-nums text-zinc-300">
-              {formatSpeed(row.speedLimitBps)}
-            </span>
-          </Detail>
-        ) : null}
-        <Detail label="Updated">
-          <span className="text-zinc-300">{localTime(row.updatedAt)}</span>
-        </Detail>
-        {row.completedAt !== null ? (
-          <Detail label="Completed">
-            <span className="text-zinc-300">{localTime(row.completedAt)}</span>
-          </Detail>
-        ) : null}
-      </dl>
+      </div>
 
       {row.errorMessage ? (
         <p
@@ -151,21 +185,44 @@ export function DetailsPane({
   )
 }
 
-function Detail({
+function StatusPill({
   label,
-  wide = false,
-  children
+  tone
 }: {
   label: string
-  wide?: boolean
-  children: JSX.Element
+  tone: StatusTone
 }): JSX.Element {
   return (
-    <div className={`min-w-0 ${wide ? 'sm:col-span-2 xl:col-span-3' : ''}`}>
-      <dt className="text-[11px] uppercase tracking-[0.12em] text-zinc-600">
-        {label}
-      </dt>
-      <dd className="min-w-0">{children}</dd>
-    </div>
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${PILL_TONE[tone]}`}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 rounded-full ${PILL_DOT[tone]} ${tone === 'active' ? 'animate-pulse' : ''}`}
+      />
+      {label}
+    </span>
+  )
+}
+
+function IconAction({
+  icon,
+  label,
+  onClick
+}: {
+  icon: IconName
+  label: string
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+    >
+      <Icon name={icon} size={13} />
+    </button>
   )
 }

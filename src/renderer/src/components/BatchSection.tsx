@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX
+} from 'react'
 import {
   type Batch,
   type BatchItem,
@@ -8,6 +15,8 @@ import {
 } from '@shared/batches'
 import { formatBytes, formatPercent } from '@shared/format'
 import type { ApiResult, AppErrorInfo, BatchSnapshot } from '@shared/types'
+import type { UnifiedRow } from '../lib/unified'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Icon, type IconName } from './Icon'
 
 const BATCH_KIND_ICON: Record<BatchKind, IconName> = {
@@ -76,10 +85,15 @@ const PREVIEW_ITEM_COUNT = 5
  */
 export function BatchSection({
   onBack,
-  onAddLinks
+  onAddLinks,
+  findFolderRow,
+  onShowRowInFolder
 }: {
   onBack?: () => void
   onAddLinks?: () => void
+  /** Resolves the child row whose folder a batch "Open folder" action reveals. */
+  findFolderRow?: (batch: Batch) => UnifiedRow | undefined
+  onShowRowInFolder?: (row: UnifiedRow) => void
 } = {}): JSX.Element {
   const [snapshot, setSnapshot] = useState<BatchSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
@@ -91,6 +105,8 @@ export function BatchSection({
   const [actionPending, setActionPending] = useState(false)
   const [actionError, setActionError] = useState<AppErrorInfo | null>(null)
   const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({})
+  /** Batch awaiting "cancel remaining" confirmation via ConfirmDialog. */
+  const [cancelBatch, setCancelBatch] = useState<Batch | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -337,13 +353,20 @@ export function BatchSection({
         ) : filteredBatches.length === 0 ? (
           <BatchEmptyState onAddLinks={onAddLinks} filtered={batches.length > 0} />
         ) : (
-          filteredBatches.map((batch) => (
+          filteredBatches.map((batch) => {
+            const folderRow = findFolderRow?.(batch)
+            return (
             <BatchCard
               key={batch.id}
               batch={batch}
               expanded={expandedBatches[batch.id] ?? false}
               showAll={showAllItems[batch.id] ?? false}
               busy={interactionBusy}
+              onOpenFolder={
+                folderRow !== undefined && onShowRowInFolder
+                  ? () => onShowRowInFolder(folderRow)
+                  : undefined
+              }
               onToggle={() => {
                 setExpandedBatches((current) => ({
                   ...current,
@@ -357,9 +380,7 @@ export function BatchSection({
                 }))
               }}
               onCancelBatch={() => {
-                void runSnapshotAction(() =>
-                  window.donDownload.cancelBatch({ batchId: batch.id })
-                )
+                setCancelBatch(batch)
               }}
               onRemoveBatch={() => {
                 void runSnapshotAction(() =>
@@ -390,9 +411,29 @@ export function BatchSection({
                 void handleOpenSource(batch.id, item.id)
               }}
             />
-          ))
+            )
+          })
         )}
       </div>
+
+      {cancelBatch !== null ? (
+        <ConfirmDialog
+          request={{
+            title: 'Cancel batch?',
+            message:
+              'Cancel the remaining downloads in this batch? Finished files are kept.',
+            confirmLabel: 'Cancel remaining',
+            onConfirm: () => {
+              void runSnapshotAction(() =>
+                window.donDownload.cancelBatch({ batchId: cancelBatch.id })
+              )
+            }
+          }}
+          onClose={() => {
+            setCancelBatch(null)
+          }}
+        />
+      ) : null}
     </section>
   )
 }
@@ -402,6 +443,7 @@ function BatchCard({
   expanded,
   showAll,
   busy,
+  onOpenFolder,
   onToggle,
   onShowAll,
   onCancelBatch,
@@ -415,6 +457,7 @@ function BatchCard({
   expanded: boolean
   showAll: boolean
   busy: boolean
+  onOpenFolder?: () => void
   onToggle: () => void
   onShowAll: () => void
   onCancelBatch: () => void
@@ -516,7 +559,7 @@ function BatchCard({
         </div>
 
         <div className="flex items-center justify-end gap-1">
-          {retryableCount > 0 && !active ? (
+          {retryableCount > 0 && !active && batch.status !== 'interrupted' ? (
             <button
               type="button"
               onClick={onRetryFailed}
@@ -527,21 +570,53 @@ function BatchCard({
               Retry {retryableCount}
             </button>
           ) : null}
-          {active ? (
-            <IconAction
-              icon="pause"
-              ariaLabel={`Cancel batch ${batch.title}`}
-              title="Cancel batch"
-              disabled={busy}
-              onClick={onCancelBatch}
-            />
-          ) : null}
-          <IconAction
-            icon="trash"
-            ariaLabel={`Remove batch card ${batch.title}`}
-            title="Remove group card"
+          <BatchMenu
+            ariaLabel={`More actions for ${batch.title}`}
             disabled={busy}
-            onClick={onRemoveBatch}
+            items={
+              (
+                [
+                  onOpenFolder
+                    ? {
+                        id: 'open-folder',
+                        label: 'Open folder',
+                        icon: 'folder' as const,
+                        onSelect: onOpenFolder
+                      }
+                    : null,
+                  retryableCount > 0 && !active
+                    ? batch.status === 'interrupted'
+                      ? {
+                          id: 'resume',
+                          label: 'Resume',
+                          icon: 'play' as const,
+                          onSelect: onRetryFailed
+                        }
+                      : {
+                          id: 'retry-failed',
+                          label: 'Retry failed',
+                          icon: 'retry' as const,
+                          onSelect: onRetryFailed
+                        }
+                    : null,
+                  active
+                    ? {
+                        id: 'cancel',
+                        label: 'Cancel remaining',
+                        icon: 'x' as const,
+                        danger: true,
+                        onSelect: onCancelBatch
+                      }
+                    : null,
+                  {
+                    id: 'remove',
+                    label: 'Remove from list',
+                    danger: true,
+                    onSelect: onRemoveBatch
+                  }
+                ] as Array<BatchMenuEntry | null>
+              ).filter((item): item is BatchMenuEntry => item !== null)
+            }
           />
         </div>
       </div>
@@ -702,6 +777,106 @@ function BatchItemRow({
         ) : null}
       </div>
     </li>
+  )
+}
+
+interface BatchMenuEntry {
+  id: string
+  label: string
+  icon?: IconName
+  danger?: boolean
+  onSelect: () => void
+}
+
+/**
+ * The batch card's "more" (⋯) menu: keeps the card header calm while every
+ * group action — open folder, retry/resume, cancel remaining, remove — stays
+ * reachable.
+ * Closes on outside click and Escape; items are regular buttons so Tab/Enter
+ * keyboard flows keep working in all themes.
+ */
+function BatchMenu({
+  ariaLabel,
+  items,
+  disabled
+}: {
+  ariaLabel: string
+  items: BatchMenuEntry[]
+  disabled: boolean
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (event: PointerEvent): void => {
+      if (
+        containerRef.current !== null &&
+        event.target instanceof Node &&
+        containerRef.current.contains(event.target)
+      ) {
+        return
+      }
+      setOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="relative shrink-0" ref={containerRef}>
+      <button
+        type="button"
+        ref={triggerRef}
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        title="More actions"
+        disabled={disabled}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
+      >
+        <Icon name="more" size={15} />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          aria-label={ariaLabel}
+          className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-xl shadow-black/40"
+        >
+          {items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                item.onSelect()
+              }}
+              className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] font-medium transition ${
+                item.danger
+                  ? 'text-red-300 hover:bg-red-400/10'
+                  : 'text-zinc-200 hover:bg-white/5'
+              }`}
+            >
+              {item.icon ? <Icon name={item.icon} size={13} /> : null}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

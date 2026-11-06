@@ -32,6 +32,8 @@ export type IconName =
   | 'chevron-right'
   | 'menu'
   | 'external'
+  | 'copy'
+  | 'puzzle'
 
 export const CATEGORY_ICON: Record<ItemCategory, IconName> = {
   video: 'video',
@@ -221,6 +223,17 @@ const ICONS: Record<IconName, JSX.Element> = {
       <path d="M14 4h6v6" />
       <path d="m20 4-9 9" />
       <path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  puzzle: (
+    <>
+      <path d="M10 4a2 2 0 1 1 4 0v1h4a1 1 0 0 1 1 1v4h-1a2 2 0 1 0 0 4h1v5a1 1 0 0 1-1 1h-4v-1a2 2 0 1 0-4 0v1H6a1 1 0 0 1-1-1v-4H4a2 2 0 1 1 0-4h1V6a1 1 0 0 1 1-1h4z" />
     </>
   )
 }
