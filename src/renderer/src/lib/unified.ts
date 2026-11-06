@@ -330,6 +330,13 @@ function mediaStatus(job: MediaJob): {
         tone: 'warning',
         indeterminate: true
       }
+    case 'paused':
+      return {
+        label: 'Paused',
+        group: 'active',
+        tone: 'paused',
+        indeterminate: false
+      }
     case 'complete':
       return {
         label: 'Complete',

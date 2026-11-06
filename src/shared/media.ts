@@ -36,6 +36,7 @@ export const MEDIA_JOB_STATUSES = [
   'analyzing',
   'downloading',
   'merging',
+  'paused',
   'complete',
   'error',
   'cancelled',

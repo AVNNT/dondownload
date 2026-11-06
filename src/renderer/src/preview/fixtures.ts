@@ -22,6 +22,11 @@ import { normalizeMediaSourceUrl } from '@shared/media'
 import type { DownloadSettings } from '@shared/settings'
 import { parseDownloadSettings } from '@shared/settings'
 import {
+  defaultDesktopSettings,
+  parseDesktopSettings,
+  type DesktopSettings
+} from '@shared/desktopSettings'
+import {
   CHROME_NATIVE_HOST_REGISTRY_KEY,
   EDGE_NATIVE_HOST_REGISTRY_KEY,
   type BrowserExtensionStatus
@@ -137,6 +142,7 @@ export function createPreviewApi(
   let mediaJobs = seedMediaJobs(anchor)
   let batches = seedBatches(anchor)
   let settings = seedSettings()
+  let desktopSettings: DesktopSettings = seedDesktopSettings()
   let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
   let appUpdateSettings: AppUpdateSettings = defaultAppUpdateSettings()
 
@@ -626,6 +632,16 @@ export function createPreviewApi(
         ? ok(null)
         : fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.'),
 
+    deleteDownloadFile: async (id: string) => {
+      const item = findDownload(id)
+      if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
+      if (item.status !== 'complete') {
+        return fail('FILE_NOT_READY', 'Only a finished download can be deleted.')
+      }
+      downloads = downloads.filter((candidate) => candidate.id !== id)
+      return ok(emitDownloads())
+    },
+
     openFile: async (id: string) => {
       const item = findDownload(id)
       if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
@@ -705,8 +721,63 @@ export function createPreviewApi(
       return ok(emitMedia())
     },
 
+    pauseMedia: async (jobId: string) => {
+      const job = findMediaJob(jobId)
+      if (!job) return fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+      if (
+        job.status === 'queued' ||
+        job.status === 'analyzing' ||
+        job.status === 'downloading' ||
+        job.status === 'merging'
+      ) {
+        job.status = 'paused'
+        job.speedBps = 0
+        job.updatedAt = now()
+      }
+      return ok(emitMedia())
+    },
+
+    resumeMedia: async (jobId: string) => {
+      const job = findMediaJob(jobId)
+      if (!job) return fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+      if (job.status === 'paused') {
+        job.status = 'queued'
+        job.errorMessage = null
+        job.completedAt = null
+        job.updatedAt = now()
+      }
+      return ok(emitMedia())
+    },
+
+    retryMedia: async (jobId: string) => {
+      const job = findMediaJob(jobId)
+      if (!job) return fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+      if (
+        job.status === 'error' ||
+        job.status === 'cancelled' ||
+        job.status === 'interrupted'
+      ) {
+        job.status = 'queued'
+        job.completedBytes = 0
+        job.errorMessage = null
+        job.completedAt = null
+        job.updatedAt = now()
+      }
+      return ok(emitMedia())
+    },
+
     removeMedia: async (jobId: string) => {
       mediaJobs = mediaJobs.filter((job) => job.id !== jobId)
+      return ok(emitMedia())
+    },
+
+    deleteMediaFile: async (jobId: string) => {
+      const job = findMediaJob(jobId)
+      if (!job) return fail(PREVIEW_NOT_FOUND_CODE, 'That media job is gone.')
+      if (job.status !== 'complete') {
+        return fail('FILE_NOT_READY', 'Only a finished media job can be deleted.')
+      }
+      mediaJobs = mediaJobs.filter((candidate) => candidate.id !== jobId)
       return ok(emitMedia())
     },
 
@@ -811,6 +882,28 @@ export function createPreviewApi(
       return ok(cloneSettings(settings))
     },
 
+    getDesktopSettings: async () => ok({ ...desktopSettings }),
+
+    updateDesktopSettings: async (value: DesktopSettings) => {
+      try {
+        desktopSettings = parseDesktopSettings(value)
+      } catch (error) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          error instanceof Error ? error.message : 'Invalid settings.'
+        )
+      }
+      return ok({ ...desktopSettings })
+    },
+
+    onDesktopSettingsChanged: () => () => undefined,
+
+    copyText: async (_text: string) => ok(null),
+
+    onClipboardLink: () => () => undefined,
+
+    onRevealRow: () => () => undefined,
+
     getMediaToolSettings: async () => ok({ ...mediaToolSettings }),
 
     updateMediaToolSettings: async (input: { autoUpdateYtdlp: boolean }) => {
@@ -890,6 +983,14 @@ function seedSettings(): DownloadSettings {
       end: '06:00'
     },
     theme: 'dark'
+  }
+}
+
+function seedDesktopSettings(): DesktopSettings {
+  return {
+    ...defaultDesktopSettings(),
+    watchClipboard: true,
+    interfaceSizePercent: 110
   }
 }
 

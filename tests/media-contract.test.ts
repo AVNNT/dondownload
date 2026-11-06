@@ -211,7 +211,7 @@ describe('media public schema', () => {
     for (const status of MEDIA_JOB_STATUSES) {
       expect(parseMediaJob(job({ status })).status).toBe(status)
     }
-    expect(() => parseMediaJob(job({ status: 'paused' }))).toThrow()
+    expect(() => parseMediaJob(job({ status: 'stopped' }))).toThrow()
   })
 
   it('never accepts a URL, disk path or yt-dlp selector on a public job', () => {

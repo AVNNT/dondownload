@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<MediaJobStatus, string> = {
   analyzing: 'Analyzing',
   downloading: 'Downloading',
   merging: 'Merging',
+  paused: 'Paused',
   complete: 'Complete',
   error: 'Failed',
   cancelled: 'Cancelled',
@@ -30,6 +31,7 @@ const STATUS_STYLE: Record<MediaJobStatus, string> = {
   analyzing: 'border-amber-400/25 bg-amber-400/10 text-amber-300',
   downloading: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
   merging: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
+  paused: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
   error: 'border-red-400/30 bg-red-400/10 text-red-300',
   cancelled: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
@@ -41,6 +43,7 @@ const BAR_STYLE: Record<MediaJobStatus, string> = {
   analyzing: 'bg-amber-400',
   downloading: 'bg-emerald-400',
   merging: 'bg-amber-400',
+  paused: 'bg-zinc-500',
   complete: 'bg-emerald-400',
   error: 'bg-red-400',
   cancelled: 'bg-zinc-500',
@@ -118,7 +121,7 @@ export function MediaJobCard({
             {job.title}
           </h3>
           <p className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-zinc-500">
-            <span className="shrink-0 rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
+            <span className="shrink-0 rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[11px] font-medium text-zinc-400">
               {kindLabel}
             </span>
             <span className="truncate" title={job.label}>
@@ -127,7 +130,7 @@ export function MediaJobCard({
           </p>
         </div>
         <span
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[job.status]}`}
+          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${STATUS_STYLE[job.status]}`}
         >
           {statusLabel}
         </span>

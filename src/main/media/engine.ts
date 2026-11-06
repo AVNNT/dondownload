@@ -144,6 +144,11 @@ export interface MediaEngine {
   ): Promise<MediaDownloadResult>
   cancel(jobId: string): void
   /**
+   * Stop the yt-dlp child while keeping the job's staging directory and
+   * `.part` files so a later resume can continue them.
+   */
+  pause(jobId: string): void
+  /**
    * Stop every in-flight download, analysis and tool probe. Resolves after
    * downloads have settled and captured children have closed, or the bounded
    * abort/cancel grace elapsed. Once called, no new engine work can start.
@@ -180,12 +185,15 @@ export interface MediaEngineOptions {
 interface ActiveDownload {
   child: MediaProcess | null
   cancelRequested: boolean
+  pauseRequested: boolean
   cancelTimer: NodeJS.Timeout | null
   forceCancel: (() => void) | null
+  forcePause: (() => void) | null
 }
 
 interface PendingDownload {
   cancelRequested: boolean
+  pauseRequested: boolean
 }
 
 function defaultCreateId(prefix: string): string {
@@ -224,6 +232,11 @@ export function createMediaEngine(
   const analyses = new Map<string, StoredAnalysis>()
   const activeDownloads = new Map<string, ActiveDownload>()
   const pendingDownloads = new Map<string, PendingDownload>()
+  /**
+   * Staging directories kept by a user pause. They are reused verbatim by the
+   * next download call for that job, or discarded if the job is cancelled.
+   */
+  const pausedStagingDirs = new Map<string, string>()
   // Every in-flight download run promise. `cancel(jobId)` only signals the
   // child; shutdown also needs to know when the run promise has settled so a
   // late finalize/progress callback cannot race persistence close.
@@ -434,9 +447,16 @@ export function createMediaEngine(
       )
     }
 
+    // A paused job already owns a staging directory with partial data. Keep it
+    // and let yt-dlp continue the `.part` files on this new run.
+    pausedStagingDirs.delete(jobId)
+
     // Reserve the identifier before the first await so two concurrent calls
     // cannot both start a download with the same job ID.
-    const pending: PendingDownload = { cancelRequested: false }
+    const pending: PendingDownload = {
+      cancelRequested: false,
+      pauseRequested: false
+    }
     pendingDownloads.set(jobId, pending)
     const task = runDownload(request, jobId, pending, onProgress)
     downloadTasks.add(task)
@@ -596,14 +616,22 @@ export function createMediaEngine(
       }
     }
 
-    if (pending.cancelRequested) {
-      throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
+    const throwIfStopped = (): void => {
+      if (pending.pauseRequested) {
+        throw new AppError('MEDIA_DOWNLOAD_PAUSED', 'The download was paused.')
+      }
+      if (pending.cancelRequested) {
+        throw new AppError(
+          'MEDIA_DOWNLOAD_CANCELLED',
+          'The download was cancelled.'
+        )
+      }
     }
 
+    throwIfStopped()
+
     const toolchain = await resolveToolchain()
-    if (pending.cancelRequested) {
-      throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
-    }
+    throwIfStopped()
     if (toolchain.ytdlpPath === null) {
       throw toolUnavailableError(toolchain.state)
     }
@@ -620,9 +648,7 @@ export function createMediaEngine(
     }
 
     const outputDir = await prepareOutputDir(record.dir)
-    if (pending.cancelRequested) {
-      throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
-    }
+    throwIfStopped()
 
     const formatSelector = outputChoice.formatIds.join('+')
     if (
@@ -656,6 +682,10 @@ export function createMediaEngine(
     }
 
     await staging.prepare(outputDir, stagingDir)
+    if (pending.pauseRequested) {
+      // Keep the staging directory and any partial files for a resume.
+      throw new AppError('MEDIA_DOWNLOAD_PAUSED', 'The download was paused.')
+    }
     if (pending.cancelRequested) {
       await staging.discard(stagingDir)
       throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
@@ -704,8 +734,10 @@ export function createMediaEngine(
       const job: ActiveDownload = {
         child: null,
         cancelRequested: false,
+        pauseRequested: false,
         cancelTimer: null,
-        forceCancel: null
+        forceCancel: null,
+        forcePause: null
       }
       activeDownloads.set(jobId, job)
 
@@ -745,7 +777,7 @@ export function createMediaEngine(
       })
 
       const finalize = async (
-        outcome: 'success' | 'failure' | 'cancelled'
+        outcome: 'success' | 'failure' | 'cancelled' | 'paused'
       ): Promise<void> => {
         if (settled) return
         settled = true
@@ -805,6 +837,14 @@ export function createMediaEngine(
           return
         }
 
+        if (outcome === 'paused') {
+          // Keep the private staging directory, `.part` files and any merge
+          // intermediates. A resume for this job reuses them verbatim.
+          pausedStagingDirs.set(jobId, stagingDir)
+          reject(new AppError('MEDIA_DOWNLOAD_PAUSED', 'The download was paused.'))
+          return
+        }
+
         await staging.discard(stagingDir)
         if (outcome === 'cancelled') {
           reject(
@@ -832,6 +872,9 @@ export function createMediaEngine(
 
       job.forceCancel = () => {
         void finalize('cancelled')
+      }
+      job.forcePause = () => {
+        void finalize('paused')
       }
 
       let child: MediaProcess
@@ -862,7 +905,9 @@ export function createMediaEngine(
       })
       child.on('close', (code: number | null) => {
         progress.flush()
-        if (job.cancelRequested) {
+        if (job.pauseRequested) {
+          void finalize('paused')
+        } else if (job.cancelRequested) {
           void finalize('cancelled')
         } else if (code === 0) {
           void finalize('success')
@@ -873,7 +918,7 @@ export function createMediaEngine(
 
       emit('downloading', 0, selectedSize.bytes, 0, null)
 
-      if (job.cancelRequested) {
+      if (job.cancelRequested || job.pauseRequested) {
         terminateProcessTree(child, platform, spawn, env)
       }
     })
@@ -887,13 +932,24 @@ export function createMediaEngine(
       return
     }
 
+    // Cancelling a paused job discards the staging directory it was keeping.
+    const pausedDir = pausedStagingDirs.get(id)
+    if (pausedDir !== undefined) {
+      pausedStagingDirs.delete(id)
+      void staging.discard(pausedDir)
+    }
+
     const pending = pendingDownloads.get(id)
-    if (pending) pending.cancelRequested = true
+    if (pending) {
+      pending.cancelRequested = true
+      pending.pauseRequested = false
+    }
 
     const job = activeDownloads.get(id)
     if (!job || job.cancelRequested) return
 
     job.cancelRequested = true
+    job.pauseRequested = false
     if (job.child !== null) {
       terminateProcessTree(job.child, platform, spawn, env)
     }
@@ -903,6 +959,34 @@ export function createMediaEngine(
         terminateProcessTree(job.child, platform, spawn, env)
       }
       job.forceCancel?.()
+    }, cancellationGraceMs)
+    job.cancelTimer.unref?.()
+  }
+
+  function pause(jobId: string): void {
+    let id: string
+    try {
+      id = parseMediaJobId(jobId)
+    } catch {
+      return
+    }
+
+    const pending = pendingDownloads.get(id)
+    if (pending) pending.pauseRequested = true
+
+    const job = activeDownloads.get(id)
+    if (!job || job.pauseRequested || job.cancelRequested) return
+
+    job.pauseRequested = true
+    if (job.child !== null) {
+      terminateProcessTree(job.child, platform, spawn, env)
+    }
+
+    job.cancelTimer = setTimeout(() => {
+      if (job.child !== null) {
+        terminateProcessTree(job.child, platform, spawn, env)
+      }
+      job.forcePause?.()
     }, cancellationGraceMs)
     job.cancelTimer.unref?.()
   }
@@ -965,6 +1049,7 @@ export function createMediaEngine(
     resolveCollectionEntries,
     download,
     cancel,
+    pause,
     cancelAll
   }
 }

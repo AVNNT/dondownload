@@ -63,6 +63,7 @@ class FakeEngine implements MediaEnginePort {
   analysisOptions: Array<{ cookie?: string } | undefined> = []
   downloads: PendingDownload[] = []
   cancelCalls: string[] = []
+  pauseCalls: string[] = []
   cancelError: Error | null = null
   cancelAllCalls = 0
   cancelAllError: Error | null = null
@@ -98,6 +99,19 @@ class FakeEngine implements MediaEnginePort {
   cancel(jobId: string): void {
     this.cancelCalls.push(jobId)
     if (this.cancelError) throw this.cancelError
+  }
+
+  pause(jobId: string): void {
+    this.pauseCalls.push(jobId)
+    // Emulate the real engine: the child stops and its run rejects. The
+    // manager must ignore that rejection because the row is already paused.
+    const index = this.downloads.findIndex(
+      (pending) => pending.request.jobId === jobId
+    )
+    if (index >= 0) {
+      const [pending] = this.downloads.splice(index, 1)
+      pending?.reject(new Error('paused by user'))
+    }
   }
 
   async cancelAll(): Promise<void> {
@@ -1189,5 +1203,93 @@ describe('MediaJobsManager tool state', () => {
     snapshot = harness.manager.getMediaSnapshot()
     expect(snapshot.tool.status).toBe('error')
     expect(JSON.stringify(snapshot)).not.toContain('worstvideo')
+  })
+})
+
+describe('MediaJobsManager pause, resume and pinned retry', () => {
+  it('pauses the child and keeps the exact selection for resume', async () => {
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+    const firstRequest = harness.engine.downloads[0]?.request
+
+    const paused = await harness.manager.pauseMedia(job.id)
+    expect(paused.jobs.find((entry) => entry.id === job.id)?.status).toBe(
+      'paused'
+    )
+    expect(harness.engine.pauseCalls).toEqual([job.id])
+
+    // The engine rejection from the stopped child must not turn the row into
+    // an error while it is paused.
+    await flushMicrotasks()
+    expect(
+      harness.manager.getMediaSnapshot().jobs.find((entry) => entry.id === job.id)
+        ?.status
+    ).toBe('paused')
+
+    const resumed = await harness.manager.resumeMedia(job.id)
+    expect(resumed.jobs.find((entry) => entry.id === job.id)?.status).toBe(
+      'queued'
+    )
+    await flushMicrotasks()
+    const resumedJob = harness.manager.getMediaSnapshot().jobs.find(
+      (entry) => entry.id === job.id
+    )
+    expect(resumedJob?.status).toBe('downloading')
+
+    const secondRequest = harness.engine.downloads.at(-1)?.request
+    expect(secondRequest).toMatchObject({
+      jobId: firstRequest?.jobId,
+      analysisId: firstRequest?.analysisId,
+      optionId: firstRequest?.optionId,
+      outputFormat: firstRequest?.outputFormat
+    })
+  })
+
+  it('retries a failed job with the pinned format and never re-analyzes', async () => {
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+    harness.engine.pending.reject(new Error('network failed'))
+    await flushMicrotasks()
+    expect(
+      harness.manager.getMediaSnapshot().jobs.find((entry) => entry.id === job.id)
+        ?.status
+    ).toBe('error')
+
+    const analyzedBefore = harness.engine.analyzedUrls.length
+    const retried = await harness.manager.retryMedia(job.id)
+    expect(retried.jobs.find((entry) => entry.id === job.id)?.status).toBe(
+      'queued'
+    )
+    await flushMicrotasks()
+
+    expect(harness.engine.analyzedUrls).toHaveLength(analyzedBefore)
+    const retriedRequest = harness.engine.downloads.at(-1)?.request
+    expect(retriedRequest).toMatchObject({
+      analysisId: ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID
+    })
+  })
+
+  it('retries a user-cancelled job and rejects resuming a non-paused one', async () => {
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+    await harness.manager.cancelMedia(job.id)
+    expect(
+      harness.manager.getMediaSnapshot().jobs.find((entry) => entry.id === job.id)
+        ?.status
+    ).toBe('cancelled')
+
+    const retried = await harness.manager.retryMedia(job.id)
+    expect(retried.jobs.find((entry) => entry.id === job.id)?.status).toBe(
+      'queued'
+    )
+    await flushMicrotasks()
+
+    await expect(harness.manager.resumeMedia(job.id)).rejects.toMatchObject({
+      code: 'MEDIA_NOT_PAUSED'
+    })
   })
 })

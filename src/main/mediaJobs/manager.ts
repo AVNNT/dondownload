@@ -25,6 +25,11 @@ import {
   type SniffedMediaInput
 } from '@shared/sniffedMedia'
 import { AppError } from '../errors'
+import {
+  checkDeleteTarget,
+  deleteTargetError,
+  type DeleteTargetEntry
+} from '../downloads/deleteFile'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -86,6 +91,11 @@ export interface MediaEnginePort {
     onProgress: (progress: MediaDownloadProgress) => void
   ): Promise<MediaDownloadResult>
   cancel(jobId: string): void
+  /**
+   * Stop the child but keep staging/partial files for an explicit resume.
+   * Optional so narrow test doubles remain valid engine ports.
+   */
+  pause?(jobId: string): void
   /** Optional so narrow test doubles remain valid engine ports. */
   cancelAll?(): void | Promise<void>
 }
@@ -161,6 +171,10 @@ interface ManagedMediaJob {
    * automatically.
    */
   awaitingPolicy: boolean
+  /** Explicit Resume/Retry this process bypasses the allowed-hours gate once. */
+  startNow: boolean
+  /** Increments for every run so a paused run cannot fail its successor. */
+  runId: number
 }
 
 interface CachedMediaAnalysis {
@@ -475,7 +489,9 @@ export class MediaJobsManager {
       direct: null,
       cookie: input.cookie ?? null,
       optionFingerprint,
-      awaitingPolicy: !allowedNow
+      awaitingPolicy: !allowedNow,
+      startNow: false,
+      runId: 0
     }
     this.jobs.set(record.id, job)
     this.persistNow(job)
@@ -578,7 +594,9 @@ export class MediaJobsManager {
       },
       cookie: null,
       optionFingerprint: fingerprint,
-      awaitingPolicy: !allowedNow
+      awaitingPolicy: !allowedNow,
+      startNow: false,
+      runId: 0
     }
     this.jobs.set(record.id, job)
     this.persistNow(job)
@@ -599,7 +617,10 @@ export class MediaJobsManager {
    */
   async cancelMedia(rawId: unknown): Promise<MediaJob> {
     const job = this.requireJob(rawId)
-    if (!isActiveMediaJobStatus(job.record.status)) {
+    if (
+      !isActiveMediaJobStatus(job.record.status) &&
+      job.record.status !== 'paused'
+    ) {
       return this.toMediaJob(job)
     }
 
@@ -612,6 +633,7 @@ export class MediaJobsManager {
     this.publish(true)
 
     try {
+      // Cancelling a paused job also removes the staging/partial files it kept.
       this.engine.cancel(job.record.id)
     } catch {
       // The job is already cancelled locally; a missing engine job is fine.
@@ -620,11 +642,149 @@ export class MediaJobsManager {
     return this.toMediaJob(job)
   }
 
-  /** Remove only the database row. Media files are intentionally never deleted. */
+  /**
+   * Pause a running (or queued) media job. The yt-dlp child is stopped but the
+   * private staging directory and `.part` files stay on disk for Resume.
+   */
+  async pauseMedia(rawId: unknown): Promise<MediaSnapshot> {
+    const job = this.requireJob(rawId)
+    if (job.record.status === 'paused') return this.getMediaSnapshot()
+    if (!isActiveMediaJobStatus(job.record.status)) {
+      throw new AppError(
+        'MEDIA_NOT_RUNNING',
+        'Only a queued or running media job can be paused.'
+      )
+    }
+
+    job.record.status = 'paused'
+    job.record.errorMessage = null
+    job.record.updatedAt = this.now()
+    job.awaitingPolicy = false
+    job.startNow = false
+    job.speedBps = 0
+    this.persistNow(job)
+    this.publish(true)
+
+    try {
+      this.engine.pause?.(job.record.id)
+    } catch {
+      // The job is already paused locally; a missing child is harmless.
+    }
+    return this.getMediaSnapshot()
+  }
+
+  /** Continue a paused job with the same pinned analysis/format selection. */
+  async resumeMedia(rawId: unknown): Promise<MediaSnapshot> {
+    const job = this.requireJob(rawId)
+    if (job.record.status !== 'paused') {
+      throw new AppError(
+        'MEDIA_NOT_PAUSED',
+        'Only a paused media job can be resumed.'
+      )
+    }
+    this.assertSelectionAvailable(job)
+
+    job.record.status = 'queued'
+    job.record.errorMessage = null
+    job.record.completedAt = null
+    job.record.updatedAt = this.now()
+    job.awaitingPolicy = false
+    job.startNow = true
+    this.persistNow(job)
+    this.publish(true)
+    queueMicrotask(() => {
+      void this.runJob(job.record.id)
+    })
+    return this.getMediaSnapshot()
+  }
+
+  /**
+   * Re-queue a failed, cancelled or interrupted media job without analyzing the
+   * page again. Only the already-pinned analysis/option pair is reused; when
+   * that in-memory analysis no longer exists the user is asked to analyze
+   * again rather than guessing a format.
+   */
+  async retryMedia(rawId: unknown): Promise<MediaSnapshot> {
+    const job = this.requireJob(rawId)
+    if (
+      job.record.status !== 'error' &&
+      job.record.status !== 'cancelled' &&
+      job.record.status !== 'interrupted'
+    ) {
+      throw new AppError(
+        'MEDIA_NOT_RETRYABLE',
+        'Only a failed, cancelled or interrupted media job can be retried.'
+      )
+    }
+    this.assertSelectionAvailable(job)
+
+    job.record.status = 'queued'
+    job.record.completedBytes = 0
+    job.record.errorMessage = null
+    job.record.filePath = null
+    job.record.completedAt = null
+    job.record.updatedAt = this.now()
+    job.awaitingPolicy = false
+    job.startNow = true
+    job.speedBps = 0
+    this.persistNow(job)
+    this.publish(true)
+    queueMicrotask(() => {
+      void this.runJob(job.record.id)
+    })
+    return this.getMediaSnapshot()
+  }
+
+  /**
+   * Move the exact recorded media output to the Recycle Bin, then remove the
+   * row. Same safety policy as downloads: finished only, inside the job's
+   * recorded directory, symlinks refused, `shell.trashItem` only.
+   */
+  async deleteMediaFile(rawId: unknown): Promise<MediaSnapshot> {
+    const job = this.requireJob(rawId)
+    const record = job.record
+    let entry: DeleteTargetEntry | null = null
+    if (record.filePath !== null) {
+      try {
+        const stat = await fs.lstat(record.filePath)
+        entry = { isFile: stat.isFile(), isSymbolicLink: stat.isSymbolicLink() }
+      } catch {
+        entry = null
+      }
+    }
+
+    const check = checkDeleteTarget({
+      root: record.dir,
+      filePath: record.filePath,
+      finished: record.status === 'complete',
+      entry
+    })
+    if (!check.ok) {
+      const info = deleteTargetError(check.problem)
+      throw new AppError(info.code, info.message, info.hint)
+    }
+
+    try {
+      await shell.trashItem(record.filePath as string)
+    } catch {
+      throw new AppError(
+        'FILE_DELETE_FAILED',
+        'The file could not be moved to the Recycle Bin.',
+        'The media job was kept.'
+      )
+    }
+
+    return this.removeJobRow(job)
+  }
+
+  /** Remove only the database row. Media files are intentionally kept. */
   async removeMedia(rawId: unknown): Promise<MediaSnapshot> {
     const job = this.requireJob(rawId)
 
-    if (isActiveMediaJobStatus(job.record.status)) {
+    if (
+      isActiveMediaJobStatus(job.record.status) ||
+      job.record.status === 'paused'
+    ) {
       try {
         this.engine.cancel(job.record.id)
       } catch {
@@ -632,12 +792,53 @@ export class MediaJobsManager {
       }
     }
 
+    return this.removeJobRow(job)
+  }
+
+  private removeJobRow(job: ManagedMediaJob): MediaSnapshot {
     this.jobs.delete(job.record.id)
     this.dirtyIds.delete(job.record.id)
     this.stopFlushIfIdle()
     this.removePersisted(job.record.id)
     this.publish(true)
     return this.getMediaSnapshot()
+  }
+
+  /** True when the pinned selection can still be used without a new analysis. */
+  private assertSelectionAvailable(job: ManagedMediaJob): void {
+    if (job.record.analysisId === 'sniffed') {
+      if (job.direct === null) {
+        throw new AppError(
+          'MEDIA_SOURCE_UNAVAILABLE',
+          'This detected stream was not kept in memory. Add it again from the browser.'
+        )
+      }
+      return
+    }
+    const cached = this.analyses.get(job.record.analysisId)
+    if (!cached) {
+      throw new AppError(
+        'MEDIA_ANALYSIS_NOT_FOUND',
+        'The media details are no longer available. Analyze the page again.'
+      )
+    }
+    if (cached.analysis.expiresAt <= this.now()) {
+      this.analyses.delete(job.record.analysisId)
+      throw new AppError(
+        'MEDIA_ANALYSIS_EXPIRED',
+        'The media details expired. Analyze the page again.'
+      )
+    }
+    if (
+      !cached.analysis.options.some(
+        (option) => option.optionId === job.record.optionId
+      )
+    ) {
+      throw new AppError(
+        'MEDIA_OPTION_INVALID',
+        'That media format is no longer available.'
+      )
+    }
   }
 
   /** Validated completed output only; Electron `shell` stays in the main process. */
@@ -827,11 +1028,17 @@ export class MediaJobsManager {
     const job = this.jobs.get(id)
     if (!job || job.record.status !== 'queued' || this.closed) return
 
-    if (!this.startAllowed(this.now())) {
+    // Explicit Resume/Retry bypasses the allowed-hours gate for this one run,
+    // matching the download manager's start-now semantics.
+    const override = job.startNow
+    job.startNow = false
+    if (!override && !this.startAllowed(this.now())) {
       job.awaitingPolicy = true
       return
     }
     job.awaitingPolicy = false
+    const runId = job.runId + 1
+    job.runId = runId
 
     job.record.status = 'downloading'
     job.record.updatedAt = this.now()
@@ -857,18 +1064,29 @@ export class MediaJobsManager {
               })
         },
         (progress) => {
-          this.handleProgress(id, progress)
+          this.handleProgress(id, runId, progress)
         }
       )
-      this.completeJob(id, result)
+      this.completeJob(id, runId, result)
     } catch (error) {
-      this.failJob(id, error)
+      this.failJob(id, runId, error)
     }
   }
 
-  private handleProgress(id: string, progress: MediaDownloadProgress): void {
+  private handleProgress(
+    id: string,
+    runId: number,
+    progress: MediaDownloadProgress
+  ): void {
     const job = this.jobs.get(id)
-    if (!job || isTerminalStatus(job.record.status)) return
+    if (
+      !job ||
+      job.runId !== runId ||
+      isTerminalStatus(job.record.status) ||
+      job.record.status === 'paused'
+    ) {
+      return
+    }
 
     const reportedStatus = progress?.status
     if (reportedStatus !== 'downloading' && reportedStatus !== 'merging') {
@@ -914,14 +1132,25 @@ export class MediaJobsManager {
     this.publish()
   }
 
-  private completeJob(id: string, result: MediaDownloadResult): void {
+  private completeJob(
+    id: string,
+    runId: number,
+    result: MediaDownloadResult
+  ): void {
     const job = this.jobs.get(id)
-    if (!job || isTerminalStatus(job.record.status)) return
+    if (
+      !job ||
+      job.runId !== runId ||
+      isTerminalStatus(job.record.status) ||
+      job.record.status === 'paused'
+    ) {
+      return
+    }
 
     const filePath =
       result && typeof result.filePath === 'string' ? result.filePath.trim() : ''
     if (filePath.length === 0) {
-      this.failJob(id)
+      this.failJob(id, runId)
       return
     }
 
@@ -930,7 +1159,14 @@ export class MediaJobsManager {
       result.totalBytes !== null &&
       result.totalBytes > job.record.maxBytes
     ) {
-      this.failJob(id, new AppError('MEDIA_SIZE_CAP_EXCEEDED', 'The media output exceeded the configured per-job size limit.'))
+      this.failJob(
+        id,
+        runId,
+        new AppError(
+          'MEDIA_SIZE_CAP_EXCEEDED',
+          'The media output exceeded the configured per-job size limit.'
+        )
+      )
       return
     }
 
@@ -955,9 +1191,16 @@ export class MediaJobsManager {
     this.publish(true)
   }
 
-  private failJob(id: string, error?: unknown): void {
+  private failJob(id: string, runId: number, error?: unknown): void {
     const job = this.jobs.get(id)
-    if (!job || isTerminalStatus(job.record.status)) return
+    if (
+      !job ||
+      job.runId !== runId ||
+      isTerminalStatus(job.record.status) ||
+      job.record.status === 'paused'
+    ) {
+      return
+    }
 
     job.record.status = 'error'
     job.record.errorMessage =
@@ -1077,7 +1320,9 @@ export class MediaJobsManager {
         cookie: null,
         optionFingerprint: '',
         // Persisted queued jobs are not silently restarted after a relaunch.
-        awaitingPolicy: false
+        awaitingPolicy: false,
+        startNow: false,
+        runId: 0
       })
     }
 
