@@ -91,6 +91,39 @@ const PAGINATION_QUERY = new Set([
   'order'
 ])
 const PAGINATION_TEXT = /^(?:next|previous|prev|older|newer|more|back|forward|[«»‹›←→])$/i
+/**
+ * Discourse/forum chrome. These are navigation, listings or account pages, not
+ * page content. The topic's own posts are read from its JSON post stream, so a
+ * `/t/<other-topic>` link is never a reason to fetch another topic.
+ */
+const FORUM_NAVIGATION_SEGMENTS = new Set([
+  't',
+  'u',
+  'c',
+  'tag',
+  'tags',
+  'latest',
+  'new',
+  'top',
+  'unread',
+  'categories',
+  'badges',
+  'groups',
+  'my',
+  'admin',
+  'moderation',
+  'about',
+  'faq',
+  'guidelines',
+  'tos',
+  'privacy',
+  'safe-mode',
+  'users',
+  'session',
+  'password',
+  'activate'
+])
+
 const SKIPPED_SEGMENTS = new Set([
   'tag',
   'tags',
@@ -241,6 +274,12 @@ function isSkippedPath(parsed: URL): boolean {
     .filter((segment) => segment.length > 0)
     .map((segment) => segment.toLowerCase())
   if (segments.some((segment) => SKIPPED_SEGMENTS.has(segment))) return true
+  // Forum navigation and other topic/user/category pages are never content.
+  // This is checked on the first segment so an ordinary `/t/…` path cannot
+  // pull in a Discourse suggested/related topic. The topic's own pagination and
+  // post JSON are handled by the Discourse adapter before this policy runs.
+  const first = segments[0]
+  if (first !== undefined && FORUM_NAVIGATION_SEGMENTS.has(first)) return true
   // Channel/user/profile hubs are listings, not a single video.
   if (segments.some((segment) => segment === 'channel' || segment === 'channels')) {
     return true
