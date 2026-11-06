@@ -457,6 +457,10 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<ScanQueueResult>(IPC.scanQueueSelection, (_event, input) => {
     const parsed = parseScanQueueSelectionInput(input)
-    return scanQueue().queueSelection(parsed.sessionId, parsed.itemIds)
+    return scanQueue().queueSelection(
+      parsed.sessionId,
+      parsed.itemIds,
+      parsed.videoOptions ?? []
+    )
   })
 }

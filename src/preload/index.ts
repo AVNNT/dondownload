@@ -35,6 +35,7 @@ import type { BrowserExtensionStatus } from '../shared/browserExtension'
 import type { AppUpdateState } from '../shared/appUpdate'
 import type {
   ScanQueueResult,
+  ScanQueueVideoOption,
   ScanSession,
   ScanStartInput
 } from '../shared/scanner'
@@ -279,10 +280,16 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.scanCancel, { sessionId }) as Promise<
       ApiResult<ScanSession>
     >,
-  queueScanSelection: (sessionId: string, itemIds: string[]) =>
-    ipcRenderer.invoke(IPC.scanQueueSelection, { sessionId, itemIds }) as Promise<
-      ApiResult<ScanQueueResult>
-    >,
+  queueScanSelection: (
+    sessionId: string,
+    itemIds: string[],
+    videoOptions?: ScanQueueVideoOption[]
+  ) =>
+    ipcRenderer.invoke(IPC.scanQueueSelection, {
+      sessionId,
+      itemIds,
+      ...(videoOptions === undefined ? {} : { videoOptions })
+    }) as Promise<ApiResult<ScanQueueResult>>,
   onScanUpdated: (listener: (session: ScanSession) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

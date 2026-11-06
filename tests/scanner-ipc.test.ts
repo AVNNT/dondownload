@@ -34,7 +34,15 @@ const SESSION: ScanSession = {
   hostname: 'forum.example',
   message: null,
   signinRequired: false,
-  counters: { found: 0, probing: 0, ready: 0, signin: 0, unavailable: 0 },
+  counters: {
+    found: 0,
+    probing: 0,
+    ready: 0,
+    signin: 0,
+    protected: 0,
+    unavailable: 0,
+    toolUnavailable: 0
+  },
   progress: { fetchedPages: 0, totalItems: 0, queueableItems: 0 },
   items: [],
   removedItemIds: [],
@@ -174,10 +182,28 @@ describe('scan IPC', () => {
       { sessionId: SESSION.sessionId, itemIds: ['item_1', 'item_2'] }
     )
     expect(result.ok).toBe(true)
-    expect(scanQueue.queueSelection).toHaveBeenCalledWith(SESSION.sessionId, [
-      'item_1',
-      'item_2'
-    ])
+    expect(scanQueue.queueSelection).toHaveBeenCalledWith(
+      SESSION.sessionId,
+      ['item_1', 'item_2'],
+      []
+    )
+
+    const withVideo = await handler(IPC.scanQueueSelection)(
+      trustedEvent(fakeWindow),
+      {
+        sessionId: SESSION.sessionId,
+        itemIds: ['item_1'],
+        videoOptions: [
+          { itemId: 'item_1', optionId: 'opt_1', outputFormat: 'mp4' }
+        ]
+      }
+    )
+    expect(withVideo.ok).toBe(true)
+    expect(scanQueue.queueSelection).toHaveBeenLastCalledWith(
+      SESSION.sessionId,
+      ['item_1'],
+      [{ itemId: 'item_1', optionId: 'opt_1', outputFormat: 'mp4' }]
+    )
   })
 })
 
