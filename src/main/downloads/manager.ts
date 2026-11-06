@@ -39,6 +39,8 @@ import type { DownloadDatabase } from '../db/database'
 import { AppError } from '../errors'
 import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
+import { isUnsafeLocalPath } from '../scanner/manualMatch'
+import type { PickedVideoFolder } from '../scanner/manualMatch'
 import {
   checkDeleteTarget,
   deleteTargetError,
@@ -115,6 +117,11 @@ export interface DownloadManagerOptions {
    * bounded public preflight; focused tests inject a deterministic resolver.
    */
   resolveCookieTarget?: CookieTargetResolver
+  /**
+   * Resolve a short-lived manual pairing folder token to the file the user
+   * picked. Main-only; a raw renderer path is never accepted.
+   */
+  resolvePairingFolder?: (token: string) => PickedVideoFolder | null
 }
 
 export interface CookieTargetResolutionInput {
@@ -190,10 +197,15 @@ export class DownloadManager {
    * allowed-hours policy apply again (and active work becomes interrupted).
    */
   private readonly startNowIds = new Set<string>()
+  /** Records downloaded into a validated user-chosen pairing folder token. */
+  private readonly pairingFileIds = new Set<string>()
   private readonly submittingIds = new Set<string>()
   private readonly now: () => number
   private readonly autoResumeProvider: () => boolean
   private readonly resolveCookieTarget: CookieTargetResolver
+  private readonly resolvePairingFolder:
+    | ((token: string) => PickedVideoFolder | null)
+    | null
   private settingsProvider: () => DownloadSettings
   private mediaPolicy: DownloadPolicyMediaPort | null = null
   private readonly dirtyIds = new Set<string>()
@@ -223,6 +235,7 @@ export class DownloadManager {
     this.autoResumeProvider = options.autoResume ?? (() => false)
     this.resolveCookieTarget =
       options.resolveCookieTarget ?? defaultResolveCookieTarget
+    this.resolvePairingFolder = options.resolvePairingFolder ?? null
     this.settingsProvider =
       options.settings ?? (() => defaultDownloadSettings())
     this.loadPersistedDownloads()
@@ -427,6 +440,46 @@ export class DownloadManager {
     return this.getSnapshot()
   }
 
+  /**
+   * Download one script into the folder of a video the user picked in the
+   * native dialog. The token is resolved here; no raw path crosses IPC. The
+   * folder must exist, be a plain local directory and belong to that exact
+   * file. This narrow exception is the only way a download may start outside
+   * the normal download root.
+   */
+  async addPairingFile(rawInput: unknown, token: string): Promise<AppSnapshot> {
+    const picked = this.resolvePairingFolder?.(token) ?? null
+    if (
+      picked === null ||
+      isUnsafeLocalPath(picked.filePath) ||
+      isUnsafeLocalPath(picked.directory) ||
+      path.dirname(path.resolve(picked.filePath)) !== path.resolve(picked.directory)
+    ) {
+      throw new AppError(
+        'PAIR_FOLDER_UNAVAILABLE',
+        'The chosen video folder is no longer available. Choose the video again.'
+      )
+    }
+    const stat = await fs.stat(picked.directory).catch(() => null)
+    if (stat === null) {
+      throw new AppError(
+        'PAIR_FOLDER_UNAVAILABLE',
+        'The chosen video folder no longer exists. Choose the video again.'
+      )
+    }
+    if (!stat.isDirectory()) {
+      throw new AppError(
+        'PAIR_FOLDER_UNAVAILABLE',
+        'The chosen video folder is not a folder.'
+      )
+    }
+    const record = await this.addInternal(rawInput, false, picked.directory, {
+      allowOutsideRoot: true
+    })
+    this.pairingFileIds.add(record.id)
+    return this.getSnapshot()
+  }
+
   /** Final path of a completed download, for the scanner rename step. */
   getFilePath(id: string): string | null {
     const record = this.records.get(id)
@@ -439,6 +492,25 @@ export class DownloadManager {
    */
   adoptRenamedFile(id: string, filePath: string): void {
     if (!this.isInsideDownloadRoot(filePath)) return
+    this.adoptRecordFile(id, filePath)
+  }
+
+  /**
+   * Update a completed pairing script after a rename inside the exact folder of
+   * the user-picked video. The token must still resolve to that folder.
+   */
+  adoptRenamedFileInFolder(
+    id: string,
+    filePath: string,
+    token: string
+  ): void {
+    const picked = this.resolvePairingFolder?.(token) ?? null
+    if (picked === null) return
+    if (!isInsideDirectory(picked.directory, filePath)) return
+    this.adoptRecordFile(id, filePath)
+  }
+
+  private adoptRecordFile(id: string, filePath: string): void {
     const record = this.records.get(id)
     if (!record || record.status !== 'complete') return
     record.filePath = filePath
@@ -466,7 +538,8 @@ export class DownloadManager {
   private async addInternal(
     rawInput: unknown,
     durable: boolean,
-    directory?: string
+    directory?: string,
+    options: { allowOutsideRoot?: boolean } = {}
   ): Promise<DownloadItem> {
     // Validate before starting aria2 or touching the disk. Both the IPC Quick
     // Add path and the native browser bridge call this method, so the duplicate
@@ -475,7 +548,10 @@ export class DownloadManager {
     const force = input.force === true
     const outputDirectory =
       directory === undefined ? this.downloadDir : path.resolve(directory)
-    if (!this.isInsideDownloadRoot(outputDirectory)) {
+    if (
+      options.allowOutsideRoot !== true &&
+      !this.isInsideDownloadRoot(outputDirectory)
+    ) {
       throw new AppError(
         'DOWNLOAD_DIR_UNAVAILABLE',
         'The script download folder is not inside the download folder.'
@@ -542,7 +618,8 @@ export class DownloadManager {
           controls,
           target.requestHeaders,
           target.cookieHost,
-          outputDirectory
+          outputDirectory,
+          options.allowOutsideRoot === true
         )
       }
 
@@ -642,6 +719,7 @@ export class DownloadManager {
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
     this.submittingIds.delete(id)
+    this.pairingFileIds.delete(id)
     this.dirtyIds.delete(id)
     if (this.database) {
       try {
@@ -819,7 +897,8 @@ export class DownloadManager {
       this.controls.get(record.id) ?? defaultDownloadControls(),
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
-      record.dir
+      record.dir,
+      this.pairingFileIds.has(record.id)
     )
 
     this.updateRecord(record, {
@@ -858,6 +937,7 @@ export class DownloadManager {
     this.controls.delete(record.id)
     this.blockReasons.delete(record.id)
     this.startNowIds.delete(record.id)
+    this.pairingFileIds.delete(record.id)
     this.dirtyIds.delete(record.id)
     this.removePersisted(record.id)
     this.stopPollingIfIdle()
@@ -1063,7 +1143,8 @@ export class DownloadManager {
         this.controlsOf(record),
         this.requestHeaders.get(record.id),
         this.cookieHosts.get(record.id),
-        record.dir
+        record.dir,
+        this.pairingFileIds.has(record.id)
       )
       this.updateRecord(record, {
         gid,
@@ -1362,7 +1443,8 @@ export class DownloadManager {
       this.controls.get(record.id) ?? defaultDownloadControls(),
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
-      record.dir
+      record.dir,
+      this.pairingFileIds.has(record.id)
     )
 
     this.updateRecord(record, {
@@ -1498,13 +1580,14 @@ export class DownloadManager {
     controls: DownloadControls,
     headers?: DownloadRequestHeaders,
     cookieHost?: string,
-    directory: string = this.downloadDir
+    directory: string = this.downloadDir,
+    allowOutsideRoot = false
   ): Promise<string> {
     // Re-validate even for records loaded from SQLite; the database is not a
     // trusted source for URL schemes if it was modified outside the app.
     const url = normalizeHttpUrl(rawUrl)
     const outputDirectory = path.resolve(directory)
-    if (!this.isInsideDownloadRoot(outputDirectory)) {
+    if (!allowOutsideRoot && !this.isInsideDownloadRoot(outputDirectory)) {
       throw new AppError(
         'DOWNLOAD_DIR_UNAVAILABLE',
         'The download folder is invalid.'

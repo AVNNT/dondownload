@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 import { shell } from 'electron'
 import {
   MAX_BATCH_SOURCES,
@@ -29,6 +30,11 @@ import {
   type CreateCollectionBatchInput
 } from '@shared/batches'
 import { isMediaOutputFormat } from '@shared/media'
+import type { SniffedMediaInput } from '@shared/sniffedMedia'
+import {
+  parseSniffedMediaInput,
+  sniffedMediaFilename
+} from '@shared/sniffedMedia'
 import type {
   MediaAnalysis,
   MediaJob,
@@ -145,10 +151,18 @@ export interface BatchDownloadsPort {
    * existing test doubles stay valid.
    */
   addScanFile?(input: unknown, directory: string): Promise<unknown>
+  /**
+   * Manual pairing folder: the directory comes from a short-lived opaque token
+   * that main resolved from a file the user picked in the native dialog. Never
+   * accepts a raw path.
+   */
+  addPairingFile?(input: unknown, token: string): Promise<unknown>
   /** Final path of a completed child, for the post-download rename. */
   getFilePath?(id: string): string | null
   /** Keep the download record in sync after a script was renamed in place. */
   adoptRenamedFile?(id: string, filePath: string): void
+  /** As above, but validates against the user-chosen pairing folder token. */
+  adoptRenamedFileInFolder?(id: string, filePath: string, token: string): void
 }
 
 export interface BatchMediaJobsPort {
@@ -156,6 +170,11 @@ export interface BatchMediaJobsPort {
   queueMedia(input: unknown): Promise<MediaJob>
   cancelMedia(id: string): Promise<MediaJob>
   getMediaSnapshot(): MediaSnapshot
+  /**
+   * Additive detected media path (HLS/DASH). The input is the already
+   * validated sniffed-media payload; the manager creates a normal media job.
+   */
+  queueSniffedMedia?(input: unknown): Promise<MediaJob>
   /** Final video path of a completed child, for the post-download rename. */
   getFilePath?(id: string): string | null
 }
@@ -219,6 +238,14 @@ export interface BatchManagerOptions {
   scanMediaDir?: string
   /** Scanner download root; every rename path must resolve inside it. */
   scanRootDir?: string
+  /**
+   * Resolve a short-lived manual pairing folder token to the already validated
+   * directory of the file the user picked. Main-only; a raw path is never
+   * accepted here.
+   */
+  resolvePairingFolder?: (token: string) =>
+    | { directory: string; filePath: string; filename: string }
+    | null
 }
 
 interface ManagedBatch {
@@ -233,7 +260,15 @@ interface ManagedBatch {
  */
 interface ManagedScanPairing {
   batchId: string
-  videoItemId: string
+  /** Batch item of the downloaded video, or null for a manual file match. */
+  videoItemId: string | null
+  /** Present for a manual match against an existing user-chosen video file. */
+  externalVideo?: {
+    filePath: string
+    directory: string
+    filename: string
+    token: string
+  }
   setId: string
   scriptItemIds: string[]
   primaryVariant: string | null
@@ -560,6 +595,9 @@ export class BatchManager {
   private readonly pollIntervalMs: number
   private readonly previewTtlMs: number
   private readonly openExternal: (url: string) => Promise<void> | void
+  private readonly resolvePairingFolder:
+    | ((token: string) => { directory: string; filePath: string; filename: string } | null)
+    | null
 
   private readonly batches = new Map<string, ManagedBatch>()
   private readonly previews = new Map<string, StoredPreview>()
@@ -584,6 +622,8 @@ export class BatchManager {
   >()
   /** Memory-only funscript pairings, keyed by parent batch ID. */
   private readonly scanPairings = new Map<string, ManagedScanPairing[]>()
+  /** Detected HLS/DASH inputs for browser-matched batch items. Memory-only. */
+  private readonly scanSniffedMediaSelections = new Map<string, SniffedMediaInput>()
   private readonly pairingTasks = new Set<Promise<void>>()
   private readonly scanMediaDir: string | null
   private readonly scanRootDir: string | null
@@ -611,6 +651,7 @@ export class BatchManager {
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
     this.scanMediaDir = options.scanMediaDir ?? null
     this.scanRootDir = options.scanRootDir ?? null
+    this.resolvePairingFolder = options.resolvePairingFolder ?? null
 
     this.loadPersistedBatches()
   }
@@ -1387,15 +1428,413 @@ export class BatchManager {
   }
 
   /**
-   * Strict internal pairing parse. Every referenced scan item must have made it
-   * into this batch, scripts must be funscript downloads, and one script or set
-   * cannot be claimed twice.
+   * Create a scanner batch for a manual "Match to video file…" action. The
+   * scripts are downloaded into the user-chosen folder (resolved from an
+   * opaque token, never a renderer path) and renamed after completion against
+   * the picked video's basename.
    */
+  async createManualMatchBatch(rawInput: unknown): Promise<Batch> {
+    this.assertOpen()
+    const record = asRecord(rawInput)
+    for (const key of Object.keys(record)) {
+      if (key !== 'title' && key !== 'scripts' && key !== 'pairing' && key !== 'folderToken') {
+        throw new ValidationError('The manual match batch contains unsupported fields.')
+      }
+    }
+    const title = this.readBatchTitle(record.title)
+    const scripts = this.parsePairingScripts(record.scripts, 'manual match')
+    const pairing = this.readPairingSelection(record.pairing, 'manual match')
+    const token = typeof record.folderToken === 'string' ? record.folderToken : ''
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) {
+      throw new ValidationError('The manual match folder token is invalid.')
+    }
+    const folder = this.resolvePairingFolder?.(token) ?? null
+    if (folder === null) {
+      throw new AppError(
+        'PAIR_FOLDER_UNAVAILABLE',
+        'The chosen video folder is no longer available. Choose the video again.'
+      )
+    }
+    const filePath = folder.filePath
+    if (path.dirname(path.resolve(filePath)) !== path.resolve(folder.directory)) {
+      throw new ValidationError('The manual match video is not inside its folder.')
+    }
+
+    const createdAt = this.now()
+    const batchId = newOpaqueId('batch')
+    const items = new Map<string, BatchItemRecord>()
+    const scanItemIdToBatch = this.addScriptItems(items, batchId, createdAt, scripts)
+    if (scanItemIdToBatch === null) {
+      throw new ValidationError('The manual match script list is invalid.')
+    }
+    const managed = this.buildPairing({
+      batchId,
+      videoItemId: null,
+      externalVideo: {
+        filePath,
+        directory: folder.directory,
+        filename: folder.filename,
+        token
+      },
+      pairing,
+      scanItemIdToBatch,
+      scanItems: scripts,
+      items
+    })
+
+    const batchRecord = this.newDirectBatchRecord(batchId, title, createdAt)
+    const batch = this.insertBatch(batchRecord, [...items.values()])
+    this.scanPairings.set(batchId, [managed])
+    this.recomputeBatch(batch)
+    this.persistBatchNow(batch)
+    this.schedulePump()
+    this.ensurePolling()
+    this.publish(true)
+    return this.toPublicBatch(batch)
+  }
+
+  /**
+   * Create one scanner batch from a browser hand-off that matched an armed
+   * browser-only card: the detected video plus the chosen scripts. No cookie or
+   * header beyond the existing sniffed-media payload is added.
+   */
+  async createBrowserMatchBatch(rawInput: unknown): Promise<Batch> {
+    this.assertOpen()
+    const record = asRecord(rawInput)
+    for (const key of Object.keys(record)) {
+      if (key !== 'title' && key !== 'video' && key !== 'scripts' && key !== 'pairing') {
+        throw new ValidationError('The browser match batch contains unsupported fields.')
+      }
+    }
+    const title = this.readBatchTitle(record.title)
+    const video = parseSniffedMediaInput(record.video)
+    const scripts = this.parsePairingScripts(record.scripts, 'browser match')
+    const pairing = this.readPairingSelection(record.pairing, 'browser match')
+
+    const createdAt = this.now()
+    const batchId = newOpaqueId('batch')
+    const items = new Map<string, BatchItemRecord>()
+    const videoItemId = newOpaqueId('bitem')
+    const filename = sniffedMediaFilename(video)
+    const isFile = video.kind === 'file'
+    items.set(videoItemId, {
+      id: videoItemId,
+      batchId,
+      position: 0,
+      kind: isFile ? 'download' : 'media',
+      status: 'queued',
+      title: video.title,
+      label: isFile ? 'Detected video' : video.kind === 'hls' ? 'HLS stream' : 'DASH stream',
+      childId: null,
+      completedBytes: 0,
+      totalBytes: null,
+      errorMessage: null,
+      sourceUrl: video.url,
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null
+    })
+    if (isFile) {
+      this.scanFilenames.set(videoItemId, filename)
+      this.scanRequestHeaders.set(videoItemId, {
+        referer: video.referer,
+        userAgent: video.userAgent,
+        ...(video.cookie === undefined ? {} : { cookie: video.cookie })
+      })
+    } else {
+      this.scanSniffedMediaSelections.set(videoItemId, video)
+    }
+
+    const scanItemIdToBatch = this.addScriptItems(items, batchId, createdAt, scripts, 1)
+    if (scanItemIdToBatch === null) {
+      throw new ValidationError('The browser match script list is invalid.')
+    }
+    const managed = this.buildPairing({
+      batchId,
+      videoItemId,
+      pairing,
+      scanItemIdToBatch,
+      scanItems: scripts,
+      items
+    })
+
+    const batchRecord = this.newDirectBatchRecord(batchId, title, createdAt)
+    const batch = this.insertBatch(batchRecord, [...items.values()])
+    this.scanPairings.set(batchId, [managed])
+    this.recomputeBatch(batch)
+    this.persistBatchNow(batch)
+    this.schedulePump()
+    this.ensurePolling()
+    this.publish(true)
+    return this.toPublicBatch(batch)
+  }
+
+  private readBatchTitle(value: unknown): string {
+    if (
+      typeof value !== 'string' ||
+      value.trim().length === 0
+    ) {
+      throw new ValidationError('The scan batch title is invalid.')
+    }
+    return cleanSafeText(value, MAX_BATCH_TITLE_LENGTH, 'Scanned page')
+  }
+
+  private newDirectBatchRecord(
+    batchId: string,
+    title: string,
+    createdAt: number
+  ): BatchRecord {
+    return {
+      id: batchId,
+      kind: 'direct-urls',
+      title,
+      status: 'queued',
+      sourceUrl: null,
+      mediaQuality: null,
+      maxBytesPerItem: null,
+      errorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null
+    }
+  }
+
+  private parsePairingScripts(
+    rawValue: unknown,
+    subject: string
+  ): BatchScanTarget[] {
+    if (
+      !Array.isArray(rawValue) ||
+      rawValue.length === 0 ||
+      rawValue.length > MAX_COLLECTION_SELECTION
+    ) {
+      throw new ValidationError(`The ${subject} script list is invalid.`)
+    }
+    const seen = new Set<string>()
+    return rawValue.map((rawTarget) => {
+      const target = asRecord(rawTarget)
+      for (const key of Object.keys(target)) {
+        if (
+          key !== 'url' &&
+          key !== 'title' &&
+          key !== 'filename' &&
+          key !== 'resolvedUrl' &&
+          key !== 'requestHeaders' &&
+          key !== 'scanItemId'
+        ) {
+          throw new ValidationError(`A ${subject} script contains unsupported fields.`)
+        }
+      }
+      const url = normalizeBatchSourceUrl(target.url)
+      const title = cleanSafeText(target.title, MAX_BATCH_TITLE_LENGTH, 'Scanned script')
+      let filename: string | undefined
+      if (target.filename !== undefined) {
+        if (typeof target.filename !== 'string') {
+          throw new ValidationError(`The ${subject} script filename is invalid.`)
+        }
+        filename = sanitizeFilename(target.filename)
+      }
+      const resolvedUrl =
+        target.resolvedUrl === undefined
+          ? undefined
+          : normalizeBatchSourceUrl(target.resolvedUrl)
+      let requestHeaders: DownloadRequestHeaders | undefined
+      if (target.requestHeaders !== undefined) {
+        const headers = asRecord(target.requestHeaders)
+        for (const key of Object.keys(headers)) {
+          if (key !== 'cookie') {
+            throw new ValidationError(
+              `A ${subject} script header contains unsupported fields.`
+            )
+          }
+        }
+        const cookie = headers.cookie
+        if (
+          typeof cookie !== 'string' ||
+          cookie.length === 0 ||
+          cookie.length > 8192 ||
+          // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+          /[\u0000-\u001f\u007f]/.test(cookie)
+        ) {
+          throw new ValidationError(`The ${subject} script cookie is invalid.`)
+        }
+        requestHeaders = { cookie }
+      }
+      if (target.scanItemId === undefined) {
+        throw new ValidationError(`A ${subject} script has no item identifier.`)
+      }
+      const scanItemId = opaqueId(target.scanItemId)
+      if (seen.has(scanItemId)) {
+        throw new ValidationError(`Duplicate ${subject} script item.`)
+      }
+      seen.add(scanItemId)
+      return {
+        url,
+        title,
+        ...(filename === undefined ? {} : { filename }),
+        ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
+        ...(requestHeaders === undefined ? {} : { requestHeaders }),
+        scanItemId
+      }
+    })
+  }
+
+  private readPairingSelection(
+    value: unknown,
+    subject: string
+  ): {
+    setId: string
+    scriptItemIds: string[]
+    primaryVariant: string | null
+    rename: boolean
+  } {
+    const pairing = asRecord(value)
+    for (const key of Object.keys(pairing)) {
+      if (
+        key !== 'setId' &&
+        key !== 'scriptItemIds' &&
+        key !== 'primaryVariant' &&
+        key !== 'rename'
+      ) {
+        throw new ValidationError(`A ${subject} pairing contains unsupported fields.`)
+      }
+    }
+    if (
+      typeof pairing.setId !== 'string' ||
+      pairing.setId.length > 300 ||
+      // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+      !/^set:[^\s\u0000-\u001f\u007f/\\]{1,300}$/u.test(pairing.setId)
+    ) {
+      throw new ValidationError(`A ${subject} pairing set is invalid.`)
+    }
+    if (
+      !Array.isArray(pairing.scriptItemIds) ||
+      pairing.scriptItemIds.length === 0 ||
+      pairing.scriptItemIds.length > MAX_COLLECTION_SELECTION
+    ) {
+      throw new ValidationError(`A ${subject} pairing has no scripts.`)
+    }
+    const scriptItemIds = pairing.scriptItemIds.map((id) => opaqueId(id))
+    if (new Set(scriptItemIds).size !== scriptItemIds.length) {
+      throw new ValidationError(`Duplicate ${subject} script item.`)
+    }
+    const primaryVariant =
+      pairing.primaryVariant === null
+        ? null
+        : cleanSafeText(pairing.primaryVariant, 32, 'script version').toLowerCase()
+    if (typeof pairing.rename !== 'boolean') {
+      throw new ValidationError(`A ${subject} rename flag is invalid.`)
+    }
+    return {
+      setId: pairing.setId,
+      scriptItemIds,
+      primaryVariant,
+      rename: pairing.rename
+    }
+  }
+
+  private addScriptItems(
+    items: Map<string, BatchItemRecord>,
+    batchId: string,
+    createdAt: number,
+    scripts: readonly BatchScanTarget[],
+    positionOffset = 0
+  ): Map<string, string> {
+    const scanItemIdToBatch = new Map<string, string>()
+    for (const target of scripts) {
+      const itemId = newOpaqueId('bitem')
+      items.set(itemId, {
+        id: itemId,
+        batchId,
+        position: positionOffset + items.size,
+        kind: 'download',
+        status: 'queued',
+        title: target.title,
+        label: 'Scanned file',
+        childId: null,
+        completedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+        sourceUrl: target.url,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null
+      })
+      if (target.scanItemId !== undefined) {
+        if (scanItemIdToBatch.has(target.scanItemId)) {
+          throw new ValidationError('Duplicate script item identifier.')
+        }
+        scanItemIdToBatch.set(target.scanItemId, itemId)
+      }
+      if (target.requestHeaders !== undefined) {
+        this.scanRequestHeaders.set(itemId, target.requestHeaders)
+      }
+      if (target.resolvedUrl !== undefined) {
+        this.scanResolvedUrls.set(itemId, target.resolvedUrl)
+      }
+      if (target.filename !== undefined) {
+        this.scanFilenames.set(itemId, target.filename)
+      }
+    }
+    return scanItemIdToBatch
+  }
+
+  private buildPairing(input: {
+    batchId: string
+    videoItemId: string | null
+    externalVideo?: ManagedScanPairing['externalVideo']
+    pairing: {
+      setId: string
+      scriptItemIds: string[]
+      primaryVariant: string | null
+      rename: boolean
+    }
+    scanItemIdToBatch: ReadonlyMap<string, string>
+    scanItems: readonly BatchScanTarget[]
+    items: ReadonlyMap<string, BatchItemRecord>
+  }): ManagedScanPairing {
+    const scriptBatchIds: string[] = []
+    const scripts = new Map<string, { axis: string | null; variant: string | null }>()
+    for (const scanItemId of input.pairing.scriptItemIds) {
+      const batchId = input.scanItemIdToBatch.get(scanItemId)
+      const item = batchId === undefined ? undefined : input.items.get(batchId)
+      if (!item) {
+        throw new ValidationError(
+          'A scan script pairing file is not part of this batch.'
+        )
+      }
+      if (scriptBatchIds.includes(item.id)) {
+        throw new ValidationError('Duplicate scan script item identifier.')
+      }
+      const filename = this.scanFilenames.get(item.id) ?? item.title
+      const parsed = parseFunscriptName(filename)
+      if (parsed === null) {
+        throw new ValidationError('A scan script pairing file is not a funscript.')
+      }
+      scriptBatchIds.push(item.id)
+      scripts.set(item.id, { axis: parsed.axis, variant: parsed.variant })
+    }
+    return {
+      batchId: input.batchId,
+      videoItemId: input.videoItemId,
+      ...(input.externalVideo === undefined
+        ? {}
+        : { externalVideo: input.externalVideo }),
+      setId: input.pairing.setId,
+      scriptItemIds: scriptBatchIds,
+      primaryVariant: input.pairing.primaryVariant,
+      rename: input.pairing.rename,
+      scripts,
+      settled: false
+    }
+  }
+
   private parseScanPairings(
     rawValue: unknown,
     batchId: string,
     items: ReadonlyMap<string, BatchItemRecord>,
-    scanItemIdToBatch: ReadonlyMap<string, string>
+    scanItemIdToBatch: ReadonlyMap<string, string>,
+    fileVideoItemIds: ReadonlySet<string> = new Set()
   ): ManagedScanPairing[] {
     if (rawValue === undefined) return []
     if (!Array.isArray(rawValue) || rawValue.length > MAX_COLLECTION_SELECTION) {
@@ -1424,7 +1863,11 @@ export class BatchManager {
       const videoScanId = opaqueId(pairing.videoItemId)
       const videoBatchId = scanItemIdToBatch.get(videoScanId)
       const videoItem = videoBatchId === undefined ? undefined : items.get(videoBatchId)
-      if (!videoItem || videoItem.kind !== 'media') {
+      if (
+        !videoItem ||
+        (videoItem.kind !== 'media' &&
+          !(videoBatchId !== undefined && fileVideoItemIds.has(videoBatchId)))
+      ) {
         throw new ValidationError(
           'A scan script pairing video is not part of this batch.'
         )
@@ -1740,6 +2183,7 @@ export class BatchManager {
       this.scanResolvedUrls.delete(item.id)
       this.scanFilenames.delete(item.id)
       this.scanMediaSelections.delete(item.id)
+      this.scanSniffedMediaSelections.delete(item.id)
     }
     this.removePersistedBatch(batch.record.id)
     this.stopPollingIfIdle()
@@ -1890,6 +2334,7 @@ export class BatchManager {
     this.scanResolvedUrls.clear()
     this.scanFilenames.clear()
     this.scanMediaSelections.clear()
+    this.scanSniffedMediaSelections.clear()
     this.scanPairings.clear()
     this.resolveIdleWaiters()
   }
@@ -2053,17 +2498,29 @@ export class BatchManager {
           ? { requestHeaders: this.scanRequestHeaders.get(item.id) }
           : {})
       }
-      // Paired funscripts go directly into the scanner's video folder so the
-      // post-download rename never moves a file across folders.
-      const pairedScriptDir =
-        this.scanMediaDir !== null &&
-        typeof this.downloads.addScanFile === 'function' &&
-        this.isPairedScript(batch, item.id)
-          ? this.scanMediaDir
-          : null
-      const snapshot = (pairedScriptDir === null
-        ? await this.downloads.add(addInput)
-        : await this.downloads.addScanFile!(addInput, pairedScriptDir)) as AppSnapshot
+      // Paired funscripts go directly into the video's folder so the
+      // post-download rename never moves a file across folders. A manual
+      // match uses its opaque folder token; a browser-matched direct video
+      // uses the normal download root; a media job uses the media output dir.
+      const pairing = this.pairingForScript(batch, item.id)
+      let snapshot: AppSnapshot
+      if (pairing?.externalVideo !== undefined) {
+        if (typeof this.downloads.addPairingFile !== 'function') {
+          throw new AppError(
+            'PAIR_FOLDER_UNAVAILABLE',
+            'The chosen video folder is not available.'
+          )
+        }
+        snapshot = (await this.downloads.addPairingFile(
+          addInput,
+          pairing.externalVideo.token
+        )) as AppSnapshot
+      } else {
+        const pairedScriptDir = this.pairedScriptDirectory(batch, pairing)
+        snapshot = (pairedScriptDir === null
+          ? await this.downloads.add(addInput)
+          : await this.downloads.addScanFile!(addInput, pairedScriptDir)) as AppSnapshot
+      }
       if (!this.batches.has(batch.record.id)) {
         // The parent row was removed while `add` was in flight. The child row
         // is never deleted by a batch removal; pause it best effort so it does
@@ -2152,6 +2609,42 @@ export class BatchManager {
             : { outputFormat: pinned.outputFormat }),
           ...(pinned.cookie === undefined ? {} : { cookie: pinned.cookie })
         })
+        if (!this.batches.has(batch.record.id)) {
+          try {
+            await this.mediaJobs.cancelMedia(job.id)
+          } catch {
+            // The child may already be terminal.
+          }
+          return
+        }
+        item.childId = job.id
+        item.totalBytes = job.totalBytes
+        item.completedBytes = job.completedBytes
+        item.label = cleanSafeText(job.label, 240, 'Media')
+        if (item.status !== 'running') {
+          try {
+            await this.mediaJobs.cancelMedia(job.id)
+          } catch {
+            // Best effort; the item stays cancelled.
+          }
+          this.persistItemNow(item)
+          return
+        }
+        this.applyMediaChild(item, job)
+        this.persistItemNow(item)
+        this.persistBatchNow(batch)
+        return
+      }
+
+      const sniffed = this.scanSniffedMediaSelections.get(item.id)
+      if (sniffed !== undefined) {
+        if (typeof this.mediaJobs.queueSniffedMedia !== 'function') {
+          throw new AppError(
+            'MEDIA_UNAVAILABLE',
+            'Stream downloads are not available in this build.'
+          )
+        }
+        const job = await this.mediaJobs.queueSniffedMedia(sniffed)
         if (!this.batches.has(batch.record.id)) {
           try {
             await this.mediaJobs.cancelMedia(job.id)
@@ -2355,18 +2848,27 @@ export class BatchManager {
     let changed = false
     for (const pairing of pairings) {
       if (pairing.settled) continue
-      const video = batch.items.get(pairing.videoItemId)
+      const video =
+        pairing.videoItemId === null
+          ? null
+          : batch.items.get(pairing.videoItemId)
       const scripts = pairing.scriptItemIds.map((id) => batch.items.get(id))
       if (
-        !video ||
+        (pairing.videoItemId !== null && !video) ||
         scripts.some((script) => script === undefined) ||
-        !terminalItemStatus(video.status) ||
+        (pairing.videoItemId !== null &&
+          (!video || !terminalItemStatus(video.status))) ||
         scripts.some((script) => !terminalItemStatus(script!.status))
       ) {
         continue
       }
       pairing.settled = true
-      if (video.status !== 'complete') {
+      if (
+        pairing.videoItemId !== null &&
+        video !== undefined &&
+        video !== null &&
+        video.status !== 'complete'
+      ) {
         changed =
           this.updatePairLabels(batch, pairing, PAIR_RENAME_VIDEO_FAILED) ||
           changed
@@ -2399,17 +2901,32 @@ export class BatchManager {
     pairing: ManagedScanPairing
   ): Promise<void> {
     if (!this.batches.has(batch.record.id)) return
-    const video = batch.items.get(pairing.videoItemId)
-    if (!video) return
-    const root = this.scanRootDir ?? this.scanMediaDir
+    let root: string | null
+    let videoPath: string | null
+    let videoStatus: string
+    if (pairing.externalVideo !== undefined) {
+      root = pairing.externalVideo.directory
+      videoPath = pairing.externalVideo.filePath
+      videoStatus = 'complete'
+    } else {
+      const video =
+        pairing.videoItemId === null
+          ? null
+          : batch.items.get(pairing.videoItemId)
+      if (!video) return
+      root = this.scanRootDir ?? this.scanMediaDir
+      videoPath =
+        video.childId === null
+          ? null
+          : video.kind === 'media'
+            ? this.mediaJobs.getFilePath?.(video.childId) ?? null
+            : this.downloads.getFilePath?.(video.childId) ?? null
+      videoStatus = video.status
+    }
     if (root === null) {
       this.applyPairLabels(batch, pairing, PAIR_RENAME_SCRIPT_FAILED)
       return
     }
-    const videoPath =
-      video.childId === null
-        ? null
-        : this.mediaJobs.getFilePath?.(video.childId) ?? null
     const files = pairing.scriptItemIds.map((itemId) => {
       const item = batch.items.get(itemId)
       const script = pairing.scripts.get(itemId)
@@ -2428,7 +2945,7 @@ export class BatchManager {
     const result = await applyPairRename({
       rootDir: root,
       videoPath,
-      videoStatus: video.status,
+      videoStatus,
       files,
       primaryVariant: pairing.primaryVariant,
       rename: pairing.rename
@@ -2437,7 +2954,15 @@ export class BatchManager {
       for (const entry of result.renamed) {
         const item = batch.items.get(entry.itemId)
         if (item?.childId != null) {
-          this.downloads.adoptRenamedFile?.(item.childId, entry.path)
+          if (pairing.externalVideo !== undefined) {
+            this.downloads.adoptRenamedFileInFolder?.(
+              item.childId,
+              entry.path,
+              pairing.externalVideo.token
+            )
+          } else {
+            this.downloads.adoptRenamedFile?.(item.childId, entry.path)
+          }
         }
       }
       this.applyPairLabels(batch, pairing, 'Renamed to match video')
@@ -2481,10 +3006,34 @@ export class BatchManager {
     }
   }
 
-  private isPairedScript(batch: ManagedBatch, itemId: string): boolean {
+  private pairingForScript(
+    batch: ManagedBatch,
+    itemId: string
+  ): ManagedScanPairing | null {
     const pairings = this.scanPairings.get(batch.record.id)
-    if (!pairings) return false
-    return pairings.some((pairing) => pairing.scriptItemIds.includes(itemId))
+    if (!pairings) return null
+    return (
+      pairings.find((pairing) => pairing.scriptItemIds.includes(itemId)) ?? null
+    )
+  }
+
+  /**
+   * Folder for paired scripts that are downloaded next to their video. Returns
+   * null when the download should use the normal download root or when the
+   * optional scanner download path is unavailable.
+   */
+  private pairedScriptDirectory(
+    batch: ManagedBatch,
+    pairing: ManagedScanPairing | null
+  ): string | null {
+    if (pairing === null || pairing.videoItemId === null) return null
+    if (typeof this.downloads.addScanFile !== 'function') return null
+    const video = batch.items.get(pairing.videoItemId)
+    if (!video) return null
+    if (video.kind === 'media') return this.scanMediaDir
+    // A browser-matched direct file is downloaded into the normal root, so its
+    // scripts must land in that same folder.
+    return this.scanRootDir ?? this.scanMediaDir
   }
 
   /* ------------------------------ aggregate ------------------------------ */

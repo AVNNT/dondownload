@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard } from 'electron'
+import { app, BrowserWindow, clipboard, dialog } from 'electron'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
@@ -39,6 +39,11 @@ import {
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
 import { ScanSessionManager } from './scanner/session'
 import { ScanQueueService } from './scanner/queue'
+import {
+  ManualMatchService,
+  ManualMatchStore
+} from './scanner/manualMatch'
+import { BrowserMatchService } from './scanner/browserMatch'
 import {
   createNativeHostRegistrar,
   createNodeFileSystem,
@@ -413,6 +418,10 @@ if (unregisterRequested) {
       }
     })
 
+    // Main-only token store for "Match to video file…". A picked path never
+    // crosses IPC; both the download manager and batch renames resolve it here.
+    const manualMatchStore = new ManualMatchStore()
+
     manager = new DownloadManager(
       aria2,
       downloadDir,
@@ -427,7 +436,9 @@ if (unregisterRequested) {
         settings: () => settings.getSettings(),
         autoResume: () =>
           desktopSettingsManager?.getSettings().resumeInterruptedOnStartup ??
-          false
+          false,
+        resolvePairingFolder: (token) =>
+          manualMatchStore.resolveFolder(token)
       }
     )
 
@@ -516,6 +527,7 @@ if (unregisterRequested) {
       database,
       scanMediaDir: mediaDir,
       scanRootDir: downloadDir,
+      resolvePairingFolder: (token) => manualMatchStore.resolveFolder(token),
       onUpdate: (snapshot) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.batchSnapshotChanged, snapshot)
@@ -555,6 +567,53 @@ if (unregisterRequested) {
         ...(mediaJobs === null ? {} : { mediaJobs })
       })
     }
+
+    const manualMatchService =
+      batches === null
+        ? null
+        : new ManualMatchService({
+            sessions: scanner,
+            batches,
+            store: manualMatchStore,
+            pickFile: async () => {
+              const options: Electron.OpenDialogOptions = {
+                title: 'Choose the video file to match these scripts',
+                properties: ['openFile'],
+                filters: [
+                  {
+                    name: 'Video files',
+                    extensions: [
+                      'mp4',
+                      'mkv',
+                      'webm',
+                      'mov',
+                      'm4v',
+                      'avi',
+                      'wmv',
+                      'flv',
+                      'ogv',
+                      'mpeg',
+                      'mpg',
+                      '3gp',
+                      'ts'
+                    ]
+                  }
+                ]
+              }
+              const owner =
+                mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+              const result =
+                owner === null
+                  ? await dialog.showOpenDialog(options)
+                  : await dialog.showOpenDialog(owner, options)
+              if (result.canceled || result.filePaths.length === 0) return null
+              return result.filePaths[0] ?? null
+            }
+          })
+    const browserMatchService =
+      batches === null
+        ? null
+        : new BrowserMatchService({ sessions: scanner, batches })
 
     // Native messaging registration is zero-config for the packaged and dev
     // apps. Ordinary and interactive smoke sessions skip it so they never write
@@ -611,6 +670,7 @@ if (unregisterRequested) {
       appUpdate,
       ...(scanner === null ? {} : { scanner }),
       ...(scanQueue === null ? {} : { scanQueue }),
+      ...(manualMatchService === null ? {} : { manualMatch: manualMatchService }),
       getWindow: () => mainWindow
     })
 
@@ -676,6 +736,9 @@ if (unregisterRequested) {
           userDataPath: app.getPath('userData'),
           logger: (message) => console.error(message),
           ...(scanner === null ? {} : { scanner }),
+          ...(browserMatchService === null
+            ? {}
+            : { browserMatch: (input) => browserMatchService.handleSniffed(input) }),
           onScanRequested: (session) => {
             // Signed-in pages are scanned from the browser tab. Bringing the
             // window forward makes the progressive result visible immediately.
