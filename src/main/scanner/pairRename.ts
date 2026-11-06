@@ -214,6 +214,8 @@ export async function applyPairRename(
     target: string
     temp: string
   }> = []
+  // Operations whose temp file already reached its final target name.
+  const placed = new Set<number>()
   try {
     for (const operation of operations) {
       const temp = path.join(
@@ -226,24 +228,39 @@ export async function applyPairRename(
       await fs.rename(operation.source, temp)
       temporary.push({ ...operation, temp })
     }
-    for (const operation of temporary) {
+    for (const [index, operation] of temporary.entries()) {
       if (await exists(operation.target)) {
         throw new Error('target appeared during rename')
       }
       await fs.rename(operation.temp, operation.target)
+      placed.add(index)
     }
   } catch {
-    // Best effort rollback. A failure never loses a file: every temporary name
-    // is inside the video folder and is moved back to its original source.
-    for (const operation of temporary.reverse()) {
+    // Best-effort rollback that never overwrites. fs.rename replaces an
+    // existing destination on every platform, so a naive temp -> source move
+    // could clobber a file another operation already placed there (e.g. a
+    // swap). First lift every placed target back to its own temp name, then
+    // restore temps to their sources, skipping any destination that exists.
+    for (const [index, operation] of temporary.entries()) {
+      if (!placed.has(index)) continue
       try {
-        if (await exists(operation.temp)) {
-          await fs.rename(operation.temp, operation.source)
-        } else if (await exists(operation.target)) {
-          await fs.rename(operation.target, operation.source)
+        if (!(await exists(operation.temp))) {
+          await fs.rename(operation.target, operation.temp)
         }
       } catch {
         // Leave the file where it is; the batch label reports the failure.
+      }
+    }
+    for (const operation of temporary) {
+      try {
+        if (
+          (await exists(operation.temp)) &&
+          !(await exists(operation.source))
+        ) {
+          await fs.rename(operation.temp, operation.source)
+        }
+      } catch {
+        // Leave the temp file in the video folder; nothing is deleted.
       }
     }
     return { status: 'skipped', reason: PAIR_RENAME_FAILED }

@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   PAIR_RENAME_OUTSIDE_ROOT,
   PAIR_RENAME_SCRIPT_FAILED,
@@ -113,6 +113,54 @@ describe('applyPairRename', () => {
       'Fancam 02 Wonyoung.original.funscript',
       'Fancam 02 Wonyoung.roll.funscript'
     ])
+  })
+
+  it('rolls back a failed swap without overwriting either script', async () => {
+    const root = await tempRoot()
+    const media = path.join(root, 'Media')
+    const video = path.join(media, 'V.mp4')
+    const plain = path.join(media, 'V.funscript')
+    const original = path.join(media, 'V.original.funscript')
+    await writeFile(video)
+    await writeFile(plain, 'plain')
+    await writeFile(original, 'original')
+
+    const realRename = fs.rename.bind(fs)
+    let failed = false
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      // Fail the second placement (temp -> V.funscript) after the first
+      // placement already moved the plain script onto V.original.funscript.
+      if (
+        !failed &&
+        path.basename(String(from)).startsWith('.dondownload-rename-') &&
+        path.basename(String(to)) === 'V.funscript'
+      ) {
+        failed = true
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+      }
+      return realRename(from, to)
+    })
+    try {
+      const result = await applyPairRename({
+        rootDir: root,
+        videoPath: video,
+        videoStatus: 'complete',
+        files: [file('plain', plain), file('orig', original, null, 'original')],
+        primaryVariant: 'original',
+        rename: true
+      })
+      expect(result.status).toBe('skipped')
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(await names(media)).toEqual([
+      'V.funscript',
+      'V.mp4',
+      'V.original.funscript'
+    ])
+    expect(await fs.readFile(plain, 'utf8')).toBe('plain')
+    expect(await fs.readFile(original, 'utf8')).toBe('original')
   })
 
   it('keeps every original name when renaming is off', async () => {
