@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import { BrowserWindow, session } from 'electron'
+import { BrowserWindow, session, shell } from 'electron'
+import { isPublicOpenableUrl } from './scanner/openExternal'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import { themeWindowColors } from './settings/theme'
 import windowIconPath from './assets/icon.ico?asset'
@@ -58,7 +59,16 @@ export function createMainWindow(
   })
   rendererSession.setPermissionCheckHandler(() => false)
 
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // The renderer never hosts a new window. Public page links (a
+  // `target="_blank"` anchor such as "Open topic") route to the user's
+  // browser via the same guard as "Open in browser"; everything else,
+  // including private and credential-bearing URLs, stays denied.
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isPublicOpenableUrl(url)) {
+      void shell.openExternal(url).catch(() => undefined)
+    }
+    return { action: 'deny' }
+  })
   window.webContents.on('will-navigate', (event) => {
     event.preventDefault()
   })
