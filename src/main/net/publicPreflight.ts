@@ -15,8 +15,10 @@ import {
  *
  * This is not a download. It sends `Range: bytes=0-0`, reads response headers,
  * and destroys the response immediately. No cookie jar, Authorization header,
- * referer, proxy credential or browser session is used. Each redirect hop is
- * resolved and revalidated against the public-target policy before it is
+ * proxy credential or browser session is used. The automatic browser hand-off
+ * may pass the browser's Referer/User-Agent and the cookies for exactly the
+ * download URL in memory; those are used for this probe only. Each redirect hop
+ * is resolved and revalidated against the public-target policy before it is
  * contacted. A missing, mismatched or ambiguous total fails closed.
  */
 
@@ -45,9 +47,10 @@ export interface PublicResourcePreflightInput {
   /** For an extensionless captured video: the exact allowed media type. */
   expectedMediaType?: 'video/mp4' | 'video/webm'
   /**
-   * Allow a video/audio/HTML/manifest response. The scanner uses this to learn
-   * what a candidate URL really serves; the existing hand-off path leaves it
-   * unset and therefore keeps accepting only non-media resources.
+   * Allow a video/audio response for a direct media download. The automatic
+   * browser hand-off sets this because a normal browser download of a media
+   * file is exactly what a download manager takes over. HTML pages and
+   * HLS/DASH manifests are rejected either way.
    */
   allowMedia?: boolean
   /**
@@ -151,15 +154,21 @@ function parseContentLength(
   return Number.isSafeInteger(length) && length > 0 ? length : null
 }
 
-function isMediaContentType(contentType: string): boolean {
+function isPageOrManifestContentType(contentType: string): boolean {
   return (
-    /^(?:video|audio)\//.test(contentType) ||
     contentType === 'application/vnd.apple.mpegurl' ||
     contentType === 'application/x-mpegurl' ||
     contentType === 'application/mpegurl' ||
+    contentType === 'audio/mpegurl' ||
+    contentType === 'audio/x-mpegurl' ||
     contentType === 'application/dash+xml' ||
-    contentType === 'text/html'
+    contentType === 'text/html' ||
+    contentType === 'application/xhtml+xml'
   )
+}
+
+function isMediaContentType(contentType: string): boolean {
+  return /^(?:video|audio)\//.test(contentType)
 }
 
 function requestHeaders(
@@ -348,8 +357,11 @@ function validateResponse(
     if (response.contentType !== input.expectedMediaType) {
       throw failure('The public resource is not the expected media type.')
     }
-  } else if (isMediaContentType(response.contentType) && input.allowMedia !== true) {
-    throw failure('Automatic hand-off only accepts non-media resources.')
+  } else if (
+    isPageOrManifestContentType(response.contentType) ||
+    (isMediaContentType(response.contentType) && input.allowMedia !== true)
+  ) {
+    throw failure('Automatic hand-off only accepts downloadable files.')
   }
 
   if (input.expectedContentType !== undefined) {

@@ -123,25 +123,47 @@
       </section>
 
       <section class="group" aria-labelledby="handoff-heading">
-        <h2 id="handoff-heading">Automatic file hand-off</h2>
+        <h2 id="handoff-heading">Download browser files with DonDownload</h2>
         <p class="lead">
-          Off until you approve the optional <strong>downloads</strong>
-          permission. When enabled, the extension hands off only an HTTP(S)
-          ordinary file (zip, PDF, installer and similar). Video/audio,
-          manifests, segments, extension downloads and excluded sites are never
-          touched. The browser download is cancelled only after DonDownload
-          returns a durable receipt.
+          Off until you allow it once. When it is on, a normal browser download
+          (files, installers, PDFs, and direct video/audio files such as MP4,
+          MKV or MP3) is handed to DonDownload. The browser's cookies for
+          exactly that download URL are sent with it so login-protected files
+          work; they are kept in memory for that job only and never saved. HTML
+          pages, HLS/DASH playlists and segments, extension downloads and
+          excluded sites are never touched. The browser download is cancelled
+          only after DonDownload returns a durable receipt; any failure leaves
+          it running. Allowing asks for the optional <strong>downloads</strong>
+          and <strong>cookies</strong> permissions plus site access in one
+          prompt.
         </p>
         <p id="permission-state" class="state" role="status" aria-live="polite"></p>
         <button id="request-downloads" class="btn primary" type="button">
-          Allow automatic file hand-off
+          Allow browser download takeover
         </button>
         <label class="toggle-row">
           <input id="automatic-handoff" type="checkbox" disabled />
           <span>
-            <strong>Hand off new browser downloads</strong>
+            <strong>Download browser files with DonDownload</strong>
             <span class="hint">
-              Enabled only after the downloads permission is granted.
+              Enabled only after the optional permissions are granted. Turning
+              it off keeps the permissions and leaves every download in the
+              browser.
+            </span>
+          </span>
+        </label>
+        <label class="toggle-row select-row" for="handoff-min-bytes">
+          <select id="handoff-min-bytes" class="field">
+            <option value="0">any size</option>
+            <option value="1000000" selected>1 MB</option>
+            <option value="10000000">10 MB</option>
+          </select>
+          <span>
+            <strong>Only files larger than</strong>
+            <span class="hint">
+              Smaller downloads stay in the browser. When the browser does not
+              report a size, a link that names a real file (a video, audio or
+              known file type) is handed off and the size is checked first.
             </span>
           </span>
         </label>

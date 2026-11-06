@@ -82,7 +82,7 @@ enableAllButton.addEventListener('click', () => {
     enableAllButton.textContent = 'Recommended setup enabled'
     setChoicesStatus(
       'success',
-      'Capture is on: media is detected on all normal http/https sites and browser downloads are handed to DonDownload. You can change both in Settings.'
+      'Capture is on: media is detected on all normal http/https sites and new browser downloads, including video and audio files, are taken over by DonDownload with your browser sign-in. You can change both in Settings.'
     )
   })
 })

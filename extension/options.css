@@ -171,6 +171,16 @@
   margin: 0;
 }
 
+/* A labelled select inside a toggle row (same layout, no switch). */
+.toggle-row.select-row select.field {
+  flex: none;
+  width: 150px;
+  margin-top: 1px;
+  color: var(--t1);
+  font: inherit;
+  font-size: 12.5px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .toggle-row input[type="checkbox"] {
     transition: none;

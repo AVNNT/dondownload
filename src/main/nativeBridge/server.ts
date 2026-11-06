@@ -739,6 +739,10 @@ export async function startNativeBridge(
    * the manual/captured acceptance path: success includes a receipt that was
    * written and read back by SQLite. Any failure leaves the browser's own
    * transfer running because this route never touches the downloads API.
+   *
+   * A normal browser download (files, installers and direct video/audio) is
+   * taken over; HTML pages, manifests and segments are rejected by the parser.
+   * Browser cookies for the exact URL stay in memory for this job only.
    */
   async function handleDurableHandoffRequest(
     parsed: unknown,
@@ -775,15 +779,18 @@ export async function startNativeBridge(
       return
     }
 
-    // The downloads API does not expose whether the browser used GET, POST,
-    // cookies or another authenticated session. Prove only that the same
-    // public resource is anonymously retrievable with one bounded range GET.
-    // If that cannot be established, fail closed and leave the browser's own
+    // The browser's own download may have used its cookies. Prove that the
+    // same public resource is retrievable with one bounded range GET, using
+    // the browser headers for this exact job when the extension sent them. If
+    // that cannot be established, fail closed and leave the browser's own
     // download running rather than cancel an authenticated/POST transfer.
     let preflight: PublicResourcePreflightResult
     try {
       preflight = await runPublicPreflight({
         url: input.url,
+        // A normal browser download of a direct video/audio file is taken over
+        // like any other download; pages and manifests are still rejected.
+        allowMedia: true,
         ...(input.expectedBytes === undefined
           ? {}
           : { expectedBytes: input.expectedBytes }),

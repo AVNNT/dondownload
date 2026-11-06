@@ -23,10 +23,12 @@ export const DURABLE_HANDOFF_ROUTE = '/handoff-download'
 const MAX_FILENAME_LENGTH = 180
 
 /**
- * Automatic hand-off only accepts ordinary files. Playback media, manifests,
- * segments and extension-internal downloads stay with the explicit manual
- * path; the browser's own download must keep running unless the desktop can
- * prove it owns a supported non-media file.
+ * Automatic hand-off takes over a normal browser download the way a download
+ * manager does: the browser already decided the transfer is a download, so the
+ * desktop does not require an extension allowlist. HTML pages, HLS/DASH
+ * manifests and stream segments are still never accepted, and neither is a
+ * blob:/data: URL (it fails URL validation). Direct video/audio files are
+ * ordinary downloads and are accepted.
  */
 export const HANDOFF_FILE_EXTENSIONS = Object.freeze([
   '7z',
@@ -93,6 +95,27 @@ export const MEDIA_FILE_EXTENSIONS = Object.freeze([
   'webm'
 ])
 
+/** Playlists and segments: never a downloadable file. */
+export const MANIFEST_OR_SEGMENT_EXTENSIONS = Object.freeze([
+  'm3u8',
+  'mpd',
+  'm4s',
+  'ts'
+])
+
+/** HTML documents are pages, not downloads. */
+export const PAGE_EXTENSIONS = Object.freeze(['html', 'htm', 'xhtml', 'shtml'])
+
+const PAGE_CONTENT_TYPES = new Set(['text/html', 'application/xhtml+xml'])
+const MANIFEST_CONTENT_TYPES = new Set([
+  'application/dash+xml',
+  'application/vnd.apple.mpegurl',
+  'application/x-mpegurl',
+  'application/mpegurl',
+  'audio/mpegurl',
+  'audio/x-mpegurl'
+])
+
 export interface DurableHandoffInput {
   url: string
   filename?: string
@@ -101,8 +124,9 @@ export interface DurableHandoffInput {
   /** Browser-reported response media type, compared when it is specific. */
   expectedContentType?: string
   /**
-   * Opt-in browser headers for this one job. Cookies are memory-only and must
-   * never be written to SQLite, an aria2 session file or a log.
+   * Browser headers for this one job. Cookies are memory-only and must never
+   * be written to SQLite, an aria2 session file or a log. An automatic browser
+   * download sends the browser's cookies for exactly that URL.
    */
   requestHeaders?: DownloadRequestHeaders
   /**
@@ -131,6 +155,9 @@ function extensionOf(value: string | null | undefined): string | null {
  * The container can be proven by the URL path or an explicitly supplied file
  * name, exactly like the progressive capture contract. The extension is never
  * inferred from a MIME header or the browser download item.
+ *
+ * Kept for callers that need the allowlist answer; the automatic hand-off
+ * accepts any non-page file and does not require this to be non-null.
  */
 export function handoffFileExtension(
   pathname: string | null | undefined,
@@ -146,6 +173,35 @@ export function handoffFileExtension(
 export function isMediaFileExtension(value: string | null | undefined): boolean {
   const extension = extensionOf(value)
   return extension !== null && MEDIA_FILE_EXTENSIONS.includes(extension)
+}
+
+/**
+ * True when the path or file name names an HTML page, an HLS/DASH manifest or
+ * a stream segment. Those are never handed off even though the browser may
+ * report them as a download.
+ */
+export function isPageOrManifestFile(
+  pathname: string | null | undefined,
+  filename?: string | null
+): boolean {
+  for (const value of [pathname, filename]) {
+    const extension = extensionOf(value)
+    if (extension === null) continue
+    if (
+      PAGE_EXTENSIONS.includes(extension) ||
+      MANIFEST_OR_SEGMENT_EXTENSIONS.includes(extension)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/** True when a browser-reported media type names a page or a manifest. */
+export function isPageOrManifestContentType(value: string | null | undefined): boolean {
+  if (typeof value !== 'string') return false
+  const mediaType = value.split(';')[0]?.trim().toLowerCase() ?? ''
+  return PAGE_CONTENT_TYPES.has(mediaType) || MANIFEST_CONTENT_TYPES.has(mediaType)
 }
 
 function asPlainObject(value: unknown): Record<string, unknown> {
@@ -274,7 +330,7 @@ export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
   const expectedContentType = readExpectedContentType(record)
   const requestHeaders = readRequestHeaders(record)
 
-  let pathname = ''
+  let pathname
   try {
     pathname = new URL(url).pathname
   } catch {
@@ -282,12 +338,11 @@ export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
   }
 
   if (
-    isMediaFileExtension(pathname) ||
-    isMediaFileExtension(filename) ||
-    handoffFileExtension(pathname, filename) === null
+    isPageOrManifestFile(pathname, filename) ||
+    isPageOrManifestContentType(expectedContentType)
   ) {
     throw new ValidationError(
-      'Automatic hand-off only accepts a supported non-media file.'
+      'HTML pages, playlists and stream segments stay in the browser.'
     )
   }
 

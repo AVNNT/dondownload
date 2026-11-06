@@ -252,7 +252,7 @@ describe('welcome recommended capture setup', () => {
   it('requests the all-sites host grant plus optional downloads, then saves both options', async () => {
     const fake = installFakeChrome()
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'webRequest'],
+      permissions: ['downloads', 'webRequest', 'cookies'],
       origins: ['http://*/*', 'https://*/*']
     })
 
@@ -262,7 +262,7 @@ describe('welcome recommended capture setup', () => {
 
     expect(fake.permissionRequests).toEqual([
       {
-        permissions: ['downloads', 'webRequest'],
+        permissions: ['downloads', 'webRequest', 'cookies'],
         origins: ['http://*/*', 'https://*/*']
       }
     ])
@@ -279,7 +279,7 @@ describe('welcome recommended capture setup', () => {
       optional_permissions: ['webRequest', 'cookies']
     })
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['webRequest'],
+      permissions: ['webRequest', 'cookies'],
       origins: ['http://*/*', 'https://*/*']
     })
   })

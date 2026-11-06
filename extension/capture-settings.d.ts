@@ -4,10 +4,13 @@ export const NEEDS_LOGIN_STATE_KEY: string
 export const OPTIONS_TARGET_KEY: string
 export const MAX_HANDOFF_IDS: number
 export const MAX_EXCLUDED_ORIGINS: number
+export const MAX_COOKIE_HEADER_LENGTH: number
+export const HANDOFF_MIN_BYTES_OPTIONS: readonly number[]
 
 export interface CaptureSettings {
   floatingTriggerEnabled: boolean
   automaticFileHandoff: boolean
+  handoffMinBytes: number
   handoffNotifications: boolean
   networkObservation: boolean
   mediaSniffing: boolean
@@ -61,6 +64,10 @@ export function readCookieHeaderForOrigins(
   chromeApi: unknown,
   cookieUrl: unknown,
   allowedOrigins: unknown[]
+): Promise<string | undefined>
+export function readHandoffCookieHeader(
+  chromeApi: unknown,
+  cookieUrl: unknown
 ): Promise<string | undefined>
 export function normalizeNeedsLoginState(value: unknown): NeedsLoginState | null
 export function readNeedsLoginState(chromeApi: unknown): Promise<NeedsLoginState | null>

@@ -73,6 +73,14 @@ internal static class NativeHost
     private static readonly Regex HandoffExtensionPattern =
         new Regex("\\.(7z|apk|bin|bz2|csv|deb|dmg|doc|docx|epub|exe|funscript|gz|img|iso|jar|json|md|msi|odp|ods|odt|pkg|pdf|ppt|pptx|rar|rpm|sqlite|tar|tgz|txt|whl|xls|xlsx|xz|zip|zst)/?$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    // Automatic browser hand-off takes over a normal browser download, so a
+    // direct media file is accepted too. Pages, playlists and segments are not.
+    private static readonly Regex HandoffPageOrManifestExtensionPattern =
+        new Regex("\\.(html|htm|xhtml|shtml|m3u8|mpd|m4s|ts)/?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex HandoffPageOrManifestContentTypePattern =
+        new Regex("^(text/html|application/xhtml\\+xml|application/dash\\+xml|application/(vnd\\.apple\\.mpegurl|x-mpegurl|mpegurl)|audio/(x-)?mpegurl)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex CompleteMediaTypePattern =
         new Regex("^video/(mp4|webm)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ContentTypePattern =
@@ -823,12 +831,24 @@ internal static class NativeHost
         bool supported = false;
         try
         {
-            supported = HandoffExtensionPattern.IsMatch(
-                new Uri(normalizedUrl).AbsolutePath);
+            string absolutePath = new Uri(normalizedUrl).AbsolutePath;
+            // The browser already decided this is a download. Anything that is
+            // not an HTML page, playlist or segment may be taken over; a known
+            // supported container or media file is accepted explicitly.
+            supported = !HandoffPageOrManifestExtensionPattern.IsMatch(absolutePath);
         }
         catch (Exception)
         {
             return Error("INVALID_URL", "That does not look like a valid URL.");
+        }
+        if (supported && filename != null && HandoffPageOrManifestExtensionPattern.IsMatch(filename))
+        {
+            supported = false;
+        }
+        if (supported && expectedContentType != null &&
+            HandoffPageOrManifestContentTypePattern.IsMatch(expectedContentType))
+        {
+            supported = false;
         }
         if (!supported && filename != null)
         {
@@ -838,7 +858,7 @@ internal static class NativeHost
         {
             return Error(
                 "HANDOFF_UNSUPPORTED_FILE",
-                "Automatic hand-off only accepts a supported non-media file.");
+                "HTML pages, playlists and stream segments stay in the browser.");
         }
 
         Dictionary<string, object> body = new Dictionary<string, object>();

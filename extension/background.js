@@ -588,12 +588,14 @@ function installLifecycleListeners(details) {
 }
 
 /**
- * The downloads permission is optional and granted only from the options page
- * on a user gesture. Until then `chrome.downloads` is absent, so this is a
- * guarded no-op rather than a broken top-level listener.
+ * The downloads permission is optional and granted only on a user gesture from
+ * the popup or the options page. Until then `chrome.downloads` is absent, so
+ * this is a guarded no-op rather than a broken top-level listener. It is called
+ * again after a grant and on a message from the granting page, so takeover
+ * starts without reloading the extension.
  */
 function installDownloadsSupport() {
-  installDownloadsListener(chrome, (item) => handleCreatedDownload(chrome, item))
+  return installDownloadsListener(chrome, (item) => handleCreatedDownload(chrome, item))
 }
 
 async function toggleOverlayOnActiveTab() {
@@ -769,6 +771,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'dondownload:handoff-login-clear') {
     clearNeedsLoginBadge()
     refreshActiveBadge()
+    return false
+  }
+
+  if (message.type === 'dondownload:downloads-support') {
+    // The popup/options page asked for the optional permissions in one click.
+    // Install the downloads listener now instead of waiting for the next worker
+    // start, so takeover works immediately after the grant.
+    let listener = false
+    try {
+      listener = installDownloadsSupport()
+    } catch {
+      listener = false
+    }
+    sendResponse({ ok: true, listener })
     return false
   }
 

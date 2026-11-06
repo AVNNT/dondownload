@@ -654,6 +654,13 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
   const normalized = normalizeHandoffFile(rawUrl, rawFilename, {
     expectedBytes: options && options.expectedBytes,
     expectedContentType: options && options.expectedContentType
+  }, {
+    // This is the automatic browser-download path: the browser already
+    // decided the transfer is a download, so no extension allowlist applies.
+    allowAnyFile: true,
+    ...(Number.isSafeInteger(options && options.minBytes)
+      ? { requireMinimumBytes: options.minBytes }
+      : {})
   })
   if (!normalized.ok) {
     return Promise.resolve({

@@ -12,9 +12,15 @@ export const MAX_HANDOFF_IDS = 300
 export const MAX_EXCLUDED_ORIGINS = 100
 export const MAX_COOKIE_HEADER_LENGTH = 8192
 
+/** Allowed "only files larger than" values for automatic hand-off. */
+export const HANDOFF_MIN_BYTES_OPTIONS = Object.freeze([0, 1_000_000, 10_000_000])
+
 export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
   floatingTriggerEnabled: true,
   automaticFileHandoff: false,
+  // Automatic browser downloads smaller than this stay in the browser. 1 MB
+  // by default; 0 means any size the browser reports.
+  handoffMinBytes: 1_000_000,
   handoffNotifications: true,
   networkObservation: false,
   // NDM-style detection is active only on sites the user enabled. Turning it
@@ -31,6 +37,10 @@ export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
 function storageArea(chromeApi, area) {
   const storage = chromeApi && chromeApi.storage
   return storage && storage[area] ? storage[area] : null
+}
+
+function normalizeHandoffMinBytes(value) {
+  return HANDOFF_MIN_BYTES_OPTIONS.includes(value) ? value : 1_000_000
 }
 
 export function normalizeCaptureSettings(value) {
@@ -57,6 +67,7 @@ export function normalizeCaptureSettings(value) {
     floatingTriggerEnabled:
       source.floatingTriggerEnabled !== false,
     automaticFileHandoff: source.automaticFileHandoff === true,
+    handoffMinBytes: normalizeHandoffMinBytes(source.handoffMinBytes),
     handoffNotifications: source.handoffNotifications !== false,
     // Off unless the user has explicitly enabled it after granting the
     // optional webRequest permission. A stored true is not enough on its own.
@@ -127,6 +138,32 @@ export async function readCookieHeaderForOrigins(
     ) {
       return undefined
     }
+    return readCookieHeaderForUrl(chromeApi, cookieUrl)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Automatic browser hand-off variant. The user already switched on "Download
+ * browser files with DonDownload" and granted the optional cookies permission
+ * for that, so the browser's cookies for exactly this download URL are read
+ * without a per-site opt-in. The header travels in one native message only:
+ * it is never written to extension storage and never logged. The per-site
+ * opt-in above still governs the overlay and detected-media paths.
+ */
+export async function readHandoffCookieHeader(chromeApi, cookieUrl) {
+  try {
+    if (originFromPageUrl(cookieUrl) === null) return undefined
+    return readCookieHeaderForUrl(chromeApi, cookieUrl)
+  } catch {
+    return undefined
+  }
+}
+
+/** Read and join the cookies for one exact URL, bounded by MAX_COOKIE_HEADER_LENGTH. */
+async function readCookieHeaderForUrl(chromeApi, cookieUrl) {
+  try {
     if (
       (await chromeApi.permissions.contains({ permissions: ['cookies'] })) !==
       true

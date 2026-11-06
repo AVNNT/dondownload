@@ -1823,12 +1823,16 @@ async function ensureHandoffEnabled(browser, optionsSession) {
   const stored = await readStorage(browser, optionsSession, 'local', CAPTURE_SETTINGS_KEY)
   let setting = stored && stored[CAPTURE_SETTINGS_KEY]
   if (setting && setting.automaticFileHandoff === true) return setting
+  // Turn takeover on through the real Allow button. One user gesture asks for
+  // downloads, cookies and the host permission together.
   await browser.connection.evaluate(
     optionsSession,
     `(() => {
+      const button = document.getElementById('request-downloads')
+      if (button && !button.hidden) button.click()
       const checkbox = document.getElementById('automatic-handoff')
-      if (checkbox && !checkbox.checked) checkbox.click()
-      return Boolean(checkbox)
+      if (checkbox && !checkbox.disabled && !checkbox.checked) checkbox.click()
+      return true
     })()`,
     { userGesture: true }
   )
@@ -4567,7 +4571,7 @@ async function main() {
         }
       })
 
-      await scenario('N4', 'Hand-off refusal: auth-only fixture completes in the browser and is not queued', async () => {
+      await scenario('N4', 'Browser login hand-off: cookies for the download URL are used and the browser copy is cancelled', async () => {
         if (setupError) return blocked()
         const setting = await ensureHandoffEnabled(browserB, optionsB.sessionId)
         const browserDownloadDir = path.join(tempRoot, 'downloads-refused')
@@ -4578,15 +4582,175 @@ async function main() {
           downloadPath: browserDownloadDir,
           eventsEnabled: true
         })
-        // The browser has the session cookie; the app's anonymous preflight
-        // deliberately does not, so it must reject this target.
-        const cookie = await pageEvaluate(
-          nativeRun.page,
-          `(() => {
-            document.cookie = 'auth=1; path=/'
-            return document.cookie
+        // The browser has the session cookie. Takeover reads the cookies for
+        // exactly this download URL without a per-site opt-in, so the app's
+        // preflight uses the same login and the file is taken over.
+        await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `(async () => {
+            const base = { url: ${JSON.stringify(`${nativeOrigin}/`)}, path: '/', expirationDate: Math.floor(Date.now() / 1000) + 3600 }
+            await chrome.cookies.set({ ...base, name: 'auth', value: '1' })
+            return 'auth=1'
           })()`,
           { userGesture: false }
+        )
+        const cookie = 'auth=1'
+        const secureUrl = `${nativeOrigin}/secure.bin`
+        const logStart = server.log.length
+        const stderrBefore = nativeRun.appStderr().length
+        const beforeRowIds = new Set(readDownloadRows(nativeRun.db).map((entry) => entry.id))
+        const downloadPage = await createPage(browserB, secureUrl, { waitForCommit: false })
+        downloadPage.browser = browserB
+        const item = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    typeof candidate.url === 'string' &&
+                    candidate.url.endsWith('/secure.bin')
+                ) || null
+            ),
+          (match) => match !== null,
+          20000,
+          'browser download item for secure.bin',
+          50
+        )
+        const itemId = item.id
+        const rowFound = await waitForValue(
+          () =>
+            readDownloadRows(nativeRun.db).find(
+              (entry) => !beforeRowIds.has(entry.id) && entry.url === secureUrl
+            ) || null,
+          (match) => match !== null,
+          20000,
+          'durable app row for secure.bin',
+          10
+        ).catch(() => null)
+        if (rowFound === null) {
+          const debugHits = server.log.slice(logStart)
+          const debugState = await readStorage(
+            browserB,
+            optionsB.sessionId,
+            'session',
+            HANDOFF_STATE_KEY
+          )
+          return {
+            status: 'FAIL',
+            evidence: `no app row; cookie=${JSON.stringify(cookie)}; server hits=${JSON.stringify(debugHits)}; handoff state=${JSON.stringify(debugState)}; app log=${JSON.stringify(nativeRun.appStderr().slice(-2000))}`
+          }
+        }
+        const dbObservedAt = Date.now()
+        const terminal = await waitForValue(
+          () =>
+            searchDownloads(browserB, optionsB.sessionId).then(
+              (items) =>
+                items.find(
+                  (candidate) =>
+                    candidate.id === itemId &&
+                    (candidate.state === 'interrupted' ||
+                      candidate.state === 'complete')
+                ) || null
+            ),
+          (match) => match !== null,
+          25000,
+          'browser download terminal state for secure.bin',
+          50
+        )
+        const terminalObservedAt = Date.now()
+        const events = await readDownloadEvents(browserB, optionsB.sessionId)
+        const ownEvents = events.filter((event) => event.id === itemId)
+        const stateEvents = ownEvents.filter(
+          (event) => event.state === 'interrupted' || event.state === 'complete'
+        )
+        const terminalEvent = stateEvents[stateEvents.length - 1] || null
+        const completed = await waitForCompletedAppDownload(
+          nativeRun.db,
+          rowFound.url,
+          60000
+        )
+        const sessionState = await readStorage(
+          browserB,
+          optionsB.sessionId,
+          'session',
+          HANDOFF_STATE_KEY
+        )
+        const processed =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].processed
+        const pending =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].pending
+        const newAppLog = nativeRun.appStderr().slice(stderrBefore)
+        const authenticatedPreflight = server.log
+          .slice(logStart)
+          .filter(
+            (entry) =>
+              entry.path === '/secure.bin' &&
+              typeof entry.cookie === 'string' &&
+              /auth=1/.test(entry.cookie) &&
+              typeof entry.range === 'string' &&
+              entry.range.startsWith('bytes=0-0')
+          )
+        const files = filesInDirectory(browserDownloadDir)
+        const finalBrowserFile = files.includes('secure.bin')
+        const hashOk = completed.hash.sha256 === server.secureBinSha256
+        const cancelled =
+          terminal.state === 'interrupted' &&
+          /cancel/i.test(terminal.error || '')
+        const acceptedBeforeCancel =
+          completed.row.created_at <=
+            (terminalEvent ? terminalEvent.at : terminalObservedAt) &&
+          dbObservedAt <= terminalObservedAt
+        const ok =
+          setting.automaticFileHandoff === true &&
+          completed.row.status === 'complete' &&
+          hashOk &&
+          completed.filePath !== null &&
+          cancelled &&
+          !finalBrowserFile &&
+          acceptedBeforeCancel &&
+          authenticatedPreflight.length > 0 &&
+          Array.isArray(processed) &&
+          processed.includes(itemId) &&
+          Array.isArray(pending) &&
+          pending.length === 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `setting=${JSON.stringify({ automaticFileHandoff: setting.automaticFileHandoff })}; cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: terminal.state, error: terminal.error, totalBytes: terminal.totalBytes, bytesReceived: terminal.bytesReceived })}; app row=${JSON.stringify({ id: rowFound.id, url: completed.row.url, filename: completed.row.filename, created_at: completed.row.created_at, status: completed.row.status, total: completed.row.total_bytes })}; accepted before cancel=${acceptedBeforeCancel}; app file=${completed.filePath} (${completed.hash.bytes}B) sha256=${completed.hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; authenticated preflights=${JSON.stringify(authenticatedPreflight)}; browser download dir files=${JSON.stringify(files)}; final browser file present=${finalBrowserFile}; app log=${JSON.stringify(newAppLog.slice(-1200))}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        }
+      })
+
+      await scenario('N4b', 'Hand-off refusal: a login wall without cookies stays in the browser', async () => {
+        if (setupError) return blocked()
+        const setting = await ensureHandoffEnabled(browserB, optionsB.sessionId)
+        const browserDownloadDir = path.join(tempRoot, 'downloads-refused-anonymous')
+        fs.mkdirSync(browserDownloadDir, { recursive: true })
+        await installDownloadEventLog(browserB, optionsB.sessionId)
+        await browserB.connection.send('Browser.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: browserDownloadDir,
+          eventsEnabled: true
+        })
+        // The browser has the session cookie but the extension cannot read it
+        // (no cookies grant), so the app's preflight is anonymous and must
+        // reject this target while the browser download keeps running.
+        await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `(async () => {
+            const base = { url: ${JSON.stringify(`${nativeOrigin}/`)}, path: '/', expirationDate: Math.floor(Date.now() / 1000) + 3600 }
+            await chrome.cookies.set({ ...base, name: 'auth', value: '1' })
+            return 'auth=1'
+          })()`,
+          { userGesture: false }
+        )
+        const cookie = 'auth=1'
+        await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `new Promise((resolve) => chrome.permissions.remove({ permissions: ['cookies'] }, () => resolve(chrome.runtime.lastError && chrome.runtime.lastError.message)))`,
+          { userGesture: true }
         )
         const secureUrl = `${nativeOrigin}/secure.bin`
         const stderrBefore = nativeRun.appStderr().length
@@ -4712,7 +4876,6 @@ async function main() {
           preflightRejected &&
           loginStateOk &&
           popupOk &&
-          badge === '!' &&
           appRow === null &&
           !appFiles.includes('secure.bin') &&
           Array.isArray(processed) &&
