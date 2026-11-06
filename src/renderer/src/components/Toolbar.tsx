@@ -29,6 +29,9 @@ interface ToolbarProps {
   canResumeAll: boolean
   onPauseAll: () => void
   onResumeAll: () => void
+  /** Shown as a ghost button when the "Done" chip is active. */
+  canClearCompleted: boolean
+  onClearCompleted: () => void
 }
 
 export function Toolbar({
@@ -44,7 +47,9 @@ export function Toolbar({
   canPauseAll,
   canResumeAll,
   onPauseAll,
-  onResumeAll
+  onResumeAll,
+  canClearCompleted,
+  onClearCompleted
 }: ToolbarProps): JSX.Element {
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -161,6 +166,16 @@ export function Toolbar({
         disabled={!canResumeAll}
         onClick={onResumeAll}
       />
+      {statusFilter === 'completed' ? (
+        <button
+          type="button"
+          onClick={onClearCompleted}
+          disabled={!canClearCompleted}
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
+        >
+          Clear finished
+        </button>
+      ) : null}
     </div>
   )
 }

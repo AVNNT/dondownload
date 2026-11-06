@@ -23,6 +23,7 @@ import type {
 import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
 import { formatBytes, formatSpeed } from '@shared/format'
+import type { DownloadSettings } from '@shared/settings'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { SettingsSection } from './components/SettingsSection'
@@ -30,6 +31,7 @@ import { BrowserExtensionSection } from './components/BrowserExtensionSection'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
 import { AddDialog, type AddDialogTab } from './components/AddDialog'
+import { ScanSheet } from './components/ScanSheet'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ContextMenu } from './components/ContextMenu'
 import { DetailsPane } from './components/DetailsPane'
@@ -68,6 +70,7 @@ import {
   planBulkAction,
   planRowAction,
   removeConfirmation,
+  clearCompletedConfirmation,
   type ActionPlanEntry,
   type RowActionId
 } from './lib/actions'
@@ -149,6 +152,7 @@ export default function App(): JSX.Element {
   const [toast, setToast] = useState<string | null>(null)
   const [clipboardUrl, setClipboardUrl] = useState<string | null>(null)
   const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
+  const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [showReleaseNotes, setShowReleaseNotes] = useState(false)
   const dragDepth = useRef(0)
   const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
@@ -178,7 +182,10 @@ export default function App(): JSX.Element {
   useEffect(() => {
     let cancelled = false
     void window.donDownload.getSettings().then((result) => {
-      if (!cancelled && result.ok) applyRendererTheme(result.value.theme)
+      if (!cancelled && result.ok) {
+        setSettings(result.value)
+        applyRendererTheme(result.value.theme)
+      }
     })
     void window.donDownload.getAppUpdateState().then((result) => {
       if (!cancelled && result.ok) setAppUpdate(result.value)
@@ -495,6 +502,11 @@ export default function App(): JSX.Element {
     setAddRequest({ tab, url, nonce: ++addSequence.current })
   }, [])
 
+  /** Opens the redesigned scan side sheet over the whole window. */
+  const openScanSheet = useCallback((url = ''): void => {
+    setAddRequest({ tab: 'scan', url, nonce: ++addSequence.current })
+  }, [])
+
   const openRow = useCallback(
     (row: UnifiedRow): void => {
       const plan = planRowAction('open', [row])
@@ -748,6 +760,45 @@ export default function App(): JSX.Element {
 
   const resumeAll = useCallback((): void => {
     void runPlan(planBulkAction('resume-all', allRows))
+  }, [allRows, runPlan])
+
+  /** Human line for the add dialog's "Already in your list" hint. */
+  const describeDuplicate = useCallback(
+    (url: string): string | null => {
+      const row = allRows.find((candidate) => candidate.url === url)
+      if (row === undefined) return null
+      const status = row.statusLabel.toLowerCase()
+      // Progress is only meaningful before a download completes.
+      if (
+        row.statusGroup === 'completed' ||
+        row.progress <= 0 ||
+        row.indeterminate
+      ) {
+        return status
+      }
+      return `${status} at ${Math.round(row.progress)}%`
+    },
+    [allRows]
+  )
+
+  const resumeDuplicateUrl = useCallback(
+    (url: string): void => {
+      const row = allRows.find((candidate) => candidate.url === url)
+      if (row === undefined) return
+      if (canResumeRow(row)) void runPlan(planRowAction('resume', [row]))
+    },
+    [allRows, runPlan]
+  )
+
+  const requestClearCompleted = useCallback((): void => {
+    const plan = planBulkAction('clear-completed', allRows)
+    if (plan.length === 0) return
+    setConfirm({
+      ...clearCompletedConfirmation(plan.length),
+      onConfirm: () => {
+        void runPlan(plan)
+      }
+    })
   }, [allRows, runPlan])
 
   const pauseRow = useCallback(
@@ -1057,6 +1108,10 @@ export default function App(): JSX.Element {
                 canResumeAll={allRows.some(canResumeRow)}
                 onPauseAll={pauseAll}
                 onResumeAll={resumeAll}
+                canClearCompleted={
+                  planBulkAction('clear-completed', allRows).length > 0
+                }
+                onClearCompleted={requestClearCompleted}
               />
             )}
 
@@ -1111,8 +1166,8 @@ export default function App(): JSX.Element {
         ) : null}
 
         {page === 'batches' ? (
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <div className="mx-auto w-full max-w-3xl">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-4xl px-4 pb-10">
               {aria2 ? (
                 <div className="mb-3">
                   <RuntimeNotice
@@ -1124,7 +1179,10 @@ export default function App(): JSX.Element {
                   />
                 </div>
               ) : null}
-              <BatchSection />
+              <BatchSection
+                onBack={() => setPage('library')}
+                onAddLinks={() => openAddDialog('direct')}
+              />
             </div>
           </div>
         ) : null}
@@ -1132,7 +1190,7 @@ export default function App(): JSX.Element {
         {page === 'settings' ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="mx-auto w-full max-w-3xl">
-              <SettingsSection />
+              <SettingsSection onBack={() => setPage('library')} />
               <BrowserExtensionSection />
             </div>
           </div>
@@ -1140,29 +1198,38 @@ export default function App(): JSX.Element {
       </main>
 
       {addRequest ? (
-        <AddDialog
-          key={addRequest.nonce}
-          tab={addRequest.tab}
-          initialUrl={addRequest.url}
-          scanSessions={
-            addRequest.scanSessionIds === undefined
-              ? null
-              : addRequest.scanSessionIds.flatMap((sessionId) => {
-                  const session = scanSessions.find(
-                    (candidate) => candidate.sessionId === sessionId
-                  )
-                  return session === undefined ? [] : [session]
-                })
-          }
-          busy={adding}
-          onTabChange={(tab) =>
-            setAddRequest((current) => (current ? { ...current, tab } : current))
-          }
-          onClose={() => setAddRequest(null)}
-          onAdd={handleAdd}
-          onAnalyze={handleAnalyzeMedia}
-          onQueue={handleQueueMedia}
-        />
+        addRequest.tab === 'scan' ? (
+          <ScanSheet
+            url={addRequest.url}
+            sessions={
+              addRequest.scanSessionIds === undefined
+                ? null
+                : addRequest.scanSessionIds.flatMap((sessionId) => {
+                    const session = scanSessions.find(
+                      (candidate) => candidate.sessionId === sessionId
+                    )
+                    return session === undefined ? [] : [session]
+                  })
+            }
+            disabled={adding}
+            onClose={() => setAddRequest(null)}
+          />
+        ) : (
+          <AddDialog
+            key={addRequest.nonce}
+            tab={addRequest.tab}
+            initialUrl={addRequest.url}
+            busy={adding}
+            describeDuplicate={describeDuplicate}
+            onResumeDuplicate={resumeDuplicateUrl}
+            defaultConnections={settings?.perHostConnections ?? 8}
+            onScanOpen={openScanSheet}
+            onClose={() => setAddRequest(null)}
+            onAdd={handleAdd}
+            onAnalyze={handleAnalyzeMedia}
+            onQueue={handleQueueMedia}
+          />
+        )
       ) : null}
 
       {menu ? (
