@@ -326,6 +326,12 @@ export class MediaJobsManager {
     return this.toMediaJob(this.requireJob(rawId))
   }
 
+  /** Final output path of a completed job, for the scanner rename step. */
+  getFilePath(id: string): string | null {
+    const job = this.jobs.get(id)
+    return job && job.record.status === 'complete' ? job.record.filePath : null
+  }
+
   async getMediaStatus(rawId: unknown): Promise<MediaJob> {
     return this.getMediaJob(rawId)
   }

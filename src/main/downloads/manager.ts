@@ -417,6 +417,39 @@ export class DownloadManager {
   }
 
   /**
+   * Internal scanner path: download one file into an explicit folder inside the
+   * normal download root. Used only for funscripts that must sit next to their
+   * video so the post-download rename stays in place. Never reachable from IPC
+   * or the browser bridge.
+   */
+  async addScanFile(rawInput: unknown, directory: string): Promise<AppSnapshot> {
+    await this.addInternal(rawInput, false, directory)
+    return this.getSnapshot()
+  }
+
+  /** Final path of a completed download, for the scanner rename step. */
+  getFilePath(id: string): string | null {
+    const record = this.records.get(id)
+    return record && record.status === 'complete' ? record.filePath : null
+  }
+
+  /**
+   * Keep a completed child's record pointing at a script that was renamed in
+   * place. The path must still be inside the download root.
+   */
+  adoptRenamedFile(id: string, filePath: string): void {
+    if (!this.isInsideDownloadRoot(filePath)) return
+    const record = this.records.get(id)
+    if (!record || record.status !== 'complete') return
+    record.filePath = filePath
+    record.filename = path.basename(filePath)
+    record.updatedAt = this.now()
+    this.persistNow(record)
+    this.lastPublished = null
+    this.publish(true)
+  }
+
+  /**
    * Additive automatic browser hand-off. Success means the download row was
    * written with SQLite FULL durability and read back. Any failure removes the
    * local record and, when this method already handed a job to aria2, removes
@@ -432,13 +465,22 @@ export class DownloadManager {
 
   private async addInternal(
     rawInput: unknown,
-    durable: boolean
+    durable: boolean,
+    directory?: string
   ): Promise<DownloadItem> {
     // Validate before starting aria2 or touching the disk. Both the IPC Quick
     // Add path and the native browser bridge call this method, so the duplicate
     // policy exists in exactly one place.
     const input = parseAddDownloadInput(rawInput)
     const force = input.force === true
+    const outputDirectory =
+      directory === undefined ? this.downloadDir : path.resolve(directory)
+    if (!this.isInsideDownloadRoot(outputDirectory)) {
+      throw new AppError(
+        'DOWNLOAD_DIR_UNAVAILABLE',
+        'The script download folder is not inside the download folder.'
+      )
+    }
 
     if (durable && this.database === null) {
       throw new AppError(
@@ -486,9 +528,12 @@ export class DownloadManager {
         // in DonDownload as `waiting` and are submitted by the same policy
         // timer later, so aria2 cannot start them outside the window.
         client = await this.aria2.getClient()
-        await this.ensureDownloadDirectory()
+        await this.ensureDownloadDirectory(outputDirectory)
         if (finalFilename !== undefined) {
-          finalFilename = await this.uniqueDownloadFilename(finalFilename)
+          finalFilename = await this.uniqueDownloadFilename(
+            finalFilename,
+            outputDirectory
+          )
         }
         gid = await this.addUri(
           client,
@@ -496,7 +541,8 @@ export class DownloadManager {
           finalFilename,
           controls,
           target.requestHeaders,
-          target.cookieHost
+          target.cookieHost,
+          outputDirectory
         )
       }
 
@@ -505,7 +551,7 @@ export class DownloadManager {
         gid,
         url: input.url,
         filename: finalFilename ?? guessFilenameFromUrl(input.url),
-        dir: this.downloadDir,
+        dir: outputDirectory,
         filePath: null,
         status: decision.allowed ? 'queued' : 'waiting',
         totalBytes: 0,
@@ -764,6 +810,7 @@ export class DownloadManager {
     // Retry is explicit and must not be immediately re-blocked by schedule or
     // allowed hours. It keeps the stored controls for the next restart.
     this.startNowIds.add(record.id)
+    await this.ensureDownloadDirectory(record.dir)
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
@@ -771,7 +818,8 @@ export class DownloadManager {
       explicitFilename,
       this.controls.get(record.id) ?? defaultDownloadControls(),
       this.requestHeaders.get(record.id),
-      this.cookieHosts.get(record.id)
+      this.cookieHosts.get(record.id),
+      record.dir
     )
 
     this.updateRecord(record, {
@@ -1007,14 +1055,15 @@ export class DownloadManager {
     if (this.submittingIds.has(record.id)) return
     this.submittingIds.add(record.id)
     try {
-      await this.ensureDownloadDirectory()
+      await this.ensureDownloadDirectory(record.dir)
       const gid = await this.addUri(
         client,
         this.resolvedUrls.get(record.id) ?? record.url,
         this.explicitFilenames.get(record.id),
         this.controlsOf(record),
         this.requestHeaders.get(record.id),
-        this.cookieHosts.get(record.id)
+        this.cookieHosts.get(record.id),
+        record.dir
       )
       this.updateRecord(record, {
         gid,
@@ -1270,9 +1319,20 @@ export class DownloadManager {
     return record
   }
 
-  private async ensureDownloadDirectory(): Promise<void> {
+  private isInsideDownloadRoot(candidate: string): boolean {
+    const root = path.resolve(this.downloadDir)
+    const relative = path.relative(root, path.resolve(candidate))
+    return (
+      relative === '' ||
+      (!relative.startsWith('..') && !path.isAbsolute(relative))
+    )
+  }
+
+  private async ensureDownloadDirectory(
+    directory: string = this.downloadDir
+  ): Promise<void> {
     try {
-      await fs.mkdir(this.downloadDir, { recursive: true })
+      await fs.mkdir(directory, { recursive: true })
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'unknown error'
       throw new AppError(
@@ -1293,6 +1353,7 @@ export class DownloadManager {
     ) {
       throw new AppError('HANDOFF_NEEDS_BROWSER_LOGIN', NEEDS_LOGIN_MESSAGE)
     }
+    await this.ensureDownloadDirectory(record.dir)
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
@@ -1300,7 +1361,8 @@ export class DownloadManager {
       explicitFilename,
       this.controls.get(record.id) ?? defaultDownloadControls(),
       this.requestHeaders.get(record.id),
-      this.cookieHosts.get(record.id)
+      this.cookieHosts.get(record.id),
+      record.dir
     )
 
     this.updateRecord(record, {
@@ -1319,7 +1381,10 @@ export class DownloadManager {
    * convention as the media engine instead of aria2's ".1" suffix. Both a file
    * on disk and another unfinished record with the same name are considered.
    */
-  private async uniqueDownloadFilename(value: string): Promise<string> {
+  private async uniqueDownloadFilename(
+    value: string,
+    directory: string = this.downloadDir
+  ): Promise<string> {
     const sanitized = sanitizeFilename(value)
     const extension = path.extname(sanitized)
     const base =
@@ -1329,13 +1394,9 @@ export class DownloadManager {
     for (let index = 1; index <= 1_000; index += 1) {
       const candidate =
         index === 1 ? sanitized : `${base} (${index})${extension}`
-      let exists = false
-      try {
-        await fs.access(path.join(this.downloadDir, candidate))
-        exists = true
-      } catch {
-        exists = false
-      }
+      const exists = await fs
+        .access(path.join(directory, candidate))
+        .then(() => true, () => false)
       if (exists) continue
       let active = false
       for (const record of this.records.values()) {
@@ -1436,13 +1497,21 @@ export class DownloadManager {
     explicitFilename: string | undefined,
     controls: DownloadControls,
     headers?: DownloadRequestHeaders,
-    cookieHost?: string
+    cookieHost?: string,
+    directory: string = this.downloadDir
   ): Promise<string> {
     // Re-validate even for records loaded from SQLite; the database is not a
     // trusted source for URL schemes if it was modified outside the app.
     const url = normalizeHttpUrl(rawUrl)
+    const outputDirectory = path.resolve(directory)
+    if (!this.isInsideDownloadRoot(outputDirectory)) {
+      throw new AppError(
+        'DOWNLOAD_DIR_UNAVAILABLE',
+        'The download folder is invalid.'
+      )
+    }
     const options: Record<string, string | string[]> = {
-      dir: this.downloadDir,
+      dir: outputDirectory,
       'max-tries': '3',
       'retry-wait': '2',
       'connect-timeout': '15',

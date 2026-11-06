@@ -55,9 +55,11 @@ import {
   type ScanItem,
   type ScanQueueResult,
   type ScanQueueVideoOption,
+  type ScanScriptPairingInput,
   type ScanSession,
   type ScanStartInput
 } from '@shared/scanner'
+import { buildScanScriptSets } from '@shared/scriptSets'
 import { normalizeHttpUrl } from '@shared/validation'
 
 const browserExtensionFixture: BrowserExtensionStatus = {
@@ -515,7 +517,7 @@ export function createPreviewApi(
       }
     ]
 
-    return [
+    const baseItems: ScanItem[] = [
       {
         id: 'preview-scan-video-page',
         category: 'video',
@@ -646,6 +648,177 @@ export function createPreviewApi(
         author: 'demo-author'
       }
     ]
+
+    // Six-fancam + mix example: a multi-axis set, a variant set, a missing-main
+    // set and an ambiguous pair of videos. Titles are synthetic.
+    const fancams: ScanItem[] = [
+      {
+        id: 'preview-scan-fancam-01',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 01 Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 98 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 10,
+        author: 'demo-author',
+        durationSeconds: 213,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-fancam-02',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 02 Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 101 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 11,
+        author: 'demo-author',
+        durationSeconds: 198,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-fancam-03',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 03 Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 95 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 12,
+        author: 'demo-author',
+        durationSeconds: 187,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-fancam-04',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 04 Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 104 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 13,
+        author: 'demo-author',
+        durationSeconds: 205,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-fancam-04-alt',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 04 Wonyoung Full',
+        hostname: 'youtube.com',
+        sizeBytes: 108 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 13,
+        author: 'demo-author',
+        durationSeconds: 224,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-fancam-05',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Fancam 05 Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 99 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 14,
+        author: 'demo-author',
+        durationSeconds: 191,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-mix',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Stage Mix Wonyoung',
+        hostname: 'youtube.com',
+        sizeBytes: 126 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 16,
+        author: 'demo-author',
+        durationSeconds: 402,
+        width: 1920,
+        height: 1080,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      }
+    ]
+
+    const scriptFiles = (
+      base: string,
+      postNumber: number,
+      names: string[]
+    ): ScanItem[] =>
+      names.map((suffix, index) => ({
+        id: `preview-scan-script-${postNumber}-${index}`,
+        category: 'script',
+        kind: 'file',
+        name: `${base}${suffix}.funscript`,
+        hostname: 'discuss.example.com',
+        sizeBytes: 42_000 + index * 1_500,
+        verified: true,
+        status: 'ready',
+        postNumber,
+        author: 'demo-author'
+      }))
+
+    const scripts = [
+      ...scriptFiles('Fancam 01 Wonyoung', 10, [
+        '',
+        '.roll',
+        '.surge',
+        '.twist'
+      ]),
+      ...scriptFiles('Fancam 02 Wonyoung', 11, ['', '.hard', '.hard.roll']),
+      ...scriptFiles('Fancam 03 Wonyoung', 12, ['.roll', '.pitch']),
+      ...scriptFiles('Fancam 04 Wonyoung', 13, ['', '.roll']),
+      ...scriptFiles('Stage Mix Wonyoung', 16, ['', '.roll'])
+    ]
+
+    return [...baseItems, ...fancams, ...scripts]
   }
 
   function emitScan(session: ScanSession): ScanSession {
@@ -690,6 +863,7 @@ export function createPreviewApi(
         queueableItems: items.filter(isQueueableScanItem).length
       },
       items,
+      scriptSets: buildScanScriptSets(items),
       removedItemIds: [],
       revision: 1,
       updatedAt: now()
@@ -1230,7 +1404,8 @@ export function createPreviewApi(
     queueScanSelection: async (
       _sessionId: string,
       itemIds: string[],
-      _videoOptions?: ScanQueueVideoOption[]
+      _videoOptions?: ScanQueueVideoOption[],
+      _pairings?: ScanScriptPairingInput[]
     ): Promise<ApiResult<ScanQueueResult>> => {
       if (scanSession === null) {
         return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')

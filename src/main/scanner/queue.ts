@@ -4,12 +4,17 @@ import type {
   ScanQueueResult,
   ScanQueueSkip,
   ScanQueueVideoOption,
+  ScanScriptPairingInput,
   ScanVideoFormat
 } from '@shared/scanner'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
-import type { ResolvedScanTarget, ScanSessionManager } from './session'
+import type {
+  ResolvedScriptPairing,
+  ResolvedScanTarget,
+  ScanSessionManager
+} from './session'
 
 /**
  * Explicit queue path. Nothing here runs during scanning; it is reachable only
@@ -31,6 +36,8 @@ export interface ScanBatchTarget {
   requestHeaders?: {
     cookie: string
   }
+  /** Internal scan item ID used only to wire funscript pairings. */
+  scanItemId?: string
 }
 
 /**
@@ -44,6 +51,17 @@ export interface ScanVideoBatchTarget {
   optionId: string
   outputFormat?: MediaOutputFormat
   cookie?: string
+  /** Internal scan item ID used only to wire funscript pairings. */
+  scanItemId?: string
+}
+
+/** Internal pairing descriptor; references scan item IDs, not paths. */
+export interface ScanPairingBatchTarget {
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
 }
 
 export interface ScanBatchPort {
@@ -60,6 +78,7 @@ export interface ScanBatchPort {
     title: string
     files: readonly ScanBatchTarget[]
     videos: readonly ScanVideoBatchTarget[]
+    pairings?: readonly ScanPairingBatchTarget[]
   }): Promise<Batch>
 }
 
@@ -168,10 +187,16 @@ export class ScanQueueService {
   async queueSelection(
     rawSessionId: unknown,
     rawItemIds: readonly string[],
-    rawVideoOptions: readonly ScanQueueVideoOption[] = []
+    rawVideoOptions: readonly ScanQueueVideoOption[] = [],
+    rawPairings: readonly ScanScriptPairingInput[] = []
   ): Promise<ScanQueueResult> {
     const session = this.sessions.getSession(rawSessionId)
     const targets = this.sessions.resolveSelection(rawSessionId, rawItemIds)
+    const resolvedPairings = this.sessions.resolveScriptPairings(
+      rawSessionId,
+      rawPairings,
+      rawItemIds
+    )
 
     const byId = new Map(targets.map((target) => [target.itemId, target]))
     const requested = new Map<string, ScanQueueVideoOption>()
@@ -272,6 +297,7 @@ export class ScanQueueService {
           url: target.url,
           title: cleanTitle(target.name),
           ...(target.name.length > 0 ? { filename: target.name } : {}),
+          scanItemId: target.itemId,
           ...(pageProbe.finalUrl === null ? {} : { resolvedUrl: pageProbe.finalUrl }),
           ...(target.cookie === undefined
             ? {}
@@ -303,10 +329,19 @@ export class ScanQueueService {
           'Video downloads are not available in this build.'
         )
       }
+      const queuedIds = new Set(queued.map((entry) => entry.itemId))
+      const pairings = resolvedPairings
+        .filter(
+          (pairing) =>
+            queuedIds.has(pairing.videoItemId) &&
+            pairing.scriptItemIds.every((itemId) => queuedIds.has(itemId))
+        )
+        .map((pairing) => this.toBatchPairing(pairing))
       batch = await this.batches.createScanMediaBatch({
         title,
         files,
-        videos
+        videos,
+        ...(pairings.length === 0 ? {} : { pairings })
       })
     } else {
       batch = await this.batches.createScanBatch({ title, targets: files })
@@ -364,6 +399,7 @@ export class ScanQueueService {
         title: cleanTitle(target.name),
         analysisId: video.analysisId,
         optionId: requestedFormat.optionId,
+        scanItemId: target.itemId,
         ...(outputFormat === 'auto' ? {} : { outputFormat }),
         ...(target.cookie === undefined ? {} : { cookie: target.cookie })
       }
@@ -419,8 +455,19 @@ export class ScanQueueService {
       title: cleanTitle(target.name),
       analysisId: analysis.analysisId,
       optionId: match.optionId,
+      scanItemId: target.itemId,
       ...(outputFormat === 'auto' ? {} : { outputFormat }),
       ...(target.cookie === undefined ? {} : { cookie: target.cookie })
+    }
+  }
+
+  private toBatchPairing(pairing: ResolvedScriptPairing): ScanPairingBatchTarget {
+    return {
+      videoItemId: pairing.videoItemId,
+      setId: pairing.setId,
+      scriptItemIds: [...pairing.scriptItemIds],
+      primaryVariant: pairing.primaryVariant,
+      rename: pairing.rename
     }
   }
 }

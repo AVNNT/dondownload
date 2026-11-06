@@ -3,6 +3,7 @@ import { shell } from 'electron'
 import {
   MAX_BATCH_SOURCES,
   MAX_BATCH_TITLE_LENGTH,
+  MAX_BATCH_LABEL_LENGTH,
   MAX_COLLECTION_SELECTION,
   BATCH_MEDIA_QUALITIES,
   isActiveBatchItemStatus,
@@ -45,12 +46,19 @@ import type {
   SmartBatchSubmitResult
 } from '@shared/types'
 import { ValidationError, sanitizeFilename } from '@shared/validation'
+import { parseFunscriptName } from '@shared/funscriptPairing'
 import type {
   PixeldrainFileResolution,
   PixeldrainLink,
   PixeldrainListResolution
 } from '../hosts/pixeldrain'
 import { AppError } from '../errors'
+import {
+  PAIR_RENAME_FAILED,
+  PAIR_RENAME_SCRIPT_FAILED,
+  PAIR_RENAME_VIDEO_FAILED,
+  applyPairRename
+} from '../scanner/pairRename'
 
 /**
  * Milestone 3B batch orchestration.
@@ -76,6 +84,9 @@ const BATCH_ITEM_INTERRUPTED_MESSAGE =
 
 const BATCH_NO_MEDIA_OPTION_MESSAGE =
   'No verified video or audio option is available for this entry.'
+
+const PAIR_RENAME_APP_STOPPED =
+  'Rename skipped: DonDownload stopped before the scripts finished.'
 
 function selectBatchMediaOption(
   analysis: MediaAnalysis,
@@ -128,6 +139,16 @@ export interface BatchDownloadsPort {
   add(input: unknown): Promise<unknown>
   pause(id: string): Promise<unknown>
   getSnapshot(): AppSnapshot
+  /**
+   * Internal scanner-only variant: downloads one funscript directly into the
+   * resolved video folder (inside the normal download root). Optional so
+   * existing test doubles stay valid.
+   */
+  addScanFile?(input: unknown, directory: string): Promise<unknown>
+  /** Final path of a completed child, for the post-download rename. */
+  getFilePath?(id: string): string | null
+  /** Keep the download record in sync after a script was renamed in place. */
+  adoptRenamedFile?(id: string, filePath: string): void
 }
 
 export interface BatchMediaJobsPort {
@@ -135,6 +156,8 @@ export interface BatchMediaJobsPort {
   queueMedia(input: unknown): Promise<MediaJob>
   cancelMedia(id: string): Promise<MediaJob>
   getMediaSnapshot(): MediaSnapshot
+  /** Final video path of a completed child, for the post-download rename. */
+  getFilePath?(id: string): string | null
 }
 
 export interface BatchCollectionTarget {
@@ -188,11 +211,35 @@ export interface BatchManagerOptions {
   pollIntervalMs?: number
   previewTtlMs?: number
   openExternal?: (url: string) => Promise<void> | void
+  /**
+   * Scanner video output folder. Paired funscript downloads are placed here so
+   * they sit next to the video and can be renamed in place. Must be inside
+   * `scanRootDir`.
+   */
+  scanMediaDir?: string
+  /** Scanner download root; every rename path must resolve inside it. */
+  scanRootDir?: string
 }
 
 interface ManagedBatch {
   record: BatchRecord
   items: Map<string, BatchItemRecord>
+}
+
+/**
+ * Memory-only pairing chosen by the user for one scanned video. The state is
+ * deliberately not persisted: a restart marks the batch interrupted and the
+ * scripts keep their original names. Nothing here is sensitive (IDs + names).
+ */
+interface ManagedScanPairing {
+  batchId: string
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
+  scripts: Map<string, { axis: string | null; variant: string | null }>
+  settled: boolean
 }
 
 interface StoredPreview {
@@ -225,6 +272,8 @@ export interface BatchScanTarget {
   /** Redirect-resolved target proven by the queue-time scanner probe. */
   resolvedUrl?: string
   requestHeaders?: DownloadRequestHeaders
+  /** Scanner item ID; used only to wire funscript pairings, never public. */
+  scanItemId?: string
 }
 
 /** Internal scanner video target with an opaque, fresh analysis selection. */
@@ -235,6 +284,17 @@ export interface BatchScanVideoTarget {
   optionId: string
   outputFormat?: MediaOutputFormat
   cookie?: string
+  /** Scanner item ID; used only to wire funscript pairings, never public. */
+  scanItemId?: string
+}
+
+/** Internal funscript pairing; references scan item IDs, never paths. */
+export interface BatchScanPairingTarget {
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
 }
 
 /* ------------------------------------------------------------------------- *
@@ -281,6 +341,13 @@ export function parseSmartBatchSubmitInput(
 
 function newOpaqueId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`
+}
+
+function opaqueId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new ValidationError('A scan item identifier is invalid.')
+  }
+  return value
 }
 
 function errorCode(error: unknown): string | null {
@@ -515,6 +582,11 @@ export class BatchManager {
       cookie?: string
     }
   >()
+  /** Memory-only funscript pairings, keyed by parent batch ID. */
+  private readonly scanPairings = new Map<string, ManagedScanPairing[]>()
+  private readonly pairingTasks = new Set<Promise<void>>()
+  private readonly scanMediaDir: string | null
+  private readonly scanRootDir: string | null
   private readonly idleWaiters: Array<() => void> = []
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -537,6 +609,8 @@ export class BatchManager {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.previewTtlMs = options.previewTtlMs ?? PREVIEW_TTL_MS
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
+    this.scanMediaDir = options.scanMediaDir ?? null
+    this.scanRootDir = options.scanRootDir ?? null
 
     this.loadPersistedBatches()
   }
@@ -945,7 +1019,8 @@ export class BatchManager {
           key !== 'title' &&
           key !== 'filename' &&
           key !== 'resolvedUrl' &&
-          key !== 'requestHeaders'
+          key !== 'requestHeaders' &&
+          key !== 'scanItemId'
         ) {
           throw new ValidationError(
             'A scan batch target contains unsupported fields.'
@@ -987,6 +1062,7 @@ export class BatchManager {
         }
         requestHeaders = { cookie }
       }
+      if (target.scanItemId !== undefined) opaqueId(target.scanItemId)
       return {
         url,
         title,
@@ -1062,7 +1138,12 @@ export class BatchManager {
     this.assertOpen()
     const record = asRecord(rawInput)
     for (const key of Object.keys(record)) {
-      if (key !== 'title' && key !== 'files' && key !== 'videos') {
+      if (
+        key !== 'title' &&
+        key !== 'files' &&
+        key !== 'videos' &&
+        key !== 'pairings'
+      ) {
         throw new ValidationError(
           'The scan media batch contains unsupported fields.'
         )
@@ -1108,7 +1189,8 @@ export class BatchManager {
           key !== 'title' &&
           key !== 'filename' &&
           key !== 'resolvedUrl' &&
-          key !== 'requestHeaders'
+          key !== 'requestHeaders' &&
+          key !== 'scanItemId'
         ) {
           throw new ValidationError(
             'A scan batch target contains unsupported fields.'
@@ -1147,7 +1229,10 @@ export class BatchManager {
         title,
         ...(filename === undefined ? {} : { filename }),
         ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
-        ...(requestHeaders === undefined ? {} : { requestHeaders })
+        ...(requestHeaders === undefined ? {} : { requestHeaders }),
+        ...(target.scanItemId === undefined
+          ? {}
+          : { scanItemId: opaqueId(target.scanItemId) })
       }
     })
 
@@ -1160,7 +1245,8 @@ export class BatchManager {
           key !== 'analysisId' &&
           key !== 'optionId' &&
           key !== 'outputFormat' &&
-          key !== 'cookie'
+          key !== 'cookie' &&
+          key !== 'scanItemId'
         ) {
           throw new ValidationError(
             'A scan video target contains unsupported fields.'
@@ -1188,13 +1274,17 @@ export class BatchManager {
         ...(outputFormat === undefined ? {} : { outputFormat }),
         ...(target.cookie === undefined
           ? {}
-          : { cookie: readCookie(target.cookie) })
+          : { cookie: readCookie(target.cookie) }),
+        ...(target.scanItemId === undefined
+          ? {}
+          : { scanItemId: opaqueId(target.scanItemId) })
       }
     })
 
     const createdAt = this.now()
     const batchId = newOpaqueId('batch')
     const items = new Map<string, BatchItemRecord>()
+    const scanItemIdToBatch = new Map<string, string>()
 
     for (const target of files) {
       const itemId = newOpaqueId('bitem')
@@ -1215,6 +1305,9 @@ export class BatchManager {
         updatedAt: createdAt,
         completedAt: null
       })
+      if (target.scanItemId !== undefined) {
+        scanItemIdToBatch.set(target.scanItemId, itemId)
+      }
       if (target.requestHeaders !== undefined) {
         this.scanRequestHeaders.set(itemId, target.requestHeaders)
       }
@@ -1247,6 +1340,9 @@ export class BatchManager {
         updatedAt: createdAt,
         completedAt: null
       })
+      if (target.scanItemId !== undefined) {
+        scanItemIdToBatch.set(target.scanItemId, itemId)
+      }
       this.scanMediaSelections.set(itemId, {
         analysisId: target.analysisId,
         optionId: target.optionId,
@@ -1256,6 +1352,13 @@ export class BatchManager {
         ...(target.cookie === undefined ? {} : { cookie: target.cookie })
       })
     }
+
+    const parsedPairings = this.parseScanPairings(
+      record.pairings,
+      batchId,
+      items,
+      scanItemIdToBatch
+    )
 
     const batchRecord: BatchRecord = {
       id: batchId,
@@ -1272,12 +1375,144 @@ export class BatchManager {
     }
 
     const batch = this.insertBatch(batchRecord, [...items.values()])
+    if (parsedPairings.length > 0) {
+      this.scanPairings.set(batchId, parsedPairings)
+    }
     this.recomputeBatch(batch)
     this.persistBatchNow(batch)
     this.schedulePump()
     this.ensurePolling()
     this.publish(true)
     return this.toPublicBatch(batch)
+  }
+
+  /**
+   * Strict internal pairing parse. Every referenced scan item must have made it
+   * into this batch, scripts must be funscript downloads, and one script or set
+   * cannot be claimed twice.
+   */
+  private parseScanPairings(
+    rawValue: unknown,
+    batchId: string,
+    items: ReadonlyMap<string, BatchItemRecord>,
+    scanItemIdToBatch: ReadonlyMap<string, string>
+  ): ManagedScanPairing[] {
+    if (rawValue === undefined) return []
+    if (!Array.isArray(rawValue) || rawValue.length > MAX_COLLECTION_SELECTION) {
+      throw new ValidationError('The scan script pairings are invalid.')
+    }
+    const pairings: ManagedScanPairing[] = []
+    const seenVideos = new Set<string>()
+    const seenSets = new Set<string>()
+    const claimedScripts = new Set<string>()
+
+    for (const entry of rawValue) {
+      const pairing = asRecord(entry)
+      for (const key of Object.keys(pairing)) {
+        if (
+          key !== 'videoItemId' &&
+          key !== 'setId' &&
+          key !== 'scriptItemIds' &&
+          key !== 'primaryVariant' &&
+          key !== 'rename'
+        ) {
+          throw new ValidationError(
+            'A scan script pairing contains unsupported fields.'
+          )
+        }
+      }
+      const videoScanId = opaqueId(pairing.videoItemId)
+      const videoBatchId = scanItemIdToBatch.get(videoScanId)
+      const videoItem = videoBatchId === undefined ? undefined : items.get(videoBatchId)
+      if (!videoItem || videoItem.kind !== 'media') {
+        throw new ValidationError(
+          'A scan script pairing video is not part of this batch.'
+        )
+      }
+      if (seenVideos.has(videoScanId)) {
+        throw new ValidationError('Duplicate scan script pairing video.')
+      }
+      seenVideos.add(videoScanId)
+
+      if (
+        typeof pairing.setId !== 'string' ||
+        pairing.setId.length > 300 ||
+        // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+        !/^set:[^\s\u0000-\u001f\u007f/\\]{1,300}$/u.test(pairing.setId)
+      ) {
+        throw new ValidationError('A scan script pairing set is invalid.')
+      }
+      if (seenSets.has(pairing.setId)) {
+        throw new ValidationError('Duplicate scan script pairing set.')
+      }
+      seenSets.add(pairing.setId)
+
+      const rawScripts = pairing.scriptItemIds
+      if (
+        !Array.isArray(rawScripts) ||
+        rawScripts.length === 0 ||
+        rawScripts.length > MAX_COLLECTION_SELECTION
+      ) {
+        throw new ValidationError('A scan script pairing has no scripts.')
+      }
+      const scriptItems: string[] = []
+      const scripts = new Map<string, { axis: string | null; variant: string | null }>()
+      for (const rawScriptId of rawScripts) {
+        const scriptScanId = opaqueId(rawScriptId)
+        if (claimedScripts.has(scriptScanId)) {
+          throw new ValidationError('A script cannot belong to two pairings.')
+        }
+        claimedScripts.add(scriptScanId)
+        const scriptBatchId = scanItemIdToBatch.get(scriptScanId)
+        const scriptItem = scriptBatchId === undefined ? undefined : items.get(scriptBatchId)
+        if (!scriptItem || scriptItem.kind !== 'download') {
+          throw new ValidationError(
+            'A scan script pairing file is not part of this batch.'
+          )
+        }
+        if (scriptItems.includes(scriptItem.id)) {
+          throw new ValidationError('Duplicate scan script item identifier.')
+        }
+        const filename =
+          this.scanFilenames.get(scriptItem.id) ?? scriptItem.title
+        const parsed = parseFunscriptName(filename)
+        if (parsed === null) {
+          throw new ValidationError(
+            'A scan script pairing file is not a funscript.'
+          )
+        }
+        scriptItems.push(scriptItem.id)
+        scripts.set(scriptItem.id, {
+          axis: parsed.axis,
+          variant: parsed.variant
+        })
+      }
+
+      let primaryVariant: string | null = null
+      if (pairing.primaryVariant !== null) {
+        primaryVariant = cleanSafeText(
+          pairing.primaryVariant,
+          32,
+          'script version'
+        ).toLowerCase()
+      }
+      if (typeof pairing.rename !== 'boolean') {
+        throw new ValidationError('A scan script rename flag is invalid.')
+      }
+
+      pairings.push({
+        batchId,
+        videoItemId: videoBatchId as string,
+        setId: pairing.setId,
+        scriptItemIds: scriptItems,
+        primaryVariant,
+        rename: pairing.rename,
+        scripts,
+        settled: false
+      })
+    }
+
+    return pairings
   }
 
   /* ---------------------- batch creation from a preview ---------------------- */
@@ -1498,6 +1733,7 @@ export class BatchManager {
     const batch = this.requireBatch(input.batchId)
 
     this.batches.delete(batch.record.id)
+    this.scanPairings.delete(batch.record.id)
     for (const item of batch.items.values()) {
       this.dirtyItems.delete(item.id)
       this.scanRequestHeaders.delete(item.id)
@@ -1576,6 +1812,7 @@ export class BatchManager {
           if (child && this.applyDownloadChild(item, child)) changed = true
         }
       }
+      if (this.maybeSchedulePairRename(batch)) changed = true
       if (this.recomputeBatch(batch)) {
         this.persistBatchNow(batch)
         changed = true
@@ -1637,20 +1874,38 @@ export class BatchManager {
       }
     }
 
+    // A graceful shutdown before the video/scripts finish leaves a clear item
+    // label. A hard crash simply keeps the original script names.
+    for (const [batchId, pairings] of this.scanPairings) {
+      const batch = this.batches.get(batchId)
+      if (!batch) continue
+      for (const pairing of pairings) {
+        if (pairing.settled) continue
+        this.updatePairLabels(batch, pairing, PAIR_RENAME_APP_STOPPED)
+      }
+    }
+
     this.flushPersistence()
     this.scanRequestHeaders.clear()
     this.scanResolvedUrls.clear()
     this.scanFilenames.clear()
     this.scanMediaSelections.clear()
+    this.scanPairings.clear()
     this.resolveIdleWaiters()
   }
 
   /** Resolves when no scheduler pass is running or queued on the microtask. */
-  waitForIdle(): Promise<void> {
-    if (!this.pumping && !this.pumpScheduled) return Promise.resolve()
-    return new Promise<void>((resolve) => {
-      this.idleWaiters.push(resolve)
-    })
+  async waitForIdle(): Promise<void> {
+    if (this.pumping || this.pumpScheduled) {
+      await new Promise<void>((resolve) => {
+        this.idleWaiters.push(resolve)
+      })
+    }
+    // Pair renames run after the child status is reconciled; wait for them so
+    // tests and shutdown observe the final labels.
+    while (this.pairingTasks.size > 0) {
+      await Promise.allSettled([...this.pairingTasks])
+    }
   }
 
   publish(force = false): void {
@@ -1788,7 +2043,7 @@ export class BatchManager {
 
       const resolvedScanUrl =
         targetUrl === sourceUrl ? this.scanResolvedUrls.get(item.id) : undefined
-      const snapshot = (await this.downloads.add({
+      const addInput = {
         url: targetUrl,
         ...(filename ? { filename } : {}),
         ...(resolvedScanUrl === undefined
@@ -1797,7 +2052,18 @@ export class BatchManager {
         ...(this.scanRequestHeaders.has(item.id)
           ? { requestHeaders: this.scanRequestHeaders.get(item.id) }
           : {})
-      })) as AppSnapshot
+      }
+      // Paired funscripts go directly into the scanner's video folder so the
+      // post-download rename never moves a file across folders.
+      const pairedScriptDir =
+        this.scanMediaDir !== null &&
+        typeof this.downloads.addScanFile === 'function' &&
+        this.isPairedScript(batch, item.id)
+          ? this.scanMediaDir
+          : null
+      const snapshot = (pairedScriptDir === null
+        ? await this.downloads.add(addInput)
+        : await this.downloads.addScanFile!(addInput, pairedScriptDir)) as AppSnapshot
       if (!this.batches.has(batch.record.id)) {
         // The parent row was removed while `add` was in flight. The child row
         // is never deleted by a batch removal; pause it best effort so it does
@@ -2075,6 +2341,150 @@ export class BatchManager {
       this.markItemDirty(item)
     }
     return true
+  }
+
+  /**
+   * Trigger the post-download rename once the video and every chosen script
+   * are terminal. Failures settle the pair immediately with a safe label.
+   * Memory-only: after a restart the pair is gone and scripts keep their
+   * original names.
+   */
+  private maybeSchedulePairRename(batch: ManagedBatch): boolean {
+    const pairings = this.scanPairings.get(batch.record.id)
+    if (!pairings || pairings.length === 0) return false
+    let changed = false
+    for (const pairing of pairings) {
+      if (pairing.settled) continue
+      const video = batch.items.get(pairing.videoItemId)
+      const scripts = pairing.scriptItemIds.map((id) => batch.items.get(id))
+      if (
+        !video ||
+        scripts.some((script) => script === undefined) ||
+        !terminalItemStatus(video.status) ||
+        scripts.some((script) => !terminalItemStatus(script!.status))
+      ) {
+        continue
+      }
+      pairing.settled = true
+      if (video.status !== 'complete') {
+        changed =
+          this.updatePairLabels(batch, pairing, PAIR_RENAME_VIDEO_FAILED) ||
+          changed
+        continue
+      }
+      if (scripts.some((script) => script!.status !== 'complete')) {
+        changed =
+          this.updatePairLabels(
+            batch,
+            pairing,
+            PAIR_RENAME_SCRIPT_FAILED
+          ) || changed
+        continue
+      }
+      const task = this.runPairRename(batch, pairing)
+        .catch(() => {
+          this.applyPairLabels(batch, pairing, PAIR_RENAME_FAILED)
+        })
+        .finally(() => {
+          this.pairingTasks.delete(task)
+        })
+      this.pairingTasks.add(task)
+    }
+    if (changed) this.persistPairLabels(batch)
+    return changed
+  }
+
+  private async runPairRename(
+    batch: ManagedBatch,
+    pairing: ManagedScanPairing
+  ): Promise<void> {
+    if (!this.batches.has(batch.record.id)) return
+    const video = batch.items.get(pairing.videoItemId)
+    if (!video) return
+    const root = this.scanRootDir ?? this.scanMediaDir
+    if (root === null) {
+      this.applyPairLabels(batch, pairing, PAIR_RENAME_SCRIPT_FAILED)
+      return
+    }
+    const videoPath =
+      video.childId === null
+        ? null
+        : this.mediaJobs.getFilePath?.(video.childId) ?? null
+    const files = pairing.scriptItemIds.map((itemId) => {
+      const item = batch.items.get(itemId)
+      const script = pairing.scripts.get(itemId)
+      const path =
+        item?.childId == null
+          ? null
+          : this.downloads.getFilePath?.(item.childId) ?? null
+      return {
+        itemId,
+        filePath: path,
+        axis: script?.axis ?? null,
+        variant: script?.variant ?? null,
+        status: item?.status ?? 'error'
+      }
+    })
+    const result = await applyPairRename({
+      rootDir: root,
+      videoPath,
+      videoStatus: video.status,
+      files,
+      primaryVariant: pairing.primaryVariant,
+      rename: pairing.rename
+    })
+    if (result.status === 'renamed') {
+      for (const entry of result.renamed) {
+        const item = batch.items.get(entry.itemId)
+        if (item?.childId != null) {
+          this.downloads.adoptRenamedFile?.(item.childId, entry.path)
+        }
+      }
+      this.applyPairLabels(batch, pairing, 'Renamed to match video')
+      return
+    }
+    this.applyPairLabels(batch, pairing, result.reason)
+  }
+
+  private updatePairLabels(
+    batch: ManagedBatch,
+    pairing: ManagedScanPairing,
+    label: string
+  ): boolean {
+    let changed = false
+    const text = cleanSafeText(label, MAX_BATCH_LABEL_LENGTH, 'Scanned script')
+    for (const itemId of pairing.scriptItemIds) {
+      const item = batch.items.get(itemId)
+      if (!item || item.label === text) continue
+      item.label = text
+      item.updatedAt = this.now()
+      this.persistItemNow(item)
+      changed = true
+    }
+    return changed
+  }
+
+  private persistPairLabels(batch: ManagedBatch): void {
+    this.persistBatchNow(batch)
+    this.publish()
+  }
+
+  private applyPairLabels(
+    batch: ManagedBatch,
+    pairing: ManagedScanPairing,
+    label: string
+  ): void {
+    if (this.updatePairLabels(batch, pairing, label)) {
+      this.recomputeBatch(batch)
+      this.persistBatchNow(batch)
+      this.publish()
+    }
+  }
+
+  private isPairedScript(batch: ManagedBatch, itemId: string): boolean {
+    const pairings = this.scanPairings.get(batch.record.id)
+    if (!pairings) return false
+    return pairings.some((pairing) => pairing.scriptItemIds.includes(itemId))
   }
 
   /* ------------------------------ aggregate ------------------------------ */

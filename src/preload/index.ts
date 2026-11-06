@@ -36,6 +36,7 @@ import type { AppUpdateState } from '../shared/appUpdate'
 import type {
   ScanQueueResult,
   ScanQueueVideoOption,
+  ScanScriptPairingInput,
   ScanSession,
   ScanStartInput
 } from '../shared/scanner'
@@ -283,12 +284,14 @@ const api: DonDownloadApi = {
   queueScanSelection: (
     sessionId: string,
     itemIds: string[],
-    videoOptions?: ScanQueueVideoOption[]
+    videoOptions?: ScanQueueVideoOption[],
+    pairings?: ScanScriptPairingInput[]
   ) =>
     ipcRenderer.invoke(IPC.scanQueueSelection, {
       sessionId,
       itemIds,
-      ...(videoOptions === undefined ? {} : { videoOptions })
+      ...(videoOptions === undefined ? {} : { videoOptions }),
+      ...(pairings === undefined ? {} : { pairings })
     }) as Promise<ApiResult<ScanQueueResult>>,
   onScanUpdated: (listener: (session: ScanSession) => void) => {
     const handler = (

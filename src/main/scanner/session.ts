@@ -15,6 +15,8 @@ import {
   type ScanItem,
   type ScanItemKind,
   type ScanOrigin,
+  type ScanScriptPairingInput,
+  type ScanScriptSet,
   type ScanSession,
   type ScanSessionStatus,
   type ScanVideoFormat
@@ -56,6 +58,11 @@ import {
   type ScanMediaAnalyzer,
   type VideoResolution
 } from './videoResolver'
+import {
+  buildScanScriptSets,
+  buildScriptSetSources,
+  type PairingScanItem
+} from './pairing'
 
 /**
  * Ephemeral Smart Link Scanner sessions.
@@ -118,6 +125,21 @@ export interface ResolvedScanTarget {
   author: string | null
   /** Present only for a resolved video page link. */
   video?: ResolvedVideoTarget
+}
+
+/** Internal funscript pairing after session membership and set checks. */
+export interface ResolvedScriptPairing {
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
+  scripts: Array<{
+    itemId: string
+    filename: string
+    axis: string | null
+    variant: string | null
+  }>
 }
 
 type ScanCandidate = ExtractedCandidate & {
@@ -432,6 +454,178 @@ export class ScanSessionManager {
       })
     }
     return targets
+  }
+
+  /**
+   * Validate explicit funscript pairings against the live session. Every
+   * referenced item must be in the caller's selection, every script must belong
+   * to the named set, and the video must be a resolved video page link.
+   */
+  resolveScriptPairings(
+    rawSessionId: unknown,
+    rawPairings: readonly ScanScriptPairingInput[],
+    selectedItemIds: readonly string[]
+  ): ResolvedScriptPairing[] {
+    if (rawPairings.length === 0) return []
+    const id = this.requireSessionId(rawSessionId)
+    const session = this.requireSession(id)
+    if (session.expiresAt <= this.now()) {
+      this.deleteSession(id)
+      throw new AppError(
+        'SCAN_EXPIRED',
+        'This scan has expired. Scan the page again.'
+      )
+    }
+
+    const selected = new Set(selectedItemIds)
+    const sources = buildScriptSetSources(this.pairingItems(session))
+    const setById = new Map(sources.map((source) => [source.set.id, source.set]))
+    const resolved: ResolvedScriptPairing[] = []
+    const seenVideos = new Set<string>()
+    const seenSets = new Set<string>()
+    const claimedScripts = new Set<string>()
+
+    for (const pairing of rawPairings) {
+      const video = session.items.get(pairing.videoItemId)
+      if (
+        !video ||
+        video.category !== 'video' ||
+        video.kind !== 'page-link' ||
+        video.status !== 'ready' ||
+        video.videoAnalysis === null
+      ) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A paired video is not a resolved video in this scan.'
+        )
+      }
+      if (!selected.has(pairing.videoItemId)) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A paired video is not part of the selected items.'
+        )
+      }
+      if (seenVideos.has(pairing.videoItemId)) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'The same video cannot be paired twice.'
+        )
+      }
+      seenVideos.add(pairing.videoItemId)
+
+      if (seenSets.has(pairing.setId)) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'The same script set cannot be paired twice.'
+        )
+      }
+      seenSets.add(pairing.setId)
+
+      const set = setById.get(pairing.setId)
+      if (!set) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'That script set does not belong to this scan.'
+        )
+      }
+      const setFiles = new Map(
+        set.files.map((file) => [file.fileId, file])
+      )
+      const primaryVariant =
+        pairing.primaryVariant === null
+          ? null
+          : pairing.primaryVariant.trim().toLowerCase() || null
+      if (
+        primaryVariant !== null &&
+        !set.variants.some(
+          (variant) => variant.toLowerCase() === primaryVariant
+        )
+      ) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'That script version does not belong to the paired set.'
+        )
+      }
+
+      const scripts: ResolvedScriptPairing['scripts'] = []
+      for (const scriptItemId of pairing.scriptItemIds) {
+        const file = setFiles.get(scriptItemId)
+        if (!file) {
+          throw new AppError(
+            'SCAN_PAIRING_INVALID',
+            'A paired script does not belong to the chosen set.'
+          )
+        }
+        if (!selected.has(scriptItemId)) {
+          throw new AppError(
+            'SCAN_PAIRING_INVALID',
+            'A paired script is not part of the selected items.'
+          )
+        }
+        const item = session.items.get(scriptItemId)
+        if (
+          !item ||
+          item.category !== 'script' ||
+          item.kind !== 'file' ||
+          item.status === 'unavailable' ||
+          item.status === 'protected'
+        ) {
+          throw new AppError(
+            'SCAN_PAIRING_INVALID',
+            'A paired script is not downloadable in this scan.'
+          )
+        }
+        if (claimedScripts.has(scriptItemId)) {
+          throw new AppError(
+            'SCAN_PAIRING_INVALID',
+            'A script cannot belong to two pairings.'
+          )
+        }
+        claimedScripts.add(scriptItemId)
+        scripts.push({
+          itemId: scriptItemId,
+          filename: file.filename,
+          axis: file.axis,
+          variant: file.variant
+        })
+      }
+      if (scripts.length === 0) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A script pairing must include at least one script.'
+        )
+      }
+
+      resolved.push({
+        videoItemId: pairing.videoItemId,
+        setId: pairing.setId,
+        scriptItemIds: [...pairing.scriptItemIds],
+        primaryVariant,
+        rename: pairing.rename,
+        scripts
+      })
+    }
+
+    return resolved
+  }
+
+  /** Current script sets, recomputed from the live session items. */
+  private scriptSetsFor(session: StoredScanSession): ScanScriptSet[] {
+    return buildScanScriptSets(this.pairingItems(session))
+  }
+
+  private pairingItems(session: StoredScanSession): PairingScanItem[] {
+    return session.order
+      .map((id) => session.items.get(id))
+      .filter((item): item is StoredScanItem => item !== undefined)
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        category: item.category,
+        kind: item.kind,
+        postNumber: item.postNumber,
+        status: item.status
+      }))
   }
 
   /** Read-only snapshot for tests and focused orchestration. */
@@ -1157,6 +1351,7 @@ export class ScanSessionManager {
         queueableItems: items.filter(isQueueableScanItem).length
       },
       items,
+      scriptSets: this.scriptSetsFor(session),
       removedItemIds: [...session.removed],
       revision: session.revision,
       updatedAt: session.updatedAt
@@ -1220,6 +1415,7 @@ export class ScanSessionManager {
         queueableItems: allPublic.filter(isQueueableScanItem).length
       },
       items: changed,
+      scriptSets: this.scriptSetsFor(session),
       removedItemIds: removed,
       revision: session.revision + 1,
       updatedAt: session.updatedAt

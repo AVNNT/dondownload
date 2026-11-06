@@ -25,6 +25,7 @@ import type { AppUpdateState } from './appUpdate'
 import type {
   ScanQueueResult,
   ScanQueueVideoOption,
+  ScanScriptPairingInput,
   ScanSession,
   ScanStartInput
 } from './scanner'
@@ -348,7 +349,8 @@ export interface DonDownloadApi {
   queueScanSelection: (
     sessionId: string,
     itemIds: string[],
-    videoOptions?: ScanQueueVideoOption[]
+    videoOptions?: ScanQueueVideoOption[],
+    pairings?: ScanScriptPairingInput[]
   ) => Promise<ApiResult<ScanQueueResult>>
   onScanUpdated: (listener: (session: ScanSession) => void) => () => void
 }
