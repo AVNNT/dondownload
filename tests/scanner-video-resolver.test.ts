@@ -139,8 +139,8 @@ describe('video resolver', () => {
     const unsupported = await resolveOne(async () => {
       throw new AppError('MEDIA_UNSUPPORTED_MEDIA', 'unsupported')
     })
-    expect(unsupported.status).toBe('unavailable')
-    expect(unsupported.reason).toMatch(/No downloadable/)
+    expect(unsupported.status).toBe('browser-only')
+    expect(unsupported.reason).toMatch(/open it in your browser/)
   })
 
   it('turns a missing yt-dlp into a tool state without failing the scan', async () => {

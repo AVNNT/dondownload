@@ -151,7 +151,7 @@ describe('follow scoring', () => {
     ).toMatchObject({ reason: 'video-text' })
   })
 
-  it('never follows pagination, login, nofollow or external non-video links', () => {
+  it('never follows pagination, login or external non-video links', () => {
     expect(
       scoreFollowLink({ url: 'https://site.example/page/2', baseUrl: BASE })
     ).toBeNull()
@@ -165,14 +165,34 @@ describe('follow scoring', () => {
       scoreFollowLink({ url: 'https://site.example/category/action', baseUrl: BASE })
     ).toBeNull()
     expect(
+      scoreFollowLink({ url: 'https://other.example/article', baseUrl: BASE })
+    ).toBeNull()
+  })
+
+  it('treats Discourse nofollow as a ranking hint, not a hard block', () => {
+    // Discourse adds rel="nofollow ugc" to every user link. A video-shaped
+    // link is still followed at a lower priority; an article link stays out.
+    expect(
       scoreFollowLink({
         url: 'https://site.example/video/one',
         baseUrl: BASE,
-        rel: 'nofollow'
+        rel: 'nofollow ugc'
       })
-    ).toBeNull()
+    ).toMatchObject({ reason: 'video-path' })
     expect(
-      scoreFollowLink({ url: 'https://other.example/article', baseUrl: BASE })
+      scoreFollowLink({
+        url: 'https://unknown-video.example/watch?v=1234',
+        baseUrl: BASE,
+        rel: 'nofollow ugc',
+        text: 'watch on hanime1'
+      })
+    ).toMatchObject({ reason: 'video-path' })
+    expect(
+      scoreFollowLink({
+        url: 'https://site.example/article/random',
+        baseUrl: BASE,
+        rel: 'nofollow ugc'
+      })
     ).toBeNull()
   })
 
@@ -230,6 +250,7 @@ describe('recursive scanner discovery', () => {
         <a href="/page/2">next</a>
         <a href="/login">login</a>
         <a rel="nofollow" href="/video/nofollow">nofollow</a>
+        <a rel="nofollow ugc" href="/article/random">random article</a>
         <a href="https://other.example/article">external</a>
       `,
       'https://site.example/video/one': `
@@ -263,7 +284,8 @@ describe('recursive scanner discovery', () => {
     expect(fetched).toContain('https://site.example/video/four')
     expect(fetched).not.toContain('https://site.example/video/deep')
     expect(fetched).not.toContain('https://site.example/video/blocked')
-    expect(fetched).not.toContain('https://site.example/video/nofollow')
+    expect(fetched).toContain('https://site.example/video/nofollow')
+    expect(fetched).not.toContain('https://site.example/article/random')
     expect(fetched).not.toContain('https://site.example/page/2')
     expect(fetched).not.toContain('https://site.example/login')
     expect(fetched).not.toContain('https://other.example/article')

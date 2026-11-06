@@ -23,6 +23,9 @@ import type {
 import type { BrowserExtensionStatus } from './browserExtension'
 import type { AppUpdateState } from './appUpdate'
 import type {
+  ScanBrowserScriptSelection,
+  ScanManualMatchInput,
+  ScanManualMatchResult,
   ScanQueueResult,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
@@ -352,5 +355,18 @@ export interface DonDownloadApi {
     videoOptions?: ScanQueueVideoOption[],
     pairings?: ScanScriptPairingInput[]
   ) => Promise<ApiResult<ScanQueueResult>>
+  /**
+   * Open a browser-only card. The renderer sends opaque IDs only; the stored
+   * URL never crosses IPC. With a pairing, main also arms the browser hand-off.
+   */
+  openScanInBrowser: (
+    sessionId: string,
+    itemId: string,
+    pairing?: ScanBrowserScriptSelection
+  ) => Promise<ApiResult<null>>
+  /** Ask main for a local video file and queue the chosen scripts into it. */
+  pickScanMatchVideo: (
+    input: ScanManualMatchInput
+  ) => Promise<ApiResult<ScanManualMatchResult | null>>
   onScanUpdated: (listener: (session: ScanSession) => void) => () => void
 }

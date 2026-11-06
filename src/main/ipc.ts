@@ -25,9 +25,11 @@ import type {
   YtdlpUpdateState
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
-import type { ScanQueueResult, ScanSession } from '@shared/scanner'
+import type { ScanQueueResult, ScanManualMatchResult, ScanSession } from '@shared/scanner'
 import {
   parseScanCancelInput,
+  parseScanManualMatchInput,
+  parseScanOpenInBrowserInput,
   parseScanQueueSelectionInput,
   parseScanStartInput
 } from '@shared/scanner'
@@ -43,6 +45,8 @@ import type { NativeHostRegistrar } from './nativeHost/registration'
 import type { AppUpdateChecker } from './appUpdate/checker'
 import type { ScanSessionManager } from './scanner/session'
 import type { ScanQueueService } from './scanner/queue'
+import type { ManualMatchService } from './scanner/manualMatch'
+import { isPublicOpenableUrl } from './scanner/openExternal'
 import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
@@ -72,6 +76,8 @@ export interface IpcContext {
   scanner?: ScanSessionManager
   /** Explicit scanner selection queue path. */
   scanQueue?: ScanQueueService
+  /** Manual "Match to video file…" support. */
+  manualMatch?: ManualMatchService
   getWindow: () => BrowserWindow | null
 }
 
@@ -472,4 +478,50 @@ export function registerIpc(context: IpcContext): void {
       parsed.pairings
     )
   })
+
+  // Browser-only cards: the renderer sends opaque IDs only. Main resolves the
+  // stored URL, validates it as public HTTP(S) and opens the user's browser.
+  invoke<null>(IPC.scanOpenInBrowser, async (_event, input) => {
+    const parsed = parseScanOpenInBrowserInput(input)
+    const opened = scanner().openInBrowser(parsed.sessionId, parsed.itemId)
+    if (!isPublicOpenableUrl(opened.url)) {
+      throw new AppError(
+        'SCAN_URL_NOT_PUBLIC',
+        'That link cannot be opened because it is not a public web page.'
+      )
+    }
+    if (parsed.pairing !== undefined) {
+      scanner().armBrowserMatch(parsed.sessionId, parsed.itemId, {
+        videoItemId: parsed.itemId,
+        setId: parsed.pairing.setId,
+        scriptItemIds: parsed.pairing.scriptItemIds,
+        primaryVariant: parsed.pairing.primaryVariant,
+        rename: parsed.pairing.rename
+      })
+    }
+    try {
+      await shell.openExternal(opened.url)
+    } catch {
+      throw new AppError(
+        'SCAN_OPEN_FAILED',
+        'The link could not be opened in the browser.'
+      )
+    }
+    return null
+  })
+
+  invoke<ScanManualMatchResult | null>(
+    IPC.scanPickMatchVideo,
+    async (_event, input) => {
+      const parsed = parseScanManualMatchInput(input)
+      const service = context.manualMatch
+      if (!service) {
+        throw new AppError(
+          'SCAN_MATCH_UNAVAILABLE',
+          'Matching a script set to a local video is not available.'
+        )
+      }
+      return service.match(parsed)
+    }
+  )
 }

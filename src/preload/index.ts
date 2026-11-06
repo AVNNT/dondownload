@@ -34,6 +34,9 @@ import type {
 import type { BrowserExtensionStatus } from '../shared/browserExtension'
 import type { AppUpdateState } from '../shared/appUpdate'
 import type {
+  ScanBrowserScriptSelection,
+  ScanManualMatchInput,
+  ScanManualMatchResult,
   ScanQueueResult,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
@@ -293,6 +296,20 @@ const api: DonDownloadApi = {
       ...(videoOptions === undefined ? {} : { videoOptions }),
       ...(pairings === undefined ? {} : { pairings })
     }) as Promise<ApiResult<ScanQueueResult>>,
+  openScanInBrowser: (
+    sessionId: string,
+    itemId: string,
+    pairing?: ScanBrowserScriptSelection
+  ) =>
+    ipcRenderer.invoke(IPC.scanOpenInBrowser, {
+      sessionId,
+      itemId,
+      ...(pairing === undefined ? {} : { pairing })
+    }) as Promise<ApiResult<null>>,
+  pickScanMatchVideo: (input: ScanManualMatchInput) =>
+    ipcRenderer.invoke(IPC.scanPickMatchVideo, input) as Promise<
+      ApiResult<ScanManualMatchResult | null>
+    >,
   onScanUpdated: (listener: (session: ScanSession) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

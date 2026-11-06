@@ -161,6 +161,12 @@ export interface NativeBridgeOptions {
   /** Injectable DNS lookup for focused tests; production uses node:dns. */
   publicTargetLookup?: PublicTargetLookup
   /**
+   * Additive browser-only auto-match. Returns true when a pending pairing was
+   * consumed and the detected media was queued in a scanner batch; false keeps
+   * every existing sniffed-media behaviour unchanged.
+   */
+  browserMatch?: (input: SniffedMediaInput) => Promise<boolean>
+  /**
    * Additive bounded anonymous GET probe. Injectable for focused tests; the
    * production default never sends cookies, credentials or browser headers.
    */
@@ -644,6 +650,22 @@ export async function startNativeBridge(
       logger(`Detected media target rejected (${info.code}).`)
       sendError(response, 400, info.code, safeErrorMessage(info.message))
       return
+    }
+
+    if (options.browserMatch !== undefined) {
+      let matched: boolean
+      try {
+        matched = await options.browserMatch(input)
+      } catch (error) {
+        const info = toErrorInfo(error)
+        logger(`Browser match hand-off failed (${info.code}).`)
+        sendError(response, 503, info.code, safeErrorMessage(info.message))
+        return
+      }
+      if (matched) {
+        sendJson(response, 200, { ok: true, accepted: true })
+        return
+      }
     }
 
     if (input.kind === 'file') {

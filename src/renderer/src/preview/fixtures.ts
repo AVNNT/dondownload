@@ -52,7 +52,10 @@ import type {
 } from '@shared/types'
 import {
   isQueueableScanItem,
+  type ScanBrowserScriptSelection,
   type ScanItem,
+  type ScanManualMatchInput,
+  type ScanManualMatchResult,
   type ScanQueueResult,
   type ScanQueueVideoOption,
   type ScanScriptPairingInput,
@@ -784,6 +787,20 @@ export function createPreviewApi(
         sizeIsEstimate: true,
         formats: videoFormats,
         bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-hanime1',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Hanime1 Watch Video',
+        hostname: 'hanime1.me',
+        sizeBytes: null,
+        verified: false,
+        status: 'browser-only',
+        postNumber: 20,
+        author: 'demo-author',
+        unavailableReason:
+          "Can't be read automatically — open it in your browser."
       }
     ]
 
@@ -815,7 +832,8 @@ export function createPreviewApi(
       ...scriptFiles('Fancam 02 Wonyoung', 11, ['', '.hard', '.hard.roll']),
       ...scriptFiles('Fancam 03 Wonyoung', 12, ['.roll', '.pitch']),
       ...scriptFiles('Fancam 04 Wonyoung', 13, ['', '.roll']),
-      ...scriptFiles('Stage Mix Wonyoung', 16, ['', '.roll'])
+      ...scriptFiles('Stage Mix Wonyoung', 16, ['', '.roll']),
+      ...scriptFiles('Hanime1 Watch Video', 20, ['', '.roll', '.surge'])
     ]
 
     return [...baseItems, ...fancams, ...scripts]
@@ -1424,6 +1442,94 @@ export function createPreviewApi(
         batch: batches[0] ?? null,
         queuedItemIds: queueable.map((item) => item.id),
         skipped: []
+      })
+    },
+
+    openScanInBrowser: async (
+      sessionId: string,
+      itemId: string,
+      pairing?: ScanBrowserScriptSelection
+    ): Promise<ApiResult<null>> => {
+      if (scanSession === null || scanSession.sessionId !== sessionId) {
+        return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+      }
+      const item = scanSession.items.find((candidate) => candidate.id === itemId)
+      if (!item || item.status !== 'browser-only') {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          'Only a browser-only video card can be opened this way.'
+        )
+      }
+      if (pairing !== undefined) {
+        const updated: ScanItem = { ...item, browserMatchPending: true }
+        const updatedSession: ScanSession = {
+          ...scanSession,
+          items: scanSession.items.map((candidate) =>
+            candidate.id === itemId ? updated : candidate
+          ),
+          revision: scanSession.revision + 1,
+          updatedAt: now()
+        }
+        scanSession = updatedSession
+        for (const listener of scanListeners) {
+          listener({ ...updatedSession, items: [updated] })
+        }
+      }
+      return ok(null)
+    },
+
+    pickScanMatchVideo: async (
+      input: ScanManualMatchInput
+    ): Promise<ApiResult<ScanManualMatchResult | null>> => {
+      if (scanSession === null || scanSession.sessionId !== input.sessionId) {
+        return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+      }
+      const scripts = scanSession.items.filter((item) =>
+        input.scriptItemIds.includes(item.id)
+      )
+      if (scripts.length === 0) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          'Choose at least one script to match.'
+        )
+      }
+      const batchId = nextId('preview-batch')
+      const createdAt = now()
+      const items = scripts.map((script, position) =>
+        makeBatchItem({
+          id: nextId('preview-item'),
+          batchId,
+          position,
+          kind: 'download',
+          status: 'queued',
+          title: script.name,
+          label: 'Scanned file',
+          childId: null,
+          completedBytes: 0,
+          totalBytes: null,
+          errorMessage: null,
+          createdAt,
+          updatedAt: createdAt,
+          completedAt: null
+        })
+      )
+      const batch = finalizeBatch({
+        id: batchId,
+        kind: 'direct-urls',
+        title: `Scan: ${input.setId.replace(/^set:/u, '')}`,
+        status: 'queued',
+        progress: summarizeBatchItems(items),
+        errorMessage: null,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null,
+        items
+      })
+      batches.unshift(batch)
+      for (const listener of batchListeners) listener(batchSnapshot())
+      return ok({
+        batchId,
+        filename: `${scanSession.items.find((item) => item.id === input.videoItemId)?.name ?? 'Hanime1 Watch Video'}.mp4`
       })
     },
 

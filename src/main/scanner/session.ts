@@ -77,6 +77,12 @@ export const SCAN_UPDATE_THROTTLE_MS = 150
 export const MAX_ACTIVE_SCANS = 2
 const MAX_STORED_SCANS = 16
 
+/**
+ * A browser-only card keeps a pending pairing for this long. It is memory-only:
+ * a restart simply forgets it and the extension hand-off behaves normally.
+ */
+export const BROWSER_MATCH_TTL_MS = 30 * 60_000
+
 export type ScanPageFetcher = (
   input: ScanFetchInput,
   options?: ScanFetchOptions
@@ -142,6 +148,35 @@ export interface ResolvedScriptPairing {
   }>
 }
 
+/** One script resolved for a browser hand-off, with its exact-host cookie. */
+export interface BrowserPairingScript {
+  itemId: string
+  url: string
+  filename: string
+  axis: string | null
+  variant: string | null
+  /** Only present when the script URL host equals the scan's cookie host. */
+  cookie?: string
+}
+
+/**
+ * Memory-only pairing remembered when the user opens a browser-only video.
+ * The normalized page URL is the join key for the later extension hand-off.
+ */
+export interface PendingBrowserPairing {
+  pageUrl: string
+  origin: string
+  sessionId: string
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
+  videoTitle: string
+  scripts: BrowserPairingScript[]
+  expiresAt: number
+}
+
 type ScanCandidate = ExtractedCandidate & {
   postNumber?: number | null
   author?: string | null
@@ -156,6 +191,8 @@ interface StoredScanItem extends ScanItem {
   videoIdentity: string | null
   /** Analysis association used by the explicit queue path. */
   videoAnalysis: ResolvedVideoTarget | null
+  /** True while a browser-only card has an armed hand-off pairing. */
+  browserMatchPending: boolean
 }
 
 interface StoredScanSession {
@@ -257,6 +294,8 @@ export class ScanSessionManager {
   private readonly sessionBudgetMs: number
   private readonly onUpdate: (session: ScanSession) => void
   private readonly sessions = new Map<string, StoredScanSession>()
+  /** Memory-only pending browser hand-offs, keyed by normalized page URL. */
+  private readonly browserPairings = new Map<string, PendingBrowserPairing>()
   private closed = false
 
   constructor(options: ScanSessionOptions) {
@@ -464,7 +503,8 @@ export class ScanSessionManager {
   resolveScriptPairings(
     rawSessionId: unknown,
     rawPairings: readonly ScanScriptPairingInput[],
-    selectedItemIds: readonly string[]
+    selectedItemIds: readonly string[],
+    options: { allowBrowserOnly?: boolean } = {}
   ): ResolvedScriptPairing[] {
     if (rawPairings.length === 0) return []
     const id = this.requireSessionId(rawSessionId)
@@ -487,16 +527,24 @@ export class ScanSessionManager {
 
     for (const pairing of rawPairings) {
       const video = session.items.get(pairing.videoItemId)
-      if (
-        !video ||
-        video.category !== 'video' ||
-        video.kind !== 'page-link' ||
-        video.status !== 'ready' ||
-        video.videoAnalysis === null
-      ) {
+      const readyVideo =
+        video !== undefined &&
+        video.category === 'video' &&
+        video.kind === 'page-link' &&
+        video.status === 'ready' &&
+        video.videoAnalysis !== null
+      const browserOnlyVideo =
+        video !== undefined &&
+        options.allowBrowserOnly === true &&
+        video.category === 'video' &&
+        video.kind === 'page-link' &&
+        video.status === 'browser-only'
+      if (!video || (!readyVideo && !browserOnlyVideo)) {
         throw new AppError(
           'SCAN_PAIRING_INVALID',
-          'A paired video is not a resolved video in this scan.'
+          options.allowBrowserOnly === true
+            ? 'A paired video is not a browser-only or resolved video in this scan.'
+            : 'A paired video is not a resolved video in this scan.'
         )
       }
       if (!selected.has(pairing.videoItemId)) {
@@ -609,6 +657,269 @@ export class ScanSessionManager {
     return resolved
   }
 
+  /**
+   * Validate that a card may be opened in the user's browser and return the
+   * internal URL. Only a browser-only video page link qualifies.
+   */
+  openInBrowser(
+    rawSessionId: unknown,
+    rawItemId: unknown
+  ): { url: string; pageUrl: string } {
+    this.assertOpen()
+    const id = this.requireSessionId(rawSessionId)
+    const session = this.requireSession(id)
+    if (session.expiresAt <= this.now()) {
+      this.deleteSession(id)
+      throw new AppError(
+        'SCAN_EXPIRED',
+        'This scan has expired. Scan the page again.'
+      )
+    }
+    if (typeof rawItemId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(rawItemId)) {
+      throw new ValidationError('Invalid scan item identifier.')
+    }
+    const item = session.items.get(rawItemId)
+    if (
+      !item ||
+      item.category !== 'video' ||
+      item.kind !== 'page-link' ||
+      item.status !== 'browser-only'
+    ) {
+      throw new AppError(
+        'SCAN_ITEM_NOT_BROWSER_ONLY',
+        'Only a video card that needs your browser can be opened this way.'
+      )
+    }
+    let pageUrl: string
+    try {
+      pageUrl = normalizeScanUrl(item.url)
+    } catch {
+      throw new AppError('SCAN_ITEM_INVALID', 'That video link is not valid.')
+    }
+    return { url: item.url, pageUrl }
+  }
+
+  /**
+   * Remember a chosen script pairing for a browser-only page. The extension
+   * hand-off consumes it once when the same normalized page URL is detected.
+   */
+  armBrowserMatch(
+    rawSessionId: unknown,
+    rawItemId: unknown,
+    pairing: ScanScriptPairingInput
+  ): { pageUrl: string } {
+    const opened = this.openInBrowser(rawSessionId, rawItemId)
+    const session = this.requireSession(String(rawSessionId))
+    const video = session.items.get(String(rawItemId))
+    if (!video) {
+      throw new AppError('SCAN_ITEM_NOT_FOUND', 'That video is not in this scan.')
+    }
+    const resolved = this.resolveScriptPairings(
+      rawSessionId,
+      [pairing],
+      [video.id, ...pairing.scriptItemIds],
+      { allowBrowserOnly: true }
+    )
+    const match = resolved[0]
+    if (!match) {
+      throw new AppError(
+        'SCAN_PAIRING_INVALID',
+        'That script pairing is not valid for this scan.'
+      )
+    }
+    const scripts: BrowserPairingScript[] = []
+    for (const script of match.scripts) {
+      const item = session.items.get(script.itemId)
+      if (!item) continue
+      const cookie = this.cookieFor(session, item.url)
+      scripts.push({
+        itemId: script.itemId,
+        url: item.url,
+        filename: script.filename,
+        axis: script.axis,
+        variant: script.variant,
+        ...(cookie === null ? {} : { cookie })
+      })
+    }
+    if (scripts.length === 0) {
+      throw new AppError(
+        'SCAN_PAIRING_INVALID',
+        'That script pairing has no downloadable scripts.'
+      )
+    }
+
+    this.pruneBrowserPairings()
+    this.browserPairings.set(opened.pageUrl, {
+      pageUrl: opened.pageUrl,
+      origin: new URL(opened.pageUrl).origin,
+      sessionId: session.id,
+      videoItemId: video.id,
+      setId: match.setId,
+      scriptItemIds: [...match.scriptItemIds],
+      primaryVariant: match.primaryVariant,
+      rename: match.rename,
+      videoTitle: video.name,
+      scripts,
+      expiresAt: this.now() + BROWSER_MATCH_TTL_MS
+    })
+    video.browserMatchPending = true
+    this.touch(session)
+    this.publish(session, true)
+    return { pageUrl: opened.pageUrl }
+  }
+
+  /**
+   * Consume a pending browser pairing by exact normalized page URL. Returns
+   * null when nothing matches (the normal hand-off path then stays unchanged).
+   */
+  consumeBrowserMatch(rawPageUrl: unknown): PendingBrowserPairing | null {
+    if (typeof rawPageUrl !== 'string') return null
+    let pageUrl: string
+    try {
+      pageUrl = normalizeScanUrl(rawPageUrl)
+    } catch {
+      return null
+    }
+    this.pruneBrowserPairings()
+    const pending = this.browserPairings.get(pageUrl)
+    if (!pending) return null
+    try {
+      if (new URL(pageUrl).origin !== pending.origin) return null
+    } catch {
+      return null
+    }
+    this.browserPairings.delete(pageUrl)
+    const session = this.sessions.get(pending.sessionId)
+    const item = session?.items.get(pending.videoItemId)
+    if (item) {
+      item.browserMatchPending = false
+      if (session) {
+        this.touch(session)
+        this.publish(session, true)
+      }
+    }
+    return pending
+  }
+
+  private pruneBrowserPairings(): void {
+    const current = this.now()
+    for (const [key, pending] of this.browserPairings) {
+      if (pending.expiresAt > current) continue
+      this.browserPairings.delete(key)
+      const session = this.sessions.get(pending.sessionId)
+      const item = session?.items.get(pending.videoItemId)
+      if (item) item.browserMatchPending = false
+    }
+  }
+
+  /**
+   * Validate a manual "Match to video file…" script pick without any video
+   * item. Used when the user starts from a script-set row as well as from a
+   * browser-only card.
+   */
+  resolveManualScripts(
+    rawSessionId: unknown,
+    input: {
+      setId: string
+      scriptItemIds: readonly string[]
+      primaryVariant: string | null
+      rename: boolean
+    }
+  ): {
+    setId: string
+    base: string
+    primaryVariant: string | null
+    rename: boolean
+    scripts: BrowserPairingScript[]
+  } {
+    const id = this.requireSessionId(rawSessionId)
+    const session = this.requireSession(id)
+    if (session.expiresAt <= this.now()) {
+      this.deleteSession(id)
+      throw new AppError(
+        'SCAN_EXPIRED',
+        'This scan has expired. Scan the page again.'
+      )
+    }
+    const sources = buildScriptSetSources(this.pairingItems(session))
+    const source = sources.find((entry) => entry.set.id === input.setId)
+    if (!source) {
+      throw new AppError(
+        'SCAN_PAIRING_INVALID',
+        'That script set does not belong to this scan.'
+      )
+    }
+    const primaryVariant =
+      input.primaryVariant === null
+        ? null
+        : input.primaryVariant.trim().toLowerCase() || null
+    if (
+      primaryVariant !== null &&
+      !source.set.variants.some(
+        (variant) => variant.toLowerCase() === primaryVariant
+      )
+    ) {
+      throw new AppError(
+        'SCAN_PAIRING_INVALID',
+        'That script version does not belong to the chosen set.'
+      )
+    }
+    const files = new Map(source.set.files.map((file) => [file.fileId, file]))
+    const claimed = new Set<string>()
+    const scripts: BrowserPairingScript[] = []
+    for (const scriptItemId of input.scriptItemIds) {
+      const file = files.get(scriptItemId)
+      if (!file) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A paired script does not belong to the chosen set.'
+        )
+      }
+      if (claimed.has(scriptItemId)) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A script cannot be chosen twice.'
+        )
+      }
+      claimed.add(scriptItemId)
+      const item = session.items.get(scriptItemId)
+      if (
+        !item ||
+        item.category !== 'script' ||
+        item.kind !== 'file' ||
+        item.status === 'unavailable' ||
+        item.status === 'protected'
+      ) {
+        throw new AppError(
+          'SCAN_PAIRING_INVALID',
+          'A paired script is not downloadable in this scan.'
+        )
+      }
+      const cookie = this.cookieFor(session, item.url)
+      scripts.push({
+        itemId: scriptItemId,
+        url: item.url,
+        filename: file.filename,
+        axis: file.axis,
+        variant: file.variant,
+        ...(cookie === null ? {} : { cookie })
+      })
+    }
+    if (scripts.length === 0) {
+      throw new AppError(
+        'SCAN_PAIRING_INVALID',
+        'A script pairing must include at least one script.'
+      )
+    }
+    return {
+      setId: source.set.id,
+      base: source.set.base,
+      primaryVariant,
+      rename: input.rename,
+      scripts
+    }
+  }
+
   /** Current script sets, recomputed from the live session items. */
   private scriptSetsFor(session: StoredScanSession): ScanScriptSet[] {
     return buildScanScriptSets(this.pairingItems(session))
@@ -658,6 +969,7 @@ export class ScanSessionManager {
       }
     }
     this.sessions.clear()
+    this.browserPairings.clear()
   }
 
   private async run(session: StoredScanSession): Promise<void> {
@@ -879,7 +1191,8 @@ export class ScanSessionManager {
           : null,
       url: normalized,
       videoIdentity: identity,
-      videoAnalysis: null
+      videoAnalysis: null,
+      browserMatchPending: false
     }
     session.items.set(id, item)
     session.order.push(id)
@@ -1328,11 +1641,13 @@ export class ScanSessionManager {
         : { bestOptionId: item.bestOptionId }),
       ...(item.unavailableReason === undefined
         ? {}
-        : { unavailableReason: item.unavailableReason })
+        : { unavailableReason: item.unavailableReason }),
+      ...(item.browserMatchPending ? { browserMatchPending: true } : {})
     }
   }
 
   private fullSnapshot(session: StoredScanSession): ScanSession {
+    this.pruneBrowserPairings()
     const items = session.order
       .map((id) => session.items.get(id))
       .filter((item): item is StoredScanItem => item !== undefined)
@@ -1371,6 +1686,7 @@ export class ScanSessionManager {
 
   private publish(session: StoredScanSession, force: boolean): void {
     if (this.closed) return
+    this.pruneBrowserPairings()
     if (!force) {
       const elapsed = this.now() - session.lastEmitAt
       if (elapsed < SCAN_UPDATE_THROTTLE_MS) {

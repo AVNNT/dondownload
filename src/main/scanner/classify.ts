@@ -135,7 +135,59 @@ const VIDEO_HOSTS = new Set([
   'instagram.com',
   'www.instagram.com',
   'facebook.com',
-  'www.facebook.com'
+  'www.facebook.com',
+  'hanime1.me',
+  'www.hanime1.me'
+])
+
+/**
+ * Path keywords that strongly suggest a single video/player page. The keyword
+ * must be followed by an id-like segment (`/video/123`, `/v/abc`) or, for
+ * `/watch`, carry a `v` query parameter. Listings (`/videos`, `/tags/…`),
+ * random articles and direct file paths are deliberately rejected.
+ */
+const VIDEO_PAGE_SEGMENTS = new Set([
+  'watch',
+  'video',
+  'videos',
+  'v',
+  'embed',
+  'player',
+  'clip',
+  'clips',
+  'movie',
+  'movies',
+  'episode',
+  'episodes',
+  'stream',
+  'streams',
+  'reel',
+  'reels',
+  'shorts'
+])
+
+const NON_VIDEO_PAGE_SEGMENTS = new Set([
+  'tag',
+  'tags',
+  'category',
+  'categories',
+  'genre',
+  'genres',
+  'search',
+  'login',
+  'signin',
+  'sign-in',
+  'signup',
+  'register',
+  'account',
+  'settings',
+  'playlist',
+  'playlists',
+  'results',
+  'feed',
+  'user',
+  'users',
+  'profile'
 ])
 
 function safeName(value: string, fallback: string): string {
@@ -250,6 +302,65 @@ export function isVideoPageHost(hostname: string): boolean {
   return host.endsWith('.youtube.com') || host.endsWith('.vimeo.com')
 }
 
+/**
+ * Conservative, network-free hint that a URL is a single video page rather
+ * than an article or a direct file. It is used for video cards that cannot be
+ * resolved (browser-only) and for deciding whether a followed link is worth a
+ * bounded fetch. It never turns a URL into a direct file.
+ */
+export function isLikelyVideoPageUrl(raw: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  if (parsed.username !== '' || parsed.password !== '') return false
+
+  const path = pathnameOf(parsed.href).replace(/\/+$/, '')
+  const extension = extensionOfPath(path)
+  if (extension !== null && !PAGE_EXTENSIONS.has(extension)) return false
+
+  const segments = path
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment).toLowerCase()
+      } catch {
+        return segment.toLowerCase()
+      }
+    })
+  if (segments.length === 0) return false
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]
+    if (segment === undefined || !VIDEO_PAGE_SEGMENTS.has(segment)) continue
+    const next = segments[index + 1]
+    if (next !== undefined) {
+      // `/videos` and `/video/videos` are listings, not a single video.
+      if (NON_VIDEO_PAGE_SEGMENTS.has(next)) continue
+      if (VIDEO_PAGE_SEGMENTS.has(next)) continue
+      if (next.length > 0 && next.length <= 128) return true
+      continue
+    }
+    if (segment === 'watch' && hasNonEmptyQuery(parsed, 'v')) return true
+    if (
+      (segment === 'video' || segment === 'v') &&
+      (hasNonEmptyQuery(parsed, 'v') || hasNonEmptyQuery(parsed, 'id'))
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasNonEmptyQuery(parsed: URL, key: string): boolean {
+  const value = parsed.searchParams.get(key)
+  return typeof value === 'string' && value.trim().length > 0
+}
+
 function displayNameFor(
   input: ClassifyScanCandidateInput,
   contentDispositionFilename: string | null,
@@ -328,9 +439,10 @@ export function classifyScanCandidate(
   }
 
   // Linked video pages are listed as page links and resolved by a later phase.
+  // An unknown host is trusted only for a conservative single-video path.
   if (
     hostname.length > 0 &&
-    isVideoPageHost(hostname) &&
+    (isVideoPageHost(hostname) || isLikelyVideoPageUrl(input.url)) &&
     (pathExtension === null || !VIDEO_EXTENSIONS.has(pathExtension))
   ) {
     return { category: 'video', kind: 'page-link', name, extension }
