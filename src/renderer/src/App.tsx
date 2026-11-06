@@ -1068,29 +1068,39 @@ export default function App(): JSX.Element {
       <header className="window-app-header relative shrink-0 border-b border-white/[0.07] surface-app">
         <div aria-hidden="true" className="window-drag-region absolute left-0 top-0" />
         <div className="window-app-header-content relative z-10 flex h-14 items-center gap-3 pl-4">
-          <button
-            type="button"
-            onClick={() => setPage('library')}
-            className="flex shrink-0 items-center gap-2.5 select-none"
-            title={page === 'library' ? undefined : 'Back to downloads'}
-          >
-            <span
-              aria-hidden="true"
-              className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-accent-500 text-on-accent"
-            >
-              <Icon name="download" size={17} strokeWidth={2} />
-            </span>
-            {page === 'library' ? (
+          {page === 'library' ? (
+            /* Non-interactive on the library page so the logo and app name
+             * stay inside the header drag region. */
+            <div className="flex shrink-0 items-center gap-2.5 select-none">
+              <span
+                aria-hidden="true"
+                className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-accent-500 text-on-accent"
+              >
+                <Icon name="download" size={17} strokeWidth={2} />
+              </span>
               <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-100">
                 DonDownload
               </h1>
-            ) : (
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setPage('library')}
+              className="flex shrink-0 items-center gap-2.5 select-none"
+              title="Back to downloads"
+            >
+              <span
+                aria-hidden="true"
+                className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-accent-500 text-on-accent"
+              >
+                <Icon name="download" size={17} strokeWidth={2} />
+              </span>
               <span className="flex items-center gap-1 text-sm font-semibold text-zinc-100">
                 <Icon name="chevron-left" size={15} />
                 Downloads
               </span>
-            )}
-          </button>
+            </button>
+          )}
 
           <div className="ml-auto flex items-center gap-2">
             <div
