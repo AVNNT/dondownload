@@ -8,6 +8,7 @@ import {
 } from 'react'
 import {
   isQueueableScanItem,
+  type ScanBrowserScriptSelection,
   type ScanCategory,
   type ScanItem,
   type ScanQueueVideoOption,
@@ -73,6 +74,7 @@ function statusTone(status: ScanItem['status']): StatusTone {
   if (status === 'probing') return 'active'
   if (status === 'signin') return 'warning'
   if (status === 'unavailable' || status === 'protected') return 'failed'
+  if (status === 'browser-only') return 'warning'
   if (status === 'tool-unavailable') return 'warning'
   return 'queued'
 }
@@ -83,6 +85,7 @@ function statusLabel(status: ScanItem['status']): string {
   if (status === 'signin') return 'Sign-in needed'
   if (status === 'protected') return 'Protected'
   if (status === 'unavailable') return 'Unavailable'
+  if (status === 'browser-only') return 'Open in browser'
   if (status === 'tool-unavailable') return 'yt-dlp missing'
   return 'Found'
 }
@@ -250,6 +253,8 @@ export function ScanPanel({
   const [primaryChoice, setPrimaryChoice] = useState<Record<string, string>>({})
   const [renameChoice, setRenameChoice] = useState<Record<string, boolean>>({})
   const [expandedSets, setExpandedSets] = useState<Record<string, boolean>>({})
+  const [matchingKey, setMatchingKey] = useState<string | null>(null)
+  const [openingItemId, setOpeningItemId] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
   const sessionIdRef = useRef<string | null>(initialSession?.sessionId ?? null)
@@ -603,6 +608,97 @@ export function ScanPanel({
     queueItems(ids)
   }
 
+  const browserPairingForSet = (
+    set: ScanScriptSet
+  ): ScanBrowserScriptSelection | undefined => {
+    const scriptItemIds = selectableFileIds(selectedFilesForSet(set))
+    if (scriptItemIds.length === 0) return undefined
+    const primary = primaryForSet(set)
+    return {
+      setId: set.id,
+      scriptItemIds,
+      primaryVariant: primary.length > 0 ? primary : null,
+      rename: renameForSet(set)
+    }
+  }
+
+  const openInBrowser = (item: ScanItem): void => {
+    if (session === null || openingItemId !== null) return
+    const pairedSet = setById.get(chosenSetIdFor(item.id)) ?? null
+    const pairing = pairedSet ? browserPairingForSet(pairedSet) : undefined
+    setOpeningItemId(item.id)
+    setError(null)
+    setNotice(null)
+    void window.donDownload
+      .openScanInBrowser(session.sessionId, item.id, pairing)
+      .then((result) => {
+        setOpeningItemId(null)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+        setNotice(
+          pairing
+            ? 'Opened in your browser. Waiting for the video from the browser… play it there.'
+            : 'Opened in your browser.'
+        )
+      })
+      .catch((reason: unknown) => {
+        setOpeningItemId(null)
+        setError({
+          code: 'SCAN_OPEN_FAILED',
+          message:
+            reason instanceof Error
+              ? reason.message
+              : 'The link could not be opened in the browser.'
+        })
+      })
+  }
+
+  const matchToVideoFile = (
+    key: string,
+    set: ScanScriptSet,
+    videoItemId: string | null
+  ): void => {
+    if (session === null || matchingKey !== null) return
+    const scriptItemIds = selectableFileIds(selectedFilesForSet(set))
+    if (scriptItemIds.length === 0) return
+    const primary = primaryForSet(set)
+    setMatchingKey(key)
+    setError(null)
+    setNotice(null)
+    void window.donDownload
+      .pickScanMatchVideo({
+        sessionId: session.sessionId,
+        videoItemId,
+        setId: set.id,
+        scriptItemIds,
+        primaryVariant: primary.length > 0 ? primary : null,
+        rename: renameForSet(set)
+      })
+      .then((result) => {
+        setMatchingKey(null)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+        if (result.value === null) return
+        setNotice(
+          `Matched ${result.value.filename}: the chosen scripts are downloading next to it and will be renamed when they finish.`
+        )
+      })
+      .catch((reason: unknown) => {
+        setMatchingKey(null)
+        setError({
+          code: 'SCAN_MATCH_FAILED',
+          message:
+            reason instanceof Error
+              ? reason.message
+              : 'The script set could not be matched to that video.'
+        })
+      })
+  }
+
   const scanning = session?.status === 'scanning'
   const progress = session?.progress
   const counters = session?.counters
@@ -879,6 +975,22 @@ export function ScanPanel({
                                     >
                                       {allSelected ? 'Clear' : 'Select all axes'}
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        matchToVideoFile(
+                                          `set:${set.id}`,
+                                          set,
+                                          null
+                                        )
+                                      }
+                                      disabled={disabled || matchingKey !== null}
+                                      className="text-[10.5px] text-sky-300 transition hover:text-sky-200 disabled:opacity-50"
+                                    >
+                                      {matchingKey === `set:${set.id}`
+                                        ? 'Choose video…'
+                                        : 'Match to video file…'}
+                                    </button>
                                   </div>
                                   {expanded ? (
                                     <ul className="mt-1.5 flex flex-col gap-1 pl-5">
@@ -1099,8 +1211,32 @@ export function ScanPanel({
                                         {reason}
                                       </p>
                                     ) : null}
-                                    {item.status === 'ready' &&
-                                    scriptSets.length > 0 ? (
+                                    {item.status === 'browser-only' ? (
+                                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => openInBrowser(item)}
+                                          disabled={disabled || openingItemId !== null}
+                                          className="h-7 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                          {openingItemId === item.id
+                                            ? 'Opening…'
+                                            : 'Open in browser'}
+                                        </button>
+                                        <span className="text-[10px] text-zinc-500">
+                                          Can&apos;t be read automatically — open it in your browser.
+                                        </span>
+                                      </div>
+                                    ) : null}
+                                    {item.browserMatchPending === true ? (
+                                      <p className="mt-1 text-[10.5px] leading-4 text-sky-200">
+                                        Waiting for the video from your browser… play it there.
+                                        The chosen scripts download with it.
+                                      </p>
+                                    ) : null}
+                                    {scriptSets.length > 0 &&
+                                    item.status !== 'probing' &&
+                                    item.status !== 'signin' ? (
                                       <div className="mt-2 rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/[0.04] px-2 py-1.5">
                                         <div className="flex flex-wrap items-center gap-2">
                                           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fuchsia-200/80">
@@ -1305,11 +1441,32 @@ export function ScanPanel({
                                                   disabled ||
                                                   queuing ||
                                                   !queueableItem ||
+                                                  item.status !== 'ready' ||
                                                   pairingFiles.length === 0
                                                 }
                                                 className="h-7 rounded-md border border-fuchsia-400/30 bg-fuchsia-400/10 px-2.5 text-[11px] font-medium text-fuchsia-100 transition hover:bg-fuchsia-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                                               >
                                                 Download video + scripts
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  matchToVideoFile(
+                                                    `video:${item.id}`,
+                                                    pairedSet,
+                                                    item.id
+                                                  )
+                                                }
+                                                disabled={
+                                                  disabled ||
+                                                  matchingKey !== null ||
+                                                  pairingFiles.length === 0
+                                                }
+                                                className="h-7 rounded-md border border-white/15 px-2.5 text-[11px] font-medium text-zinc-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+                                              >
+                                                {matchingKey === `video:${item.id}`
+                                                  ? 'Choose video…'
+                                                  : 'Match to video file…'}
                                               </button>
                                               <span className="text-[10px] text-zinc-500">
                                                 {pairingFiles.length} script
