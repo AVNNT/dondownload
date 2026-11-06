@@ -33,6 +33,7 @@ const readyProbe: ProbeScanItemFn = async (input) => {
     contentType,
     contentDisposition: null,
     sizeBytes: 1024,
+    finalUrl: input.url,
     classification: classifyScanCandidate({
       url: input.url,
       contentType
@@ -101,6 +102,7 @@ describe('scan sessions', () => {
       contentType: 'text/html',
       contentDisposition: null,
       sizeBytes: null,
+      finalUrl: null,
       classification: classifyScanCandidate({
         url: input.url,
         contentType: 'text/html'
@@ -197,6 +199,7 @@ describe('scan sessions', () => {
         contentType: 'application/zip',
         contentDisposition: null,
         sizeBytes: 10,
+        finalUrl: input.url,
         classification: classifyScanCandidate({
           url: input.url,
           contentType: 'application/zip'

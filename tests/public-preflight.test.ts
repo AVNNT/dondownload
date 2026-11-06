@@ -104,22 +104,24 @@ describe('bounded anonymous hand-off preflight', () => {
 
     seen.length = 0
     // Referer and User-Agent may follow a same-site redirect, but a Cookie must
-    // not cross hosts. With a cookie present the preflight fails closed.
-    await expect(
-      preflightPublicResource(
-        {
-          url: `http://public.example:${port}/other-host`,
-          requestHeaders: {
-            referer: 'https://public.example/page',
-            userAgent: 'BrowserAgent/1.0',
-            cookie: 'auth=1'
-          }
-        },
-        { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
-      )
-    ).rejects.toMatchObject({ code: 'HANDOFF_PREFLIGHT_FAILED' })
-    expect(seen).toHaveLength(1)
+    // not cross hosts. The preflight continues anonymously and reports the
+    // final URL so the download manager can hand that target to aria2 without
+    // the cookie.
+    const crossHost = await preflightPublicResource(
+      {
+        url: `http://public.example:${port}/other-host`,
+        requestHeaders: {
+          referer: 'https://public.example/page',
+          userAgent: 'BrowserAgent/1.0',
+          cookie: 'auth=1'
+        }
+      },
+      { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
+    )
+    expect(crossHost.finalUrl).toBe(`http://other.example:${port}/file.zip`)
+    expect(seen).toHaveLength(2)
     expect(seen[0]!.cookie).toBe('auth=1')
+    expect(seen[1]!.cookie).toBeUndefined()
 
     seen.length = 0
     await preflightPublicResource(

@@ -11,6 +11,7 @@ import type { Aria2State } from '../src/shared/types'
 import type { Aria2Service } from '../src/main/aria2/service'
 import { openDownloadDatabase, type DownloadDatabase } from '../src/main/db/database'
 import { DownloadManager } from '../src/main/downloads/manager'
+import type { CookieTargetResolver } from '../src/main/downloads/manager'
 import {
   startNativeBridge,
   type BridgeDownloadManager,
@@ -44,7 +45,8 @@ async function makeWorkspace(): Promise<{
 
 function createManager(
   database: DownloadDatabase | null,
-  downloadDir: string
+  downloadDir: string,
+  options: { resolveCookieTarget?: CookieTargetResolver } = {}
 ): { manager: DownloadManager; calls: AriaCall[]; gids: string[] } {
   const calls: AriaCall[] = []
   const gids: string[] = []
@@ -87,7 +89,12 @@ function createManager(
     downloadDir,
     () => undefined,
     database,
-    { now: () => 1_800_000_000_000 }
+    {
+      now: () => 1_800_000_000_000,
+      ...(options.resolveCookieTarget === undefined
+        ? {}
+        : { resolveCookieTarget: options.resolveCookieTarget })
+    }
   )
   managers.push(manager)
   return { manager, calls, gids }
@@ -116,7 +123,9 @@ afterEach(async () => {
 describe('browser login jobs stay out of persistence', () => {
   it('passes one-job headers to aria2, stores no cookie, and fails honestly after restart', async () => {
     const { dir, database, downloadDir } = await makeWorkspace()
-    const { manager, calls } = createManager(database, downloadDir)
+    const { manager, calls } = createManager(database, downloadDir, {
+      resolveCookieTarget: async (input) => ({ finalUrl: input.url })
+    })
     const cookie = 'session=super-secret-cookie-value'
     const receipt = await manager.addDurable({
       url: 'https://example.com/files/report.zip',
@@ -289,5 +298,55 @@ describe('strict durable hand-off', () => {
       ok: false,
       error: { code: 'HANDOFF_UNAVAILABLE' }
     })
+  })
+
+  it('reuses the hand-off preflight final URL so a cross-host redirect reaches aria2 without the cookie', async () => {
+    const { dir, database, downloadDir } = await makeWorkspace()
+    const { manager, calls } = createManager(database, downloadDir)
+    const finalUrl =
+      'https://storage.example/bucket/report.zip?X-Amz-Signature=abc'
+
+    const bridge = await startNativeBridge({
+      manager,
+      userDataPath: dir,
+      logger: () => undefined,
+      publicTargetLookup: async () => [
+        { address: '93.184.216.34', family: 4 }
+      ],
+      publicResourcePreflight: async () => ({
+        finalUrl,
+        status: 206,
+        contentType: 'application/zip',
+        contentDisposition: null,
+        totalBytes: 4
+      })
+    })
+    bridges.push(bridge)
+    const endpoint = parseNativeBridgeEndpoint(
+      JSON.parse(await readFile(bridge.statePath, 'utf8'))
+    )
+
+    const response = await fetch(
+      `http://127.0.0.1:${endpoint.port}/handoff-download`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${endpoint.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          url: 'https://discuss.example/files/report.zip',
+          filename: 'report.zip',
+          cookie: 'forum_session=secret'
+        })
+      }
+    )
+    expect(response.status).toBe(200)
+
+    const addCall = calls.find((entry) => entry.method === 'aria2.addUri')
+    const urls = addCall?.params[0] as string[]
+    const options = addCall?.params[1] as Record<string, unknown>
+    expect(urls).toEqual([finalUrl])
+    expect(options.header).toBeUndefined()
   })
 })

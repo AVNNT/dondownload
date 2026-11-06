@@ -145,6 +145,13 @@ export interface AddDownloadInput {
   filename?: string
   requestHeaders?: DownloadRequestHeaders
   /**
+   * Internal: a redirect chain that a trusted caller (the scanner probe or the
+   * browser hand-off preflight) already resolved. DownloadManager still enforces
+   * host and scheme scope before it sends a Cookie; it never trusts this value
+   * to widen a cookie's origin.
+   */
+  resolvedUrl?: string
+  /**
    * Explicit user opt-in for a deliberate second copy of an unfinished URL.
    * Never set this automatically; it only comes from a Download again action.
    */

@@ -232,6 +232,11 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     requestHeaders = parseDownloadRequestHeaders(record.requestHeaders)
   }
 
+  let resolvedUrl: string | undefined
+  if (record.resolvedUrl !== undefined && record.resolvedUrl !== null) {
+    resolvedUrl = normalizeHttpUrl(record.resolvedUrl)
+  }
+
   return {
     url,
     ...(filename === undefined ? {} : { filename }),
@@ -239,7 +244,8 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     ...(record.controls === undefined || record.controls === null
       ? {}
       : { controls }),
-    ...(requestHeaders === undefined ? {} : { requestHeaders })
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
+    ...(resolvedUrl === undefined ? {} : { resolvedUrl })
   }
 }
 

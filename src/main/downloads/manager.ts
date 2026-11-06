@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
 import {
+  type AddDownloadInput,
   type AppSnapshot,
   type Aria2State,
   type DownloadBlockReason,
@@ -36,6 +37,8 @@ import {
 import type { Aria2Service } from '../aria2/service'
 import type { DownloadDatabase } from '../db/database'
 import { AppError } from '../errors'
+import { isCookieHopSafe } from '../net/cookieScope'
+import { preflightPublicResource } from '../net/publicPreflight'
 import {
   checkDeleteTarget,
   deleteTargetError,
@@ -107,6 +110,46 @@ export interface DownloadManagerOptions {
    * false for narrow tests; production wires the persisted value.
    */
   autoResume?: () => boolean
+  /**
+   * Redirect resolution for a one-job browser Cookie. The default runs the
+   * bounded public preflight; focused tests inject a deterministic resolver.
+   */
+  resolveCookieTarget?: CookieTargetResolver
+}
+
+export interface CookieTargetResolutionInput {
+  /** The original URL the browser Cookie was captured for. */
+  url: string
+  cookie: string
+  referer?: string
+  userAgent?: string
+  /** A target already resolved by a trusted caller (probe/hand-off). */
+  resolvedUrl?: string
+}
+
+export type CookieTargetResolver = (
+  input: CookieTargetResolutionInput
+) => Promise<{ finalUrl: string }>
+
+/**
+ * Production resolver: reuses a caller's verified final URL when present,
+ * otherwise performs the same bounded public preflight as the hand-off path.
+ * `allowMedia` is required because the scanner can queue media containers.
+ */
+const defaultResolveCookieTarget: CookieTargetResolver = async (input) => {
+  if (input.resolvedUrl !== undefined) {
+    return { finalUrl: input.resolvedUrl }
+  }
+  const result = await preflightPublicResource({
+    url: input.url,
+    allowMedia: true,
+    requestHeaders: {
+      cookie: input.cookie,
+      ...(input.referer === undefined ? {} : { referer: input.referer }),
+      ...(input.userAgent === undefined ? {} : { userAgent: input.userAgent })
+    }
+  })
+  return { finalUrl: result.finalUrl }
 }
 
 /** A receipt is returned only after the strict SQLite write was verified. */
@@ -124,6 +167,17 @@ export class DownloadManager {
    */
   private readonly requestHeaders = new Map<string, DownloadRequestHeaders>()
   /**
+   * Redirect-resolved aria2 targets for cookie jobs. The original URL stays on
+   * the record for duplicate detection and display, while aria2 receives the
+   * verified final URL so a one-job Cookie is never replayed through a redirect.
+   */
+  private readonly resolvedUrls = new Map<string, string>()
+  /**
+   * The exact original host a retained Cookie belongs to. addUri refuses to
+   * emit a Cookie header unless the target host matches this value.
+   */
+  private readonly cookieHosts = new Map<string, string>()
+  /**
    * IDs queued with an opt-in browser Cookie. Only the boolean is persisted so
    * a restart can fail honestly; the Cookie itself never touches disk.
    */
@@ -139,6 +193,7 @@ export class DownloadManager {
   private readonly submittingIds = new Set<string>()
   private readonly now: () => number
   private readonly autoResumeProvider: () => boolean
+  private readonly resolveCookieTarget: CookieTargetResolver
   private settingsProvider: () => DownloadSettings
   private mediaPolicy: DownloadPolicyMediaPort | null = null
   private readonly dirtyIds = new Set<string>()
@@ -166,6 +221,8 @@ export class DownloadManager {
     this.database = database
     this.now = options.now ?? Date.now
     this.autoResumeProvider = options.autoResume ?? (() => false)
+    this.resolveCookieTarget =
+      options.resolveCookieTarget ?? defaultResolveCookieTarget
     this.settingsProvider =
       options.settings ?? (() => defaultDownloadSettings())
     this.loadPersistedDownloads()
@@ -408,6 +465,12 @@ export class DownloadManager {
     let gid = ''
     let client: Aria2Client | null = null
     try {
+      // A one-job Cookie is only handed to aria2 after its redirect chain is
+      // resolved and the final target still matches the exact original host and
+      // scheme. This runs before the job is created so an unresolved or unsafe
+      // target fails closed with no aria2 job and no partial record.
+      const target = await this.resolveDownloadTarget(input)
+
       const controls = input.controls ?? defaultDownloadControls()
       const now = this.now()
       const decision = evaluateStart(
@@ -429,10 +492,11 @@ export class DownloadManager {
         }
         gid = await this.addUri(
           client,
-          input.url,
+          target.url,
           finalFilename,
           controls,
-          input.requestHeaders
+          target.requestHeaders,
+          target.cookieHost
         )
       }
 
@@ -462,11 +526,17 @@ export class DownloadManager {
       if (finalFilename) {
         this.explicitFilenames.set(id, finalFilename)
       }
-      if (input.requestHeaders) {
-        this.requestHeaders.set(id, input.requestHeaders)
-        if (input.requestHeaders.cookie !== undefined) {
+      if (target.url !== input.url) {
+        this.resolvedUrls.set(id, target.url)
+      }
+      if (target.requestHeaders) {
+        this.requestHeaders.set(id, target.requestHeaders)
+        if (target.requestHeaders.cookie !== undefined) {
           this.needsLoginIds.add(id)
         }
+      }
+      if (target.cookieHost !== undefined) {
+        this.cookieHosts.set(id, target.cookieHost)
       }
 
       if (durable) {
@@ -519,6 +589,8 @@ export class DownloadManager {
     this.records.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
+    this.resolvedUrls.delete(id)
+    this.cookieHosts.delete(id)
     this.needsLoginIds.delete(id)
     this.controls.delete(id)
     this.blockReasons.delete(id)
@@ -695,10 +767,11 @@ export class DownloadManager {
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
-      record.url,
+      this.resolvedUrls.get(record.id) ?? record.url,
       explicitFilename,
       this.controls.get(record.id) ?? defaultDownloadControls(),
-      this.requestHeaders.get(record.id)
+      this.requestHeaders.get(record.id),
+      this.cookieHosts.get(record.id)
     )
 
     this.updateRecord(record, {
@@ -731,6 +804,8 @@ export class DownloadManager {
     this.records.delete(record.id)
     this.explicitFilenames.delete(record.id)
     this.requestHeaders.delete(record.id)
+    this.resolvedUrls.delete(record.id)
+    this.cookieHosts.delete(record.id)
     this.needsLoginIds.delete(record.id)
     this.controls.delete(record.id)
     this.blockReasons.delete(record.id)
@@ -935,10 +1010,11 @@ export class DownloadManager {
       await this.ensureDownloadDirectory()
       const gid = await this.addUri(
         client,
-        record.url,
+        this.resolvedUrls.get(record.id) ?? record.url,
         this.explicitFilenames.get(record.id),
         this.controlsOf(record),
-        this.requestHeaders.get(record.id)
+        this.requestHeaders.get(record.id),
+        this.cookieHosts.get(record.id)
       )
       this.updateRecord(record, {
         gid,
@@ -1220,10 +1296,11 @@ export class DownloadManager {
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
-      record.url,
+      this.resolvedUrls.get(record.id) ?? record.url,
       explicitFilename,
       this.controls.get(record.id) ?? defaultDownloadControls(),
-      this.requestHeaders.get(record.id)
+      this.requestHeaders.get(record.id),
+      this.cookieHosts.get(record.id)
     )
 
     this.updateRecord(record, {
@@ -1275,13 +1352,95 @@ export class DownloadManager {
     return sanitized
   }
 
+  /**
+   * Resolve the redirect chain of a Cookie-bearing job before aria2 sees it.
+   * aria2 replays custom `header` values on every request, including redirects,
+   * so a browser session Cookie must be scoped to the exact original host and
+   * scheme. Callers such as the scanner probe and the hand-off preflight already
+   * resolved the chain and pass `resolvedUrl`; a direct caller without that
+   * value gets the same bounded public preflight here. Any failure propagates,
+   * so no aria2 job is created for an unresolved Cookie URL.
+   */
+  private async resolveDownloadTarget(input: AddDownloadInput): Promise<{
+    url: string
+    requestHeaders?: DownloadRequestHeaders
+    cookieHost?: string
+  }> {
+    const cookie = input.requestHeaders?.cookie
+    if (cookie === undefined) {
+      return {
+        url: input.url,
+        ...(input.requestHeaders === undefined
+          ? {}
+          : { requestHeaders: input.requestHeaders })
+      }
+    }
+
+    const original = new URL(input.url)
+    const resolved = await this.resolveCookieTarget({
+      url: input.url,
+      cookie,
+      ...(input.requestHeaders?.referer === undefined
+        ? {}
+        : { referer: input.requestHeaders.referer }),
+      ...(input.requestHeaders?.userAgent === undefined
+        ? {}
+        : { userAgent: input.requestHeaders.userAgent }),
+      ...(input.resolvedUrl === undefined
+        ? {}
+        : { resolvedUrl: input.resolvedUrl })
+    })
+
+    let final: URL
+    try {
+      final = new URL(resolved.finalUrl)
+    } catch {
+      throw new AppError(
+        'HANDOFF_PREFLIGHT_FAILED',
+        'The resolved download URL is not valid.'
+      )
+    }
+    if (
+      (final.protocol !== 'http:' && final.protocol !== 'https:') ||
+      final.username !== '' ||
+      final.password !== ''
+    ) {
+      throw new AppError(
+        'HANDOFF_PREFLIGHT_FAILED',
+        'The resolved download URL is not safe.'
+      )
+    }
+
+    if (isCookieHopSafe(original, final)) {
+      return {
+        url: final.href,
+        requestHeaders: input.requestHeaders,
+        cookieHost: original.host
+      }
+    }
+
+    // Cross-host or HTTPS -> HTTP: the final target works anonymously by
+    // definition of the verified redirect chain. Drop only the Cookie and keep
+    // harmless same-job browser context.
+    const { cookie: _dropped, ...rest } =
+      input.requestHeaders as DownloadRequestHeaders
+    return {
+      url: final.href,
+      ...(Object.keys(rest).length === 0 ? {} : { requestHeaders: rest })
+    }
+  }
+
   private async addUri(
     client: Aria2Client,
     rawUrl: string,
     explicitFilename: string | undefined,
     controls: DownloadControls,
-    headers?: DownloadRequestHeaders
+    headers?: DownloadRequestHeaders,
+    cookieHost?: string
   ): Promise<string> {
+    // Re-validate even for records loaded from SQLite; the database is not a
+    // trusted source for URL schemes if it was modified outside the app.
+    const url = normalizeHttpUrl(rawUrl)
     const options: Record<string, string | string[]> = {
       dir: this.downloadDir,
       'max-tries': '3',
@@ -1306,6 +1465,16 @@ export class DownloadManager {
         options['user-agent'] = headers.userAgent
       }
       if (headers.cookie !== undefined) {
+        // Defence in depth: the Cookie may only be emitted for the exact host
+        // the resolver approved. Every caller (initial add, policy submit,
+        // retry, history resume) passes that host, so a future caller cannot
+        // bypass the redirect check by supplying raw headers.
+        if (cookieHost === undefined || new URL(url).host !== cookieHost) {
+          throw new AppError(
+            'DOWNLOAD_COOKIE_HOST_UNRESOLVED',
+            'The browser login cookie was not resolved to its original host, so it was not sent.'
+          )
+        }
         options.header = [`Cookie: ${headers.cookie}`]
       }
     }
@@ -1322,10 +1491,6 @@ export class DownloadManager {
     if (controls.speedLimitBps !== null) {
       options['max-download-limit'] = String(controls.speedLimitBps)
     }
-
-    // Re-validate even for records loaded from SQLite; the database is not a
-    // trusted source for URL schemes if it was modified outside the app.
-    const url = normalizeHttpUrl(rawUrl)
 
     try {
       // aria2.addUri returns the new GID directly, not an object.

@@ -518,6 +518,7 @@ export async function startNativeBridge(
       return
     }
 
+    let resolvedUrl: string | undefined
     if (capturedSourceExtension(pathname) === null || input.requestHeaders) {
       // An extensionless URL is not proven by a filename. A player URL that
       // carries one-job headers (KVS) is also preflighted so the same bounded
@@ -537,7 +538,7 @@ export async function startNativeBridge(
         input.contentType ??
         (capturedSourceExtension(pathname) === 'webm' ? 'video/webm' : 'video/mp4')
       try {
-        await runPublicPreflight({
+        const preflight = await runPublicPreflight({
           url: input.url,
           ...(input.contentType === undefined
             ? {}
@@ -550,6 +551,7 @@ export async function startNativeBridge(
             ? {}
             : { requestHeaders: input.requestHeaders })
         })
+        resolvedUrl = preflight.finalUrl
       } catch (error) {
         const info = toErrorInfo(error)
         logger(`Captured source preflight rejected (${info.code}).`)
@@ -584,7 +586,8 @@ export async function startNativeBridge(
         ...(input.filename === undefined ? {} : { filename: input.filename }),
         ...(input.requestHeaders === undefined
           ? {}
-          : { requestHeaders: input.requestHeaders })
+          : { requestHeaders: input.requestHeaders }),
+        ...(resolvedUrl === undefined ? {} : { resolvedUrl })
       })
       receipt = parseDurableHandoffReceipt(raw)
     } catch (error) {
@@ -747,8 +750,9 @@ export async function startNativeBridge(
     // public resource is anonymously retrievable with one bounded range GET.
     // If that cannot be established, fail closed and leave the browser's own
     // download running rather than cancel an authenticated/POST transfer.
+    let preflight: PublicResourcePreflightResult
     try {
-      await runPublicPreflight({
+      preflight = await runPublicPreflight({
         url: input.url,
         ...(input.expectedBytes === undefined
           ? {}
@@ -778,7 +782,13 @@ export async function startNativeBridge(
 
     let acceptance: { downloadId: string; persistedAt: number }
     try {
-      const raw = await addDurable.call(options.manager, input)
+      // Reuse the verified final URL so DownloadManager does not probe twice.
+      // The manager still enforces host/scheme scope before any Cookie header
+      // reaches aria2.
+      const raw = await addDurable.call(options.manager, {
+        ...input,
+        resolvedUrl: preflight.finalUrl
+      })
       if (!raw || typeof raw !== 'object') {
         throw new AppError('HANDOFF_RESPONSE_INVALID', 'The hand-off receipt is invalid.')
       }
