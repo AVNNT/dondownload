@@ -5,6 +5,7 @@ import type { BrowserExtensionStatus } from '@shared/browserExtension'
 import type {
   MediaAnalysis,
   MediaJob,
+  MediaJobDetails,
   MediaSnapshot
 } from '@shared/media'
 import type {
@@ -187,6 +188,11 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<MediaJob>(IPC.getMediaJob, (_event, jobId) =>
     media().getMediaJob(jobId)
+  )
+
+  // Scoped display details for the details pane; snapshots stay clean.
+  invoke<MediaJobDetails>(IPC.getMediaJobDetails, (_event, jobId) =>
+    media().getMediaJobDetails(jobId)
   )
 
   invoke<MediaSnapshot>(IPC.cancelMedia, async (_event, jobId) => {

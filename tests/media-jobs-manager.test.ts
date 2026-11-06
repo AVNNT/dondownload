@@ -441,6 +441,37 @@ describe('MediaJobsManager analysis and opaque selection', () => {
     await flushMicrotasks()
   })
 
+  it('serves display details on demand while snapshots stay clean', async () => {
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+
+    // The bulk job DTO and snapshot never carry a URL or path.
+    const exposed = JSON.stringify({
+      job,
+      snapshot: harness.manager.getMediaSnapshot()
+    })
+    expect(exposed).not.toContain('example.com')
+    expect(exposed).not.toContain('sourceUrl')
+    expect(exposed).not.toContain('filePath')
+
+    // The scoped details accessor recovers exactly the persisted data.
+    expect(harness.manager.getMediaJobDetails(job.id)).toEqual({
+      sourceUrl: 'https://example.com/watch?v=1',
+      filePath: null
+    })
+
+    await flushMicrotasks()
+    harness.engine.pending.resolve({
+      filePath: path.join(harness.mediaDir, 'video.mp4'),
+      totalBytes: 1_000
+    })
+    await flushMicrotasks()
+    expect(harness.manager.getMediaJobDetails(job.id)).toEqual({
+      sourceUrl: 'https://example.com/watch?v=1',
+      filePath: path.join(harness.mediaDir, 'video.mp4')
+    })
+  })
+
   it('rejects credential-bearing URLs and unsupported extra fields before analysis', async () => {
     const harness = await createHarness()
 

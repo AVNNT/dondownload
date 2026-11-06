@@ -1,11 +1,13 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type JSX
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   type Batch,
   type BatchItem,
@@ -792,9 +794,18 @@ interface BatchMenuEntry {
  * The batch card's "more" (⋯) menu: keeps the card header calm while every
  * group action — open folder, retry/resume, cancel remaining, remove — stays
  * reachable.
- * Closes on outside click and Escape; items are regular buttons so Tab/Enter
- * keyboard flows keep working in all themes.
+ * The menu renders in a portal anchored to the trigger with `position:
+ * fixed`, so neither the card's rounded-corner clipping (overflow-hidden) nor
+ * the page scroller can crop it. It is right-aligned to the trigger and flips
+ * upward when it would overflow the viewport bottom, repositioning on scroll
+ * and resize.
+ * Closes on outside click (portal clicks count as inside) and Escape; items
+ * are regular buttons so Tab/Enter keyboard flows keep working in all themes.
+ * z-40 keeps it above card content but below modal dialogs (z-50).
  */
+const MENU_MARGIN = 4
+const MENU_EDGE_GAP = 8
+
 function BatchMenu({
   ariaLabel,
   items,
@@ -805,16 +816,63 @@ function BatchMenu({
   disabled: boolean
 }): JSX.Element {
   const [open, setOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<{
+    left: number
+    top: number
+  } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current
+    if (trigger === null) return
+    const rect = trigger.getBoundingClientRect()
+    const menu = menuRef.current
+    const width = menu?.offsetWidth || 176
+    const height = menu?.offsetHeight || 0
+    // Right-align to the trigger, clamped to the viewport edges.
+    const left = Math.min(
+      Math.max(rect.right - width, MENU_EDGE_GAP),
+      window.innerWidth - width - MENU_EDGE_GAP
+    )
+    let top = rect.bottom + MENU_MARGIN
+    if (height > 0 && top + height > window.innerHeight - MENU_EDGE_GAP) {
+      const above = rect.top - MENU_MARGIN - height
+      top = above >= MENU_EDGE_GAP ? above : height
+    }
+    setPosition({ left, top })
+  }, [])
+
+  // Measure on open before first paint so the menu never flashes misplaced,
+  // then follow scroll (any scroller, hence capture) and resize while open.
+  // Repositioning is computed directly (no rAF) so it also runs reliably while
+  // the window is hidden or minimized.
+  useLayoutEffect(() => {
+    if (!open) return
+    updatePosition()
+    const handleScroll = (event: Event): void => {
+      if (menuRef.current !== null && event.target instanceof Node) {
+        if (menuRef.current.contains(event.target)) return
+      }
+      updatePosition()
+    }
+    window.addEventListener('scroll', handleScroll, true)
+    window.addEventListener('resize', updatePosition)
+    return () => {
+      window.removeEventListener('scroll', handleScroll, true)
+      window.removeEventListener('resize', updatePosition)
+    }
+  }, [open, updatePosition])
 
   useEffect(() => {
     if (!open) return
     const handlePointerDown = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node)) return
+      // Clicks inside the portal menu and on the trigger itself stay open.
       if (
-        containerRef.current !== null &&
-        event.target instanceof Node &&
-        containerRef.current.contains(event.target)
+        (menuRef.current !== null && menuRef.current.contains(event.target)) ||
+        (triggerRef.current !== null &&
+          triggerRef.current.contains(event.target))
       ) {
         return
       }
@@ -834,8 +892,42 @@ function BatchMenu({
     }
   }, [open])
 
+  const menu = open ? (
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label={ariaLabel}
+      style={
+        position === null
+          ? { visibility: 'hidden' }
+          : { left: position.left, top: position.top }
+      }
+      className="fixed z-40 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-xl shadow-black/40"
+    >
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setOpen(false)
+            item.onSelect()
+          }}
+          className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] font-medium transition ${
+            item.danger
+              ? 'text-red-300 hover:bg-red-400/10'
+              : 'text-zinc-200 hover:bg-white/5'
+          }`}
+        >
+          {item.icon ? <Icon name={item.icon} size={13} /> : null}
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ) : null
+
   return (
-    <div className="relative shrink-0" ref={containerRef}>
+    <div className="relative shrink-0">
       <button
         type="button"
         ref={triggerRef}
@@ -849,33 +941,7 @@ function BatchMenu({
       >
         <Icon name="more" size={15} />
       </button>
-      {open ? (
-        <div
-          role="menu"
-          aria-label={ariaLabel}
-          className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-xl shadow-black/40"
-        >
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false)
-                item.onSelect()
-              }}
-              className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] font-medium transition ${
-                item.danger
-                  ? 'text-red-300 hover:bg-red-400/10'
-                  : 'text-zinc-200 hover:bg-white/5'
-              }`}
-            >
-              {item.icon ? <Icon name={item.icon} size={13} /> : null}
-              {item.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {menu !== null ? createPortal(menu, document.body) : null}
     </div>
   )
 }

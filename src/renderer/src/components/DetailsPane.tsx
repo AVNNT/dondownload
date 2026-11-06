@@ -48,10 +48,15 @@ function shortDateTime(value: number): string {
  * ETA; finished rows state when they landed; everything else shows bytes only.
  */
 function progressLine(row: UnifiedRow): string {
-  const range =
-    row.sizeBytes !== null && row.sizeBytes > 0
-      ? `${formatBytes(row.completedBytes)} of ${formatBytes(row.sizeBytes)}`
-      : formatBytes(row.completedBytes)
+  const totalBytes = row.sizeBytes
+  const sizeKnown = totalBytes !== null && totalBytes > 0
+  // A job that has not received any bytes yet and has no known total has
+  // effectively not started; "0 B" would read like a glitch.
+  const range = sizeKnown
+    ? `${formatBytes(row.completedBytes)} of ${formatBytes(totalBytes)}`
+    : row.completedBytes > 0
+      ? formatBytes(row.completedBytes)
+      : 'Waiting to start'
 
   if (row.statusGroup === 'active') {
     if (row.speedBps > 0 && row.etaSeconds !== null) {
@@ -132,6 +137,11 @@ export function DetailsPane({
 
       <div className="flex flex-col gap-1.5 px-3 py-2.5 text-[11.5px] text-zinc-400">
         <p className="tabular-nums">{progressLine(row)}</p>
+        {row.media ? (
+          <p className="truncate" title={row.media.label}>
+            {row.media.label}
+          </p>
+        ) : null}
         {row.url ? (
           <div className="flex min-w-0 items-center gap-2">
             <Icon name="link" size={13} className="shrink-0 text-zinc-600" />
@@ -145,7 +155,7 @@ export function DetailsPane({
             />
           </div>
         ) : null}
-        {row.download?.filePath ? (
+        {row.filePath ? (
           <div className="flex min-w-0 items-center gap-2">
             {showable ? (
               <Icon
@@ -154,8 +164,8 @@ export function DetailsPane({
                 className="shrink-0 text-zinc-600"
               />
             ) : null}
-            <span className="truncate" title={row.download.filePath}>
-              {row.download.filePath}
+            <span className="truncate" title={row.filePath}>
+              {row.filePath}
             </span>
             {showable ? (
               <IconAction

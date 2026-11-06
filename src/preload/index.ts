@@ -13,6 +13,7 @@ import type {
   AnalyzeMediaInput,
   MediaAnalysis,
   MediaJob,
+  MediaJobDetails,
   MediaQueueInput,
   MediaSnapshot
 } from '../shared/media'
@@ -94,6 +95,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.getMediaSnapshot) as Promise<ApiResult<MediaSnapshot>>,
   getMediaJob: (jobId: string) =>
     ipcRenderer.invoke(IPC.getMediaJob, jobId) as Promise<ApiResult<MediaJob>>,
+  getMediaJobDetails: (jobId: string) =>
+    ipcRenderer.invoke(IPC.getMediaJobDetails, jobId) as Promise<
+      ApiResult<MediaJobDetails>
+    >,
   cancelMedia: (jobId: string) =>
     ipcRenderer.invoke(IPC.cancelMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
   pauseMedia: (jobId: string) =>

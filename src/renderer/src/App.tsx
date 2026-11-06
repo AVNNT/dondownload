@@ -17,6 +17,7 @@ import type {
 } from '@shared/types'
 import type {
   MediaAnalysis,
+  MediaJobDetails,
   MediaOutputFormat,
   MediaSnapshot
 } from '@shared/media'
@@ -143,6 +144,15 @@ export default function App(): JSX.Element {
   const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
   const [focusedKey, setFocusedKey] = useState<string | null>(null)
   const [detailsClosedFor, setDetailsClosedFor] = useState<string | null>(null)
+  /**
+   * Display-only details for media jobs, fetched on demand for the details
+   * pane: job id → { at: job updatedAt when fetched, details }.
+   * Bulk media snapshots never carry a source URL or path (see shared/media),
+   * so the pane recovers them through the scoped `getMediaJobDetails` call.
+   */
+  const [mediaDetails, setMediaDetails] = useState<
+    Record<string, { at: number; details: MediaJobDetails }>
+  >({})
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null)
@@ -398,6 +408,45 @@ export default function App(): JSX.Element {
 
   const showDetails =
     singleSelected !== null && detailsClosedFor !== singleSelected.key
+
+  // Refresh the selected media job's display details whenever its snapshot
+  // row changed (a path can become known once the job completes).
+  useEffect(() => {
+    const media = singleSelected?.media
+    if (!showDetails || media === null || media === undefined) return
+    const cached = mediaDetails[media.id]
+    if (cached !== undefined && cached.at >= media.updatedAt) return
+    let cancelled = false
+    void window.donDownload.getMediaJobDetails(media.id).then((result) => {
+      if (cancelled) return
+      setMediaDetails((current) => ({
+        ...current,
+        [media.id]: {
+          at: media.updatedAt,
+          details: result.ok
+            ? result.value
+            : { sourceUrl: null, filePath: null }
+        }
+      }))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [singleSelected, showDetails, mediaDetails])
+
+  const detailsPaneRow = useMemo(() => {
+    const media = singleSelected?.media
+    if (singleSelected === null || media === null || media === undefined) {
+      return singleSelected
+    }
+    const cached = mediaDetails[media.id]
+    if (cached === undefined) return singleSelected
+    return {
+      ...singleSelected,
+      url: singleSelected.url ?? cached.details.sourceUrl,
+      filePath: singleSelected.filePath ?? cached.details.filePath
+    }
+  }, [singleSelected, mediaDetails])
 
   const applyDownloadResult = useCallback(
     (result: ApiResult<AppSnapshot>): boolean => {
@@ -1163,9 +1212,9 @@ export default function App(): JSX.Element {
               onKeyDown={handleTableKeyDown}
             />
 
-            {showDetails && singleSelected ? (
+            {showDetails && singleSelected !== null ? (
               <DetailsPane
-                row={singleSelected}
+                row={detailsPaneRow ?? singleSelected}
                 onClose={() => setDetailsClosedFor(singleSelected.key)}
                 onOpen={openRow}
                 onShowInFolder={showRowInFolder}
