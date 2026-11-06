@@ -796,24 +796,60 @@ export function ScanPanel({
           setError(result.error)
           return
         }
-        setSelection(new Set())
-        const results = 'results' in result.value ? result.value.results : [result.value]
-        const queued = results.reduce(
-          (count, entry) => count + entry.queuedItemIds.length,
-          0
-        )
-        const skipped = results.reduce(
-          (count, entry) => count + entry.skipped.length,
-          0
-        )
+        const outcomes =
+          'results' in result.value
+            ? result.value.results
+            : [
+                {
+                  sessionId: payload[0]!.sessionId,
+                  ok: true as const,
+                  value: result.value
+                }
+              ]
+        const queuedSessionIds = new Set<string>()
+        const failures: Array<{ code: string; message: string }> = []
+        let queued = 0
+        let skipped = 0
+        for (const outcome of outcomes) {
+          if (outcome.ok) {
+            queuedSessionIds.add(outcome.sessionId)
+            queued += outcome.value.queuedItemIds.length
+            skipped += outcome.value.skipped.length
+          } else {
+            failures.push(outcome.error)
+          }
+        }
+
+        // Only topics that actually queued are cleared; a failed topic keeps
+        // its selection so the user can retry it.
+        setSelection((previous) => {
+          const next = new Set(previous)
+          for (const selection of payload) {
+            if (!queuedSessionIds.has(selection.sessionId)) continue
+            for (const itemId of selection.itemIds) next.delete(itemId)
+          }
+          return next
+        })
+
+        if (queuedSessionIds.size === 0) {
+          const first = failures[0]
+          if (first !== undefined) setError(first)
+          return
+        }
+        const skippedText =
+          skipped > 0 ? ` ${skipped} item(s) were skipped.` : ''
+        if (failures.length === 0) {
+          setNotice(
+            outcomes.length === 1
+              ? `Queued ${queued} item(s) in one batch.${skippedText}`
+              : `Queued ${outcomes.length} topics (${queued} item(s)) in one click (one batch per topic).${skippedText}`
+          )
+          return
+        }
         setNotice(
-          results.length === 1
-            ? `Queued ${queued} item(s) in one batch.${
-                skipped > 0 ? ` ${skipped} item(s) were skipped.` : ''
-              }`
-            : `Queued ${queued} item(s) from ${results.length} topics in one click (one batch per topic).${
-                skipped > 0 ? ` ${skipped} item(s) were skipped.` : ''
-              }`
+          `Queued ${queuedSessionIds.size} of ${outcomes.length} topics (${queued} item(s)); ${
+            failures.length
+          } failed: ${failures[0]!.message}${skippedText}`
         )
       })
       .catch((reason: unknown) => {

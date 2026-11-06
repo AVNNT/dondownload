@@ -58,6 +58,7 @@ import {
   type ScanManualMatchResult,
   type ScanQueueResult,
   type ScanQueueSelectionInput,
+  type ScanQueueSelectionOutcome,
   type ScanQueueSelectionsResult,
   type ScanQueueVideoOption,
   type ScanScriptPairingInput,
@@ -1510,11 +1511,22 @@ export function createPreviewApi(
     queueScanSelections: async (
       selections: ScanQueueSelectionInput[]
     ): Promise<ApiResult<ScanQueueSelectionsResult>> => {
-      const results: ScanQueueResult[] = []
+      const results: ScanQueueSelectionOutcome[] = []
       for (const selection of selections) {
         const result = queueForSession(selection.sessionId, selection.itemIds)
-        if (!result.ok) return result
-        results.push(result.value)
+        results.push(
+          result.ok
+            ? {
+                sessionId: selection.sessionId,
+                ok: true,
+                value: result.value
+              }
+            : {
+                sessionId: selection.sessionId,
+                ok: false,
+                error: result.error
+              }
+        )
       }
       return ok({ results })
     },

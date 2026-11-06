@@ -7,6 +7,7 @@ import type {
 } from '../src/shared/scanner'
 import { MAX_SCAN_SELECTION } from '../src/shared/scanner'
 import { parseScanQueueSelectionsInput } from '../src/shared/scanner'
+import { parseScanQueueSelectionsResult } from '../src/shared/scanner'
 import {
   bestScriptSetForVideo,
   buildScanBulkSelection,
@@ -233,6 +234,60 @@ describe('bulk download payload', () => {
     expect(() =>
       parseScanQueueSelectionsInput({
         selections: [{ sessionId: 'scan_a', itemIds: ['item_a'], extra: 1 }]
+      } as never)
+    ).toThrow(/unsupported fields/i)
+  })
+
+  it('validates per-topic queue outcomes with safe errors', () => {
+    const parsed = parseScanQueueSelectionsResult({
+      results: [
+        {
+          sessionId: 'scan_a',
+          ok: true,
+          value: { batch: null, queuedItemIds: ['item_a'], skipped: [] }
+        },
+        {
+          sessionId: 'scan_b',
+          ok: false,
+          error: {
+            code: 'SCAN_ITEM_NOT_FOUND',
+            message: 'The selected item does not belong to this scan.'
+          }
+        }
+      ]
+    })
+    expect(parsed.results[0]).toMatchObject({
+      sessionId: 'scan_a',
+      ok: true,
+      value: { queuedItemIds: ['item_a'] }
+    })
+    expect(parsed.results[1]).toMatchObject({
+      sessionId: 'scan_b',
+      ok: false,
+      error: { code: 'SCAN_ITEM_NOT_FOUND' }
+    })
+
+    expect(() =>
+      parseScanQueueSelectionsResult({
+        results: [
+          {
+            sessionId: 'scan_a',
+            ok: false,
+            error: { code: 'SCAN_FAILED', message: 'https://secret.example/x' }
+          }
+        ]
+      })
+    ).toThrow()
+    expect(() =>
+      parseScanQueueSelectionsResult({
+        results: [
+          {
+            sessionId: 'scan_a',
+            ok: true,
+            value: { batch: null, queuedItemIds: [], skipped: [] },
+            extra: true
+          }
+        ]
       } as never)
     ).toThrow(/unsupported fields/i)
   })

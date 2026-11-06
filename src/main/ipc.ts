@@ -25,7 +25,7 @@ import type {
   YtdlpUpdateState
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
-import type { ScanQueueResult, ScanManualMatchResult, ScanSession } from '@shared/scanner'
+import type { ScanQueueResult, ScanManualMatchResult, ScanSession, ScanQueueSelectionsResult } from '@shared/scanner'
 import {
   parseScanCancelInput,
   parseScanManualMatchInput,
@@ -486,7 +486,7 @@ export function registerIpc(context: IpcContext): void {
     )
   })
 
-  invoke<{ results: ScanQueueResult[] }>(
+  invoke<ScanQueueSelectionsResult>(
     IPC.scanQueueSelections,
     (_event, input) => {
       const parsed = parseScanQueueSelectionsInput(input)

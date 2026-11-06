@@ -1,12 +1,17 @@
 import type { Batch } from '@shared/batches'
 import type { MediaAnalysis, MediaOutputFormat } from '@shared/media'
+import { MAX_SCAN_MESSAGE_LENGTH } from '@shared/scanner'
 import type {
   ScanQueueResult,
+  ScanQueueSelectionError,
+  ScanQueueSelectionOutcome,
+  ScanQueueSelectionsResult,
   ScanQueueSkip,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
   ScanVideoFormat
 } from '@shared/scanner'
+import { ValidationError } from '@shared/validation'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
@@ -149,6 +154,29 @@ function errorCode(error: unknown): string {
   return ''
 }
 
+const UNSAFE_ERROR_TEXT =
+  /(?:[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
+
+/**
+ * Produce a renderer-safe per-topic failure. Internal error text is kept only
+ * for our own AppError/ValidationError messages; any other failure gets a
+ * generic message so a URL or path can never escape through this field.
+ */
+function safeQueueFailure(error: unknown): ScanQueueSelectionError {
+  const fallback = 'The selected items could not be queued.'
+  let code = errorCode(error) || 'SCAN_QUEUE_FAILED'
+  let message = fallback
+  if (error instanceof AppError || error instanceof ValidationError) {
+    code = error.code
+    message = error.message
+  }
+  if (UNSAFE_ERROR_TEXT.test(message)) message = fallback
+  return {
+    code,
+    message: Array.from(message).slice(0, MAX_SCAN_MESSAGE_LENGTH).join('')
+  }
+}
+
 function formatsSupport(
   format: ScanVideoFormat,
   outputFormat: MediaOutputFormat
@@ -198,17 +226,24 @@ export class ScanQueueService {
       videoOptions?: readonly ScanQueueVideoOption[]
       pairings?: readonly ScanScriptPairingInput[]
     }[]
-  ): Promise<{ results: ScanQueueResult[] }> {
-    const results: ScanQueueResult[] = []
+  ): Promise<ScanQueueSelectionsResult> {
+    const results: ScanQueueSelectionOutcome[] = []
     for (const selection of selections) {
-      results.push(
-        await this.queueSelection(
+      try {
+        const value = await this.queueSelection(
           selection.sessionId,
           selection.itemIds,
           selection.videoOptions ?? [],
           selection.pairings ?? []
         )
-      )
+        results.push({ sessionId: selection.sessionId, ok: true, value })
+      } catch (error) {
+        results.push({
+          sessionId: selection.sessionId,
+          ok: false,
+          error: safeQueueFailure(error)
+        })
+      }
     }
     return { results }
   }

@@ -321,6 +321,20 @@ export interface ScanQueueResult {
   skipped: ScanQueueSkip[]
 }
 
+/** Safe, renderer-facing reason a single topic selection was not queued. */
+export interface ScanQueueSelectionError {
+  code: string
+  message: string
+}
+
+/**
+ * Outcome of one topic inside a multi-selection queue request. A failure in one
+ * topic never discards results from the topics that were queued.
+ */
+export type ScanQueueSelectionOutcome =
+  | { sessionId: string; ok: true; value: ScanQueueResult }
+  | { sessionId: string; ok: false; error: ScanQueueSelectionError }
+
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
@@ -601,7 +615,7 @@ export function parseScanQueueSelectionsInput(
 }
 
 export interface ScanQueueSelectionsResult {
-  results: ScanQueueResult[]
+  results: ScanQueueSelectionOutcome[]
 }
 
 
@@ -1559,6 +1573,65 @@ export function parseScanQueueResult(value: unknown): ScanQueueResult {
     queuedItemIds: rawQueued.map(parseScanItemId),
     skipped
   }
+}
+
+export function parseScanQueueSelectionOutcome(
+  value: unknown
+): ScanQueueSelectionOutcome {
+  const record = asPlainObject(value, 'scan queue outcome')
+  const sessionId = parseScanSessionId(record.sessionId)
+  if (record.ok === true) {
+    exactKeys(
+      record,
+      ['sessionId', 'ok', 'value'],
+      [],
+      'scan queue outcome'
+    )
+    return {
+      sessionId,
+      ok: true,
+      value: parseScanQueueResult(record.value)
+    }
+  }
+  if (record.ok === false) {
+    exactKeys(
+      record,
+      ['sessionId', 'ok', 'error'],
+      [],
+      'scan queue outcome'
+    )
+    const error = asPlainObject(record.error, 'scan queue error')
+    exactKeys(error, ['code', 'message'], [], 'scan queue error')
+    const message = safeMessage(error.message)
+    if (message === null) {
+      throw new ValidationError('The scan queue error message is invalid.')
+    }
+    return {
+      sessionId,
+      ok: false,
+      error: {
+        code: safeDisplayText(
+          error.code,
+          MAX_SCAN_MESSAGE_LENGTH,
+          'scan queue error code'
+        ),
+        message
+      }
+    }
+  }
+  throw new ValidationError('The scan queue outcome is invalid.')
+}
+
+export function parseScanQueueSelectionsResult(
+  value: unknown
+): ScanQueueSelectionsResult {
+  const record = asPlainObject(value, 'scan queue results')
+  exactKeys(record, ['results'], [], 'scan queue results')
+  const raw = record.results
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCAN_URLS) {
+    throw new ValidationError('The scan queue results are invalid.')
+  }
+  return { results: raw.map(parseScanQueueSelectionOutcome) }
 }
 
 const DIRECT_FILE_EXTENSIONS = new Set([
