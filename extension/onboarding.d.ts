@@ -15,10 +15,4 @@ export interface ConnectionView {
 export function connectionView(result: unknown): ConnectionView
 export function popupConnectionLine(result: unknown): string
 export function welcomeUrl(chromeApi: unknown): string
-export function browserDownloadTakeoverCopy(): {
-  title: string
-  on: string
-  off: string
-  permission: string
-}
 export function siteOrigin(value: unknown): string | null

@@ -310,7 +310,10 @@ function entryProblem(field: Record<string, unknown>): EntryProblem | null {
     liveStatus === 'is_upcoming' ||
     liveStatus === 'post_live'
   ) {
-    return { code: 'unsupported', reason: 'Live streams are not supported.' }
+    return {
+      code: 'unsupported',
+      reason: 'This is a live stream. Download it after it ends (as a VOD).'
+    }
   }
 
   const availability =

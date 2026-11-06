@@ -358,7 +358,10 @@ export function classifyVideoError(
     }
   }
   if (code === 'MEDIA_UNSUPPORTED_LIVE') {
-    return { status: 'unavailable', reason: 'Live streams are not supported.' }
+    return {
+      status: 'unavailable',
+      reason: 'This is a live stream. Download it after it ends (as a VOD).'
+    }
   }
   if (code === 'MEDIA_ANALYSIS_TIMEOUT') {
     return {

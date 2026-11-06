@@ -37,5 +37,13 @@ export function originToMatchPattern(origin: unknown): string | null
 export function matchPatternToOrigin(pattern: unknown): string | null
 export function overlayScriptId(origin: unknown): string | null
 export function overlayRegistrationForOrigin(origin: unknown): OverlayRegistration | null
+export const OVERLAY_ALL_SITES_ID: string
+export const OVERLAY_ALL_SITES_MATCHES: ReadonlyArray<string>
+export function overlayAllSitesRegistration(): OverlayRegistration
+export function allSitesOverlayWanted(
+  settings: { floatingTriggerEnabled?: boolean; detectAllSites?: boolean } | null | undefined,
+  broadHostsGranted: boolean
+): boolean
+export function isAllSitesRegistration(registration: unknown): boolean
 export function hasExactOriginGrant(grantedOrigins: unknown, origin: unknown): boolean
 export function overlayOriginFromRegistration(registration: unknown): string | null

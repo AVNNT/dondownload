@@ -89,22 +89,6 @@ export function welcomeUrl(chromeApi) {
   }
 }
 
-/**
- * Copy for the browser download takeover switch. It is a download-manager
- * setting, not a media or per-site opt-in: one switch takes over normal
- * browser downloads (files and direct video/audio) with the browser's own
- * cookies for that URL.
- */
-export function browserDownloadTakeoverCopy() {
-  return {
-    title: 'Download browser files with DonDownload',
-    on: 'On. New browser downloads go to DonDownload with your browser sign-in.',
-    off: 'Off. Browser downloads stay in the browser.',
-    permission:
-      'Turning this on asks once for the optional downloads and cookies permissions plus site access.'
-  }
-}
-
 export function siteOrigin(value) {
   return originFromUrl(value)
 }

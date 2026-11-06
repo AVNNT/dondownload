@@ -1063,7 +1063,8 @@
       MEDIA_ANALYSIS_TIMEOUT: 'Try again, or open this page directly in DonDownload.',
       MEDIA_UNSUPPORTED_PLAYLIST:
         'Open a single video page instead of a playlist or collection.',
-      MEDIA_UNSUPPORTED_LIVE: 'Live streams are not supported by DonDownload.',
+      MEDIA_UNSUPPORTED_LIVE:
+        'This is a live stream. Download it after it ends (as a VOD).',
       MEDIA_UNSUPPORTED_MEDIA:
         'This page does not expose a supported video that DonDownload can download.',
       MEDIA_DRM_PROTECTED:

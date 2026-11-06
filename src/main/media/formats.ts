@@ -104,7 +104,7 @@ export class MediaInfoError extends Error {
       reason === 'playlist'
         ? 'Playlists and collections are not supported.'
         : reason === 'live'
-          ? 'Live streams are not supported.'
+          ? 'This is a live stream. Download it after it ends (as a VOD).'
           : reason === 'drm'
             ? "This video is DRM-protected and can't be downloaded."
             : 'No downloadable video or audio formats were found.'
