@@ -54,6 +54,12 @@ import {
   parseQueueDownloadRequest,
   type NativeBridgeEndpoint
 } from '@shared/nativeBridge'
+import {
+  SCAN_PAGE_CHANNEL,
+  SCAN_PAGE_ROUTE,
+  parseScanPageRequest
+} from '@shared/scanBridge'
+import type { ScanSession } from '@shared/scanner'
 import { ValidationError } from '@shared/validation'
 import { AppError, toErrorInfo } from '../errors'
 import {
@@ -135,6 +141,18 @@ export interface NativeBridgeOptions {
   /** Electron's per-user userData directory. */
   userDataPath: string
   logger?: (message: string) => void
+  /**
+   * Additive Smart Link Scanner capability. The bridge starts a discovery-only
+   * session; it can never queue an item.
+   */
+  scanner?: {
+    start(
+      url: string,
+      options: { origin: 'extension'; cookie?: string }
+    ): ScanSession
+  }
+  /** Focus the desktop and open the scanner view after an extension request. */
+  onScanRequested?: (session: ScanSession) => void
   /**
    * Additive media capability. Worker B wires this; when it is absent the
    * media routes stay authenticated but report a safe unavailable error.
@@ -325,6 +343,7 @@ export async function startNativeBridge(
       route !== CAPTURED_SOURCE_ROUTE &&
       route !== DURABLE_HANDOFF_ROUTE &&
       route !== SNIFFED_MEDIA_ROUTE &&
+      route !== SCAN_PAGE_ROUTE &&
       !isMediaRoute(route)
     ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -350,6 +369,7 @@ export async function startNativeBridge(
       route !== CAPTURED_SOURCE_ROUTE &&
       route !== DURABLE_HANDOFF_ROUTE &&
       route !== SNIFFED_MEDIA_ROUTE &&
+      route !== SCAN_PAGE_ROUTE &&
       options.mediaBridge === undefined
     ) {
       request.resume()
@@ -413,6 +433,11 @@ export async function startNativeBridge(
 
     if (route === SNIFFED_MEDIA_ROUTE) {
       await handleSniffedMediaRequest(parsed, response)
+      return
+    }
+
+    if (route === SCAN_PAGE_ROUTE) {
+      await handleScanPageRequest(parsed, response)
       return
     }
 
@@ -776,6 +801,62 @@ export async function startNativeBridge(
       operation: DURABLE_HANDOFF_CHANNEL,
       durable: true,
       receipt: acceptance
+    })
+  }
+
+  /**
+   * Explicit "Scan this page" from the extension. The desktop starts an
+   * ephemeral scan session, brings its window forward and shows the results.
+   * The session only discovers; nothing is queued and the Cookie stays in the
+   * scanner session memory for exact-host page/attachment probes.
+   */
+  async function handleScanPageRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    if (options.scanner === undefined) {
+      sendError(
+        response,
+        503,
+        'SCAN_UNAVAILABLE',
+        'Page scanning is not available in this DonDownload build.'
+      )
+      return
+    }
+    let input
+    try {
+      input = parseScanPageRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    let session: ScanSession
+    try {
+      session = options.scanner.start(input.url, {
+        origin: 'extension',
+        ...(input.cookie === undefined ? {} : { cookie: input.cookie })
+      })
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not start a page scan (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
+      options.onScanRequested?.(session)
+    } catch {
+      // Focus is best effort; the scan itself already started.
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: SCAN_PAGE_CHANNEL
     })
   }
 

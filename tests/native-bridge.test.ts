@@ -9,6 +9,7 @@ import {
   parseQueueDownloadRequest
 } from '../src/shared/nativeBridge'
 import type { MediaBridgeTarget } from '../src/shared/mediaBridge'
+import type { ScanSession } from '../src/shared/scanner'
 import { ValidationError } from '../src/shared/validation'
 import { AppError } from '../src/main/errors'
 import {
@@ -196,17 +197,54 @@ let bridge: NativeBridge | null = null
 let manager: FakeManager
 let media: FakeMediaTarget | null = null
 let token = ''
+let scanCalls: Array<{ url: string; cookie?: string }> = []
+let scanRequested: ScanSession | null = null
 
-async function start(options: { media?: boolean } = {}): Promise<void> {
+const SCAN_SESSION: ScanSession = {
+  sessionId: 'scan_0123456789abcdef',
+  status: 'scanning',
+  origin: 'extension',
+  hostname: 'discuss.example',
+  message: null,
+  signinRequired: false,
+  counters: { found: 0, probing: 0, ready: 0, signin: 0, unavailable: 0 },
+  progress: { fetchedPages: 0, totalItems: 0, queueableItems: 0 },
+  items: [],
+  removedItemIds: [],
+  revision: 0,
+  updatedAt: 1_800_000_000_000
+}
+
+async function start(options: { media?: boolean; scanner?: boolean } = {}): Promise<void> {
   tempDir = await mkdtemp(path.join(os.tmpdir(), 'dondownload-bridge-'))
   manager = createManager()
   media = options.media ? createMediaTarget() : null
+  scanCalls = []
+  scanRequested = null
   bridge = await startNativeBridge({
     manager,
     userDataPath: tempDir,
     logger: () => undefined,
     publicTargetLookup: publicLookup,
-    ...(media ? { mediaBridge: media } : {})
+    ...(media ? { mediaBridge: media } : {}),
+    ...(options.scanner
+      ? {
+          scanner: {
+            start: (url: string, scanOptions: { origin: 'extension'; cookie?: string }) => {
+              scanCalls.push({
+                url,
+                ...(scanOptions.cookie === undefined
+                  ? {}
+                  : { cookie: scanOptions.cookie })
+              })
+              return SCAN_SESSION
+            }
+          },
+          onScanRequested: (session: ScanSession) => {
+            scanRequested = session
+          }
+        }
+      : {})
   })
   const state = parseNativeBridgeEndpoint(
     JSON.parse(await readFile(bridge.statePath, 'utf8'))
@@ -977,5 +1015,59 @@ describe('detected media route', () => {
       path: '/queue-sniffed-media'
     })
     expect(injected.status).toBe(400)
+  })
+})
+
+describe('native bridge scan-page route', () => {
+  beforeEach(() => start({ scanner: true }))
+
+  it('starts a discovery-only scan and brings the desktop view forward', async () => {
+    const response = await post(
+      JSON.stringify({
+        type: 'scan-page',
+        url: 'https://discuss.example/t/topic/346779',
+        cookie: 'auth=1'
+      }),
+      { path: '/scan-page' }
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      ok: true,
+      accepted: true,
+      operation: 'scan-page'
+    })
+    expect(scanCalls).toEqual([
+      {
+        url: 'https://discuss.example/t/topic/346779',
+        cookie: 'auth=1'
+      }
+    ])
+    expect(scanRequested?.sessionId).toBe(SCAN_SESSION.sessionId)
+    // This route never queues.
+    expect(manager.calls).toHaveLength(0)
+  })
+
+  it('rejects extra fields and invalid cookies without starting a scan', async () => {
+    const extra = await post(
+      JSON.stringify({
+        type: 'scan-page',
+        url: 'https://discuss.example/t/topic/346779',
+        headers: {}
+      }),
+      { path: '/scan-page' }
+    )
+    expect(extra.status).toBe(400)
+
+    const injected = await post(
+      JSON.stringify({
+        type: 'scan-page',
+        url: 'https://discuss.example/t/topic/346779',
+        cookie: 'a=1\r\nX-Evil: yes'
+      }),
+      { path: '/scan-page' }
+    )
+    expect(injected.status).toBe(400)
+    expect(scanCalls).toHaveLength(0)
   })
 })

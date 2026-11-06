@@ -37,6 +37,8 @@ import {
   shouldQuitWhenAllWindowsClosed
 } from './lifecycle'
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
+import { ScanSessionManager } from './scanner/session'
+import { ScanQueueService } from './scanner/queue'
 import {
   createNativeHostRegistrar,
   createNodeFileSystem,
@@ -77,6 +79,8 @@ let mediaUpdater: YtdlpUpdater | null = null
 let appUpdate: AppUpdateChecker | null = null
 let nativeBridge: NativeBridge | null = null
 let nativeHostRegistrar: NativeHostRegistrar | null = null
+let scanner: ScanSessionManager | null = null
+let scanQueue: ScanQueueService | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
 /** The orderly flush/stop/close sequence is running; never run it twice. */
@@ -517,6 +521,19 @@ if (unregisterRequested) {
       }
     })
 
+    // Smart Link Scanner. Discovery and probing only; the queue service is the
+    // single explicit selection path and revalidates every item first.
+    scanner = new ScanSessionManager({
+      onUpdate: (session) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.scanUpdated, session)
+        }
+      }
+    })
+    if (batches !== null) {
+      scanQueue = new ScanQueueService({ sessions: scanner, batches })
+    }
+
     // Native messaging registration is zero-config for the packaged and dev
     // apps. Ordinary and interactive smoke sessions skip it so they never write
     // the real per-user manifest or registry.
@@ -570,6 +587,8 @@ if (unregisterRequested) {
       mediaUpdater,
       browserExtension: nativeHostRegistrar ?? undefined,
       appUpdate,
+      ...(scanner === null ? {} : { scanner }),
+      ...(scanQueue === null ? {} : { scanQueue }),
       getWindow: () => mainWindow
     })
 
@@ -634,6 +653,31 @@ if (unregisterRequested) {
           mediaBridge: mediaJobs,
           userDataPath: app.getPath('userData'),
           logger: (message) => console.error(message),
+          ...(scanner === null ? {} : { scanner }),
+          onScanRequested: (session) => {
+            // Signed-in pages are scanned from the browser tab. Bringing the
+            // window forward makes the progressive result visible immediately.
+            showMainWindow()
+            const window = mainWindow
+            if (!window || window.isDestroyed()) return
+            const send = (): void => {
+              if (!mainWindow || mainWindow.isDestroyed()) return
+              const current = scanner?.getSession(session.sessionId) ?? session
+              mainWindow.webContents.send(IPC.scanUpdated, current)
+            }
+            if (window.webContents.isLoading()) {
+              window.webContents.once('did-finish-load', () => {
+                send()
+                // A freshly created renderer may not have subscribed to
+                // scan:updated at did-finish-load yet. The repeat is harmless
+                // (the renderer opens one dialog per session ID) and makes the
+                // extension-launched result reliable.
+                setTimeout(send, 750).unref?.()
+              })
+            } else {
+              send()
+            }
+          },
           ...(fixtureLookup === undefined
             ? {}
             : { publicTargetLookup: fixtureLookup }),
@@ -858,6 +902,14 @@ if (unregisterRequested) {
         // Batch recovery state is best effort; quitting must still proceed.
       }
       batches = null
+
+      try {
+        scanner?.close()
+      } catch {
+        // Scanner sessions are memory-only; quitting must still proceed.
+      }
+      scanner = null
+      scanQueue = null
 
       // Persist the last known lifecycle/progress state, stop aria2 cleanly,
       // then close the database. Crash recovery can still rely on the bounded
