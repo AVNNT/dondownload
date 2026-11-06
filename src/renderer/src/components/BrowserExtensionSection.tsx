@@ -158,14 +158,14 @@ export function BrowserExtensionSection(): JSX.Element {
               <button
                 type="button"
                 onClick={() => void openFolder()}
-                className="min-h-8 rounded-lg border border-white/10 surface-card px-3 text-[11px] font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                className="min-h-8 rounded-lg border border-white/10 surface-card px-3 text-[11px] font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
               >
                 Open folder
               </button>
               <button
                 type="button"
                 onClick={() => void copyPath()}
-                className="min-h-8 rounded-lg border border-white/10 surface-card px-3 text-[11px] font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                className="min-h-8 rounded-lg border border-white/10 surface-card px-3 text-[11px] font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
               >
                 Copy path
               </button>
@@ -189,7 +189,7 @@ export function BrowserExtensionSection(): JSX.Element {
               type="button"
               onClick={() => void repair()}
               disabled={busy}
-              className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="min-h-9 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               {busy ? 'Repairing…' : 'Repair browser connection'}
             </button>

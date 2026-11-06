@@ -517,7 +517,7 @@ export function SettingsSection(): JSX.Element {
                   key={theme}
                   className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 transition ${
                     selected
-                      ? 'border-emerald-400/40 surface-card text-zinc-100 ring-1 ring-inset ring-emerald-400/20'
+                      ? 'border-accent-400/40 surface-card text-zinc-100 ring-1 ring-inset ring-accent-400/20'
                       : 'border-white/10 text-zinc-400 hover:border-white/20 hover:text-zinc-300'
                   } ${
                     themePending || saving
@@ -534,7 +534,7 @@ export function SettingsSection(): JSX.Element {
                     onChange={() => {
                       void changeTheme(theme)
                     }}
-                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
                   />
                   <span className="min-w-0">
                     <span className="block text-xs font-medium">
@@ -570,7 +570,7 @@ export function SettingsSection(): JSX.Element {
                   maxConcurrentDownloads: Number(event.currentTarget.value)
                 })
               }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -588,7 +588,7 @@ export function SettingsSection(): JSX.Element {
                   perHostConnections: Number(event.currentTarget.value)
                 })
               }
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -603,7 +603,7 @@ export function SettingsSection(): JSX.Element {
               placeholder="Unlimited"
               value={speedInput}
               onChange={(event) => handleSpeedInput(event.currentTarget.value)}
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50"
+              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/50"
             />
             <span
               id="settings-speed-exact"
@@ -631,7 +631,7 @@ export function SettingsSection(): JSX.Element {
               onChange={(event) =>
                 updateAllowedHours({ enabled: event.currentTarget.checked })
               }
-              className="h-3.5 w-3.5 accent-emerald-400"
+              className="h-3.5 w-3.5 accent-accent-400"
             />
             Only start new downloads inside this window
           </label>
@@ -646,7 +646,7 @@ export function SettingsSection(): JSX.Element {
                 onChange={(event) =>
                   updateAllowedHours({ start: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
               />
             </label>
             <label className="text-[11px] text-zinc-400">
@@ -659,7 +659,7 @@ export function SettingsSection(): JSX.Element {
                 onChange={(event) =>
                   updateAllowedHours({ end: event.currentTarget.value })
                 }
-                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
               />
             </label>
           </div>
@@ -690,7 +690,7 @@ export function SettingsSection(): JSX.Element {
           <button
             type="submit"
             disabled={saving || unchanged}
-            className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+            className="min-h-9 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
           >
             {saving ? 'Saving…' : 'Save settings'}
           </button>
@@ -710,7 +710,7 @@ export function SettingsSection(): JSX.Element {
               onChange={(event) => {
                 void toggleAutoUpdate(event.currentTarget.checked)
               }}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
             />
             <span>
               <span className="block font-medium">
@@ -727,7 +727,7 @@ export function SettingsSection(): JSX.Element {
             type="button"
             onClick={() => void checkForUpdate()}
             disabled={updating}
-            className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+            className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {updating ? 'Updating…' : 'Check for yt-dlp update'}
           </button>
@@ -780,7 +780,7 @@ export function SettingsSection(): JSX.Element {
               onChange={(event) => {
                 void toggleAppAutoCheck(event.currentTarget.checked)
               }}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
             />
             <span>
               <span className="block font-medium">
@@ -797,7 +797,7 @@ export function SettingsSection(): JSX.Element {
               type="button"
               onClick={() => void checkForAppUpdate()}
               disabled={appUpdateBusy || !appUpdateState?.configured}
-              className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-accent-400/40 hover:text-accent-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {appUpdateBusy && appUpdateState?.status === 'checking'
                 ? 'Checking…'
@@ -811,7 +811,7 @@ export function SettingsSection(): JSX.Element {
                 appUpdateState?.status !== 'ready' ||
                 appUpdateState?.canInstall !== true
               }
-              className="min-h-9 rounded-lg bg-emerald-400 px-3 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="min-h-9 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               Restart and install
             </button>
@@ -928,7 +928,7 @@ export function SettingsSection(): JSX.Element {
                     interfaceSizePercent: Number(event.currentTarget.value) as DesktopSettings['interfaceSizePercent']
                   }))
                 }
-                className="h-9 rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+                className="h-9 rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-accent-400/50"
               >
                 {INTERFACE_SIZES.map((size) => (
                   <option key={size} value={size}>
@@ -952,7 +952,7 @@ export function SettingsSection(): JSX.Element {
             <button
               type="submit"
               disabled={desktopSaving || desktopUnchanged}
-              className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="min-h-9 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               {desktopSaving ? 'Saving…' : 'Save desktop preferences'}
             </button>
@@ -980,7 +980,7 @@ function DesktopToggle({
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.currentTarget.checked)}
-        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
       />
       <span className="min-w-0">
         <span className="block font-medium">{label}</span>

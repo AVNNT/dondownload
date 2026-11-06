@@ -838,7 +838,7 @@ export default function App(): JSX.Element {
             className="h-9 w-9 shrink-0 rounded-[10px] border border-white/10"
           />
           <div className="min-w-0 select-none">
-            <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-50">
+            <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-100">
               DonDownload
             </h1>
             <p className="truncate text-[11px] text-zinc-500">
@@ -910,7 +910,7 @@ export default function App(): JSX.Element {
               <button
                 type="button"
                 onClick={() => void installAppUpdate()}
-                className="h-7 rounded-md bg-emerald-400 px-2.5 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+                className="h-7 rounded-md bg-accent-500 px-2.5 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
               >
                 Restart and install
               </button>
@@ -949,8 +949,8 @@ export default function App(): JSX.Element {
               />
 
               {visibleSelection.length > 1 ? (
-                <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-2.5 py-1.5">
-                  <span className="mr-1 text-[11px] font-medium text-emerald-200">
+                <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-accent-400/20 bg-accent-400/[0.06] px-2.5 py-1.5">
+                  <span className="mr-1 text-[11px] font-medium text-accent-200">
                     {visibleSelection.length} selected
                   </span>
                   <BulkButton
@@ -983,7 +983,7 @@ export default function App(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => setSelection(EMPTY_SELECTION)}
-                    className="ml-auto text-[11px] text-emerald-200/70 transition hover:text-emerald-100"
+                    className="ml-auto text-[11px] text-accent-200/70 transition hover:text-accent-100"
                   >
                     Clear selection
                   </button>
@@ -1131,12 +1131,12 @@ export default function App(): JSX.Element {
       ) : null}
 
       {dragActive ? (
-        <div className="pointer-events-none fixed inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-400/70 bg-emerald-400/[0.08] backdrop-blur-[1px]">
-          <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-center">
-            <p className="text-sm font-semibold text-emerald-200">
+        <div className="pointer-events-none fixed inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent-400/70 bg-accent-400/[0.08] backdrop-blur-[1px]">
+          <div className="rounded-xl border border-accent-400/30 bg-accent-400/10 px-4 py-3 text-center">
+            <p className="text-sm font-semibold text-accent-200">
               Drop a link to add
             </p>
-            <p className="mt-0.5 text-[11px] text-emerald-200/70">
+            <p className="mt-0.5 text-[11px] text-accent-200/70">
               Media page URLs open the analyzer. Other links open Quick Add.
             </p>
           </div>
@@ -1168,7 +1168,7 @@ export default function App(): JSX.Element {
                 setClipboardUrl(null)
                 if (route) openAddDialog(route.target, route.url)
               }}
-              className="h-7 rounded-md bg-emerald-400 px-2.5 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+              className="h-7 rounded-md bg-accent-500 px-2.5 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
             >
               Download
             </button>
@@ -1293,7 +1293,7 @@ function LibraryEmptyState({
         <button
           type="button"
           onClick={onAdd}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-400 px-3 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[11px] font-semibold text-on-accent transition hover:bg-accent-400"
         >
           <Icon name="plus" size={13} strokeWidth={2.2} />
           Add download

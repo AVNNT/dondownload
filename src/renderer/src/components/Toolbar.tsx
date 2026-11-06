@@ -44,7 +44,7 @@ export function Toolbar({
       <button
         type="button"
         onClick={onAdd}
-        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400 px-3 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
       >
         <Icon name="plus" size={15} strokeWidth={2.2} />
         Add
@@ -65,7 +65,7 @@ export function Toolbar({
           aria-label="Search downloads"
           spellCheck={false}
           autoComplete="off"
-          className="h-9 w-full rounded-lg border border-white/10 surface-input pl-8 pr-3 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15"
+          className="h-9 w-full rounded-lg border border-white/10 surface-input pl-8 pr-3 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15"
         />
       </div>
 
@@ -76,7 +76,7 @@ export function Toolbar({
         id="download-sort"
         value={sortKey}
         onChange={(event) => onSortKeyChange(event.target.value as SortKey)}
-        className="h-9 shrink-0 rounded-lg border border-white/10 surface-input px-2 text-[11px] text-zinc-300 outline-none transition focus:border-emerald-400/60"
+        className="h-9 shrink-0 rounded-lg border border-white/10 surface-input px-2 text-[11px] text-zinc-300 outline-none transition focus:border-accent-400/60"
       >
         {SORT_KEYS.map((key) => (
           <option key={key} value={key}>
@@ -121,7 +121,7 @@ export function Toolbar({
           <span
             aria-hidden="true"
             className={`h-1.5 w-1.5 rounded-full ${
-              runningCount > 0 ? 'animate-pulse bg-emerald-400' : 'bg-zinc-600'
+              runningCount > 0 ? 'animate-pulse bg-accent-400' : 'bg-zinc-600'
             }`}
           />
           <span className="text-zinc-300">{runningCount}</span>

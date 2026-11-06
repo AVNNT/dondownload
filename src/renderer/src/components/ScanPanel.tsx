@@ -1121,7 +1121,7 @@ export function ScanPanel({
             <button
               type="button"
               onClick={() => toggleSetFiles(set)}
-              className="text-[10.5px] text-emerald-300 transition hover:text-emerald-200"
+              className="text-[10.5px] text-accent-300 transition hover:text-accent-200"
             >
               {allSelected ? 'Clear' : 'Select all axes'}
             </button>
@@ -1167,7 +1167,7 @@ export function ScanPanel({
                   type="button"
                   onClick={() => downloadScriptsWithOriginalNames(session, set)}
                   disabled={disabled || queuing}
-                  className="mt-0.5 text-[10.5px] text-emerald-300 transition hover:text-emerald-200 disabled:opacity-50"
+                  className="mt-0.5 text-[10.5px] text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
                 >
                   Download scripts with original names
                 </button>
@@ -1204,7 +1204,7 @@ export function ScanPanel({
     return (
       <li
         key={item.id}
-        className={`px-3 py-2.5 ${selected ? 'bg-emerald-400/[0.04]' : ''}`}
+        className={`px-3 py-2.5 ${selected ? 'bg-accent-400/[0.04]' : ''}`}
       >
         <div className="flex items-start gap-2.5">
           <input
@@ -1213,7 +1213,7 @@ export function ScanPanel({
             checked={selected}
             disabled={!queueableItem || disabled}
             onChange={() => toggle(item.id)}
-            className="mt-2 h-3.5 w-3.5 shrink-0 accent-emerald-400 disabled:opacity-40"
+            className="mt-2 h-3.5 w-3.5 shrink-0 accent-accent-400 disabled:opacity-40"
           />
           <Thumbnail
             size="card"
@@ -1286,7 +1286,7 @@ export function ScanPanel({
                     }))
                   }
                   disabled={disabled || queuing}
-                  className="h-7 max-w-[18rem] rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-emerald-400/60 disabled:opacity-50"
+                  className="h-7 max-w-[18rem] rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-accent-400/60 disabled:opacity-50"
                 >
                   {item.formats.map((format: ScanVideoFormat) => (
                     <option key={format.optionId} value={format.optionId}>
@@ -1303,7 +1303,7 @@ export function ScanPanel({
                   type="button"
                   onClick={() => queueItems(session.sessionId, [item.id])}
                   disabled={disabled || queuing}
-                  className="h-7 rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="h-7 rounded-md border border-accent-400/30 bg-accent-400/10 px-2.5 text-[11px] font-medium text-accent-200 transition hover:bg-accent-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Download
                 </button>
@@ -1691,7 +1691,7 @@ export function ScanPanel({
                             type="button"
                             onClick={() => toggleGroup(groupItems)}
                             disabled={selectable.length === 0}
-                            className="ml-auto text-[11px] text-emerald-300 transition hover:text-emerald-200 disabled:text-zinc-600"
+                            className="ml-auto text-[11px] text-accent-300 transition hover:text-accent-200 disabled:text-zinc-600"
                           >
                             {groupSelected ? 'Clear' : 'Select all'}
                           </button>
@@ -1726,7 +1726,7 @@ export function ScanPanel({
                                   checked={selected}
                                   disabled={!queueableItem || disabled}
                                   onChange={() => toggle(item.id)}
-                                  className="mt-1.5 h-3.5 w-3.5 shrink-0 accent-emerald-400 disabled:opacity-40"
+                                  className="mt-1.5 h-3.5 w-3.5 shrink-0 accent-accent-400 disabled:opacity-40"
                                 />
                                 <Thumbnail
                                   title={item.name}
@@ -1841,7 +1841,7 @@ export function ScanPanel({
           }}
           placeholder="Paste a forum topic or media page URL — one per line (up to 10)"
           disabled={disabled}
-          className="min-h-[4.5rem] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2 text-sm leading-5 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="min-h-[4.5rem] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2 text-sm leading-5 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
@@ -1886,7 +1886,7 @@ export function ScanPanel({
         </p>
       ) : null}
       {notice ? (
-        <p role="status" className="rounded-lg border border-emerald-400/25 bg-emerald-400/5 px-3 py-2 text-[11px] leading-5 text-emerald-200">
+        <p role="status" className="rounded-lg border border-accent-400/25 bg-accent-400/5 px-3 py-2 text-[11px] leading-5 text-accent-200">
           {notice}
         </p>
       ) : null}
@@ -1918,7 +1918,7 @@ export function ScanPanel({
               onClick={() => setFilter('all')}
               className={`h-7 rounded-lg px-2.5 text-[11px] transition ${
                 filter === 'all'
-                  ? 'bg-emerald-400/10 text-emerald-200 ring-1 ring-inset ring-emerald-400/25'
+                  ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
                   : 'text-zinc-400 hover:bg-white/5'
               }`}
             >
@@ -1929,7 +1929,7 @@ export function ScanPanel({
               onClick={() => setFilter('script-video')}
               className={`h-7 rounded-lg px-2.5 text-[11px] transition ${
                 filter === 'script-video'
-                  ? 'bg-emerald-400/10 text-emerald-200 ring-1 ring-inset ring-emerald-400/25'
+                  ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
                   : 'text-zinc-400 hover:bg-white/5'
               }`}
             >
@@ -1980,7 +1980,7 @@ export function ScanPanel({
                 selectedItems.length === 0 ||
                 overSelectionLimit
               }
-              className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-[12px] font-semibold text-emerald-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="h-10 shrink-0 rounded-lg bg-accent-500 px-4 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               {queuing
                 ? 'Queueing…'

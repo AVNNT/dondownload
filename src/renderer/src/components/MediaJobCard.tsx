@@ -29,7 +29,7 @@ const STATUS_LABEL: Record<MediaJobStatus, string> = {
 const STATUS_STYLE: Record<MediaJobStatus, string> = {
   queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
   analyzing: 'border-amber-400/25 bg-amber-400/10 text-amber-300',
-  downloading: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  downloading: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
   merging: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
   paused: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
@@ -41,7 +41,7 @@ const STATUS_STYLE: Record<MediaJobStatus, string> = {
 const BAR_STYLE: Record<MediaJobStatus, string> = {
   queued: 'bg-zinc-600',
   analyzing: 'bg-amber-400',
-  downloading: 'bg-emerald-400',
+  downloading: 'bg-accent-400',
   merging: 'bg-amber-400',
   paused: 'bg-zinc-500',
   complete: 'bg-emerald-400',
