@@ -147,6 +147,12 @@ export interface BatchDownloadsPort {
   pause(id: string): Promise<unknown>
   getSnapshot(): AppSnapshot
   /**
+   * Drop one child record. Used only to clean up the failed first attempt of an
+   * image item that is retried with its fallback URL. Optional so existing test
+   * doubles stay valid.
+   */
+  remove?(id: string): Promise<unknown>
+  /**
    * Internal scanner-only variant: downloads one funscript directly into the
    * resolved video folder (inside the normal download root). Optional so
    * existing test doubles stay valid.
@@ -577,6 +583,34 @@ function safeTitleFromUrl(value: string): string {
   }
   const title = cleanSafeText(decoded, 240, '')
   return title.length > 0 ? title : cleanSafeText(parsed.hostname, 240, 'Direct download')
+}
+
+/**
+ * File name of one URL, used when an image item is retried with its fallback
+ * URL. The originals URL only guesses the extension, so the retry must keep the
+ * name the fallback URL actually serves (e.g. `<hash>.jpg`). Returns null when
+ * the URL has no usable last segment.
+ */
+function filenameFromUrl(value: string): string | null {
+  let segment: string
+  try {
+    const parsed = new URL(value)
+    segment = parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1)
+  } catch {
+    return null
+  }
+  if (segment.length === 0) return null
+  let decoded = segment
+  try {
+    decoded = decodeURIComponent(segment)
+  } catch {
+    // Keep the raw segment if it is not valid percent-encoding.
+  }
+  try {
+    return sanitizeFilename(decoded)
+  } catch {
+    return null
+  }
 }
 
 function safeMessageForBatch(error: unknown, fallback: string): string {
@@ -2859,6 +2893,14 @@ export class BatchManager {
     if (fallback === undefined) return false
     this.scanFallbacks.delete(item.id)
     if (item.status !== 'running') return false
+    const failedChildId = item.childId
+    // The originals URL only guesses the extension, so the retry follows the
+    // fallback URL's own file name instead of keeping the wrong one. The
+    // subfolder is keyed by item id and therefore unchanged.
+    const fallbackFilename = filenameFromUrl(fallback)
+    if (fallbackFilename !== null) {
+      this.scanFilenames.set(item.id, fallbackFilename)
+    }
     item.sourceUrl = fallback
     item.childId = null
     item.status = 'queued'
@@ -2866,7 +2908,25 @@ export class BatchManager {
     item.completedBytes = 0
     item.updatedAt = this.now()
     this.persistItemNow(item)
+    // This retry replaces the failed first attempt, so its child row must not
+    // stay in the downloads list as a separate failed download.
+    if (failedChildId !== null) this.discardFailedChild(failedChildId)
     return true
+  }
+
+  /**
+   * Remove the failed child record of a superseded first attempt. Best effort
+   * only: the item is already re-queued, so a missing or failing remove API
+   * must never block the fallback retry.
+   */
+  private discardFailedChild(childId: string): void {
+    const remove = this.downloads.remove
+    if (typeof remove !== 'function') return
+    void Promise.resolve()
+      .then(() => remove.call(this.downloads, childId))
+      .catch(() => {
+        // The row may already be gone, or the manager may be closing.
+      })
   }
 
   private applyMediaChild(item: BatchItemRecord, child: MediaJob): boolean {
