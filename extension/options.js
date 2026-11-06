@@ -6,10 +6,12 @@ import {
   writeCaptureSettings
 } from './capture-settings.js'
 import {
-  clearPendingEnable,
-  overlayRemovalConfirmed,
-  rememberPendingEnable
+  overlayRemovalConfirmed
 } from './overlay-controller.js'
+import {
+  enableAllSitesDetection,
+  requestExactOriginAccess
+} from './site-enable.js'
 import { originFromUrl, originToMatchPattern } from './site-policy.js'
 
 const floatingTrigger = document.getElementById('floating-trigger')
@@ -596,36 +598,34 @@ detectAllSites.addEventListener('change', () => {
     }
     return
   }
-  try {
-    chrome.permissions.request(
-      { origins: ['http://*/*', 'https://*/*'] },
-      (granted) => {
-        const runtimeError = chrome.runtime.lastError
-        broadHostsGranted = granted === true
-        if (runtimeError || !broadHostsGranted) {
-          settings.detectAllSites = false
-          detectAllSites.checked = false
-          renderSniffingState()
-          setStatus(
-            sniffingStatus,
-            'error',
-            'Broad host access was not granted. All-site detection stays off.'
-          )
-          return
-        }
-        settings.detectAllSites = true
-        if (!networkGranted) settings.mediaSniffing = true
-        saveSettings('All-site media detection is on.')
+  setStatus(sniffingStatus, '', '')
+  enableAllSitesDetection(chrome, (result) => {
+    if (!result.ok) {
+      settings.detectAllSites = false
+      detectAllSites.checked = false
+      renderSniffingState()
+      setStatus(
+        sniffingStatus,
+        'error',
+        result.error || 'All-site detection stays off.'
+      )
+      return
+    }
+    settings.detectAllSites = true
+    settings.mediaSniffing = true
+    broadHostsGranted = true
+    void chrome.permissions
+      .contains({ permissions: ['webRequest'] })
+      .then((granted) => {
+        networkGranted = granted === true
         renderSniffingState()
-        setStatus(sniffingStatus, 'success', 'All-site media detection is on.')
-      }
-    )
-  } catch {
-    settings.detectAllSites = false
-    detectAllSites.checked = false
+      })
+      .catch(() => {
+        renderSniffingState()
+      })
     renderSniffingState()
-    setStatus(sniffingStatus, 'error', 'Broad host access could not be requested.')
-  }
+    setStatus(sniffingStatus, 'success', 'All-site media detection is on.')
+  })
 })
 
 siteCookies.addEventListener('change', () => {
@@ -719,37 +719,28 @@ exclusionForm.addEventListener('submit', (event) => {
 
 enableSite.addEventListener('click', () => {
   if (busy || site === null) return
-  const pattern = originToMatchPattern(site.origin)
-  if (pattern === null) {
-    setStatus(siteStatus, 'error', 'This origin is not supported.')
-    return
-  }
   if (siteGranted) {
     sendSiteEnable()
     return
   }
 
-  void rememberPendingEnable(chrome, site.origin, site.tabId)
   setSiteBusy(true)
   setStatus(siteStatus, '', '')
-  try {
-    chrome.permissions.request({ origins: [pattern] }, (granted) => {
-      const runtimeError = chrome.runtime.lastError
-      if (runtimeError || granted !== true) {
-        void clearPendingEnable(chrome)
-        setSiteBusy(false)
-        setStatus(siteStatus, 'error', 'Site access was not granted. Nothing on the page changed.')
-        setSiteState()
-        return
-      }
-      sendSiteEnable()
-    })
-  } catch {
-    void clearPendingEnable(chrome)
+  requestExactOriginAccess(chrome, site, (result) => {
     setSiteBusy(false)
-    setStatus(siteStatus, 'error', 'Site access could not be requested.')
+    if (!result.ok) {
+      setStatus(siteStatus, 'error', result.error || 'Site access was not granted.')
+      setSiteState()
+      return
+    }
+    const applied = applySiteResult(result.response)
     setSiteState()
-  }
+    if (applied && applied.message) {
+      setStatus(siteStatus, 'error', applied.message)
+      return
+    }
+    setStatus(siteStatus, 'success', 'Overlay is ready on the selected tab.')
+  })
 })
 
 disableSite.addEventListener('click', () => {

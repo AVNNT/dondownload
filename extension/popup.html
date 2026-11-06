@@ -13,6 +13,23 @@
         <span class="pill">capture</span>
       </header>
 
+      <p id="native-status" class="native-status" role="status" aria-live="polite" hidden>
+        <span id="native-status-text"></span>
+        <a id="native-fix" href="welcome.html">How to fix</a>
+      </p>
+
+      <section id="site-section" class="site-section" aria-labelledby="site-heading" hidden>
+        <div class="section-head">
+          <h2 id="site-heading">This site</h2>
+          <span id="site-access-state" class="section-state">Not enabled</span>
+        </div>
+        <p id="site-hint" class="muted">
+          Enable the optional overlay to detect media on this exact site.
+        </p>
+        <button id="enable-site" type="button">Enable on this site</button>
+        <p id="site-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
       <section aria-labelledby="detected-heading">
         <div class="section-head">
           <h2 id="detected-heading">Detected on this tab</h2>

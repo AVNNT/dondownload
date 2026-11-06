@@ -12,6 +12,7 @@ import { normalizeHandoffFile } from './handoff-policy.js'
 
 export const NATIVE_HOST = 'com.dondownload.bridge'
 export const QUEUE_MESSAGE_TYPE = 'queue-download'
+export const PROBE_MESSAGE_TYPE = 'probe'
 export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
 export const SNIFFED_MEDIA_MESSAGE_TYPE = 'queue-sniffed-media'
 export const DURABLE_HANDOFF_MESSAGE_TYPE = 'handoff-download'
@@ -688,6 +689,66 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
             return
           }
           finish({ ok: true, durable: true, receipt })
+        }
+      )
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+/**
+ * Probe the native bridge and the running desktop app. `probe` is read-only:
+ * it is accepted only when it carries exactly a `type` field, creates nothing
+ * and returns no URLs or paths. Welcome and popup status use this instead of
+ * sending a synthetic download.
+ */
+export function probeNativeConnection() {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST,
+        { type: PROBE_MESSAGE_TYPE },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          if (runtimeError) {
+            finish({ ok: false, error: describeNativeError(runtimeError.message) })
+            return
+          }
+          if (
+            !response ||
+            response.ok !== true ||
+            response.operation !== PROBE_MESSAGE_TYPE
+          ) {
+            finish({
+              ok: false,
+              error:
+                response && response.ok === false
+                  ? describeResponseError(response)
+                  : {
+                      code: 'NATIVE_RESPONSE_INVALID',
+                      message: 'The DonDownload helper returned an unexpected response.'
+                    }
+            })
+            return
+          }
+          finish({ ok: true })
         }
       )
     } catch (error) {

@@ -1,6 +1,15 @@
-import { normalizeCapturedSource, normalizeSupportedUrl, sendQueueDownload } from './bridge.js'
+import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { rememberOptionsTarget } from './capture-settings.js'
+import {
+  popupConnectionLine,
+  siteEnableLabel,
+  welcomeUrl
+} from './onboarding.js'
+import {
+  requestExactOriginAccess,
+  siteAccessGranted
+} from './site-enable.js'
 import {
   captureViewModel,
   formatBytes,
@@ -21,6 +30,14 @@ const captureEmpty = document.getElementById('capture-empty')
 const detectedState = document.getElementById('detected-state')
 const findQualitiesButton = document.getElementById('find-qualities')
 const openOptionsButton = document.getElementById('open-options')
+const nativeStatus = document.getElementById('native-status')
+const nativeStatusText = document.getElementById('native-status-text')
+const nativeFix = document.getElementById('native-fix')
+const siteSection = document.getElementById('site-section')
+const siteAccessState = document.getElementById('site-access-state')
+const siteHint = document.getElementById('site-hint')
+const enableSiteButton = document.getElementById('enable-site')
+const siteStatus = document.getElementById('site-status')
 
 let pageUrl = null
 let pageOrigin = null
@@ -70,6 +87,64 @@ function errorHint(error) {
 function setDetectedState(text, tone) {
   detectedState.textContent = text
   detectedState.className = tone ? `section-state ${tone}` : 'section-state'
+}
+
+function setSiteStatus(kind, message) {
+  siteStatus.className = kind ? `status ${kind}` : 'status'
+  siteStatus.textContent = message
+}
+
+function showNativeFailure(error) {
+  if (nativeStatus === null) return
+  nativeStatusText.textContent = popupConnectionLine({ ok: false, error })
+  nativeFix.href = welcomeUrl(chrome)
+  nativeStatus.hidden = false
+}
+
+const NATIVE_FAILURE_CODES = new Set([
+  'APP_NOT_RUNNING',
+  'APP_UNAVAILABLE',
+  'NATIVE_HOST_FAILED',
+  'NATIVE_HOST_NOT_REGISTERED',
+  'NATIVE_HOST_FORBIDDEN',
+  'NATIVE_HOST_ERROR'
+])
+
+async function checkNativeConnection() {
+  if (nativeStatus === null) return
+  const result = await probeNativeConnection()
+  if (result.ok) {
+    nativeStatus.hidden = true
+    return
+  }
+  nativeStatusText.textContent = popupConnectionLine(result)
+  nativeFix.href = welcomeUrl(chrome)
+  nativeStatus.hidden = false
+}
+
+async function refreshSiteAccess() {
+  if (
+    siteSection === null ||
+    pageOrigin === null ||
+    activeTabId === null
+  ) {
+    if (siteSection !== null) siteSection.hidden = true
+    return
+  }
+  siteSection.hidden = false
+  const granted = await siteAccessGranted(chrome, pageOrigin)
+  enableSiteButton.textContent = siteEnableLabel(pageOrigin)
+  if (granted) {
+    siteAccessState.textContent = 'Enabled'
+    siteHint.textContent = 'The optional overlay is enabled for this exact site.'
+    enableSiteButton.hidden = true
+    return
+  }
+  siteAccessState.textContent = 'Not enabled'
+  siteHint.textContent =
+    'Enable the optional overlay and media detection for this exact site only.'
+  enableSiteButton.hidden = false
+  enableSiteButton.disabled = false
 }
 
 function clearCaptureList() {
@@ -545,6 +620,7 @@ function loadActiveTab() {
       pageOrigin = null
       activeTabId = null
       urlElement.textContent = rawUrl || 'No address is available for this tab.'
+      if (siteSection !== null) siteSection.hidden = true
       setStatus(
         'error',
         `${normalized.message} Open a normal http:// or https:// page to use DonDownload.`
@@ -562,12 +638,20 @@ function loadActiveTab() {
     setSending(false)
     setDetectedState('Checking…', '')
     querySniffedMedia()
+    void refreshSiteAccess()
     queryCapturedSources()
   })
 }
 
 function reportSendFailure(error) {
   const duplicate = error && typeof error === 'object' && error.code === 'DUPLICATE_DOWNLOAD'
+  if (
+    error &&
+    typeof error === 'object' &&
+    NATIVE_FAILURE_CODES.has(error.code)
+  ) {
+    showNativeFailure(error)
+  }
   setStatus('error', errorHint(error))
   downloadAgainButton.hidden = !duplicate
   setSending(false)
@@ -604,6 +688,35 @@ openOptionsButton.addEventListener('click', async () => {
   chrome.runtime.openOptionsPage()
 })
 
+enableSiteButton.addEventListener('click', () => {
+  if (pageOrigin === null || activeTabId === null) return
+  enableSiteButton.disabled = true
+  setSiteStatus('', '')
+  requestExactOriginAccess(
+    chrome,
+    { origin: pageOrigin, tabId: activeTabId },
+    (result) => {
+      if (!result.ok) {
+        enableSiteButton.disabled = false
+        setSiteStatus('error', result.error || 'Site access was not granted.')
+        return
+      }
+      setSiteStatus('success', 'Enabled for this exact site.')
+      setTimeout(() => {
+        void refreshSiteAccess()
+        querySniffedMedia()
+        queryCapturedSources()
+      }, 600)
+    }
+  )
+})
+
+nativeFix.addEventListener('click', (event) => {
+  event.preventDefault()
+  chrome.tabs.create({ url: welcomeUrl(chrome) })
+})
+
 window.addEventListener('unload', clearPolling)
 
+void checkNativeConnection()
 loadActiveTab()

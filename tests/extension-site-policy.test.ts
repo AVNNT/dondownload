@@ -165,24 +165,30 @@ describe('extension wiring guardrails', () => {
     path.join(extensionDir, 'overlay-controller.js'),
     'utf8'
   )
+  const siteEnable = readFileSync(
+    path.join(extensionDir, 'site-enable.js'),
+    'utf8'
+  )
 
   it('registers and removes only the exact origin chosen for the site', () => {
-    for (const source of [background, popup, options, overlay, controller]) {
+    for (const source of [background, popup, options, overlay, controller, siteEnable]) {
       expect(source).not.toContain('<all_urls>')
       expect(source).not.toContain('*://*/*')
     }
 
-    // The popup no longer owns the host grant: it only hands the active tab's
-    // exact origin to the options page and never requests an origin itself.
+    // The popup hands the active tab's exact origin to the shared enable
+    // helper and never requests an origin itself.
     expect(popup).toContain(
       'rememberOptionsTarget(chrome, { tabId: activeTabId, origin: pageOrigin })'
     )
+    expect(popup).toContain('requestExactOriginAccess')
     expect(popup).not.toContain('chrome.permissions.request')
-    // The options page asks for one canonical pattern derived from the origin
-    // the user chose, directly from the enable button's click handler.
-    expect(options).toContain('originToMatchPattern(site.origin)')
-    expect(options).toContain('chrome.permissions.request({ origins: [pattern] }')
-    expect(options).toContain('rememberPendingEnable(chrome, site.origin, site.tabId)')
+    // The options page and popup share one exact-origin request implementation.
+    expect(options).toContain('requestExactOriginAccess')
+    expect(options).not.toContain('chrome.permissions.request({ origins: [pattern] }')
+    expect(siteEnable).toContain('originToMatchPattern(origin)')
+    expect(siteEnable).toContain('chromeApi.permissions.request({ origins: [pattern] }')
+    expect(siteEnable).toContain('rememberPendingEnable(chromeApi, origin, tabId)')
     expect(controller).toContain('overlayRegistrationForOrigin(origin)')
     expect(controller).toContain('chromeApi.scripting.registerContentScripts')
     expect(controller).toContain('chromeApi.scripting.unregisterContentScripts')

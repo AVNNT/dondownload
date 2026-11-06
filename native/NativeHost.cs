@@ -15,6 +15,7 @@ using System.Web.Script.Serialization;
 //
 // Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
+//   { "type": "probe" }
 //   { "type": "queue-captured-source", "url": "https://cdn.example/clip.mp4" }
 //   { "type": "handoff-download", "url": "https://example.com/files/report.zip" }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
@@ -38,6 +39,7 @@ internal static class NativeHost
     private const string AppMarker = "DonDownload";
     private const int StateVersion = 1;
     private const string QueueDownloadOperation = "queue-download";
+    private const string ProbeOperation = "probe";
     private const string AnalyzeMediaOperation = "analyze-media";
     private const string QueueMediaOperation = "queue-media";
     private const string MediaStatusOperation = "media-status";
@@ -209,6 +211,10 @@ internal static class NativeHost
         {
             return HandleQueueDownloadMessage(message);
         }
+        if (type == ProbeOperation)
+        {
+            return HandleProbeMessage(message);
+        }
         if (type == AnalyzeMediaOperation)
         {
             return HandleAnalyzeMediaMessage(message);
@@ -235,6 +241,22 @@ internal static class NativeHost
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
+    }
+
+    private static Dictionary<string, object> HandleProbeMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type" }, new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only probe messages containing exactly a type field are accepted.");
+        }
+
+        Dictionary<string, object> response = new Dictionary<string, object>();
+        response.Add("ok", true);
+        response.Add("operation", ProbeOperation);
+        return response;
     }
 
     private static Dictionary<string, object> HandleQueueDownloadMessage(

@@ -24,6 +24,7 @@ import {
   queueMediaForSender
 } from './media-bridge.js'
 import { handleCreatedDownload, installDownloadsListener } from './handoff.js'
+import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
 import {
   CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
@@ -541,7 +542,7 @@ async function reconcileOverlayRegistrations() {
   }
 }
 
-function installLifecycleListeners() {
+function installLifecycleListeners(details) {
   installContextMenu()
   void reconcileOverlayRegistrations()
   installDownloadsSupport()
@@ -549,6 +550,16 @@ function installLifecycleListeners() {
   void refreshNetworkObservation().catch(() => undefined)
   mediaSniffer.install()
   void refreshMediaSniffing().catch(() => undefined)
+
+  // A fresh install gets one welcome tab. Updates and browser restarts never
+  // open it, so normal use is not interrupted.
+  if (shouldOpenWelcome(details)) {
+    try {
+      chrome.tabs.create({ url: chrome.runtime.getURL(WELCOME_PAGE), active: true })
+    } catch {
+      // A browser that refuses the tab still has the popup and options page.
+    }
+  }
 }
 
 /**

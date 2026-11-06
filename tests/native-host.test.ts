@@ -273,6 +273,33 @@ afterEach(async () => {
 })
 
 describeWindows('Windows native messaging host', () => {
+  it('answers a read-only probe without discovering or calling the app', async () => {
+    const run = await runHost([frame(JSON.stringify({ type: 'probe' }))])
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      { ok: true, operation: 'probe' }
+    ])
+  })
+
+  it('rejects a probe carrying extra fields', async () => {
+    const run = await runHost([
+      frame(JSON.stringify({ type: 'probe', url: 'https://example.com/' }))
+    ])
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      {
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message:
+            'Only probe messages containing exactly a type field are accepted.'
+        }
+      }
+    ])
+  })
+
   it('forwards exactly one validated queue-download request to the app', async () => {
     const app = await startFakeApp()
     const dir = await makeTempDir()

@@ -119,16 +119,21 @@ describe('browser extension manifest', () => {
       'media-bridge.js',
       'media-contract.js',
       'media-sniffer.js',
+      'onboarding.js',
       'options.html',
       'options.css',
       'options.js',
       'popup.html',
       'popup.js',
       'popup.css',
+      'site-enable.js',
       'site-policy.js',
       'overlay-core.js',
       'overlay.js',
-      'overlay-controller.js'
+      'overlay-controller.js',
+      'welcome.html',
+      'welcome.css',
+      'welcome.js'
     ]) {
       expect(existsSync(path.join(extensionDir, file))).toBe(true)
     }

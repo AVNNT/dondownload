@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DonDownload Capture setup</title>
+    <link rel="stylesheet" href="welcome.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <span class="brand">DonDownload Capture</span>
+          <h1>Welcome</h1>
+        </div>
+        <span class="pill">setup</span>
+      </header>
+
+      <section id="connection" class="connection" aria-labelledby="connection-title">
+        <div class="connection-head">
+          <span id="connection-dot" class="dot" aria-hidden="true"></span>
+          <h2 id="connection-title">Checking the desktop app…</h2>
+        </div>
+        <p id="connection-detail" class="lead">
+          DonDownload is looking for the app and its native bridge.
+        </p>
+        <ol id="connection-steps" class="steps" hidden></ol>
+        <button id="retry" type="button" class="secondary">Retry</button>
+      </section>
+
+      <section aria-labelledby="choices-title">
+        <h2 id="choices-title">Where should capture work?</h2>
+        <p class="lead">
+          Downloads are always explicit. The optional overlay and media
+          detection need site access. You can start with every normal site or
+          choose sites one at a time from the toolbar popup.
+        </p>
+        <button id="enable-all-sites" type="button">Enable on all sites</button>
+        <button id="choose-later" type="button" class="secondary">
+          Choose sites later
+        </button>
+        <p id="choices-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <footer>
+        <p class="muted">
+          No wildcard native-messaging origin is ever used. The desktop app
+          registers this extension's exact fixed ID.
+        </p>
+      </footer>
+    </main>
+
+    <script type="module" src="welcome.js"></script>
+  </body>
+</html>

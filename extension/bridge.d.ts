@@ -1,5 +1,6 @@
 export const NATIVE_HOST: string
 export const QUEUE_MESSAGE_TYPE: string
+export const PROBE_MESSAGE_TYPE: string
 export const CAPTURED_SOURCE_MESSAGE_TYPE: string
 export const DURABLE_HANDOFF_MESSAGE_TYPE: string
 export const MAX_URL_LENGTH: number
@@ -113,6 +114,9 @@ export function sendQueueDownload(
   rawUrl: unknown,
   options?: { force?: boolean }
 ): Promise<{ ok: boolean; error?: { code: string; message: string } }>
+export function probeNativeConnection(): Promise<
+  { ok: true } | { ok: false; error: { code: string; message: string } }
+>
 export function sendAnalyzeMedia(rawUrl: unknown): Promise<AnalyzeMediaResult>
 export function sendQueueMedia(input: unknown): Promise<QueueMediaResult>
 export function sendMediaStatus(jobId: unknown): Promise<QueueMediaResult>
