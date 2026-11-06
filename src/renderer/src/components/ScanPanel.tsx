@@ -38,9 +38,6 @@ import {
 import type { ApiResult, AppErrorInfo } from '@shared/types'
 import { formatBytes } from '@shared/format'
 import { Icon, type IconName } from './Icon'
-import { StatusBadge } from './StatusBadge'
-import type { StatusTone } from '../lib/unified'
-import { Thumbnail } from './Thumbnail'
 import { createScanAutoStart, type ScanAutoStart } from '../scanAutoStart'
 
 interface ScanPanelProps {
@@ -58,51 +55,35 @@ interface GroupDefinition {
 }
 
 const GROUPS: readonly GroupDefinition[] = [
-  { category: 'video', label: 'Videos', icon: 'video', accent: 'text-sky-300' },
-  { category: 'audio', label: 'Audio', icon: 'audio', accent: 'text-violet-300' },
-  { category: 'image', label: 'Images', icon: 'image', accent: 'text-emerald-300' },
+  { category: 'video', label: 'Videos', icon: 'video', accent: 'text-zinc-300' },
+  { category: 'audio', label: 'Audio', icon: 'audio', accent: 'text-zinc-300' },
+  { category: 'image', label: 'Images', icon: 'image', accent: 'text-zinc-300' },
   {
     category: 'document',
     label: 'Documents',
     icon: 'document',
-    accent: 'text-amber-300'
+    accent: 'text-zinc-300'
   },
   {
     category: 'archive',
     label: 'Archives',
     icon: 'archive',
-    accent: 'text-orange-300'
+    accent: 'text-zinc-300'
   },
-  { category: 'script', label: 'Scripts', icon: 'program', accent: 'text-fuchsia-300' },
+  { category: 'script', label: 'Scripts', icon: 'program', accent: 'text-zinc-300' },
   { category: 'other', label: 'Other', icon: 'other', accent: 'text-zinc-300' },
-  { category: 'page', label: 'Other links', icon: 'link', accent: 'text-sky-300' }
+  {
+    category: 'page',
+    label: 'Unrecognised links',
+    icon: 'link',
+    accent: 'text-zinc-300'
+  }
 ]
 
 type FilterMode = 'all' | 'script-video'
 
 function isQueueable(item: ScanItem): boolean {
   return isQueueableScanItem(item)
-}
-
-function statusTone(status: ScanItem['status']): StatusTone {
-  if (status === 'ready') return 'complete'
-  if (status === 'probing') return 'active'
-  if (status === 'signin') return 'warning'
-  if (status === 'unavailable' || status === 'protected') return 'failed'
-  if (status === 'browser-only') return 'warning'
-  if (status === 'tool-unavailable') return 'warning'
-  return 'queued'
-}
-
-function statusLabel(status: ScanItem['status']): string {
-  if (status === 'ready') return 'Ready'
-  if (status === 'probing') return 'Resolving'
-  if (status === 'signin') return 'Sign-in needed'
-  if (status === 'protected') return 'Protected'
-  if (status === 'unavailable') return 'Unavailable'
-  if (status === 'browser-only') return 'Open in browser'
-  if (status === 'tool-unavailable') return 'yt-dlp missing'
-  return 'Found'
 }
 
 function formatDuration(seconds: number | null | undefined): string | null {
@@ -129,15 +110,6 @@ function defaultVideoOptionId(item: ScanItem): string | null {
     return item.bestOptionId
   }
   return item.formats?.[0]?.optionId ?? null
-}
-
-function chosenFormat(
-  item: ScanItem,
-  chosenOptionId: string | undefined
-): ScanVideoFormat | null {
-  if (!item.formats || item.formats.length === 0) return null
-  const optionId = chosenOptionId ?? defaultVideoOptionId(item)
-  return item.formats.find((format) => format.optionId === optionId) ?? null
 }
 
 function isVideoCardItem(item: ScanItem): boolean {
@@ -294,6 +266,12 @@ export function ScanPanel({
   const [openingItemId, setOpeningItemId] = useState<string | null>(null)
   const [markingItemId, setMarkingItemId] = useState<string | null>(null)
   const [linksExpanded, setLinksExpanded] = useState(false)
+  const [thumbFailures, setThumbFailures] = useState<Map<string, boolean>>(
+    new Map()
+  )
+  const [expandedScriptPanel, setExpandedScriptPanel] = useState<
+    Record<string, boolean>
+  >({})
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
   const sessionsRef = useRef<ScanSession[]>([...seededSessions])
@@ -1059,6 +1037,22 @@ export function ScanPanel({
 
   const scanning = sessions.some((session) => session.status === 'scanning')
   const selectionLabel = sizeLabel(queueable, selection)
+  const totalItemCount = items.length
+  const videosWithScriptsCount = sessions.reduce((count, session) => {
+    const sets = setsBySession.get(session.sessionId) ?? []
+    return (
+      count +
+      session.items.filter(
+        (item) =>
+          isVideoCardItem(item) &&
+          sets.some((set) => set.matchedVideoItemId === item.id)
+      ).length
+    )
+  }, 0)
+  const selectedOtherCount = Math.max(
+    0,
+    selectedItems.length - selectedVideoCount - selectedScriptCount
+  )
 
   const renderScriptSets = (
     session: ScanSession,
@@ -1071,8 +1065,8 @@ export function ScanPanel({
         selectableIds.length > 0 &&
         selectableIds.every((id) => selection.has(id))
       return (
-        <li key={`set-${session.sessionId}-${set.id}`} className="px-3 py-2">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <li key={`set-${session.sessionId}-${set.id}`} className="px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <button
               type="button"
               onClick={() =>
@@ -1082,17 +1076,17 @@ export function ScanPanel({
                 }))
               }
               aria-expanded={expanded}
-              className="text-[11px] text-zinc-400 transition hover:text-zinc-200"
+              className="flex text-zinc-500 transition hover:text-zinc-200"
             >
-              {expanded ? '▾' : '▸'}
+              <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} />
             </button>
             <span
-              className="truncate text-[12px] font-medium text-zinc-200"
+              className="truncate text-[12.5px] font-semibold text-zinc-100"
               title={set.base}
             >
               {set.base}
             </span>
-            <span className="text-[10.5px] text-zinc-500">
+            <span className="text-[12px] text-zinc-500">
               {set.files.length} file{set.files.length === 1 ? '' : 's'}
             </span>
             {set.axes.map((axis) => (
@@ -1100,30 +1094,30 @@ export function ScanPanel({
                 key={axis}
                 type="button"
                 onClick={() => toggleSetFiles(set, axis)}
-                className="rounded-full border border-white/10 px-1.5 py-0.5 text-[10px] text-fuchsia-200/80 transition hover:bg-fuchsia-400/10"
+                className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/[0.05] hover:text-zinc-200"
               >
                 {axis}
               </button>
             ))}
             {set.missingMain ? (
-              <span className="rounded-full border border-amber-400/25 px-1.5 py-0.5 text-[10px] text-amber-200">
+              <span className="rounded-full border border-amber-400/25 px-2 py-0.5 text-[11px] font-medium text-amber-300">
                 No main stroke
               </span>
             ) : null}
             {set.ambiguous ? (
-              <span className="rounded-full border border-amber-400/25 px-1.5 py-0.5 text-[10px] text-amber-200">
+              <span className="rounded-full border border-amber-400/25 px-2 py-0.5 text-[11px] font-medium text-amber-300">
                 Ambiguous match
               </span>
             ) : null}
-            <span className="ml-auto text-[10px] text-zinc-500">
+            <span className="ml-auto text-[11px] text-zinc-500">
               {matchBucketLabel(set)}
             </span>
             <button
               type="button"
               onClick={() => toggleSetFiles(set)}
-              className="text-[10.5px] text-accent-300 transition hover:text-accent-200"
+              className="text-[12px] font-semibold text-accent-300 transition hover:text-accent-200"
             >
-              {allSelected ? 'Clear' : 'Select all axes'}
+              {allSelected ? 'Clear' : 'Select all'}
             </button>
             <button
               type="button"
@@ -1131,7 +1125,7 @@ export function ScanPanel({
                 matchToVideoFile(session, `set:${session.sessionId}:${set.id}`, set, null)
               }
               disabled={disabled || matchingKey !== null}
-              className="text-[10.5px] text-sky-300 transition hover:text-sky-200 disabled:opacity-50"
+              className="text-[12px] font-semibold text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
             >
               {matchingKey === `set:${session.sessionId}:${set.id}`
                 ? 'Choose video…'
@@ -1139,7 +1133,7 @@ export function ScanPanel({
             </button>
           </div>
           {expanded ? (
-            <ul className="mt-1.5 flex flex-col gap-1 pl-5">
+            <ul className="mt-2 flex flex-col gap-1 pl-6">
               {set.files.map((file) => {
                 const item = itemById.get(file.id)
                 return (
@@ -1150,12 +1144,12 @@ export function ScanPanel({
                       checked={selection.has(file.id)}
                       disabled={disabled || item === undefined || !isQueueable(item)}
                       onChange={() => toggle(file.id)}
-                      className="h-3 w-3 accent-fuchsia-400 disabled:opacity-40"
+                      className="h-3 w-3 accent-accent-400 disabled:opacity-40"
                     />
-                    <span className="truncate font-mono text-[10.5px] text-zinc-400">
+                    <span className="truncate font-mono text-[11.5px] text-zinc-400">
                       {file.filename}
                     </span>
-                    <span className="text-[10px] text-zinc-600">
+                    <span className="text-[11px] text-zinc-500">
                       {file.isMain ? 'main' : file.axis ?? ''}
                       {file.variant !== null ? ` · ${file.variant}` : ''}
                     </span>
@@ -1167,7 +1161,7 @@ export function ScanPanel({
                   type="button"
                   onClick={() => downloadScriptsWithOriginalNames(session, set)}
                   disabled={disabled || queuing}
-                  className="mt-0.5 text-[10.5px] text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
+                  className="text-[12px] font-semibold text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
                 >
                   Download scripts with original names
                 </button>
@@ -1178,6 +1172,48 @@ export function ScanPanel({
       )
     })
 
+  /**
+   * Local 16:9 thumbnail at the mock's exact 104x58 (the shared `Thumbnail`
+   * component has its own fixed sizes used by other screens).
+   */
+  const renderThumb = (
+    src: string | null,
+    title: string,
+    fallbackIcon: IconName,
+    sizeClass: string,
+    iconSize: number
+  ): JSX.Element => {
+    const failed = thumbFailures.get(src ?? `fallback:${title}`) === true
+    if (src === null || src.length === 0 || failed) {
+      return (
+        <span
+          className={`grid shrink-0 place-items-center border border-white/10 bg-white/[0.045] text-zinc-400 ${sizeClass}`}
+        >
+          <Icon name={fallbackIcon} size={iconSize} />
+        </span>
+      )
+    }
+    return (
+      <img
+        src={src}
+        alt=""
+        title={title}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        draggable={false}
+        onError={() =>
+          setThumbFailures((current) => {
+            if (current.get(src) === true) return current
+            const next = new Map(current)
+            next.set(src, true)
+            return next
+          })
+        }
+        className={`shrink-0 border border-white/10 object-cover ${sizeClass}`}
+      />
+    )
+  }
+
   const renderVideoCard = (
     session: ScanSession,
     item: ScanItem,
@@ -1187,9 +1223,6 @@ export function ScanPanel({
     const queueableItem = isQueueable(item)
     const selected = selection.has(item.id)
     const chosen = videoChoices[item.id] ?? defaultVideoOptionId(item) ?? ''
-    const selectedFormat = chosenFormat(item, videoChoices[item.id])
-    const reason =
-      item.status === 'probing' ? 'Resolving formats…' : item.unavailableReason
     const pairedSetId = chosenSetIdFor(session, item.id)
     const pairedSet = sets.find((set) => set.id === pairedSetId) ?? null
     const pairingFiles = pairedSet ? selectedFilesForSet(pairedSet) : []
@@ -1201,144 +1234,316 @@ export function ScanPanel({
           primaryVariant.length > 0 ? primaryVariant : null
         )
       : null
+    const off = item.status === 'protected'
+    const showScripts =
+      sets.length > 0 && item.status !== 'probing' && item.status !== 'signin'
+    const scriptPanelOpen = expandedScriptPanel[item.id] === true
+    const ambiguousSets = sets.filter((set) => set.ambiguous)
+    const ambiguousCount = ambiguousSets.length
+    const needsChoice = showScripts && pairedSet === null && ambiguousCount > 0
+    const otherVideoClaimsCandidate =
+      needsChoice &&
+      ambiguousSets.some((set) =>
+        session.items.some(
+          (other) =>
+            other.id !== item.id &&
+            isVideoCardItem(other) &&
+            chosenSetIdFor(session, other.id) === set.id
+        )
+      )
+    const warnScripts =
+      pairedSet !== null &&
+      (pairedSet.missingMain ||
+        pairedSet.ambiguous ||
+        pairedSet.conflicts.length > 0)
+    const axesSummary = pairedSet
+      ? pairedSet.missingMain
+        ? `${pairedSet.axes.join(', ')} · no main stroke`
+        : pairedSet.axes.length === 1
+          ? `main + ${pairedSet.axes[0]}`
+          : pairedSet.axes.length > 1
+            ? `main + ${pairedSet.axes.length} axes`
+            : 'main stroke'
+      : ''
+
+    const statusMeta = (() => {
+      switch (item.status) {
+        case 'probing':
+          return (
+            <span
+              className="inline-flex items-center gap-1.5 font-medium text-zinc-400"
+              title={item.unavailableReason ?? undefined}
+            >
+              <span
+                aria-hidden="true"
+                className="h-3 w-3 shrink-0 animate-spin rounded-full border border-zinc-500 border-t-transparent"
+              />
+              Finding qualities…
+            </span>
+          )
+        case 'protected':
+          return (
+            <span
+              className="inline-flex items-center gap-1 font-semibold text-red-300"
+              title={item.unavailableReason ?? undefined}
+            >
+              <Icon name="alert" size={12} />
+              Protected
+            </span>
+          )
+        case 'browser-only':
+          return (
+            <span className="inline-flex items-center gap-1 font-semibold text-amber-300">
+              <Icon name="external" size={12} />
+              Plays only in the browser
+            </span>
+          )
+        case 'signin':
+          return (
+            <span
+              className="inline-flex items-center gap-1 font-semibold text-amber-300"
+              title={item.unavailableReason ?? undefined}
+            >
+              Needs sign-in
+            </span>
+          )
+        case 'unavailable':
+          return (
+            <span
+              className="font-semibold text-red-300"
+              title={item.unavailableReason ?? undefined}
+            >
+              Unavailable
+            </span>
+          )
+        case 'tool-unavailable':
+          return (
+            <span
+              className="font-semibold text-amber-300"
+              title={item.unavailableReason ?? undefined}
+            >
+              yt-dlp missing
+            </span>
+          )
+        case 'found':
+          return <span className="font-medium text-zinc-400">Found</span>
+        default:
+          return null
+      }
+    })()
+
+    const side = (() => {
+      if (item.status === 'browser-only') {
+        return (
+          <button
+            type="button"
+            onClick={() => openInBrowser(session, item)}
+            disabled={disabled || openingItemId !== null}
+            className="inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-lg border border-white/10 px-3 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            <Icon name="external" size={13} />
+            {openingItemId === item.id ? 'Opening…' : 'Open in browser'}
+          </button>
+        )
+      }
+      if (item.status === 'probing') {
+        return <span className="text-[12px] text-zinc-500">Qualities soon</span>
+      }
+      if (off) {
+        return null
+      }
+      if (item.status === 'ready' && item.formats && item.formats.length > 0) {
+        return (
+          <>
+            <label className="sr-only" htmlFor={`quality-${item.id}`}>
+              Quality for {item.name}
+            </label>
+            <select
+              id={`quality-${item.id}`}
+              value={chosen}
+              onChange={(event) =>
+                setVideoChoices((current) => ({
+                  ...current,
+                  [item.id]: event.target.value
+                }))
+              }
+              disabled={disabled || queuing}
+              className="h-[30px] max-w-[11rem] rounded-lg border border-white/10 surface-input px-2 text-[12px] font-semibold text-zinc-100 outline-none transition focus:border-accent-400/60 disabled:opacity-50"
+            >
+              {item.formats.map((format: ScanVideoFormat) => (
+                <option
+                  key={format.optionId}
+                  value={format.optionId}
+                  title={format.label}
+                >
+                  {format.label.split(' · ')[0]}
+                  {format.sizeBytes !== null
+                    ? ` · ${format.sizeIsEstimate ? '≈ ' : ''}${formatBytes(
+                        format.sizeBytes
+                      )}`
+                    : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => queueItems(session.sessionId, [item.id])}
+              disabled={disabled || queuing}
+              title="Download now"
+              aria-label={`Download ${item.name}`}
+              className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-accent-400/40 text-accent-300 opacity-0 transition hover:bg-accent-400/10 hover:text-accent-200 focus-visible:opacity-100 disabled:opacity-40 group-hover:opacity-100"
+            >
+              <Icon name="download" size={15} />
+            </button>
+          </>
+        )
+      }
+      if (item.status === 'ready') {
+        return (
+          <span className="inline-flex h-[30px] shrink-0 items-center gap-2 rounded-lg border border-white/10 surface-input px-2.5 text-[12px] font-semibold text-zinc-100">
+            {extensionOf(item.name) ?? item.bestResolution ?? 'Video'}
+            <span className="font-normal text-zinc-500">
+              {itemSizeLabel(item)}
+            </span>
+          </span>
+        )
+      }
+      return null
+    })()
+
+    const scriptChipBase =
+      'mt-1.5 inline-flex h-6 max-w-full items-center gap-1.5 rounded-md border px-2 text-[12px] transition'
+
     return (
       <li
         key={item.id}
-        className={`px-3 py-2.5 ${selected ? 'bg-accent-400/[0.04]' : ''}`}
+        className={`group grid grid-cols-[16px_104px_minmax(0,1fr)_auto] items-center gap-x-3.5 border-t border-white/[0.06] px-3.5 py-2.5 transition-colors ${
+          selected ? 'bg-accent-400/[0.05]' : ''
+        } ${off ? 'opacity-55' : ''} hover:bg-white/[0.03]`}
       >
-        <div className="flex items-start gap-2.5">
-          <input
-            type="checkbox"
-            aria-label={`Select ${item.name}`}
-            checked={selected}
-            disabled={!queueableItem || disabled}
-            onChange={() => toggle(item.id)}
-            className="mt-2 h-3.5 w-3.5 shrink-0 accent-accent-400 disabled:opacity-40"
-          />
-          <Thumbnail
-            size="card"
-            src={item.thumbnailUrl ?? undefined}
+        <input
+          type="checkbox"
+          aria-label={`Select ${item.name}`}
+          checked={selected}
+          disabled={!queueableItem || disabled}
+          onChange={() => toggle(item.id)}
+          className="h-4 w-4 shrink-0 accent-accent-400 disabled:opacity-40"
+        />
+        <div className="relative shrink-0">
+          {renderThumb(
+            item.thumbnailUrl ?? null,
+            item.name,
+            group.icon,
+            'h-[58px] w-[104px] rounded-[7px]',
+            18
+          )}
+          {formatDuration(item.durationSeconds) !== null ? (
+            <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/75 px-1 text-[10.5px] font-semibold leading-4 text-white">
+              {formatDuration(item.durationSeconds)}
+            </span>
+          ) : null}
+        </div>
+        <div className="min-w-0">
+          <div
+            className="truncate text-[12.5px] font-semibold text-zinc-100"
             title={item.name}
-            fallback={{ icon: group.icon, accent: group.accent }}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span
-                className="truncate text-[12px] font-medium text-zinc-200"
-                title={item.name}
-              >
-                {item.name}
+          >
+            {item.name}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-zinc-500">
+            {statusMeta ? (
+              <>
+                {statusMeta}
+                <span>·</span>
+              </>
+            ) : null}
+            <span>{item.hostname}</span>
+            {item.postNumber !== null ? (
+              <>
+                <span>·</span>
+                <span>post #{item.postNumber}</span>
+              </>
+            ) : null}
+          </div>
+          {item.browserMatchPending === true ? (
+            <p className="mt-1 text-[11px] leading-4 text-accent-200">
+              Waiting for the video from your browser… play it there.
+            </p>
+          ) : null}
+          {needsChoice ? (
+            <button
+              type="button"
+              onClick={() =>
+                setExpandedScriptPanel((current) => ({
+                  ...current,
+                  [item.id]: !scriptPanelOpen
+                }))
+              }
+              aria-expanded={scriptPanelOpen}
+              className={`${scriptChipBase} ${
+                scriptPanelOpen
+                  ? 'border-accent-400/40 bg-accent-400/10 text-zinc-100'
+                  : 'border-white/10 bg-white/[0.045] text-zinc-400 hover:bg-white/[0.07]'
+              }`}
+            >
+              <Icon name="alert" size={13} className="shrink-0 text-amber-300" />
+              <span className="truncate">
+                <span className="font-semibold text-zinc-100">
+                  {ambiguousCount} script set{ambiguousCount === 1 ? '' : 's'} could match
+                </span>
+                {' · '}choose one
               </span>
-              {item.status === 'probing' ? (
-                <span
-                  aria-hidden="true"
-                  className="h-3 w-3 shrink-0 animate-spin rounded-full border border-zinc-500 border-t-transparent"
-                />
-              ) : null}
-              <StatusBadge
-                label={statusLabel(item.status)}
-                tone={statusTone(item.status)}
+              <Icon
+                name={scriptPanelOpen ? 'chevron-down' : 'chevron-right'}
+                size={12}
+                className="shrink-0 text-zinc-500"
               />
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-500">
-              {formatDuration(item.durationSeconds) !== null ? (
-                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
-                  {formatDuration(item.durationSeconds)}
+            </button>
+          ) : showScripts && pairedSet ? (
+            <button
+              type="button"
+              onClick={() =>
+                setExpandedScriptPanel((current) => ({
+                  ...current,
+                  [item.id]: !scriptPanelOpen
+                }))
+              }
+              aria-expanded={scriptPanelOpen}
+              className={`${scriptChipBase} ${
+                scriptPanelOpen
+                  ? 'border-accent-400/40 bg-accent-400/10 text-zinc-100'
+                  : 'border-white/10 bg-white/[0.045] text-zinc-400 hover:bg-white/[0.07]'
+              }`}
+            >
+              {warnScripts ? (
+                <Icon name="alert" size={13} className="shrink-0 text-amber-300" />
+              ) : (
+                <Icon name="check" size={13} className="shrink-0 text-emerald-300" />
+              )}
+              <span className="truncate">
+                <span className="font-semibold text-zinc-100">
+                  {pairingFiles.length} script{pairingFiles.length === 1 ? '' : 's'}
                 </span>
-              ) : null}
-              {selectedFormat ? (
-                <span className="font-medium text-zinc-300">
-                  {selectedFormat.label}
-                </span>
-              ) : item.bestResolution ? (
-                <span className="font-medium text-zinc-300">
-                  {item.bestResolution}
-                </span>
-              ) : null}
-              <span>{itemSizeLabel(item)}</span>
-              <span>·</span>
-              <span>{item.hostname}</span>
-              {item.postNumber !== null ? (
-                <>
-                  <span>·</span>
-                  <span>post #{item.postNumber}</span>
-                </>
-              ) : null}
-              {item.author !== null ? (
-                <>
-                  <span>·</span>
-                  <span className="truncate">{item.author}</span>
-                </>
-              ) : null}
-            </div>
-            {item.status === 'ready' && item.formats && item.formats.length > 0 ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <label className="sr-only" htmlFor={`quality-${item.id}`}>
-                  Quality for {item.name}
-                </label>
-                <select
-                  id={`quality-${item.id}`}
-                  value={chosen}
-                  onChange={(event) =>
-                    setVideoChoices((current) => ({
-                      ...current,
-                      [item.id]: event.target.value
-                    }))
-                  }
-                  disabled={disabled || queuing}
-                  className="h-7 max-w-[18rem] rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-accent-400/60 disabled:opacity-50"
-                >
-                  {item.formats.map((format: ScanVideoFormat) => (
-                    <option key={format.optionId} value={format.optionId}>
-                      {format.label}
-                      {format.sizeBytes !== null
-                        ? ` · ${format.sizeIsEstimate ? '≈ ' : ''}${formatBytes(
-                            format.sizeBytes
-                          )}`
-                        : ''}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => queueItems(session.sessionId, [item.id])}
-                  disabled={disabled || queuing}
-                  className="h-7 rounded-md border border-accent-400/30 bg-accent-400/10 px-2.5 text-[11px] font-medium text-accent-200 transition hover:bg-accent-400/20 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Download
-                </button>
-              </div>
-            ) : reason ? (
-              <p className="mt-1 text-[10.5px] leading-4 text-zinc-500">{reason}</p>
-            ) : null}
-            {item.status === 'browser-only' ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => openInBrowser(session, item)}
-                  disabled={disabled || openingItemId !== null}
-                  className="h-7 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {openingItemId === item.id ? 'Opening…' : 'Open in browser'}
-                </button>
-                <span className="text-[10px] text-zinc-500">
-                  Can&apos;t be read automatically — open it in your browser.
-                </span>
-              </div>
-            ) : null}
-            {item.browserMatchPending === true ? (
-              <p className="mt-1 text-[10.5px] leading-4 text-sky-200">
-                Waiting for the video from your browser… play it there. The
-                chosen scripts download with it.
-              </p>
-            ) : null}
-            {sets.length > 0 &&
-            item.status !== 'probing' &&
-            item.status !== 'signin' ? (
-              <div className="mt-2 rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/[0.04] px-2 py-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fuchsia-200/80">
-                    Matching scripts
+                {axesSummary ? ` · ${axesSummary}` : ''}
+                {' · renamed to match'}
+              </span>
+              <Icon
+                name={scriptPanelOpen ? 'chevron-down' : 'chevron-right'}
+                size={12}
+                className="shrink-0 text-zinc-500"
+              />
+            </button>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">{side}</div>
+
+        {showScripts && scriptPanelOpen ? (
+          <div className="col-start-3 col-span-2 mt-2.5 flex flex-col gap-3 rounded-[10px] border border-white/10 bg-[var(--surface-app)] p-3">
+            {pairedSet ? (
+              <>
+                <div className="flex items-center gap-2.5">
+                  <span className="w-[92px] shrink-0 text-[12px] text-zinc-500">
+                    Script set
                   </span>
                   <label className="sr-only" htmlFor={`script-set-${item.id}`}>
                     Script set for {item.name}
@@ -1353,211 +1558,276 @@ export function ScanPanel({
                       }))
                     }
                     disabled={disabled || queuing}
-                    className="h-7 max-w-[18rem] flex-1 rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-fuchsia-400/60 disabled:opacity-50"
+                    className="h-[30px] min-w-0 flex-1 rounded-lg border border-white/10 surface-card px-2.5 text-[12.5px] font-semibold text-zinc-100 outline-none transition focus:border-accent-400/60 disabled:opacity-50"
                   >
                     <option value="">No matching scripts</option>
                     {sets.map((set) => (
                       <option key={set.id} value={set.id}>
                         {set.base}
-                        {set.postNumber !== null ? ` · #${set.postNumber}` : ''}
+                        {set.postNumber !== null ? ` · post #${set.postNumber}` : ''}
                         {set.axes.length > 0 ? ` · ${set.axes.join(', ')}` : ''}
                         {set.missingMain ? ' · no main' : ''}
                       </option>
                     ))}
                   </select>
+                  {pairedSet ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 text-[12px] font-semibold text-emerald-300">
+                      <Icon name="check" size={13} />
+                      {matchBucketLabel(pairedSet)}
+                    </span>
+                  ) : null}
                 </div>
-                {pairedSet ? (
-                  <>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      {axisKeysOf(pairedSet).map((axisKey) => {
-                        const active = axisSelection(pairedSet).includes(axisKey)
-                        return (
-                          <label
-                            key={axisKey}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] ${
-                              active
-                                ? 'border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-100'
-                                : 'border-white/10 text-zinc-400'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={active}
-                              onChange={() => toggleAxis(pairedSet, axisKey)}
-                              disabled={disabled || queuing}
-                              className="h-3 w-3 accent-fuchsia-400"
-                            />
-                            {axisLabel(axisKey)}
-                          </label>
-                        )
-                      })}
-                      <button
-                        type="button"
-                        onClick={() => selectAllAxes(pairedSet)}
-                        disabled={disabled || queuing}
-                        className="text-[10.5px] text-fuchsia-200 transition hover:text-fuchsia-100 disabled:opacity-50"
-                      >
-                        Select all axes
-                      </button>
-                      <span className="ml-auto text-[10px] text-zinc-500">
-                        {matchBucketLabel(pairedSet)}
-                      </span>
-                    </div>
-                    {pairedSet.variants.length > 0 ? (
-                      <fieldset className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <legend className="text-[10px] uppercase tracking-wide text-zinc-500">
-                          Primary version
-                        </legend>
-                        <label className="inline-flex items-center gap-1 text-[10.5px] text-zinc-300">
+
+                <div className="flex items-start gap-2.5">
+                  <span className="w-[92px] shrink-0 pt-1 text-[12px] text-zinc-500">
+                    Axes
+                  </span>
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    {axisKeysOf(pairedSet).map((axisKey) => {
+                      const active = axisSelection(pairedSet).includes(axisKey)
+                      return (
+                        <button
+                          key={axisKey}
+                          type="button"
+                          onClick={() => toggleAxis(pairedSet, axisKey)}
+                          disabled={disabled || queuing}
+                          className={`inline-flex h-[26px] items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition disabled:opacity-50 ${
+                            active
+                              ? 'border-accent-400/40 bg-accent-400/10 text-zinc-100'
+                              : 'border-white/10 text-zinc-400 hover:bg-white/[0.05]'
+                          }`}
+                        >
+                          {active ? (
+                            <Icon name="check" size={12} className="text-accent-300" />
+                          ) : (
+                            <span className="h-3.5 w-3.5 rounded-[4px] border-[1.5px] border-zinc-600" aria-hidden="true" />
+                          )}
+                          {axisLabel(axisKey)}
+                        </button>
+                      )
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => selectAllAxes(pairedSet)}
+                      disabled={disabled || queuing}
+                      className="text-[12px] font-semibold text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
+                    >
+                      Select all axes
+                    </button>
+                  </div>
+                </div>
+
+                {pairedSet.variants.length > 0 ? (
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-[92px] shrink-0 pt-0.5 text-[12px] text-zinc-500">
+                      Versions
+                    </span>
+                    <fieldset className="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1">
+                      <label className="inline-flex items-center gap-1.5 text-[12px] text-zinc-300">
+                        <input
+                          type="radio"
+                          name={`primary-${item.id}`}
+                          checked={primaryVariant.length === 0}
+                          onChange={() =>
+                            setPrimaryChoice((current) => ({
+                              ...current,
+                              [pairedSet.id]: ''
+                            }))
+                          }
+                          disabled={disabled || queuing}
+                          className="h-3.5 w-3.5 accent-accent-400"
+                        />
+                        Keep versions separate
+                      </label>
+                      {pairedSet.variants.map((variant) => (
+                        <label
+                          key={variant}
+                          className="inline-flex items-center gap-1.5 text-[12px] text-zinc-300"
+                        >
                           <input
                             type="radio"
                             name={`primary-${item.id}`}
-                            checked={primaryVariant.length === 0}
+                            checked={primaryVariant === variant}
                             onChange={() =>
                               setPrimaryChoice((current) => ({
                                 ...current,
-                                [pairedSet.id]: ''
+                                [pairedSet.id]: variant
                               }))
                             }
                             disabled={disabled || queuing}
-                            className="h-3 w-3 accent-fuchsia-400"
+                            className="h-3.5 w-3.5 accent-accent-400"
                           />
-                          Keep versions separate
+                          {variant}
                         </label>
-                        {pairedSet.variants.map((variant) => (
-                          <label
-                            key={variant}
-                            className="inline-flex items-center gap-1 text-[10.5px] text-zinc-300"
-                          >
-                            <input
-                              type="radio"
-                              name={`primary-${item.id}`}
-                              checked={primaryVariant === variant}
-                              onChange={() =>
-                                setPrimaryChoice((current) => ({
-                                  ...current,
-                                  [pairedSet.id]: variant
-                                }))
-                              }
-                              disabled={disabled || queuing}
-                              className="h-3 w-3 accent-fuchsia-400"
-                            />
-                            {variant}
-                          </label>
-                        ))}
-                      </fieldset>
-                    ) : null}
-                    <label className="mt-1.5 inline-flex items-center gap-1.5 text-[10.5px] text-zinc-300">
-                      <input
-                        type="checkbox"
-                        checked={renameForSet(pairedSet)}
-                        onChange={(event) =>
-                          setRenameChoice((current) => ({
-                            ...current,
-                            [pairedSet.id]: event.target.checked
-                          }))
-                        }
-                        disabled={disabled || queuing}
-                        className="h-3 w-3 accent-fuchsia-400"
-                      />
-                      Rename scripts to match this video
-                    </label>
-                    {pairedSet.missingMain ? (
-                      <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
-                        No main stroke script in this set. The other axes will
-                        still be downloaded and renamed.
-                      </p>
-                    ) : null}
-                    {pairedSet.conflicts.length > 0 ? (
-                      <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
-                        This set has two files for the same axis. Choose a
-                        different set or download the originals below.
-                      </p>
-                    ) : null}
-                    {preview === null ? (
-                      <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
-                        The chosen versions produce conflicting names. Pick a
-                        different primary version.
-                      </p>
-                    ) : (
-                      <div className="mt-1.5">
-                        <p className="text-[10.5px] text-zinc-400">
-                          {renameForSet(pairedSet)
-                            ? `→ saved as ${item.name}.*`
-                            : 'Original names will be kept.'}
-                        </p>
-                        <ul className="mt-0.5 flex flex-col gap-0.5">
-                          {pairingFiles.map((file) => {
-                            const target = preview.get(file.id) ?? null
-                            return (
-                              <li
-                                key={file.id}
-                                className="truncate font-mono text-[10px] text-zinc-500"
-                                title={`${file.filename} → ${target ?? file.filename}`}
-                              >
-                                {file.filename} →{' '}
-                                {renameForSet(pairedSet)
-                                  ? target ?? 'name conflict'
-                                  : file.filename}
-                              </li>
-                            )
-                          })}
-                        </ul>
-                      </div>
-                    )}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => downloadVideoWithScripts(session, item)}
-                        disabled={
-                          disabled ||
-                          queuing ||
-                          !queueableItem ||
-                          item.status !== 'ready' ||
-                          pairingFiles.length === 0
-                        }
-                        className="h-7 rounded-md border border-fuchsia-400/30 bg-fuchsia-400/10 px-2.5 text-[11px] font-medium text-fuchsia-100 transition hover:bg-fuchsia-400/20 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        Download video + scripts
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          matchToVideoFile(
-                            session,
-                            `video:${session.sessionId}:${item.id}`,
-                            pairedSet,
-                            item.id
-                          )
-                        }
-                        disabled={
-                          disabled ||
-                          matchingKey !== null ||
-                          pairingFiles.length === 0
-                        }
-                        className="h-7 rounded-md border border-white/15 px-2.5 text-[11px] font-medium text-zinc-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {matchingKey === `video:${session.sessionId}:${item.id}`
-                          ? 'Choose video…'
-                          : 'Match to video file…'}
-                      </button>
-                      <span className="text-[10px] text-zinc-500">
-                        {pairingFiles.length} script
-                        {pairingFiles.length === 1 ? '' : 's'} next to the video
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <p className="mt-1 text-[10.5px] leading-4 text-zinc-500">
-                    {sets.some((set) => set.ambiguous)
-                      ? 'Some script sets match more than one video. Choose the set that belongs to this video above.'
-                      : 'Choose a script set above to download it with this video.'}
+                      ))}
+                    </fieldset>
+                  </div>
+                ) : null}
+
+                <div className="flex items-center gap-2.5">
+                  <span className="w-[92px] shrink-0 text-[12px] text-zinc-500">
+                    File names
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={renameForSet(pairedSet)}
+                    onClick={() =>
+                      setRenameChoice((current) => ({
+                        ...current,
+                        [pairedSet.id]: !renameForSet(pairedSet)
+                      }))
+                    }
+                    disabled={disabled || queuing}
+                    className={`relative h-5 w-[34px] shrink-0 rounded-full transition disabled:opacity-50 ${
+                      renameForSet(pairedSet) ? 'bg-accent-500' : 'bg-zinc-800'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full transition ${
+                        renameForSet(pairedSet)
+                          ? 'left-[16px] bg-white'
+                          : 'left-0.5 bg-zinc-500'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-[12px] text-zinc-400">
+                    Rename to match the video
+                  </span>
+                </div>
+
+                {pairedSet.missingMain ? (
+                  <p className="text-[11.5px] leading-4 text-amber-300">
+                    No main stroke script in this set. The other axes will still
+                    be downloaded and renamed.
                   </p>
-                )}
-              </div>
-            ) : null}
+                ) : null}
+                {pairedSet.conflicts.length > 0 ? (
+                  <p className="flex items-center gap-1.5 text-[11.5px] leading-4 text-amber-300">
+                    This set has two files for the same axis. Choose a different
+                    set or download the originals below.
+                  </p>
+                ) : null}
+
+                <div className="rounded-lg border border-white/[0.06] surface-card px-2.5 py-2 font-mono text-[12px] leading-[1.7] text-zinc-400">
+                  {preview === null ? (
+                    <span className="text-amber-300">
+                      The chosen versions produce conflicting names. Pick a
+                      different primary version.
+                    </span>
+                  ) : (
+                    pairingFiles.map((file) => {
+                      const target = preview.get(file.id) ?? null
+                      return (
+                        <div
+                          key={file.id}
+                          className="truncate"
+                          title={`${file.filename} → ${target ?? file.filename}`}
+                        >
+                          {renameForSet(pairedSet)
+                            ? target ?? 'name conflict'
+                            : file.filename}
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => downloadVideoWithScripts(session, item)}
+                    disabled={
+                      disabled ||
+                      queuing ||
+                      !queueableItem ||
+                      item.status !== 'ready' ||
+                      pairingFiles.length === 0
+                    }
+                    className="inline-flex h-[30px] items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+                  >
+                    <Icon name="download" size={13} />
+                    Download video + scripts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      matchToVideoFile(
+                        session,
+                        `video:${session.sessionId}:${item.id}`,
+                        pairedSet,
+                        item.id
+                      )
+                    }
+                    disabled={
+                      disabled || matchingKey !== null || pairingFiles.length === 0
+                    }
+                    className="text-[12px] font-semibold text-accent-300 transition hover:text-accent-200 disabled:opacity-50"
+                  >
+                    {matchingKey === `video:${session.sessionId}:${item.id}`
+                      ? 'Choose video…'
+                      : 'Match to a video file on disk…'}
+                  </button>
+                  <span className="ml-auto text-[12px] text-zinc-500">
+                    Saved next to the video
+                  </span>
+                </div>
+              </>
+            ) : ambiguousSets.length > 0 ? (
+              <>
+                <div className="flex items-start gap-2.5">
+                  <span className="w-[92px] shrink-0 pt-1 text-[12px] text-zinc-500">
+                    Which set?
+                  </span>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    {ambiguousSets.map((set) => (
+                      <label
+                        key={set.id}
+                        className="flex min-w-0 items-center gap-2 text-[12.5px]"
+                      >
+                        <input
+                          type="radio"
+                          name={`pick-set-${item.id}`}
+                          checked={false}
+                          onChange={() =>
+                            setSetChoiceByVideo((current) => ({
+                              ...current,
+                              [item.id]: set.id
+                            }))
+                          }
+                          disabled={disabled || queuing}
+                          className="h-3.5 w-3.5 shrink-0 accent-accent-400 disabled:opacity-50"
+                        />
+                        <span className="truncate font-semibold text-zinc-100">
+                          {set.base}
+                          {set.postNumber !== null
+                            ? ` · post #${set.postNumber}`
+                            : ''}
+                        </span>
+                        <span className="truncate text-[12px] text-zinc-500">
+                          {set.axes.length > 0 ? set.axes.join(', ') : 'main stroke'}
+                          {' · '}
+                          {set.files.length} file{set.files.length === 1 ? '' : 's'}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                {otherVideoClaimsCandidate ? (
+                  <p className="flex items-center gap-1.5 pl-[102px] text-[12px] text-amber-300">
+                    <Icon name="alert" size={13} className="shrink-0" />
+                    Another video in this topic is using one of these sets. Pick
+                    the one that belongs to this video.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-[11.5px] leading-4 text-zinc-500">
+                Choose a script set above to download it with this video.
+              </p>
+            )}
           </div>
-        </div>
+        ) : null}
       </li>
     )
   }
@@ -1570,14 +1840,17 @@ export function ScanPanel({
     const groups = visibleGroupsFor(session)
     const collapsed = collapsedSessions[session.sessionId] === true
     const progress = session.progress
-    const counters = session.counters
+    const sessionTotal = session.items.length
+    const sessionTicked = session.items.filter(
+      (item) => isQueueable(item) && selection.has(item.id)
+    ).length
     return (
       <section
         key={session.sessionId}
         aria-label={topicTitle(session)}
-        className="overflow-hidden rounded-xl border border-white/10 surface-card"
+        className="surface-card overflow-hidden rounded-xl border border-white/10"
       >
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/[0.06] px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
           <button
             type="button"
             onClick={() =>
@@ -1587,40 +1860,52 @@ export function ScanPanel({
               }))
             }
             aria-expanded={!collapsed}
-            className="flex min-w-0 items-center gap-1.5 text-left"
+            className="flex min-w-0 items-center gap-2.5 text-left"
           >
-            <span className="text-[11px] text-zinc-500">
-              {collapsed ? '▸' : '▾'}
+            <span className="shrink-0 text-zinc-500">
+              <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
             </span>
-            <span className="truncate text-sm font-semibold text-zinc-100">
+            <span className="truncate text-[13.5px] font-semibold text-zinc-100">
               {topicTitle(session)}
             </span>
+            <span className="shrink-0 text-[12px] text-zinc-500">
+              {session.hostname}
+            </span>
           </button>
-          <span className="text-[11px] text-zinc-400">
-            {session.status === 'scanning'
-              ? `${progress?.queueableItems ?? 0} found · ${
-                  session.message ?? 'scanning'
-                }${
-                  progress?.fetchedPages
-                    ? ` · ${progress.fetchedPages} page(s) read`
-                    : ''
-                }`
-              : session.status === 'limited'
-                ? 'Item/time limit reached'
-                : session.status === 'failed'
-                  ? 'Scan failed'
-                  : session.status === 'cancelled'
-                    ? 'Scan cancelled'
-                    : `${progress?.queueableItems ?? 0} downloadable · ${
-                        progress?.totalItems ?? 0
-                      } total`}
-          </span>
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex shrink-0 items-center gap-2 text-[12px] text-zinc-400">
+            {session.status === 'scanning' ? (
+              <>
+                <span className="truncate">
+                  {session.message ?? 'Scanning…'}
+                  {progress.fetchedPages > 0
+                    ? ` · ${progress.fetchedPages} page${
+                        progress.fetchedPages === 1 ? '' : 's'
+                      } read`
+                    : ''}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className="media-progress-indeterminate relative h-1 w-[120px] shrink-0 overflow-hidden rounded-full bg-white/[0.08]"
+                />
+              </>
+            ) : session.status === 'limited' ? (
+              'Item limit reached'
+            ) : session.status === 'failed' ? (
+              <span className="font-semibold text-red-300">Scan failed</span>
+            ) : session.status === 'cancelled' ? (
+              'Scan cancelled'
+            ) : (
+              <span className="tabular-nums">
+                <span>{sessionTotal} files</span>
+                <span className="text-zinc-600"> · </span>
+                <span>{sessionTicked} ticked</span>
+              </span>
+            )}
             {session.status === 'scanning' ? (
               <button
                 type="button"
                 onClick={() => cancelScan(session)}
-                className="h-7 rounded-lg border border-white/10 px-2.5 text-[11px] text-zinc-300 transition hover:bg-white/5"
+                className="inline-flex h-7 shrink-0 items-center rounded-lg border border-white/10 px-2.5 text-[11.5px] font-semibold text-zinc-400 transition hover:bg-white/[0.05] hover:text-zinc-200"
               >
                 Cancel
               </button>
@@ -1629,20 +1914,27 @@ export function ScanPanel({
         </div>
         {!collapsed ? (
           <>
-            <div className="flex flex-wrap gap-x-3 gap-y-1 px-3 py-1.5 text-[11px] text-zinc-400">
-              <span>{counters?.ready ?? 0} verified</span>
-              <span>{counters?.probing ?? 0} checking</span>
-              <span>{counters?.found ?? 0} found</span>
-              <span>{counters?.signin ?? 0} need sign-in</span>
-              <span className="truncate">{session.hostname}</span>
-            </div>
-            {session.message && !session.signinRequired ? (
-              <p className="px-3 pb-1.5 text-[11px] leading-4 text-zinc-500">
+            {session.signinRequired ? (
+              <div className="mx-3.5 mb-2.5 flex items-center gap-2.5 rounded-lg border border-amber-400/35 bg-amber-400/[0.07] px-3 py-2 text-[12.5px]">
+                <Icon name="alert" size={15} className="shrink-0 text-amber-300" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-zinc-100">
+                    This topic is for signed-in members
+                  </p>
+                  <p className="text-[12px] leading-4 text-zinc-500">
+                    Open the tab where you are signed in and choose “Scan this
+                    page” in the DonDownload extension.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            {session.message && !session.signinRequired && session.status !== 'scanning' ? (
+              <p className="px-3.5 pb-2 text-[11.5px] leading-4 text-zinc-500">
                 {session.message}
               </p>
             ) : null}
             {groups.length === 0 ? (
-              <p className="px-3 py-3 text-[11px] leading-5 text-zinc-500">
+              <p className="px-3.5 py-3 text-[12px] leading-5 text-zinc-500">
                 {session.status === 'scanning'
                   ? 'Looking for downloadable content…'
                   : 'No items match this filter on this topic.'}
@@ -1658,7 +1950,7 @@ export function ScanPanel({
                   const showItems = !isLinksGroup || linksExpanded
                   return (
                     <div key={`${session.sessionId}-${group.category}`}>
-                      <div className="flex items-center gap-2 border-y border-white/[0.04] bg-white/[0.02] px-3 py-1.5">
+                      <div className="flex items-center gap-2 border-t border-white/[0.06] px-3.5 pb-1 pt-2.5">
                         {isLinksGroup ? (
                           <button
                             type="button"
@@ -1669,36 +1961,37 @@ export function ScanPanel({
                                 ? 'Collapse other links'
                                 : 'Expand other links'
                             }
-                            className="text-[11px] text-zinc-400 transition hover:text-zinc-200"
+                            className="flex shrink-0 text-zinc-500 transition hover:text-zinc-200"
                           >
-                            {linksExpanded ? '▾' : '▸'}
+                            <Icon
+                              name={linksExpanded ? 'chevron-down' : 'chevron-right'}
+                              size={13}
+                            />
                           </button>
                         ) : (
-                          <Icon name={group.icon} size={13} />
+                          <span className="flex shrink-0 text-zinc-500">
+                            <Icon name={group.icon} size={13} />
+                          </span>
                         )}
-                        <span className="text-[11px] font-semibold text-zinc-200">
+                        <span className="text-[12px] font-semibold text-zinc-200">
                           {group.label}
                         </span>
-                        <span className="text-[11px] text-zinc-500">
+                        <span className="text-[12px] tabular-nums text-zinc-500">
                           {groupItems.length}
                         </span>
-                        {isLinksGroup ? (
-                          <span className="ml-auto text-[10px] text-zinc-500">
-                            Mark one as a video
-                          </span>
-                        ) : (
+                        {isLinksGroup ? null : (
                           <button
                             type="button"
                             onClick={() => toggleGroup(groupItems)}
                             disabled={selectable.length === 0}
-                            className="ml-auto text-[11px] text-accent-300 transition hover:text-accent-200 disabled:text-zinc-600"
+                            className="ml-auto text-[12px] font-semibold text-accent-300 transition hover:text-accent-200 disabled:text-zinc-700"
                           >
                             {groupSelected ? 'Clear' : 'Select all'}
                           </button>
                         )}
                       </div>
                       {showItems ? (
-                      <ul className="divide-y divide-white/[0.05]">
+                      <ul className="divide-y divide-white/[0.06]">
                         {group.category === 'script' ? renderScriptSets(session, sets) : null}
                         {groupItems
                           .filter(
@@ -1718,7 +2011,9 @@ export function ScanPanel({
                             return (
                               <li
                                 key={item.id}
-                                className="flex items-start gap-2.5 px-3 py-2"
+                                className={`grid grid-cols-[16px_32px_minmax(0,1fr)_auto] items-center gap-x-3 px-3.5 py-2 transition-colors ${
+                                  selected ? 'bg-accent-400/[0.05]' : ''
+                                } hover:bg-white/[0.03]`}
                               >
                                 <input
                                   type="checkbox"
@@ -1726,34 +2021,22 @@ export function ScanPanel({
                                   checked={selected}
                                   disabled={!queueableItem || disabled}
                                   onChange={() => toggle(item.id)}
-                                  className="mt-1.5 h-3.5 w-3.5 shrink-0 accent-accent-400 disabled:opacity-40"
+                                  className="h-4 w-4 shrink-0 accent-accent-400 disabled:opacity-40"
                                 />
-                                <Thumbnail
-                                  title={item.name}
-                                  fallback={{
-                                    icon: group.icon,
-                                    accent: group.accent
-                                  }}
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex min-w-0 items-center gap-2">
-                                    <span
-                                      className="truncate text-[12px] font-medium text-zinc-200"
-                                      title={item.name}
-                                    >
-                                      {item.name}
-                                    </span>
-                                    <StatusBadge
-                                      label={statusLabel(item.status)}
-                                      tone={statusTone(item.status)}
-                                    />
+                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-white/10 bg-white/[0.045] text-zinc-400">
+                                  <Icon name={group.icon} size={15} />
+                                </span>
+                                <div className="min-w-0">
+                                  <div
+                                    className="truncate text-[12.5px] font-semibold text-zinc-100"
+                                    title={item.name}
+                                  >
+                                    {item.name}
                                   </div>
-                                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
+                                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-zinc-500">
                                     <span>{type}</span>
                                     <span>·</span>
                                     <span>{item.hostname}</span>
-                                    <span>·</span>
-                                    <span>{itemSizeLabel(item)}</span>
                                     {item.postNumber !== null ? (
                                       <>
                                         <span>·</span>
@@ -1777,23 +2060,27 @@ export function ScanPanel({
                                         disabled={
                                           disabled || markingItemId !== null
                                         }
-                                        className="h-7 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                        className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border border-white/10 px-3 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
                                       >
+                                        <Icon name="video" size={14} />
                                         {markingItemId === item.id ? (
                                           <span className="inline-flex items-center gap-1.5">
                                             <span
                                               aria-hidden="true"
-                                              className="h-3 w-3 animate-spin rounded-full border border-sky-200/60 border-t-transparent"
+                                              className="h-3 w-3 animate-spin rounded-full border border-zinc-400 border-t-transparent"
                                             />
                                             Checking…
                                           </span>
                                         ) : (
-                                          'This is a video'
+                                          'Mark as video'
                                         )}
                                       </button>
                                     </div>
                                   ) : null}
                                 </div>
+                                <span className="text-[12.5px] tabular-nums text-zinc-400">
+                                  {itemSizeLabel(item)}
+                                </span>
                               </li>
                             )
                           })}
@@ -1810,186 +2097,254 @@ export function ScanPanel({
     )
   }
 
+  const cancelAllScans = (): void => {
+    for (const session of sessions) {
+      if (session.status === 'scanning') cancelScan(session)
+    }
+  }
+
   return (
-    <section aria-labelledby="scan-heading" className="flex h-full flex-col gap-3">
-      <div className="rounded-xl border border-white/10 surface-card p-3">
-        <div className="mb-2 flex items-baseline justify-between gap-3">
-          <h2
-            id="scan-heading"
-            className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
-          >
-            Scan pages
-          </h2>
-          <span className="text-[11px] text-zinc-400">
-            Nothing downloads until you click Download
-          </span>
-        </div>
-        <label className="sr-only" htmlFor="scan-url">
-          Page URLs to scan, one per line
-        </label>
-        <textarea
-          id="scan-url"
-          rows={2}
-          autoComplete="off"
-          spellCheck={false}
-          value={urlText}
-          onChange={(event) => {
-            setUrlText(event.target.value)
-            setNotice(null)
-            setError(null)
-            setPreselectNotice(null)
-          }}
-          placeholder="Paste a forum topic or media page URL — one per line (up to 10)"
-          disabled={disabled}
-          className="min-h-[4.5rem] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2 text-sm leading-5 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+    <section aria-labelledby="scan-heading" className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-white/[0.07] px-5 pb-3.5 pt-4">
+        <h2 id="scan-heading" className="sr-only">
+          Scan pages
+        </h2>
+        <div className="flex items-start gap-2">
+          <label className="sr-only" htmlFor="scan-url">
+            Page URLs to scan, one per line
+          </label>
+          <textarea
+            id="scan-url"
+            rows={2}
+            autoComplete="off"
+            spellCheck={false}
+            value={urlText}
+            onChange={(event) => {
+              setUrlText(event.target.value)
+              setNotice(null)
+              setError(null)
+              setPreselectNotice(null)
+            }}
+            placeholder={`Paste a forum topic or video page — one per line, up to ${MAX_SCAN_URLS}`}
+            disabled={disabled}
+            className="min-h-[38px] flex-1 resize-y rounded-lg border border-white/10 surface-input px-[11px] py-2 text-[12.5px] leading-5 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
+          />
           <button
             type="button"
-            onClick={rescan}
-            disabled={
-              disabled ||
-              starting ||
-              parseScanUrlList(urlText).urls.length === 0
-            }
-            className="h-9 shrink-0 rounded-lg border border-white/10 px-4 text-sm font-semibold text-zinc-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={scanning ? cancelAllScans : rescan}
+            disabled={disabled || starting}
+            className={`inline-flex h-[38px] shrink-0 items-center gap-2 rounded-lg px-4 text-[12.5px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              scanning || starting
+                ? 'border border-white/10 text-zinc-200 hover:bg-white/[0.05]'
+                : sessions.length === 0
+                  ? 'bg-accent-500 text-on-accent hover:bg-accent-400'
+                  : 'border border-white/10 text-zinc-200 hover:bg-white/[0.05]'
+            }`}
           >
-            {starting ? 'Scanning…' : sessions.length === 0 ? 'Scan' : 'Rescan'}
+            {starting ? (
+              <span
+                aria-hidden="true"
+                className="h-3.5 w-3.5 animate-spin rounded-full border border-zinc-400 border-t-transparent"
+              />
+            ) : scanning ? (
+              <Icon name="x" size={14} />
+            ) : (
+              <Icon name={sessions.length === 0 ? 'search' : 'refresh'} size={14} />
+            )}
+            {starting
+              ? 'Scanning…'
+              : scanning
+                ? 'Cancel'
+                : sessions.length === 0
+                  ? 'Scan'
+                  : 'Rescan'}
           </button>
-          {scanning ? (
-            <button
-              type="button"
-              onClick={() => {
-                for (const session of sessions) {
-                  if (session.status === 'scanning') cancelScan(session)
-                }
-              }}
-              className="h-9 rounded-lg border border-white/10 px-3 text-[12px] text-zinc-300 transition hover:bg-white/5"
-            >
-              Cancel all
-            </button>
-          ) : null}
-          <span className="text-[11px] text-zinc-500">
-            One URL per line · duplicates removed · up to {MAX_SCAN_URLS} topics
-          </span>
         </div>
-        <p className="mt-2 text-[11px] leading-4 text-zinc-500">
-          Each topic is scanned on its own. Only its posts and the pages linked
-          from them are read (one level deep). Signed-in pages still need “Scan
-          this page” in the DonDownload browser extension.
-        </p>
+        {error ? (
+          <p
+            role="alert"
+            className="mt-2.5 rounded-lg border border-red-400/30 bg-red-400/[0.08] px-3 py-2 text-[12px] leading-5 text-red-300"
+          >
+            {error.message}
+          </p>
+        ) : null}
+        {notice ? (
+          <p
+            role="status"
+            className="mt-2.5 rounded-lg border border-accent-400/25 bg-accent-400/[0.08] px-3 py-2 text-[12px] leading-5 text-accent-200"
+          >
+            {notice}
+          </p>
+        ) : null}
+        {preselectNotice ? (
+          <p
+            role="status"
+            className="mt-2.5 rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-2 text-[12px] leading-5 text-amber-200"
+          >
+            {preselectNotice}
+          </p>
+        ) : null}
       </div>
 
-      {error ? (
-        <p role="alert" className="rounded-lg border border-red-400/25 bg-red-400/5 px-3 py-2 text-[11px] leading-5 text-red-300">
-          {error.message}
-        </p>
-      ) : null}
-      {notice ? (
-        <p role="status" className="rounded-lg border border-accent-400/25 bg-accent-400/5 px-3 py-2 text-[11px] leading-5 text-accent-200">
-          {notice}
-        </p>
-      ) : null}
-      {preselectNotice ? (
-        <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200">
-          {preselectNotice}
-        </p>
-      ) : null}
-      {sessions.some((session) => session.signinRequired) ? (
-        <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200">
-          A topic needs your browser sign-in. Open the tab where you are signed
-          in, choose “Scan this page” in the DonDownload extension, and allow
-          cookies for that exact site first.
-        </p>
-      ) : null}
-
       {sessions.length === 0 ? (
-        <p className="rounded-xl border border-white/10 surface-card p-4 text-[11px] leading-5 text-zinc-500">
-          Paste one or more page URLs above. DonDownload lists videos, audio,
-          images, documents, archives, scripts and other files it can see, and
-          pre-ticks the videos with matching scripts. A scan never starts a
-          download.
-        </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
+          <div className="mx-auto mt-8 w-[520px] max-w-full text-center text-[12.5px] leading-5 text-zinc-400">
+            <div className="mx-auto mb-3.5 grid h-12 w-12 place-items-center rounded-xl bg-white/[0.06] text-accent-300">
+              <Icon name="search" size={22} />
+            </div>
+            <h3 className="text-[15px] font-semibold text-zinc-100">
+              Find everything on a page
+            </h3>
+            <p className="mt-1.5">
+              DonDownload reads the page and the pages it links to, and lists the
+              videos, scripts and files it finds.
+            </p>
+            <div className="mt-5 grid grid-cols-3 gap-2.5 text-left">
+              <div className="surface-card rounded-[10px] border border-white/10 p-3 text-[12px] leading-4 text-zinc-500">
+                <b className="mb-0.5 block text-[12.5px] font-semibold text-zinc-100">
+                  Nothing downloads yet
+                </b>
+                You pick what you want first.
+              </div>
+              <div className="surface-card rounded-[10px] border border-white/10 p-3 text-[12px] leading-4 text-zinc-500">
+                <b className="mb-0.5 block text-[12.5px] font-semibold text-zinc-100">
+                  Scripts are matched
+                </b>
+                Videos with matching scripts are ticked for you.
+              </div>
+              <div className="surface-card rounded-[10px] border border-white/10 p-3 text-[12px] leading-4 text-zinc-500">
+                <b className="mb-0.5 block text-[12.5px] font-semibold text-zinc-100">
+                  Signed-in pages
+                </b>
+                Use “Scan this page” in the browser extension.
+              </div>
+            </div>
+          </div>
+        </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 surface-card p-2.5">
-            <button
-              type="button"
-              onClick={() => setFilter('all')}
-              className={`h-7 rounded-lg px-2.5 text-[11px] transition ${
-                filter === 'all'
-                  ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
-                  : 'text-zinc-400 hover:bg-white/5'
-              }`}
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.07] px-5 py-2.5">
+            <div
+              role="group"
+              aria-label="Filter results"
+              className="flex rounded-[9px] border border-white/10 bg-white/[0.04] p-0.5"
             >
-              All types
-            </button>
-            <button
-              type="button"
-              onClick={() => setFilter('script-video')}
-              className={`h-7 rounded-lg px-2.5 text-[11px] transition ${
-                filter === 'script-video'
-                  ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
-                  : 'text-zinc-400 hover:bg-white/5'
-              }`}
-            >
-              Scripts + videos
-            </button>
+              <button
+                type="button"
+                onClick={() => setFilter('all')}
+                aria-pressed={filter === 'all'}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-[7px] px-3 text-[12px] font-semibold transition ${
+                  filter === 'all'
+                    ? 'bg-zinc-800/80 text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                All
+                <span className="tabular-nums text-zinc-500">
+                  {totalItemCount}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilter('script-video')}
+                aria-pressed={filter === 'script-video'}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-[7px] px-3 text-[12px] font-semibold transition ${
+                  filter === 'script-video'
+                    ? 'bg-zinc-800/80 text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Videos with scripts
+                <span className="tabular-nums text-zinc-500">
+                  {videosWithScriptsCount}
+                </span>
+              </button>
+            </div>
+            <span className="ml-1.5 flex min-w-0 items-center gap-1.5 truncate text-[12.5px] text-zinc-400">
+              <Icon name="check" size={14} className="shrink-0 text-accent-300" />
+              Videos with matching scripts are ticked
+            </span>
             <button
               type="button"
               onClick={toggleAll}
               disabled={queueable.length === 0}
-              className="ml-auto h-7 rounded-lg border border-white/10 px-2.5 text-[11px] text-zinc-300 transition hover:bg-white/5 disabled:opacity-50"
+              className="ml-auto text-[12px] font-semibold text-zinc-400 transition hover:text-zinc-200 disabled:text-zinc-700"
             >
               {allVisibleSelected ? 'Clear all' : 'Select all'}
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-2.5">
             <div className="flex flex-col gap-2">
               {sessions.map((session) => renderSession(session))}
             </div>
           </div>
 
-          <div className="sticky bottom-0 -mx-3 flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-[var(--surface-app)] px-3 py-2">
-            <p className="min-w-0 flex-1 text-[11px] leading-4 text-zinc-400">
-              {selectedItems.length === 0
-                ? 'Results are pre-selected where a video has matching scripts. Nothing is queued until you click Download.'
-                : overSelectionLimit
-                  ? `${selectedItems.length} selected — over the ${MAX_SCAN_SELECTION}-item limit. Untick items or scan fewer topics.`
-                  : `${selectedItems.length} selected · ${selectionLabel}${
-                      selectedVideoCount > 0
-                        ? ` · ${selectedVideoCount} video${
-                            selectedVideoCount === 1 ? '' : 's'
-                          }`
-                        : ''
-                    }${
-                      selectedScriptCount > 0
-                        ? ` · ${selectedScriptCount} script${
-                            selectedScriptCount === 1 ? '' : 's'
-                          }`
-                        : ''
-                    }`}
-            </p>
-            <button
-              type="button"
-              onClick={queueSelected}
-              disabled={
-                disabled ||
-                queuing ||
-                selectedItems.length === 0 ||
-                overSelectionLimit
-              }
-              className="h-10 shrink-0 rounded-lg bg-accent-500 px-4 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-            >
-              {queuing
-                ? 'Queueing…'
-                : selectedVideoCount > 0
-                  ? `Download ${selectedVideoCount} video${
-                      selectedVideoCount === 1 ? '' : 's'
-                    } + scripts (${selectionLabel})`
-                  : `Download ${selectedItems.length} selected (${selectionLabel})`}
-            </button>
+          <div className="sticky bottom-0 z-10 mt-auto shrink-0 border-t border-white/[0.07] bg-[var(--surface-app)] px-5 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="min-w-0 flex-1">
+                {selectedItems.length === 0 ? (
+                  <p className="text-[12px] leading-4 text-zinc-500">
+                    Results are pre-selected where a video has matching scripts.
+                    Nothing is queued until you click Download.
+                  </p>
+                ) : overSelectionLimit ? (
+                  <p className="text-[12px] leading-4 font-medium text-amber-300">
+                    {selectedItems.length} selected — over the{' '}
+                    {MAX_SCAN_SELECTION}-item limit. Untick items or scan fewer
+                    topics.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[12.5px] font-semibold leading-5 text-zinc-100">
+                      {[
+                        selectedVideoCount > 0
+                          ? `${selectedVideoCount} video${
+                              selectedVideoCount === 1 ? '' : 's'
+                            }`
+                          : null,
+                        selectedScriptCount > 0
+                          ? `${selectedScriptCount} script${
+                              selectedScriptCount === 1 ? '' : 's'
+                            }`
+                          : null,
+                        selectedOtherCount > 0
+                          ? `${selectedOtherCount} other`
+                          : null,
+                        sessions.length > 1
+                          ? `${sessions.length} topics`
+                          : null
+                      ]
+                        .filter((part) => part !== null)
+                        .join(' · ') || `${selectedItems.length} items`}
+                    </p>
+                    <p className="text-[12px] leading-4 text-zinc-500">
+                      {selectionLabel} · scripts are saved next to their videos
+                    </p>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={queueSelected}
+                disabled={
+                  disabled ||
+                  queuing ||
+                  selectedItems.length === 0 ||
+                  overSelectionLimit
+                }
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-accent-500 px-4 text-[12.5px] font-semibold text-on-accent transition hover:bg-accent-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+              >
+                <Icon name="download" size={15} />
+                {queuing
+                  ? 'Queueing…'
+                  : selectedVideoCount > 0
+                    ? `Download ${selectedVideoCount} video${
+                        selectedVideoCount === 1 ? '' : 's'
+                      } + scripts`
+                    : `Download ${selectedItems.length} selected`}
+              </button>
+            </div>
           </div>
         </>
       )}
