@@ -23,6 +23,7 @@ import type {
 import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
 import { formatBytes, formatSpeed } from '@shared/format'
+import type { Batch } from '@shared/batches'
 import type { DownloadSettings } from '@shared/settings'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
@@ -65,6 +66,7 @@ import {
   canCopyLink,
   canPauseRow,
   canResumeRow,
+  canShowRow,
   deleteFileConfirmation,
   executeActionPlan,
   planBulkAction,
@@ -526,6 +528,24 @@ export default function App(): JSX.Element {
     [runPlan]
   )
 
+  /** First child download/media of a batch that has a completed file on disk. */
+  const findBatchFolderRow = useCallback(
+    (batch: Batch): UnifiedRow | undefined => {
+      for (const item of batch.items) {
+        if (item.childId === null) continue
+        const row = allRows.find(
+          (candidate) =>
+            (candidate.download !== null &&
+              candidate.download.id === item.childId) ||
+            (candidate.media !== null && candidate.media.id === item.childId)
+        )
+        if (row !== undefined && canShowRow(row)) return row
+      }
+      return undefined
+    },
+    [allRows]
+  )
+
   const requestRemove = useCallback(
     (rows: readonly UnifiedRow[]): void => {
       if (rows.length === 0) return
@@ -937,10 +957,12 @@ export default function App(): JSX.Element {
               type="button"
               onClick={() => setPage('batches')}
               aria-current={page === 'batches' ? 'page' : undefined}
+              aria-label="Batches"
+              title="Batches"
               className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100"
             >
               <Icon name="layers" size={15} />
-              <span className="hidden lg:inline">Batches</span>
+              <span className="hidden min-[902px]:inline">Batches</span>
               {batchCount > 0 ? (
                 <span className="rounded-full bg-zinc-700/70 px-1.5 text-[11px] font-medium leading-4 tabular-nums text-zinc-300">
                   {batchCount}
@@ -1147,6 +1169,9 @@ export default function App(): JSX.Element {
                 onClose={() => setDetailsClosedFor(singleSelected.key)}
                 onOpen={openRow}
                 onShowInFolder={showRowInFolder}
+                onCopyLink={(copyRow) => {
+                  if (copyRow.url !== null) void copyText(copyRow.url)
+                }}
               />
             ) : null}
 
@@ -1182,6 +1207,8 @@ export default function App(): JSX.Element {
               <BatchSection
                 onBack={() => setPage('library')}
                 onAddLinks={() => openAddDialog('direct')}
+                findFolderRow={findBatchFolderRow}
+                onShowRowInFolder={showRowInFolder}
               />
             </div>
           </div>
@@ -1424,27 +1451,41 @@ function LibraryEmptyState({
         >
           <Icon name="download" size={26} />
         </div>
-        <h2 className="text-lg font-semibold text-zinc-100">No downloads yet</h2>
+        <h2 className="text-lg font-semibold text-zinc-100">
+          Nothing downloading yet
+        </h2>
         <p className="text-[12.5px] text-zinc-400">
           Paste a link, drop one here, or use the browser extension on any page.
         </p>
-        <div className="mt-2 flex w-full flex-col items-center gap-3 rounded-xl border-[1.5px] border-dashed border-white/15 px-6 py-5 text-[12.5px] text-zinc-400">
-          <span>Drop links or files here</span>
-          <button
-            type="button"
-            onClick={onAdd}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
-          >
-            <Icon name="plus" size={14} strokeWidth={2.2} />
-            Add download
-          </button>
-        </div>
-        <div className="mt-1 flex items-center gap-1.5 text-[12px] text-zinc-500">
-          <span className="rounded border border-white/10 px-1.5 py-px text-[11px] text-zinc-500">
-            Ctrl V
+        <div className="mt-1 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[12px] text-zinc-500">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-px text-[11px] font-medium text-zinc-400">
+              Ctrl V
+            </span>
+            paste a link
           </span>
-          paste a link anywhere
+          <span aria-hidden="true" className="text-zinc-600">
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            drag &amp; drop files
+          </span>
+          <span aria-hidden="true" className="text-zinc-600">
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Icon name="puzzle" size={13} />
+            browser extension
+          </span>
         </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="mt-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
+        >
+          <Icon name="plus" size={14} strokeWidth={2.2} />
+          Add download
+        </button>
       </div>
     </div>
   )
