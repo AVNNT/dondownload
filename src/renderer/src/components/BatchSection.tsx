@@ -1,55 +1,29 @@
+import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
 import {
-  useCallback,
-  useEffect,
-  useState,
-  type FormEvent,
-  type JSX
-} from 'react'
-import {
-  MAX_BATCH_SOURCES,
-  BATCH_MEDIA_QUALITIES,
-  MAX_COLLECTION_SELECTION,
   type Batch,
   type BatchItem,
   type BatchItemStatus,
   type BatchKind,
-  type BatchMediaQuality,
-  type BatchStatus,
-  type CollectionPreview,
-  type CollectionSelectionAvailability
+  type BatchStatus
 } from '@shared/batches'
-import { formatBytes, formatMediaSize, formatPercent } from '@shared/format'
-import type {
-  ApiResult,
-  AppErrorInfo,
-  BatchSnapshot,
-  SmartBatchEntryOutcome,
-  SmartBatchSubmitEntry,
-  SmartBatchSubmitResult
-} from '@shared/types'
+import { formatBytes, formatPercent } from '@shared/format'
+import type { ApiResult, AppErrorInfo, BatchSnapshot } from '@shared/types'
+import { Icon, type IconName } from './Icon'
 
-const BATCH_STATUS_LABEL: Record<BatchStatus, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  complete: 'Complete',
-  partial: 'Partial',
-  error: 'Failed',
-  cancelled: 'Cancelled',
-  interrupted: 'Interrupted'
+const BATCH_KIND_ICON: Record<BatchKind, IconName> = {
+  'media-playlist': 'video',
+  'pixeldrain-list': 'layers',
+  'direct-urls': 'link'
 }
 
-const BATCH_STATUS_STYLE: Record<BatchStatus, string> = {
-  queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  running: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
-  complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
-  partial: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
-  error: 'border-red-400/30 bg-red-400/10 text-red-300',
-  cancelled: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
-  interrupted: 'border-amber-400/30 bg-amber-400/10 text-amber-300'
+const BATCH_KIND_LABEL: Record<BatchKind, string> = {
+  'media-playlist': 'Playlist',
+  'pixeldrain-list': 'Pixeldrain list',
+  'direct-urls': 'Direct links'
 }
 
 const BATCH_BAR_STYLE: Record<BatchStatus, string> = {
-  queued: 'bg-zinc-600',
+  queued: 'bg-zinc-500',
   running: 'bg-accent-400',
   complete: 'bg-emerald-400',
   partial: 'bg-amber-400',
@@ -61,7 +35,7 @@ const BATCH_BAR_STYLE: Record<BatchStatus, string> = {
 const ITEM_STATUS_LABEL: Record<BatchItemStatus, string> = {
   queued: 'Queued',
   running: 'Running',
-  complete: 'Complete',
+  complete: 'Done',
   error: 'Failed',
   unavailable: 'Unavailable',
   skipped: 'Skipped',
@@ -70,65 +44,53 @@ const ITEM_STATUS_LABEL: Record<BatchItemStatus, string> = {
 }
 
 const ITEM_STATUS_STYLE: Record<BatchItemStatus, string> = {
-  queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  running: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
-  complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
-  error: 'border-red-400/30 bg-red-400/10 text-red-300',
-  unavailable: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
-  skipped: 'border-zinc-600 bg-zinc-800/80 text-zinc-400',
-  cancelled: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
-  interrupted: 'border-amber-400/30 bg-amber-400/10 text-amber-300'
+  queued: 'text-zinc-400',
+  running: 'text-accent-300',
+  complete: 'text-emerald-300',
+  error: 'text-red-300',
+  unavailable: 'text-amber-300',
+  skipped: 'text-zinc-500',
+  cancelled: 'text-zinc-400',
+  interrupted: 'text-amber-300'
 }
 
-const OUTCOME_LABEL: Record<SmartBatchEntryOutcome, string> = {
-  'batch-item': 'Queued',
-  'collection-preview': 'Preview ready',
-  unsupported: 'Needs browser',
-  invalid: 'Invalid',
-  failed: 'Failed'
-}
+type BatchFilter = 'all' | 'running' | 'finished'
 
-const OUTCOME_STYLE: Record<SmartBatchEntryOutcome, string> = {
-  'batch-item': 'border-emerald-400/20 bg-emerald-400/5 text-emerald-200',
-  'collection-preview': 'border-emerald-400/20 bg-emerald-400/5 text-emerald-200',
-  unsupported: 'border-amber-400/25 bg-amber-400/5 text-amber-200',
-  invalid: 'border-red-400/25 bg-red-400/5 text-red-200',
-  failed: 'border-red-400/25 bg-red-400/5 text-red-200'
-}
+const FINISHED_STATUSES: ReadonlySet<BatchStatus> = new Set([
+  'complete',
+  'partial',
+  'error',
+  'cancelled'
+])
+
+/** Number of item rows shown before the "Show all" affordance takes over. */
+const PREVIEW_ITEM_COUNT = 5
 
 /**
- * Desktop-first batch surface. It intentionally owns only renderer state:
- * - the persisted batch list comes from `getBatchSnapshot` and
- *   `onBatchSnapshotChanged`; there is no polling timer;
- * - collection previews are ephemeral and stay local until the user explicitly
- *   selects entries and presses Queue selected;
- * - Gofile browser opens call `openBatchSource` with opaque batch/item IDs only.
+ * Batches page, redesigned per the static mockup: a back header with a
+ * description and clear-finished affordance, All/Running/Finished chips, and
+ * expandable batch cards. Every previous action stays reachable — cancel and
+ * remove per group, retry per failed item, and the per-item open-in-browser
+ * for links that need the user's browser. Submission itself moved into the
+ * Add dialog ( BatchSubmit ), so new batches start there.
  */
-export function BatchSection(): JSX.Element {
+export function BatchSection({
+  onBack,
+  onAddLinks
+}: {
+  onBack?: () => void
+  onAddLinks?: () => void
+} = {}): JSX.Element {
   const [snapshot, setSnapshot] = useState<BatchSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [snapshotError, setSnapshotError] = useState<AppErrorInfo | null>(null)
-
-  const [urlsText, setUrlsText] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<AppErrorInfo | null>(null)
-  const [submitResult, setSubmitResult] =
-    useState<SmartBatchSubmitResult | null>(null)
-  const [previews, setPreviews] = useState<CollectionPreview[]>([])
-  const [selections, setSelections] = useState<Record<string, string[]>>({})
-  const [previewErrors, setPreviewErrors] = useState<
-    Record<string, AppErrorInfo>
-  >({})
-  const [previewNotice, setPreviewNotice] = useState<string | null>(null)
-  const [queueingPreviewId, setQueueingPreviewId] = useState<string | null>(
-    null
-  )
-
+  const [filter, setFilter] = useState<BatchFilter>('all')
   const [expandedBatches, setExpandedBatches] = useState<
     Record<string, boolean>
   >({})
   const [actionPending, setActionPending] = useState(false)
   const [actionError, setActionError] = useState<AppErrorInfo | null>(null)
+  const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -163,232 +125,6 @@ export function BatchSection(): JSX.Element {
       unsubscribe()
     }
   }, [])
-
-  const refreshSnapshot = useCallback(async (): Promise<void> => {
-    setLoading(true)
-    try {
-      const result = await window.donDownload.getBatchSnapshot()
-      if (result.ok) {
-        setSnapshot(result.value)
-        setSnapshotError(null)
-      } else {
-        setSnapshotError(result.error)
-      }
-    } catch (error) {
-      setSnapshotError(rejectedToError(error))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const handleSubmit = useCallback(
-    async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-      event.preventDefault()
-      if (submitting) return
-
-      const urls = parseBatchUrls(urlsText)
-      setSubmitError(null)
-      setPreviewNotice(null)
-
-      if (urls.length === 0) {
-        setSubmitError({
-          code: 'BATCH_NO_URLS',
-          message: 'Enter at least one HTTP(S) URL, one per line.'
-        })
-        return
-      }
-      if (urls.length > MAX_BATCH_SOURCES) {
-        setSubmitError({
-          code: 'BATCH_TOO_MANY_URLS',
-          message: `Submit at most ${MAX_BATCH_SOURCES} URLs at a time.`
-        })
-        return
-      }
-
-      setSubmitting(true)
-      setSubmitResult(null)
-      try {
-        const result = await window.donDownload.submitSmartBatch({ urls })
-        if (!result.ok) {
-          setSubmitError(result.error)
-          return
-        }
-
-        setSubmitResult(result.value)
-        setPreviews((current) => mergePreviews(current, result.value.previews))
-        setSelections((current) => {
-          const next = { ...current }
-          for (const preview of result.value.previews) {
-            // A fresh preview always starts with no selection.
-            next[preview.id] = []
-          }
-          return next
-        })
-        if (result.value.batch !== null) {
-          setExpandedBatches((current) => ({
-            ...current,
-            [result.value.batch!.id]: true
-          }))
-        }
-      } catch (error) {
-        setSubmitError(rejectedToError(error))
-      } finally {
-        setSubmitting(false)
-      }
-    },
-    [submitting, urlsText]
-  )
-
-  const handleToggleEntry = useCallback(
-    (previewId: string, entryId: string): void => {
-      setSelections((current) => {
-        const selected = current[previewId] ?? []
-        const next = selected.includes(entryId)
-          ? selected.filter((id) => id !== entryId)
-          : [...selected, entryId]
-        return { ...current, [previewId]: next }
-      })
-      setPreviewErrors((current) => {
-        if (!(previewId in current)) return current
-        const next = { ...current }
-        delete next[previewId]
-        return next
-      })
-    },
-    []
-  )
-
-  const handleSelectAll = useCallback((preview: CollectionPreview): void => {
-    const available = preview.entries
-      .filter((entry) => entry.availability === 'available')
-      .map((entry) => entry.id)
-    setSelections((current) => ({
-      ...current,
-      [preview.id]: available.slice(0, MAX_COLLECTION_SELECTION)
-    }))
-    setPreviewErrors((current) => {
-      if (!(preview.id in current)) return current
-      const next = { ...current }
-      delete next[preview.id]
-      return next
-    })
-  }, [])
-
-  const handleClearSelection = useCallback((previewId: string): void => {
-    setSelections((current) => ({ ...current, [previewId]: [] }))
-  }, [])
-
-  const handleDismissPreview = useCallback((previewId: string): void => {
-    setPreviews((current) => current.filter((preview) => preview.id !== previewId))
-    setSelections((current) => {
-      const next = { ...current }
-      delete next[previewId]
-      return next
-    })
-    setPreviewErrors((current) => {
-      const next = { ...current }
-      delete next[previewId]
-      return next
-    })
-    setSubmitResult((current) =>
-      current === null
-        ? null
-        : {
-            ...current,
-            entries: current.entries.filter(
-              (entry) => entry.previewId !== previewId
-            )
-          }
-    )
-  }, [])
-
-  const handleQueueSelected = useCallback(
-    async (preview: CollectionPreview & { quality: BatchMediaQuality; maxBytes: number | null }): Promise<void> => {
-      const selectedEntryIds = selections[preview.id] ?? []
-      if (selectedEntryIds.length === 0 || queueingPreviewId !== null) return
-
-      setQueueingPreviewId(preview.id)
-      setPreviewNotice(null)
-      setPreviewErrors((current) => {
-        if (!(preview.id in current)) return current
-        const next = { ...current }
-        delete next[preview.id]
-        return next
-      })
-
-      try {
-        const result = await window.donDownload.createCollectionBatch({
-          previewId: preview.id,
-          selectedEntryIds,
-          ...(preview.kind === 'playlist' ? {
-            mediaQuality: preview.quality,
-            maxBytesPerItem: preview.maxBytes
-          } : {})
-        })
-        if (!result.ok) {
-          setPreviewErrors((current) => ({
-            ...current,
-            [preview.id]: result.error
-          }))
-          return
-        }
-
-        const queuedCount = selectedEntryIds.length
-        setPreviews((current) =>
-          current.filter((entry) => entry.id !== preview.id)
-        )
-        setSelections((current) => {
-          const next = { ...current }
-          delete next[preview.id]
-          return next
-        })
-        setPreviewErrors((current) => {
-          const next = { ...current }
-          delete next[preview.id]
-          return next
-        })
-        setSubmitResult((current) =>
-          current === null
-            ? null
-            : {
-                ...current,
-                entries: current.entries.map((entry) =>
-                  entry.previewId === preview.id
-                    ? {
-                        ...entry,
-                        outcome: 'batch-item' as const,
-                        batchId: result.value.id,
-                        itemId: null,
-                        previewId: null,
-                        code: null,
-                        message: `Queued ${queuedCount} selected ${
-                          queuedCount === 1 ? 'item' : 'items'
-                        } into a new batch.`
-                      }
-                    : entry
-                )
-              }
-        )
-        setExpandedBatches((current) => ({
-          ...current,
-          [result.value.id]: true
-        }))
-        setPreviewNotice(
-          `Queued ${queuedCount} selected ${
-            queuedCount === 1 ? 'item' : 'items'
-          } from "${preview.title}".`
-        )
-      } catch (error) {
-        setPreviewErrors((current) => ({
-          ...current,
-          [preview.id]: rejectedToError(error)
-        }))
-      } finally {
-        setQueueingPreviewId(null)
-      }
-    },
-    [queueingPreviewId, selections]
-  )
 
   const runSnapshotAction = useCallback(
     async (
@@ -432,186 +168,190 @@ export function BatchSection(): JSX.Element {
     []
   )
 
+  const retryItems = useCallback(
+    async (batch: Batch, items: readonly BatchItem[]): Promise<void> => {
+      for (const item of items) {
+        // Sequential on purpose: retry results arrive as full snapshots that
+        // must not race each other.
+        await runSnapshotAction(() =>
+          window.donDownload.retryBatchItem({
+            batchId: batch.id,
+            itemId: item.id
+          })
+        )
+      }
+    },
+    [runSnapshotAction]
+  )
+
+  const clearFinished = useCallback((): void => {
+    if (snapshot === null) return
+    const finished = snapshot.batches.filter((batch) =>
+      FINISHED_STATUSES.has(batch.status)
+    )
+    if (finished.length === 0) return
+    void (async () => {
+      for (const batch of finished) {
+        await runSnapshotAction(() =>
+          window.donDownload.removeBatch({ batchId: batch.id })
+        )
+      }
+    })()
+  }, [runSnapshotAction, snapshot])
+
   const batches = snapshot?.batches ?? []
-  const parsedUrlCount = parseBatchUrls(urlsText).length
-  const interactionBusy = actionPending || queueingPreviewId !== null
+  const counts = useMemo(
+    () => ({
+      all: batches.length,
+      running: batches.filter(
+        (batch) => batch.status === 'queued' || batch.status === 'running'
+      ).length,
+      finished: batches.filter((batch) => FINISHED_STATUSES.has(batch.status))
+        .length
+    }),
+    [batches]
+  )
+  const filteredBatches =
+    filter === 'all'
+      ? batches
+      : batches.filter((batch) =>
+          filter === 'running'
+            ? batch.status === 'queued' || batch.status === 'running'
+            : FINISHED_STATUSES.has(batch.status)
+        )
+  const interactionBusy = actionPending
 
   return (
-    <section aria-labelledby="batches-heading">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h2
-          id="batches-heading"
-          className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-400"
+    <section aria-labelledby="batches-page-heading">
+      <header className="flex items-center gap-2.5 pb-4 pt-1">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back to downloads"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
         >
-          Batch downloads
-        </h2>
-        {batches.length > 0 ? (
-          <span className="text-[11px] tabular-nums text-zinc-500">
-            {batches.length} {batches.length === 1 ? 'batch' : 'batches'}
-          </span>
-        ) : null}
-      </div>
-
-      <form
-        onSubmit={(event) => {
-          void handleSubmit(event)
-        }}
-        className="rounded-xl border border-white/10 surface-card p-3"
-      >
-        <div className="flex flex-col gap-2">
-          <div className="flex items-baseline justify-between gap-3 px-1">
-            <label
-              htmlFor="batch-urls"
-              className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-400"
-            >
-              Batch URLs
-            </label>
-            <span className="text-[11px] tabular-nums text-zinc-500">
-              {parsedUrlCount > 0
-                ? `${parsedUrlCount} ${
-                    parsedUrlCount === 1 ? 'URL' : 'URLs'
-                  }`
-                : 'One per line'}
-            </span>
-          </div>
-          <textarea
-            id="batch-urls"
-            rows={3}
-            autoComplete="off"
-            spellCheck={false}
-            value={urlsText}
-            onChange={(event) => {
-              setUrlsText(event.target.value)
-              setSubmitError(null)
-            }}
-            placeholder={
-              'https://example.com/file-a.zip\nhttps://example.com/file-b.zip\nhttps://www.youtube.com/playlist?list=...'
-            }
-            disabled={submitting}
-            aria-describedby="batch-urls-help"
-            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
-          />
-          <p
-            id="batch-urls-help"
-            className="px-1 text-[11px] leading-5 text-zinc-400"
+          <Icon name="chevron-left" size={16} />
+        </button>
+        <div className="min-w-0">
+          <h1
+            id="batches-page-heading"
+            className="text-[15px] font-semibold text-zinc-100"
           >
-            One HTTP(S) URL per line. Direct links and Pixeldrain files are
-            queued immediately. Playlists and Pixeldrain lists return a preview
-            first:{' '}
-            <span className="text-zinc-300">
-              nothing from a collection is queued until you select items and
-              choose Queue selected.
-            </span>
+            Batches
+          </h1>
+          <p className="text-[12px] text-zinc-500">
+            Groups of downloads from one scan, playlist or list
           </p>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setUrlsText('')
-                setSubmitError(null)
-                setSubmitResult(null)
-              }}
-              disabled={submitting || urlsText.length === 0}
-              className="h-9 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Clear input
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || parsedUrlCount === 0}
-              className="h-10 rounded-xl bg-accent-500 px-5 text-sm font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-            >
-              {submitting ? 'Submitting…' : 'Submit batch'}
-            </button>
-          </div>
         </div>
+        <button
+          type="button"
+          onClick={clearFinished}
+          disabled={interactionBusy || counts.finished === 0}
+          className="ml-auto h-8 shrink-0 rounded-lg px-3 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
+        >
+          Clear finished
+        </button>
+      </header>
 
-        {submitError ? (
+      <div className="flex flex-col gap-2.5">
+        {batches.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                ['all', 'All'],
+                ['running', 'Running'],
+                ['finished', 'Finished']
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={filter === id}
+                onClick={() => setFilter(id)}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition ${
+                  filter === id
+                    ? 'border border-white/10 bg-white/[0.06] text-zinc-100'
+                    : 'border border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+                }`}
+              >
+                {label}{' '}
+                <span className="font-medium tabular-nums text-zinc-500">
+                  {counts[id]}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {actionError ? <InlineError error={actionError} onDismiss={() => setActionError(null)} /> : null}
+
+        {snapshotError && snapshot !== null ? (
           <InlineError
-            error={submitError}
-            onDismiss={() => setSubmitError(null)}
+            error={snapshotError}
+            onDismiss={() => setSnapshotError(null)}
+            onRetry={() => {
+              void (async () => {
+                setLoading(true)
+                try {
+                  const result = await window.donDownload.getBatchSnapshot()
+                  if (result.ok) {
+                    setSnapshot(result.value)
+                    setSnapshotError(null)
+                  } else {
+                    setSnapshotError(result.error)
+                  }
+                } catch (error) {
+                  setSnapshotError(rejectedToError(error))
+                } finally {
+                  setLoading(false)
+                }
+              })()
+            }}
           />
         ) : null}
-      </form>
 
-      {submitResult ? (
-        <SubmitOutcomes
-          result={submitResult}
-          busy={interactionBusy}
-          onOpenSource={(batchId, itemId) => {
-            void handleOpenSource(batchId, itemId)
-          }}
-        />
-      ) : null}
-
-      {previewNotice ? (
-        <p
-          role="status"
-          className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-2.5 text-[11px] leading-5 text-emerald-200"
-        >
-          {previewNotice}
-        </p>
-      ) : null}
-
-      {previews.length > 0 ? (
-        <div className="mt-3 space-y-2.5">
-          {previews.map((preview) => (
-            <PreviewCard
-              key={preview.id}
-              preview={preview}
-              selectedIds={selections[preview.id] ?? []}
-              busy={interactionBusy}
-              queueing={queueingPreviewId === preview.id}
-              error={previewErrors[preview.id] ?? null}
-              onToggleEntry={(entryId) => {
-                handleToggleEntry(preview.id, entryId)
-              }}
-              onSelectAll={() => handleSelectAll(preview)}
-              onClearSelection={() => handleClearSelection(preview.id)}
-              onQueue={(quality, maxBytes) => {
-                void handleQueueSelected({ ...preview, quality, maxBytes })
-              }}
-              onDismiss={() => handleDismissPreview(preview.id)}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {actionError ? (
-        <InlineError error={actionError} onDismiss={() => setActionError(null)} />
-      ) : null}
-
-      {snapshotError && snapshot !== null ? (
-        <InlineError
-          error={snapshotError}
-          onDismiss={() => setSnapshotError(null)}
-          onRetry={() => {
-            void refreshSnapshot()
-          }}
-        />
-      ) : null}
-
-      {loading && snapshot === null ? (
-        <LoadingState />
-      ) : snapshot === null ? (
-        <SnapshotErrorState
-          error={snapshotError}
-          onRetry={() => {
-            void refreshSnapshot()
-          }}
-        />
-      ) : batches.length === 0 ? (
-        <BatchEmptyState />
-      ) : (
-        <div className="mt-3 space-y-2.5">
-          {batches.map((batch) => (
+        {loading && snapshot === null ? (
+          <LoadingState />
+        ) : snapshot === null ? (
+          <SnapshotErrorState
+            error={snapshotError}
+            onRetry={() => {
+              void (async () => {
+                setLoading(true)
+                try {
+                  const result = await window.donDownload.getBatchSnapshot()
+                  if (result.ok) {
+                    setSnapshot(result.value)
+                    setSnapshotError(null)
+                  } else {
+                    setSnapshotError(result.error)
+                  }
+                } catch (error) {
+                  setSnapshotError(rejectedToError(error))
+                } finally {
+                  setLoading(false)
+                }
+              })()
+            }}
+          />
+        ) : filteredBatches.length === 0 ? (
+          <BatchEmptyState onAddLinks={onAddLinks} filtered={batches.length > 0} />
+        ) : (
+          filteredBatches.map((batch) => (
             <BatchCard
               key={batch.id}
               batch={batch}
               expanded={expandedBatches[batch.id] ?? false}
+              showAll={showAllItems[batch.id] ?? false}
               busy={interactionBusy}
               onToggle={() => {
                 setExpandedBatches((current) => ({
+                  ...current,
+                  [batch.id]: !(current[batch.id] ?? false)
+                }))
+              }}
+              onShowAll={() => {
+                setShowAllItems((current) => ({
                   ...current,
                   [batch.id]: !(current[batch.id] ?? false)
                 }))
@@ -626,6 +366,15 @@ export function BatchSection(): JSX.Element {
                   window.donDownload.removeBatch({ batchId: batch.id })
                 )
               }}
+              onRetryFailed={() => {
+                void retryItems(
+                  batch,
+                  batch.items.filter(
+                    (item) =>
+                      item.status === 'error' || item.status === 'interrupted'
+                  )
+                )
+              }}
               onCancelItem={(item) => {
                 void runSnapshotAction(() =>
                   window.donDownload.cancelBatchItem({
@@ -635,558 +384,186 @@ export function BatchSection(): JSX.Element {
                 )
               }}
               onRetryItem={(item) => {
-                void runSnapshotAction(() =>
-                  window.donDownload.retryBatchItem({
-                    batchId: batch.id,
-                    itemId: item.id
-                  })
-                )
+                void retryItems(batch, [item])
               }}
               onOpenSource={(item) => {
                 void handleOpenSource(batch.id, item.id)
               }}
             />
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
     </section>
-  )
-}
-
-function SubmitOutcomes({
-  result,
-  busy,
-  onOpenSource
-}: {
-  result: SmartBatchSubmitResult
-  busy: boolean
-  onOpenSource: (batchId: string, itemId: string) => void
-}): JSX.Element {
-  return (
-    <div className="mt-3 rounded-xl border border-white/10 surface-card p-3">
-      <h3 className="px-1 text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
-        Submit results
-      </h3>
-      <ul className="mt-2 max-h-64 space-y-1.5 overflow-y-auto pr-1">
-        {result.entries.map((entry) => {
-          const canOpen =
-            entry.outcome === 'unsupported' &&
-            entry.code === 'GOFILE_BROWSER_REQUIRED' &&
-            entry.batchId !== null &&
-            entry.itemId !== null
-
-          return (
-            <li
-              key={entry.index}
-              className={`rounded-xl border px-3 py-2 text-[11px] leading-5 ${
-                OUTCOME_STYLE[entry.outcome]
-              }`}
-            >
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <p className="font-medium">
-                    URL {entry.index + 1} · {OUTCOME_LABEL[entry.outcome]}
-                  </p>
-                  <p className="mt-0.5 break-words opacity-80">
-                    {entry.message ?? defaultOutcomeMessage(entry)}
-                  </p>
-                </div>
-                {canOpen ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (entry.batchId !== null && entry.itemId !== null) {
-                        onOpenSource(entry.batchId, entry.itemId)
-                      }
-                    }}
-                    disabled={busy}
-                    aria-label={`Open Gofile link from URL ${entry.index + 1} in your browser`}
-                    className="h-8 shrink-0 rounded-lg border border-amber-300/30 px-3 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Open in browser
-                  </button>
-                ) : null}
-              </div>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
-
-function PreviewCard({
-  preview,
-  selectedIds,
-  busy,
-  queueing,
-  error,
-  onToggleEntry,
-  onSelectAll,
-  onClearSelection,
-  onQueue,
-  onDismiss
-}: {
-  preview: CollectionPreview
-  selectedIds: string[]
-  busy: boolean
-  queueing: boolean
-  error: AppErrorInfo | null
-  onToggleEntry: (entryId: string) => void
-  onSelectAll: () => void
-  onClearSelection: () => void
-  onQueue: (quality: BatchMediaQuality, maxBytes: number | null) => void
-  onDismiss: () => void
-}): JSX.Element {
-  const titleId = `batch-preview-${preview.id}-title`
-  const selectedCount = selectedIds.length
-  const selectedKey = selectedIds.join('|')
-  const atLimit = selectedCount >= MAX_COLLECTION_SELECTION
-  const [availability, setAvailability] = useState<CollectionSelectionAvailability | null>(null)
-  const [checkingFormats, setCheckingFormats] = useState(false)
-  const [quality, setQuality] = useState<BatchMediaQuality>('best')
-  const [maxMiB, setMaxMiB] = useState('')
-  const [qualityError, setQualityError] = useState<string | null>(null)
-  /* eslint-disable react-hooks/set-state-in-effect -- stale availability/errors must be cleared when the selection changes */
-  useEffect(() => {
-    setAvailability(null)
-    setQualityError(null)
-  }, [selectedKey])
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const analyzeSelected = async (): Promise<void> => {
-    if (!selectedCount || checkingFormats) return
-    setCheckingFormats(true)
-    setQualityError(null)
-    try {
-      const result = await window.donDownload.analyzeCollectionSelection({
-        previewId: preview.id,
-        selectedEntryIds: selectedIds
-      })
-      if (!result.ok) setQualityError(result.error.message)
-      else setAvailability(result.value)
-    } catch {
-      setQualityError('Selected entries could not be analyzed for available formats.')
-    } finally {
-      setCheckingFormats(false)
-    }
-  }
-
-  const qualityCounts = new Map<BatchMediaQuality, number>()
-  const qualitySizes = new Map<
-    BatchMediaQuality,
-    { count: number; bytes: number | null; isEstimate: boolean }
-  >()
-  for (const entry of availability?.entries ?? []) {
-    for (const option of entry.qualities) {
-      qualityCounts.set(
-        option.quality,
-        (qualityCounts.get(option.quality) ?? 0) + 1
-      )
-      const summary = qualitySizes.get(option.quality) ?? {
-        count: 0,
-        bytes: 0,
-        isEstimate: false
-      }
-      summary.count += 1
-      if (summary.bytes !== null) {
-        summary.bytes =
-          option.estimatedBytes === null
-            ? null
-            : summary.bytes + option.estimatedBytes
-      }
-      summary.isEstimate = summary.isEstimate || option.sizeIsEstimate === true
-      qualitySizes.set(option.quality, summary)
-    }
-  }
-  const matchingCount = qualityCounts.get(quality) ?? 0
-  const maxBytes = maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
-  const validMaxBytes = maxBytes === null || (Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 100 * 1024 ** 3)
-  const selectAllLabel =
-    preview.availableCount > MAX_COLLECTION_SELECTION
-      ? `Select first ${MAX_COLLECTION_SELECTION} available`
-      : 'Select all available'
-
-  return (
-    <article
-      aria-labelledby={titleId}
-      className="rounded-xl border border-white/10 surface-card p-3"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3
-            id={titleId}
-            className="truncate text-sm font-medium text-zinc-100"
-            title={preview.title}
-          >
-            {preview.title}
-          </h3>
-          <p className="mt-0.5 text-[11px] text-zinc-500">
-            {previewKindLabel(preview.kind)} ·{' '}
-            <span className="tabular-nums">{preview.entryCount}</span>{' '}
-            {preview.entryCount === 1 ? 'item' : 'items'} ·{' '}
-            <span className="tabular-nums">{preview.availableCount}</span>{' '}
-            available
-            {preview.unavailableCount > 0 ? (
-              <>
-                {' '}
-                ·{' '}
-                <span className="tabular-nums text-amber-300/80">
-                  {preview.unavailableCount}
-                </span>{' '}
-                unavailable
-              </>
-            ) : null}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onDismiss}
-          disabled={busy}
-          aria-label={`Dismiss preview for ${preview.title}`}
-          className="h-8 shrink-0 rounded-lg border border-white/10 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Dismiss
-        </button>
-      </div>
-
-      <p className="mt-2 rounded-lg border border-amber-400/15 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200/90">
-        Nothing is queued automatically. Select the items you want, then choose
-        Queue selected.
-      </p>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onSelectAll}
-          disabled={busy || preview.availableCount === 0}
-          className="h-8 rounded-lg border border-white/10 px-2.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {selectAllLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onClearSelection}
-          disabled={busy || selectedCount === 0}
-          className="h-8 rounded-lg border border-white/10 px-2.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Clear selection
-        </button>
-        <span
-          className="text-[11px] tabular-nums text-zinc-500"
-          aria-live="polite"
-        >
-          {selectedCount} selected
-        </span>
-      </div>
-
-      <ul className="mt-3 max-h-80 space-y-1.5 overflow-y-auto pr-1">
-        {preview.entries.map((entry, index) => {
-          const available = entry.availability === 'available'
-          const checked = selectedIds.includes(entry.id)
-          const checkboxId = `batch-preview-${preview.id}-entry-${entry.id}`
-          const reasonId = available ? undefined : `${checkboxId}-reason`
-          const disabled = busy || !available || (atLimit && !checked)
-
-          return (
-            <li key={entry.id}>
-              <div
-                className={`flex items-start gap-2.5 rounded-lg border px-2.5 py-2 ${
-                  available
-                    ? 'border-white/5 surface-soft'
-                    : 'border-white/5 bg-white/[0.015] opacity-70'
-                }`}
-              >
-                <input
-                  id={checkboxId}
-                  type="checkbox"
-                  checked={checked}
-                  disabled={disabled}
-                  onChange={() => onToggleEntry(entry.id)}
-                  aria-describedby={reasonId}
-                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 surface-input accent-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed"
-                />
-                <label
-                  htmlFor={checkboxId}
-                  className={`min-w-0 flex-1 ${
-                    available ? 'cursor-pointer' : 'cursor-default'
-                  }`}
-                >
-                  <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-200">
-                    <span className="text-[11px] tabular-nums text-zinc-500">
-                      {index + 1}.
-                    </span>
-                    <span className="break-words">{entry.title}</span>
-                    {!available ? (
-                      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
-                        Unavailable
-                      </span>
-                    ) : null}
-                  </span>
-                  {preview.kind === 'playlist' && checked && availability ? (
-                    <span className="mt-1 block text-[11px] leading-4 text-zinc-500">
-                      {availability.entries.find(result => result.entryId === entry.id)?.qualities.length
-                        ? `Verified: ${availability.entries.find(result => result.entryId === entry.id)!.qualities.map(option => `${qualityLabel(option.quality)} · ${formatMediaSize(option.estimatedBytes, option.sizeIsEstimate === true)}`).join(', ')}`
-                        : 'No verified media formats available'}
-                    </span>
-                  ) : null}
-                  {!available ? (
-                    <span
-                      id={reasonId}
-                      className="mt-0.5 block text-[11px] leading-4 text-amber-200/70"
-                    >
-                      {entry.errorReason ?? entry.errorCode ?? 'Not available'}
-                    </span>
-                  ) : null}
-                </label>
-              </div>
-            </li>
-          )
-        })}
-      </ul>
-
-      {preview.availableCount > MAX_COLLECTION_SELECTION ? (
-        <p className="mt-2 text-[11px] leading-4 text-zinc-500">
-          Selection is limited to {MAX_COLLECTION_SELECTION} items per batch.
-        </p>
-      ) : null}
-      {atLimit ? (
-        <p className="mt-1 text-[11px] leading-4 text-amber-200/70">
-          Selection limit reached. Uncheck or clear items to choose others.
-        </p>
-      ) : null}
-
-      {preview.kind === 'playlist' ? <div className="mt-3 rounded-lg border border-white/5 surface-soft p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-[11px] font-medium text-zinc-200">Playlist quality</p>
-            <p className="text-[11px] text-zinc-500">Analyze selected entries first; unavailable qualities are skipped, never substituted.</p>
-          </div>
-          <button type="button" onClick={() => void analyzeSelected()} disabled={busy || selectedCount === 0 || checkingFormats} className="h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-200 disabled:opacity-40">
-            {checkingFormats ? 'Checking formats…' : 'Check selected formats'}
-          </button>
-        </div>
-        {availability ? (
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] font-medium text-zinc-400">Quality
-              <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100">
-                {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => {
-                  const summary = qualitySizes.get(option)
-                  return (
-                    <option key={option} value={option}>
-                      {qualityLabel(option)} · {summary?.count ?? 0}/{selectedCount} ·{' '}
-                      {formatMediaSize(summary?.bytes ?? null, summary?.isEstimate === true)}
-                    </option>
-                  )
-                })}
-              </select>
-            </label>
-            <label className="text-[11px] font-medium text-zinc-400">Optional max per-job size (MiB)
-              <input type="number" min="0.01" max="102400" step="0.01" value={maxMiB} onChange={event => setMaxMiB(event.target.value)} placeholder="No limit" className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600" />
-            </label>
-            <p className="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
-              {matchingCount < selectedCount ? `${selectedCount - matchingCount} selected ${selectedCount - matchingCount === 1 ? 'entry has' : 'entries have'} no ${qualityLabel(quality)} option and will be marked Skipped.` : `${matchingCount} selected ${matchingCount === 1 ? 'entry has' : 'entries have'} this verified quality.`}
-              {' '}Unknown-size and merged jobs are stopped at the cap during transfer; final output is checked before completion. Progress granularity may allow a small network overrun.
-            </p>
-          </div>
-        ) : null}
-        {!validMaxBytes ? <p role="alert" className="mt-2 text-[11px] text-red-300">Enter a per-job limit up to 102400 MiB.</p> : null}
-        {qualityError ? <p role="alert" className="mt-2 text-[11px] text-red-300">{qualityError}</p> : null}
-      </div> : null}
-
-      {error ? (
-        <div
-          role="alert"
-          className="mt-3 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-[11px] leading-5 text-red-300"
-        >
-          <p>{error.message}</p>
-          {error.hint ? (
-            <p className="mt-0.5 break-words text-[11px] text-red-300/70">
-              {error.hint}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
-        <p className="max-w-sm text-[11px] leading-4 text-zinc-500">
-          Only available entries can be queued. Unavailable entries stay
-          unselected and do not block the rest of the collection.
-        </p>
-        <button
-          type="button"
-          onClick={() => onQueue(quality, maxBytes)}
-          disabled={busy || selectedCount === 0 || (preview.kind === 'playlist' && (!availability || matchingCount === 0 || !validMaxBytes))}
-          className="h-10 shrink-0 rounded-xl bg-accent-500 px-4 text-sm font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-        >
-          {queueing
-            ? 'Queueing…'
-            : `Queue selected${selectedCount > 0 ? ` (${selectedCount})` : ''}`}
-        </button>
-      </div>
-    </article>
   )
 }
 
 function BatchCard({
   batch,
   expanded,
+  showAll,
   busy,
   onToggle,
+  onShowAll,
   onCancelBatch,
   onRemoveBatch,
+  onRetryFailed,
   onCancelItem,
   onRetryItem,
   onOpenSource
 }: {
   batch: Batch
   expanded: boolean
+  showAll: boolean
   busy: boolean
   onToggle: () => void
+  onShowAll: () => void
   onCancelBatch: () => void
   onRemoveBatch: () => void
+  onRetryFailed: () => void
   onCancelItem: (item: BatchItem) => void
   onRetryItem: (item: BatchItem) => void
   onOpenSource: (item: BatchItem) => void
 }): JSX.Element {
-  const titleId = `batch-${batch.id}-title`
   const itemsId = `batch-${batch.id}-items`
   const active = batch.status === 'queued' || batch.status === 'running'
   const percent = batchPercent(batch)
-  const progressText = `${batch.progress.completedItems} of ${
-    batch.progress.totalItems
-  } ${batch.progress.totalItems === 1 ? 'item' : 'items'} finished`
+  const retryableCount = batch.items.filter(
+    (item) => item.status === 'error' || item.status === 'interrupted'
+  ).length
+  const downloadingCount = batch.items.filter(
+    (item) => item.status === 'running'
+  ).length
+  const bytesLeft =
+    batch.progress.totalBytes !== null
+      ? Math.max(0, batch.progress.totalBytes - batch.progress.completedBytes)
+      : null
+
+  const visibleItems = showAll
+    ? batch.items
+    : batch.items.slice(0, PREVIEW_ITEM_COUNT)
 
   return (
     <article
-      aria-labelledby={titleId}
-      className="rounded-xl border border-white/10 surface-card p-3 transition-colors hover:border-white/20"
+      aria-labelledby={`batch-${batch.id}-title`}
+      className="overflow-hidden rounded-xl border border-white/10 surface-card"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="grid grid-cols-[16px_36px_minmax(0,1fr)_minmax(150px,220px)_auto] items-center gap-3 px-4 py-3">
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
           aria-controls={expanded ? itemsId : undefined}
-          className="group flex min-w-0 flex-1 items-start gap-2 rounded-lg text-left"
+          aria-label={expanded ? 'Collapse batch' : 'Expand batch'}
+          className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
         >
           <span
             aria-hidden="true"
-            className={`mt-0.5 inline-block text-[11px] text-zinc-500 transition-transform ${
-              expanded ? 'rotate-90' : ''
-            }`}
+            className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
           >
-            ▶
-          </span>
-          <span className="min-w-0">
-            <span
-              id={titleId}
-              className="block truncate text-sm font-medium text-zinc-100"
-              title={batch.title}
-            >
-              {batch.title}
-            </span>
-            <span className="mt-0.5 block text-[11px] text-zinc-500">
-              {batchKindLabel(batch.kind)} ·{' '}
-              <span className="tabular-nums">{batch.progress.totalItems}</span>{' '}
-              {batch.progress.totalItems === 1 ? 'item' : 'items'}
-            </span>
+            <Icon name="chevron-right" size={14} />
           </span>
         </button>
-        <span
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
-            BATCH_STATUS_STYLE[batch.status]
-          }`}
-        >
-          {BATCH_STATUS_LABEL[batch.status]}
-        </span>
-      </div>
 
-      <div className="mt-3">
-        <div
-          role="progressbar"
-          aria-label={`Batch progress for ${batch.title}`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(percent)}
-          aria-valuetext={`${Math.round(percent)}%. ${progressText}.`}
-          className="h-1.5 overflow-hidden rounded-full bg-white/10"
+        <span
+          aria-hidden="true"
+          className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-white/[0.05] text-zinc-400"
         >
-          <div
-            className={`h-full rounded-full transition-[width] duration-500 ${
-              BATCH_BAR_STYLE[batch.status]
-            }`}
-            style={{ width: `${percent}%` }}
-          />
+          <Icon name={BATCH_KIND_ICON[batch.kind]} size={17} />
+        </span>
+
+        <div className="min-w-0">
+          <p
+            id={`batch-${batch.id}-title`}
+            className="truncate text-[13.5px] font-semibold text-zinc-100"
+            title={batch.title}
+          >
+            {batch.title}
+          </p>
+          <p className="truncate text-[12px] text-zinc-500">
+            {BATCH_KIND_LABEL[batch.kind]} ·{' '}
+            <span className="tabular-nums">{batch.progress.totalItems}</span>{' '}
+            {batch.progress.totalItems === 1 ? 'item' : 'items'} ·{' '}
+            {formatBatchDate(batch.createdAt)}
+          </p>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-          <span className="tabular-nums">
-            <span className="text-zinc-300">
-              {batch.progress.completedItems}
-            </span>{' '}
-            / {batch.progress.totalItems} complete
-            {batch.progress.failedItems > 0 ? (
-              <span className="ml-2 text-red-300/80">
-                {batch.progress.failedItems} failed
-              </span>
-            ) : null}
-            {batch.progress.skippedItems > 0 ? (
-              <span className="ml-2 text-amber-300/80">
-                {batch.progress.skippedItems} skipped
-              </span>
-            ) : null}
-          </span>
-          {batch.progress.completedBytes > 0 ||
-          batch.progress.totalBytes !== null ? (
+        <div className="min-w-0">
+          <div className="flex items-center justify-between text-[12px] text-zinc-400">
             <span className="tabular-nums">
-              {formatBytes(batch.progress.completedBytes)} /{' '}
-              {batch.progress.totalBytes !== null
-                ? formatBytes(batch.progress.totalBytes)
-                : 'unknown'}
+              <span className="font-semibold text-zinc-100">
+                {batch.progress.completedItems} of{' '}
+                {batch.progress.totalItems}
+              </span>
+              {downloadingCount > 0 ? ` · ${downloadingCount} downloading` : ''}
             </span>
+            {bytesLeft !== null && active ? (
+              <span className="tabular-nums">{formatBytes(bytesLeft)} left</span>
+            ) : null}
+          </div>
+          <div
+            role="progressbar"
+            aria-label={`Batch progress for ${batch.title}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(percent)}
+            className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/10"
+          >
+            <div
+              className={`h-full rounded-full transition-[width] duration-500 ${BATCH_BAR_STYLE[batch.status]}`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-1">
+          {retryableCount > 0 && !active ? (
+            <button
+              type="button"
+              onClick={onRetryFailed}
+              disabled={busy}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-white/10 px-2.5 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Icon name="retry" size={14} />
+              Retry {retryableCount}
+            </button>
           ) : null}
+          {active ? (
+            <IconAction
+              icon="pause"
+              ariaLabel={`Cancel batch ${batch.title}`}
+              title="Cancel batch"
+              disabled={busy}
+              onClick={onCancelBatch}
+            />
+          ) : null}
+          <IconAction
+            icon="trash"
+            ariaLabel={`Remove batch card ${batch.title}`}
+            title="Remove group card"
+            disabled={busy}
+            onClick={onRemoveBatch}
+          />
         </div>
       </div>
 
       {batch.errorMessage ? (
-        <p className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200">
+        <p
+          role="alert"
+          className="mx-4 mb-3 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200"
+        >
           {batch.errorMessage}
         </p>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {active ? (
-          <CardAction
-            label="Cancel group"
-            ariaLabel={`Cancel batch ${batch.title}`}
-            disabled={busy}
-            onClick={onCancelBatch}
-            danger
-          />
-        ) : null}
-        <CardAction
-          label="Remove group card"
-          ariaLabel={`Remove batch card ${batch.title}`}
-          disabled={busy}
-          onClick={onRemoveBatch}
-          danger
-        />
-      </div>
-      <p className="mt-2 text-[11px] leading-4 text-zinc-500">
-        Removing this group card clears only the batch history. Child downloads,
-        media jobs and files on disk are kept.
-      </p>
-
       {expanded ? (
-        <div id={itemsId} className="mt-3 border-t border-white/5 pt-3">
+        <div id={itemsId} className="border-t border-white/[0.07]">
           {batch.items.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-white/10 surface-soft px-3 py-4 text-center text-[11px] text-zinc-500">
+            <p className="px-4 py-5 text-center text-[12px] text-zinc-500">
               No child items.
             </p>
           ) : (
-            <ul className="space-y-2">
-              {batch.items.map((item, index) => (
+            <ul>
+              {visibleItems.map((item, index) => (
                 <BatchItemRow
                   key={item.id}
                   item={item}
@@ -1199,6 +576,18 @@ function BatchCard({
               ))}
             </ul>
           )}
+          {batch.items.length > PREVIEW_ITEM_COUNT ? (
+            <button
+              type="button"
+              onClick={onShowAll}
+              disabled={busy}
+              className="w-full border-t border-white/[0.07] px-4 py-2.5 text-center text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 disabled:opacity-40"
+            >
+              {showAll
+                ? 'Show less'
+                : `Show all ${batch.items.length}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </article>
@@ -1226,114 +615,119 @@ function BatchItemRow({
     item.status === 'unavailable' &&
     item.childId === null &&
     item.label === 'Browser required'
+  const percent =
+    item.totalBytes !== null && item.totalBytes > 0
+      ? formatPercent(item.completedBytes, item.totalBytes)
+      : null
 
   return (
-    <li className="rounded-xl border border-white/5 surface-soft px-3 py-2.5">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-zinc-200">
-            <span className="text-[11px] tabular-nums text-zinc-500">
-              {index + 1}.
-            </span>
-            <span className="break-words" title={item.title}>
-              {item.title}
-            </span>
+    <li
+      className={`grid grid-cols-[16px_36px_minmax(0,1fr)_minmax(150px,220px)_auto] items-center gap-3 px-4 py-2.5 ${
+        index > 0 ? 'border-t border-white/[0.05]' : ''
+      }`}
+    >
+      <span aria-hidden="true" />
+      <span
+        aria-hidden="true"
+        className="mx-auto flex h-6 w-9 items-center justify-center rounded bg-white/[0.05] text-zinc-500"
+      >
+        <Icon name="document" size={13} />
+      </span>
+      <p
+        className="truncate text-[12.5px] font-medium text-zinc-200"
+        title={item.title}
+      >
+        {item.title}
+      </p>
+      <div className="flex min-w-0 items-center gap-2">
+        {percent !== null && percent < 100 ? (
+          <>
             <span
-              className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
-                ITEM_STATUS_STYLE[item.status]
-              }`}
+              className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10"
+              role="progressbar"
+              aria-valuenow={Math.round(percent)}
+              aria-valuemin={0}
+              aria-valuemax={100}
             >
-              {ITEM_STATUS_LABEL[item.status]}
+              <span
+                className="block h-full rounded-full bg-accent-400"
+                style={{ width: `${percent}%` }}
+              />
             </span>
-          </p>
-          <p className="mt-0.5 truncate text-[11px] text-zinc-400" title={item.label}>
-            {item.label}
-          </p>
-          {item.completedBytes > 0 || item.totalBytes !== null ? (
-            <p className="mt-1 text-[11px] tabular-nums text-zinc-500">
-              {formatBytes(item.completedBytes)} /{' '}
-              {item.totalBytes !== null
-                ? formatBytes(item.totalBytes)
-                : 'unknown'}
-            </p>
-          ) : null}
-          {item.errorMessage ? (
-            <p
-              className={`mt-1 break-words text-[11px] leading-5 ${
-                item.status === 'unavailable' || item.status === 'skipped'
-                  ? 'text-amber-200/80'
-                  : 'text-red-300'
-              }`}
-            >
-              {item.errorMessage}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {retryable ? (
-            <CardAction
-              label="Retry"
-              ariaLabel={`Retry ${item.title}`}
-              disabled={busy}
-              onClick={onRetry}
-              accent
-            />
-          ) : null}
-          {active ? (
-            <CardAction
-              label="Cancel"
-              ariaLabel={`Cancel ${item.title}`}
-              disabled={busy}
-              onClick={onCancel}
-              danger
-            />
-          ) : null}
-          {browserRequired ? (
-            <CardAction
-              label="Open in browser"
-              ariaLabel={`Open ${item.title} in your browser`}
-              disabled={busy}
-              onClick={onOpenSource}
-              accent
-            />
-          ) : null}
-        </div>
+            <span className="tabular-nums text-[12px] text-zinc-500">
+              {Math.round(percent)}%
+            </span>
+          </>
+        ) : (
+          <span
+            className={`flex items-center gap-1.5 truncate text-[12px] font-medium ${ITEM_STATUS_STYLE[item.status]}`}
+          >
+            {item.status === 'complete' ? (
+              <Icon name="check" size={13} />
+            ) : null}
+            {(item.status === 'error' || item.status === 'unavailable') ? (
+              <Icon name="alert" size={13} />
+            ) : null}
+            {ITEM_STATUS_LABEL[item.status]}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center justify-end gap-1">
+        {retryable ? (
+          <IconAction
+            icon="retry"
+            ariaLabel={`Retry ${item.title}`}
+            title="Retry"
+            disabled={busy}
+            onClick={onRetry}
+          />
+        ) : null}
+        {active ? (
+          <IconAction
+            icon="x"
+            ariaLabel={`Cancel ${item.title}`}
+            title="Cancel"
+            disabled={busy}
+            onClick={onCancel}
+          />
+        ) : null}
+        {browserRequired ? (
+          <IconAction
+            icon="external"
+            ariaLabel={`Open ${item.title} in your browser`}
+            title="Open in browser"
+            disabled={busy}
+            onClick={onOpenSource}
+          />
+        ) : null}
       </div>
     </li>
   )
 }
 
-function CardAction({
-  label,
+function IconAction({
+  icon,
   ariaLabel,
-  onClick,
+  title,
   disabled,
-  accent = false,
-  danger = false
+  onClick
 }: {
-  label: string
+  icon: IconName
   ariaLabel: string
-  onClick: () => void
+  title: string
   disabled: boolean
-  accent?: boolean
-  danger?: boolean
+  onClick: () => void
 }): JSX.Element {
-  const tone = accent
-    ? 'border-accent-400/30 text-accent-300 hover:bg-accent-400/10'
-    : danger
-      ? 'border-white/10 text-zinc-500 hover:border-red-400/30 hover:text-red-300'
-      : 'border-white/10 text-zinc-300 hover:bg-white/5'
-
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
-      className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${tone}`}
+      title={title}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
     >
-      {label}
+      <Icon name={icon} size={15} />
     </button>
   )
 }
@@ -1350,7 +744,7 @@ function InlineError({
   return (
     <div
       role="alert"
-      className="mt-3 flex items-start justify-between gap-3 rounded-xl border border-red-400/25 bg-red-400/5 px-4 py-3 text-xs leading-5 text-red-200"
+      className="flex items-start justify-between gap-3 rounded-xl border border-red-400/25 bg-red-400/5 px-4 py-3 text-xs leading-5 text-red-200"
     >
       <div className="min-w-0">
         <p>{error.message}</p>
@@ -1386,7 +780,7 @@ function LoadingState(): JSX.Element {
   return (
     <div
       role="status"
-      className="mt-3 rounded-xl border border-white/10 surface-inset px-6 py-8 text-center"
+      className="rounded-xl border border-white/10 surface-inset px-6 py-8 text-center"
     >
       <div
         aria-hidden="true"
@@ -1410,7 +804,7 @@ function SnapshotErrorState({
   onRetry: () => void
 }): JSX.Element {
   return (
-    <div className="mt-3 rounded-xl border border-red-400/25 bg-red-400/5 px-6 py-8 text-center">
+    <div className="rounded-xl border border-red-400/25 bg-red-400/5 px-6 py-8 text-center">
       <p className="text-sm font-medium text-red-200">
         Batch history could not be loaded
       </p>
@@ -1433,38 +827,52 @@ function SnapshotErrorState({
   )
 }
 
-function BatchEmptyState(): JSX.Element {
+function BatchEmptyState({
+  onAddLinks,
+  filtered
+}: {
+  onAddLinks?: () => void
+  filtered: boolean
+}): JSX.Element {
   return (
-    <div className="mt-3 rounded-xl border border-dashed border-white/10 surface-inset px-6 py-8 text-center">
+    <div className="rounded-xl border border-dashed border-white/10 surface-inset px-6 py-8 text-center">
       <div
         aria-hidden="true"
         className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-base text-zinc-400"
       >
         ≡
       </div>
-      <p className="mt-2.5 text-sm font-medium text-zinc-300">No batches yet</p>
-      <p className="mt-1 text-xs text-zinc-400">
-        Submit one or more URLs above. Collections appear as previews until you
-        select items.
-      </p>
+      {filtered ? (
+        <>
+          <p className="mt-2.5 text-sm font-medium text-zinc-300">
+            Nothing in this filter
+          </p>
+          <p className="mt-1 text-xs text-zinc-400">
+            Switch back to All to see every batch.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="mt-2.5 text-sm font-medium text-zinc-300">
+            No batches yet
+          </p>
+          <p className="mt-1 text-xs text-zinc-400">
+            Paste several links, or a playlist or list link, in the Add dialog.
+          </p>
+          {onAddLinks ? (
+            <button
+              type="button"
+              onClick={onAddLinks}
+              className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400"
+            >
+              <Icon name="plus" size={14} strokeWidth={2.2} />
+              Add links
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   )
-}
-
-function parseBatchUrls(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-}
-
-function mergePreviews(
-  current: readonly CollectionPreview[],
-  incoming: readonly CollectionPreview[]
-): CollectionPreview[] {
-  const byId = new Map(current.map((preview) => [preview.id, preview]))
-  for (const preview of incoming) byId.set(preview.id, preview)
-  return [...byId.values()]
 }
 
 function batchPercent(batch: Batch): number {
@@ -1482,38 +890,14 @@ function batchPercent(batch: Batch): number {
   return 0
 }
 
-function batchKindLabel(kind: BatchKind): string {
-  switch (kind) {
-    case 'media-playlist':
-      return 'Playlist'
-    case 'pixeldrain-list':
-      return 'Pixeldrain list'
-    case 'direct-urls':
-      return 'Direct URLs'
+function formatBatchDate(timestamp: number): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  if (sameDay) {
+    return `started ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
   }
-}
-
-function previewKindLabel(kind: CollectionPreview['kind']): string {
-  return kind === 'playlist' ? 'Playlist' : 'Pixeldrain list'
-}
-
-function qualityLabel(quality: BatchMediaQuality): string {
-  return quality === 'audio-only' ? 'Audio only' : quality === 'best' ? 'Best available' : quality
-}
-
-function defaultOutcomeMessage(entry: SmartBatchSubmitEntry): string {
-  switch (entry.outcome) {
-    case 'batch-item':
-      return 'Added to the batch below.'
-    case 'collection-preview':
-      return 'Preview ready below. Select items before queueing anything.'
-    case 'unsupported':
-      return 'This link cannot be queued here.'
-    case 'invalid':
-      return 'This URL is not valid.'
-    case 'failed':
-      return 'This URL could not be added.'
-  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function rejectedToError(error: unknown): AppErrorInfo {

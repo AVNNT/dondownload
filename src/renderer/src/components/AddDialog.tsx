@@ -1,9 +1,11 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
-  type JSX
+  type JSX,
+  type ReactNode
 } from 'react'
 import type {
   AddDownloadInput,
@@ -16,26 +18,35 @@ import {
   type MediaOutputFormat,
   type MediaSnapshot
 } from '@shared/media'
-import { type ScanSession } from '@shared/scanner'
 import { MediaAnalyzer } from './MediaAnalyzer'
 import { QuickAdd } from './QuickAdd'
-import { ScanPanel } from './ScanPanel'
+import { BatchSubmit } from './BatchSubmit'
 import { Icon } from './Icon'
 import { useWheelScrollLock } from '../lib/useWheelScrollLock'
+import {
+  filenameFromUrl,
+  parseAddInput,
+  type AddLinkKind,
+  type ParsedAddLink
+} from '../lib/addParse'
 
 export type AddDialogTab = 'direct' | 'media' | 'scan'
 
 export interface AddDialogProps {
+  /** Opening hint: 'media' seeds the qualities view; 'scan' noop, files seed text. */
   tab: AddDialogTab
   initialUrl: string
-  /** Extension-created sessions that should be shown together immediately. */
-  scanSessions?: ScanSession[] | null
   busy?: boolean
-  onTabChange: (tab: AddDialogTab) => void
+  /** Short human summary of an already-queued item, e.g. "paused at 64%". */
+  describeDuplicate?: (url: string) => string | null
+  /** Resumes the already-queued item instead of forcing a second copy. */
+  onResumeDuplicate?: (url: string) => void
+  /** Global connection count shown on the Options stepper while "Default". */
+  defaultConnections?: number
+  /** Opens the scan side sheet for one pasted page link. */
+  onScanOpen: (url: string) => void
   onClose: () => void
-  onAdd: (input: AddDownloadInput) => Promise<
-    ApiResult<AppSnapshot>
-  >
+  onAdd: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
   onAnalyze: (url: string) => Promise<ApiResult<MediaAnalysis>>
   onQueue: (input: {
     analysisId: string
@@ -45,12 +56,34 @@ export interface AddDialogProps {
   }) => Promise<ApiResult<MediaSnapshot>>
 }
 
+const TAG_CLASS: Record<AddLinkKind, string> = {
+  file: 'bg-zinc-800/80 text-zinc-400',
+  media: 'bg-accent-400/10 text-accent-300',
+  page: 'bg-accent-400/10 text-accent-300'
+}
+
+const TAG_LABEL: Record<AddLinkKind, string> = {
+  file: 'File',
+  media: 'Video',
+  page: 'Page'
+}
+
+/**
+ * One link field with type detection, per the redesign: a direct file link
+ * shows the file form, a media page leads to the quality analyzer, a pasted
+ * page link offers the scan sheet, and several links submit as one batch
+ * (playlists and lists included — their preview comes back unchanged).
+ * Detection is only a default; ambiguous links keep an explicit path to every
+ * other flow.
+ */
 export function AddDialog({
   tab,
   initialUrl,
-  scanSessions = null,
   busy = false,
-  onTabChange,
+  describeDuplicate,
+  onResumeDuplicate,
+  defaultConnections = 8,
+  onScanOpen,
   onClose,
   onAdd,
   onAnalyze,
@@ -59,22 +92,34 @@ export function AddDialog({
   const backdropRef = useRef<HTMLDivElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const requestRef = useRef(0)
+  const quickSubmitRef = useRef<(() => void) | null>(null)
+  const [text, setText] = useState(initialUrl)
+  const [forcedFile, setForcedFile] = useState(false)
+  const [mediaSeed, setMediaSeed] = useState<string | null>(
+    tab === 'media' && initialUrl.trim().length > 0 ? initialUrl : null
+  )
   const [analysis, setAnalysis] = useState<MediaAnalysis | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState<AppErrorInfo | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  const [scanSeed, setScanSeed] = useState(initialUrl)
+
+  const registerQuickSubmit = useCallback(
+    (submit: (() => void) | null): void => {
+      quickSubmitRef.current = submit
+    },
+    []
+  )
 
   useWheelScrollLock(backdropRef)
 
   useEffect(() => {
     const target = dialogRef.current?.querySelector<HTMLElement>(
-      'input, textarea, select, button'
+      'textarea, input, select, button'
     )
     target?.focus()
-  }, [tab])
+  }, [])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -89,6 +134,23 @@ export function AddDialog({
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
   }, [analysis])
+
+  const parsed = useMemo(() => parseAddInput(text), [text])
+  const batchMode = parsed.links.length > 1
+  const single = parsed.links.length === 1 ? (parsed.links[0] ?? null) : null
+  const mediaMode = mediaSeed !== null && !batchMode
+  const pageMode =
+    !batchMode &&
+    !mediaMode &&
+    !forcedFile &&
+    single !== null &&
+    single.kind === 'page'
+  const fileMode = single?.kind === 'file' || forcedFile
+
+  const handleTextChange = useCallback((value: string): void => {
+    setText(value)
+    setForcedFile(false)
+  }, [])
 
   const handleAnalyze = useCallback(
     async (url: string): Promise<ApiResult<MediaAnalysis>> => {
@@ -159,10 +221,187 @@ export function AddDialog({
     [analysis, onQueue, queuingOptionId]
   )
 
+  const clearAnalysis = useCallback((): void => {
+    requestRef.current += 1
+    setAnalyzing(false)
+    setAnalysis(null)
+    setAnalysisError(null)
+    setNotice(null)
+  }, [])
+
+  let body: JSX.Element
+  if (mediaMode && mediaSeed !== null) {
+    body = (
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-1.5 px-0.5">
+          <p className="min-w-0 flex-1 truncate text-[11px] text-zinc-500" title={mediaSeed}>
+            {mediaSeed}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              clearAnalysis()
+              setMediaSeed(null)
+            }}
+            className="h-7 shrink-0 rounded-md px-2 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+          >
+            Change input
+          </button>
+        </div>
+        <MediaAnalyzer
+          key={mediaSeed}
+          analysis={analysis}
+          analyzing={analyzing}
+          disabled={busy}
+          queuingOptionId={queuingOptionId}
+          error={analysisError}
+          notice={notice}
+          now={now}
+          initialUrl={mediaSeed}
+          onAnalyze={handleAnalyze}
+          onQueue={(optionId, maxBytes, outputFormat) => {
+            void handleQueue(optionId, maxBytes, outputFormat)
+          }}
+          onClear={clearAnalysis}
+          onUrlChange={() => {
+            clearAnalysis()
+          }}
+        />
+      </div>
+    )
+  } else if (batchMode) {
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <InvalidLines invalid={parsed.invalid} />
+        {/* Remount on membership change so outcome rows never mix inputs. */}
+        <BatchSubmit
+          key={parsed.links.map((link) => link.url).join('\n')}
+          urls={parsed.links.map((link) => link.url)}
+          disabled={busy}
+        />
+      </div>
+    )
+  } else if (single !== null && fileMode) {
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <LinkRow link={{ ...single, kind: 'file' }} subtitle={hostOf(single.url)} />
+        <QuickAdd
+          disabled={busy}
+          onAdd={async (input) => {
+            const result = await onAdd(input)
+            if (result.ok) onClose()
+            return result
+          }}
+          url={single.url}
+          onUrlChange={handleTextChange}
+          registerSubmit={registerQuickSubmit}
+          describeDuplicate={describeDuplicate}
+          onResumeDuplicate={onResumeDuplicate}
+          defaultConnections={defaultConnections}
+        />
+      </div>
+    )
+  } else if (pageMode && single !== null) {
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <LinkRow
+          link={single}
+          subtitle={`${hostOf(single.url)} · scanned before anything downloads`}
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={() => onScanOpen(single.url)}
+                className="h-7 shrink-0 rounded-md px-2.5 text-[11px] font-semibold text-zinc-200 transition hover:bg-white/5"
+              >
+                Scan
+              </button>
+              <button
+                type="button"
+                onClick={() => setForcedFile(true)}
+                className="h-7 shrink-0 rounded-md border border-white/10 px-2.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+              >
+                Add as file
+              </button>
+            </>
+          }
+        />
+        <p className="px-1 text-[11px] leading-5 text-zinc-500">
+          Not a recognised file or video link? Scan the page for downloadable
+          links, or queue the URL as a direct download.
+        </p>
+      </div>
+    )
+  } else if (single !== null) {
+    // Detected media link, qualities not requested yet (or forced file off).
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <LinkRow
+          link={single}
+          subtitle={`${hostOf(single.url)} · qualities load before anything downloads`}
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={() => setMediaSeed(single.url)}
+                className="h-7 shrink-0 rounded-md px-2.5 text-[11px] font-semibold text-accent-300 transition hover:bg-accent-400/10"
+              >
+                Show qualities
+              </button>
+              <button
+                type="button"
+                onClick={() => setForcedFile(true)}
+                className="h-7 shrink-0 rounded-md border border-white/10 px-2.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+              >
+                Add as file
+              </button>
+            </>
+          }
+        />
+      </div>
+    )
+  } else {
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <InvalidLines invalid={parsed.invalid} />
+        <p className="px-1 text-[12px] leading-5 text-zinc-500">
+          Paste one or more links. Direct files download after you confirm,
+          media pages show their qualities, playlists and lists load a preview
+          first, and a page link can be scanned before anything downloads.
+        </p>
+      </div>
+    )
+  }
+
+  const footerPrimary = batchMode
+    ? null // BatchSubmit owns its explicit submission UI.
+    : mediaMode
+      ? null // Queueing happens inside the quality analyzer.
+      : fileMode
+        ? 'Download'
+        : pageMode
+          ? 'Scan page'
+          : single?.kind === 'media'
+            ? 'Show qualities'
+            : null
+
+  const runFooterPrimary = (): void => {
+    if (batchMode || single === null) return
+    if (fileMode) {
+      quickSubmitRef.current?.()
+      return
+    }
+    if (single.kind === 'page') {
+      onScanOpen(single.url)
+      return
+    }
+    setMediaSeed(single.url)
+  }
+
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-black/65 p-4 pt-[8vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-[rgb(0_0_0_/_0.55)] p-4 pt-[8vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
@@ -177,10 +416,10 @@ export function AddDialog({
         <div className="flex items-center gap-2 border-b border-white/[0.07] px-4 py-3">
           <div className="min-w-0 flex-1">
             <h2 id="add-dialog-title" className="text-sm font-semibold text-zinc-100">
-              Add download
+              Add downloads
             </h2>
             <p className="mt-0.5 text-[11px] text-zinc-500">
-              Direct links and media pages are queued only after you confirm.
+              Nothing downloads until you confirm it here.
             </p>
           </div>
           <button
@@ -193,126 +432,118 @@ export function AddDialog({
           </button>
         </div>
 
-        <div
-          role="tablist"
-          aria-label="Download type"
-          className="flex gap-1 border-b border-white/[0.07] px-3 py-2"
-        >
-          <TabButton
-            active={tab === 'direct'}
-            onClick={() => onTabChange('direct')}
-            icon="link"
-            label="Direct link"
-          />
-          <TabButton
-            active={tab === 'media'}
-            onClick={() => onTabChange('media')}
-            icon="video"
-            label="Media page"
-          />
-          <TabButton
-            active={tab === 'scan'}
-            onClick={() => onTabChange('scan')}
-            icon="search"
-            label="Scan pages"
-          />
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+          {mediaMode ? null : (
+            <div className="flex flex-col gap-1.5">
+              <label className="sr-only" htmlFor="add-links">
+                One or more links, one per line
+              </label>
+              <textarea
+                id="add-links"
+                rows={3}
+                autoComplete="off"
+                spellCheck={false}
+                value={text}
+                onChange={(event) => handleTextChange(event.target.value)}
+                placeholder={
+                  'https://example.com/file.zip\nhttps://media.example.com/watch/video\nhttps://example.com/list'
+                }
+                disabled={busy}
+                aria-describedby="add-links-help"
+                className="min-h-[76px] w-full resize-y rounded-[10px] border border-accent-500 bg-[var(--surface-app)] px-3 py-2.5 font-mono text-[12.5px] leading-6 text-zinc-100 shadow-[0_0_0_3px] shadow-accent-500/10 placeholder:text-zinc-600 outline-none transition focus:ring-2 focus:ring-accent-400/25 disabled:opacity-50"
+              />
+              <p id="add-links-help" className="px-1 text-[11px] text-zinc-500">
+                One link per line · several lines are handled together as one batch
+              </p>
+            </div>
+          )}
+
+          <div className="mt-2.5">{body}</div>
         </div>
 
-        <div
-          role="tabpanel"
-          aria-label={
-            tab === 'direct'
-              ? 'Direct link'
-              : tab === 'media'
-                ? 'Media page'
-                : 'Scan pages'
-          }
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
-        >
-          {tab === 'direct' ? (
-            <QuickAdd
-              key={`direct:${initialUrl}`}
-              disabled={busy}
-              initialUrl={initialUrl}
-              onScanSuggested={(url) => {
-                setScanSeed(url)
-                onTabChange('scan')
-              }}
-              onAdd={async (input) => {
-                const result = await onAdd(input)
-                if (result.ok) onClose()
-                return result
-              }}
-            />
-          ) : tab === 'media' ? (
-            <MediaAnalyzer
-              key={`media:${initialUrl}`}
-              analysis={analysis}
-              analyzing={analyzing}
-              disabled={busy}
-              queuingOptionId={queuingOptionId}
-              error={analysisError}
-              notice={notice}
-              now={now}
-              initialUrl={initialUrl}
-              onAnalyze={handleAnalyze}
-              onQueue={(optionId, maxBytes, outputFormat) => {
-                void handleQueue(optionId, maxBytes, outputFormat)
-              }}
-              onClear={() => {
-                requestRef.current += 1
-                setAnalyzing(false)
-                setAnalysis(null)
-                setAnalysisError(null)
-                setNotice(null)
-              }}
-              onUrlChange={() => {
-                requestRef.current += 1
-                setAnalyzing(false)
-                setAnalysis(null)
-                setAnalysisError(null)
-                setNotice(null)
-              }}
-            />
-          ) : (
-            <ScanPanel
-              key={`scan:${scanSeed}`}
-              disabled={busy}
-              initialUrl={scanSeed}
-              initialSessions={scanSessions}
-            />
-          )}
+        <div className="flex shrink-0 items-center gap-3 border-t border-white/[0.07] px-4 py-3">
+          <span className="flex items-center gap-1.5 text-[12px] text-zinc-400">
+            <Icon name="folder" size={14} />
+            Downloads\DonDownload
+          </span>
+          <span className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 rounded-lg px-3 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+            >
+              Cancel
+            </button>
+            {footerPrimary !== null ? (
+              <button
+                type="button"
+                onClick={runFooterPrimary}
+                disabled={busy || single === null}
+                className="h-9 rounded-lg bg-accent-500 px-4 text-[12px] font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              >
+                {footerPrimary}
+              </button>
+            ) : null}
+          </span>
         </div>
       </div>
     </div>
   )
 }
 
-function TabButton({
-  active,
-  onClick,
-  icon,
-  label
+/** Mock "det" row: type tag, name, host/summary and optional inline actions. */
+function LinkRow({
+  link,
+  subtitle,
+  actions
 }: {
-  active: boolean
-  onClick: () => void
-  icon: 'link' | 'video' | 'search'
-  label: string
+  link: ParsedAddLink
+  subtitle: string
+  actions?: ReactNode
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium transition ${
-        active
-          ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
-          : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
-      }`}
-    >
-      <Icon name={icon} size={14} />
-      {label}
-    </button>
+    <div className="flex items-center gap-2.5 rounded-lg border border-white/10 surface-soft px-3 py-2.5">
+      <span
+        className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${TAG_CLASS[link.kind]}`}
+      >
+        {TAG_LABEL[link.kind]}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className="block truncate text-[12.5px] font-semibold text-zinc-100"
+          title={filenameFromUrl(link.url)}
+        >
+          {filenameFromUrl(link.url)}
+        </span>
+        <span className="block truncate text-[11px] text-zinc-500" title={link.url}>
+          {subtitle}
+        </span>
+      </span>
+      {actions}
+    </div>
   )
+}
+
+function InvalidLines({ invalid }: { invalid: string[] }): JSX.Element {
+  if (invalid.length === 0) return <></>
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200"
+    >
+      {invalid.map((line) => (
+        <p key={line} className="break-words">
+          Not a link: {line}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
 }
