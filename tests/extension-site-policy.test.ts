@@ -108,7 +108,14 @@ describe('per-site overlay permission policy', () => {
     expect(registration).toEqual({
       id: overlayScriptId('https://example.com'),
       matches: ['https://example.com/*'],
-      js: ['overlay-core.js', 'overlay.js'],
+      js: [
+        'overlay-core.js',
+        'overlay-runtime.js',
+        'overlay-ui.js',
+        'overlay-qualities.js',
+        'overlay-capture.js',
+        'overlay.js'
+      ],
       runAt: 'document_idle',
       allFrames: false,
       persistAcrossSessions: true,

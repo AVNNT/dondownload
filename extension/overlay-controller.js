@@ -10,9 +10,8 @@
 // callback runs, so the grant is also applied through permissions.onAdded.
 
 import {
-  OVERLAY_CORE_FILE,
   OVERLAY_MESSAGE_TYPES,
-  OVERLAY_UI_FILE,
+  OVERLAY_SCRIPT_FILES,
   matchPatternToOrigin,
   originFromUrl,
   originToMatchPattern,
@@ -162,7 +161,10 @@ function sameRegistration(stored, expected) {
   const matches = Array.isArray(stored.matches) ? stored.matches : []
   if (matches.length !== 1 || matches[0] !== expected.matches[0]) return false
   const js = Array.isArray(stored.js) ? stored.js : []
-  return js.length === 2 && js[0] === expected.js[0] && js[1] === expected.js[1]
+  return (
+    js.length === expected.js.length &&
+    js.every((file, index) => file === expected.js[index])
+  )
 }
 
 async function tabMatchesOrigin(chromeApi, tabId, origin) {
@@ -276,7 +278,7 @@ async function enableUncached(chromeApi, origin, tabId) {
   try {
     await chromeApi.scripting.executeScript({
       target: { tabId, allFrames: false },
-      files: [OVERLAY_CORE_FILE, OVERLAY_UI_FILE],
+      files: [...OVERLAY_SCRIPT_FILES],
       injectImmediately: true
     })
     // executeScript can resolve while a page navigation discards the frame, so

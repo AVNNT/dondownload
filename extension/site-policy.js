@@ -8,7 +8,22 @@
 
 export const OVERLAY_SCRIPT_PREFIX = 'dondownload-overlay-'
 export const OVERLAY_CORE_FILE = 'overlay-core.js'
-export const OVERLAY_UI_FILE = 'overlay.js'
+export const OVERLAY_RUNTIME_FILE = 'overlay-runtime.js'
+export const OVERLAY_UI_FILE = 'overlay-ui.js'
+export const OVERLAY_QUALITIES_FILE = 'overlay-qualities.js'
+export const OVERLAY_CAPTURE_FILE = 'overlay-capture.js'
+export const OVERLAY_ENTRY_FILE = 'overlay.js'
+
+// Order matters: core decisions, shared runtime state, then the feature files,
+// and finally the entry point that starts the overlay.
+export const OVERLAY_SCRIPT_FILES = Object.freeze([
+  OVERLAY_CORE_FILE,
+  OVERLAY_RUNTIME_FILE,
+  OVERLAY_UI_FILE,
+  OVERLAY_QUALITIES_FILE,
+  OVERLAY_CAPTURE_FILE,
+  OVERLAY_ENTRY_FILE
+])
 
 export const OVERLAY_MESSAGE_TYPES = Object.freeze({
   ENABLE: 'dondownload:overlay-enable',
@@ -29,6 +44,7 @@ export function parseSupportedPageUrl(value) {
   if (typeof value !== 'string') return null
   const raw = value.trim()
   if (raw.length === 0 || raw.length > 4096) return null
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null
 
   let url
@@ -60,6 +76,7 @@ export function originToMatchPattern(origin) {
   if (typeof origin !== 'string' || origin.length === 0 || origin.length > 2048) {
     return null
   }
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\s*?\u0000-\u001f\u007f]/.test(origin)) return null
 
   let url
@@ -83,6 +100,7 @@ export function matchPatternToOrigin(pattern) {
   if (typeof pattern !== 'string' || pattern.length === 0) return null
   if (!pattern.endsWith('/*')) return null
   const base = pattern.slice(0, -2)
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
   if (/[\s*?\u0000-\u001f\u007f]/.test(base)) return null
   const origin = originFromUrl(base)
   if (origin === null || origin !== base) return null
@@ -117,7 +135,7 @@ export function overlayRegistrationForOrigin(origin) {
   return {
     id,
     matches: [pattern],
-    js: [OVERLAY_CORE_FILE, OVERLAY_UI_FILE],
+    js: [...OVERLAY_SCRIPT_FILES],
     runAt: 'document_idle',
     allFrames: false,
     persistAcrossSessions: true,
@@ -148,7 +166,10 @@ export function overlayOriginFromRegistration(registration) {
   if (overlayScriptId(origin) !== id) return null
 
   const js = Array.isArray(registration.js) ? registration.js : []
-  if (js.length !== 2 || js[0] !== OVERLAY_CORE_FILE || js[1] !== OVERLAY_UI_FILE) {
+  if (
+    js.length !== OVERLAY_SCRIPT_FILES.length ||
+    js.some((file, index) => file !== OVERLAY_SCRIPT_FILES[index])
+  ) {
     return null
   }
   return origin

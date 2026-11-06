@@ -1,6 +1,11 @@
 export const OVERLAY_SCRIPT_PREFIX: string
 export const OVERLAY_CORE_FILE: string
+export const OVERLAY_RUNTIME_FILE: string
 export const OVERLAY_UI_FILE: string
+export const OVERLAY_QUALITIES_FILE: string
+export const OVERLAY_CAPTURE_FILE: string
+export const OVERLAY_ENTRY_FILE: string
+export const OVERLAY_SCRIPT_FILES: ReadonlyArray<string>
 
 export const OVERLAY_MESSAGE_TYPES: Readonly<{
   ENABLE: string

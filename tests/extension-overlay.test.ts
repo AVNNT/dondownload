@@ -109,7 +109,29 @@ interface CoreApi {
 
 const extensionDir = path.join(process.cwd(), 'extension')
 const coreSource = readFileSync(path.join(extensionDir, 'overlay-core.js'), 'utf8')
-const uiSource = readFileSync(path.join(extensionDir, 'overlay.js'), 'utf8')
+const runtimeSource = readFileSync(
+  path.join(extensionDir, 'overlay-runtime.js'),
+  'utf8'
+)
+const uiSource = readFileSync(path.join(extensionDir, 'overlay-ui.js'), 'utf8')
+const qualitiesSource = readFileSync(
+  path.join(extensionDir, 'overlay-qualities.js'),
+  'utf8'
+)
+const captureSource = readFileSync(
+  path.join(extensionDir, 'overlay-capture.js'),
+  'utf8'
+)
+const entrySource = readFileSync(path.join(extensionDir, 'overlay.js'), 'utf8')
+// The overlay files are classic scripts loaded in this order in one isolated
+// world; concatenating them reproduces the real load order in the harness.
+const overlaySource = [
+  runtimeSource,
+  uiSource,
+  qualitiesSource,
+  captureSource,
+  entrySource
+].join('\n')
 
 function loadCore(): CoreApi {
   const value = vm.runInNewContext(
@@ -583,6 +605,7 @@ class FakeNode {
   }
 
   get isConnected(): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- the walk starts at this node, typed as FakeNode
     let node: FakeNode | null = this
     while (node) {
       if (node === activeDocument.documentElement) return true
@@ -921,7 +944,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   sandbox.globalThis = sandbox
   vm.createContext(sandbox)
   vm.runInContext(coreSource, sandbox)
-  vm.runInContext(uiSource, sandbox)
+  vm.runInContext(overlaySource, sandbox)
 
   const host = document.documentElement.children.find(
     (child: FakeNode) => child.id === 'dondownload-overlay-host'
@@ -2233,7 +2256,7 @@ describe('overlay source guardrails', () => {
     )
 
     for (const source of [
-      uiSource,
+      overlaySource,
       coreSource,
       bridgeSource,
       mediaBridgeSource,
@@ -2254,8 +2277,8 @@ describe('overlay source guardrails', () => {
     }
 
     // The only source read is currentSrc, and only on real playback events.
-    expect(uiSource).toContain('currentSrc')
-    expect(uiSource).toContain("'playing'")
-    expect(uiSource).toContain("'timeupdate'")
+    expect(captureSource).toContain('currentSrc')
+    expect(captureSource).toContain("'playing'")
+    expect(captureSource).toContain("'timeupdate'")
   })
 })
