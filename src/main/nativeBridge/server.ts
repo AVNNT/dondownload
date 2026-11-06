@@ -60,6 +60,7 @@ import {
   parseScanPageRequest
 } from '@shared/scanBridge'
 import {
+  MAX_SCAN_IMAGES_BODY_BYTES,
   SCAN_IMAGES_CHANNEL,
   SCAN_IMAGES_ROUTE,
   parseScanImagesRequest,
@@ -413,6 +414,12 @@ export async function startNativeBridge(
       return
     }
 
+    // One route carries a whole page walk of images, so it needs a much larger
+    // body than every other (single URL or small status) request. The limit is
+    // chosen from the already validated route, before any byte is read.
+    const bodyLimit =
+      route === SCAN_IMAGES_ROUTE ? MAX_SCAN_IMAGES_BODY_BYTES : MAX_BRIDGE_BODY_BYTES
+
     const declaredLength = request.headers['content-length']
     if (declaredLength !== undefined) {
       const length = Number(declaredLength)
@@ -420,7 +427,7 @@ export async function startNativeBridge(
         sendError(response, 400, 'INVALID_LENGTH', 'Invalid content length.')
         return
       }
-      if (length > MAX_BRIDGE_BODY_BYTES) {
+      if (length > bodyLimit) {
         request.resume()
         sendError(response, 413, 'PAYLOAD_TOO_LARGE', 'The bridge request is too large.')
         return
@@ -429,7 +436,7 @@ export async function startNativeBridge(
 
     let raw: Buffer
     try {
-      raw = await readBody(request, MAX_BRIDGE_BODY_BYTES)
+      raw = await readBody(request, bodyLimit)
     } catch (error) {
       request.resume()
       if (error instanceof BodyError) {

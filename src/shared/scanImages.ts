@@ -14,6 +14,14 @@ export const SCAN_IMAGES_ROUTE = '/scan-images'
 
 /** Hard cap on images reported by one page walk. */
 export const MAX_SCAN_IMAGES = 1000
+/**
+ * A full page walk is far larger than any other bridge body: 1000 entries with
+ * an originals URL, a 736x fallback, dimensions and a 200 character
+ * description reach roughly 300 KB. The `/scan-images` route therefore accepts
+ * up to one native-messaging frame (1 MiB) while every other route keeps the
+ * much smaller default. The Windows native host mirrors this limit in C#.
+ */
+export const MAX_SCAN_IMAGES_BODY_BYTES = 1024 * 1024
 export const MAX_SCAN_IMAGE_ALT_LENGTH = 200
 export const MAX_SCAN_PAGE_TITLE_LENGTH = 200
 /** Longest folder name the desktop derives from the page title. */

@@ -9,6 +9,11 @@ import {
   parseQueueDownloadRequest
 } from '../src/shared/nativeBridge'
 import type { MediaBridgeTarget } from '../src/shared/mediaBridge'
+import {
+  MAX_SCAN_IMAGES,
+  MAX_SCAN_IMAGES_BODY_BYTES,
+  type ScanImagesRequest
+} from '../src/shared/scanImages'
 import type { ScanSession } from '../src/shared/scanner'
 import { ValidationError } from '../src/shared/validation'
 import { AppError } from '../src/main/errors'
@@ -200,6 +205,7 @@ let media: FakeMediaTarget | null = null
 let token = ''
 let scanCalls: Array<{ url: string; cookie?: string }> = []
 let scanRequested: ScanSession | null = null
+let imageCalls: ScanImagesRequest[] = []
 
 const SCAN_SESSION: ScanSession = {
   sessionId: 'scan_0123456789abcdef',
@@ -232,6 +238,7 @@ async function start(
   media = options.media ? createMediaTarget() : null
   scanCalls = []
   scanRequested = null
+  imageCalls = []
   bridge = await startNativeBridge({
     manager,
     userDataPath: tempDir,
@@ -279,6 +286,10 @@ async function start(
                           : null
                     }
                   })
+                },
+                startImages: (input: ScanImagesRequest) => {
+                  imageCalls.push(input)
+                  return SCAN_SESSION
                 }
               }
             : {
@@ -292,6 +303,10 @@ async function start(
                       ? {}
                       : { cookie: scanOptions.cookie })
                   })
+                  return SCAN_SESSION
+                },
+                startImages: (input: ScanImagesRequest) => {
+                  imageCalls.push(input)
                   return SCAN_SESSION
                 }
               },
@@ -1145,6 +1160,75 @@ describe('native bridge scan-page route', () => {
     )
     expect(injected.status).toBe(400)
     expect(scanCalls).toHaveLength(0)
+  })
+})
+
+describe('native bridge scan-images route body limit', () => {
+  beforeEach(() => start({ scanner: true }))
+
+  /**
+   * A real board walk: every entry carries the originals URL, the 736x
+   * fallback, both dimensions and a 200 character description.
+   */
+  function imageListBody(count: number, urlPad = 0): string {
+    const pad = 'a'.repeat(urlPad)
+    const images = Array.from({ length: count }, (_, index) => ({
+      url: `https://i.pinimg.com/originals/${index}/${pad}${index}.jpg`,
+      fallbackUrl: `https://i.pinimg.com/736x/${index}/${pad}${index}.jpg`,
+      width: 736,
+      height: 1104,
+      alt: `A long Pinterest pin description for image ${index} `.repeat(5).slice(0, 200)
+    }))
+    return JSON.stringify({
+      pageUrl: 'https://www.pinterest.com/someone/a-board-with-many-pins/',
+      pageTitle: 'A board with many pins',
+      images
+    })
+  }
+
+  it('accepts a ~200 KB image list that the native host forwards', async () => {
+    const body = imageListBody(600)
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(200 * 1024)
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(MAX_SCAN_IMAGES_BODY_BYTES)
+
+    const response = await post(body, { path: '/scan-images' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      ok: true,
+      accepted: true,
+      operation: 'scan-images'
+    })
+    expect(imageCalls).toHaveLength(1)
+    expect(imageCalls[0]?.images).toHaveLength(600)
+    expect(manager.calls).toHaveLength(0)
+  })
+
+  it('still rejects an image list larger than one native frame', async () => {
+    const body = imageListBody(MAX_SCAN_IMAGES, 400)
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(MAX_SCAN_IMAGES_BODY_BYTES)
+
+    const response = await post(body, { path: '/scan-images' })
+
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: 'PAYLOAD_TOO_LARGE' }
+    })
+    expect(imageCalls).toHaveLength(0)
+  })
+
+  it('keeps the small limit for every other route', async () => {
+    const body = JSON.stringify({ url: `https://example.com/${'a'.repeat(20 * 1024)}` })
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(MAX_BRIDGE_BODY_BYTES)
+
+    const download = await post(body)
+    expect(download.status).toBe(413)
+    expect(await download.json()).toMatchObject({
+      ok: false,
+      error: { code: 'PAYLOAD_TOO_LARGE' }
+    })
+    expect(manager.calls).toHaveLength(0)
   })
 })
 
