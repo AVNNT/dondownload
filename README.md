@@ -7,8 +7,9 @@ history, conservative restart reconciliation, and a Windows tray) plus
 **Milestone 2A**: an optional Helium/Chrome/Edge Manifest V3 extension for
 **manual** HTTP(S) capture through a strict native messaging bridge, and
 **Milestone 2B**: an opt-in, per-site playback overlay for verified progressive
-MP4/WebM-family sources, plus optional permission-gated browser file hand-off.
-HLS/DASH and blob/MSE streams remain unsupported. The local setup was previously verified with Helium 0.20.3.1
+MP4/WebM-family sources, detected HLS/DASH manifests and explicit yt-dlp page
+analysis for blob/MSE players, plus optional permission-gated browser file
+hand-off. The local setup was previously verified with Helium 0.20.3.1
 (Chromium 156.0.8078.79); Chrome and Edge remain supported for future installs.
 
 The UI is deliberately small: an OLED-black, centered (~800 px) layout with a
@@ -22,7 +23,10 @@ is stored locally and survives relaunches.
 - Node.js 24+ (developed with Node 24.19; Electron 45 bundles Node 24.22 and
   SQLite 3.53 through the built-in `node:sqlite` module)
 - npm 10+
-- **aria2c** available locally (not bundled — see licensing below)
+- **aria2c** available locally for a development checkout (installed, not built
+  from this repository — see licensing below). The Windows installer stages its
+  pinned tools, including aria2, from `build/vendor` when `npm run
+  build:installer` is used.
 - For the optional browser extension only: Windows .NET Framework 4.x, which
   provides `csc.exe` for building the small native messaging host. No .NET SDK
   or Visual Studio is required.
@@ -41,6 +45,7 @@ npm run test:fast # Tier 1: hermetic unit/component tests
 npm test          # Tier 3: full Vitest suite (compatibility command)
 npm run test:gate # Tier 3: full suite + typecheck + production build
 npm run typecheck # main/preload and renderer TypeScript projects
+npm run lint      # ESLint flat config (src, tests, extension, scripts)
 npm run build     # typecheck + electron-vite production build
 npm run build:native-host # optional: compile the browser native messaging host
 npm start         # preview an existing production build
@@ -114,8 +119,9 @@ chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
   cancelled only after a durable desktop receipt and a bounded anonymous
   preflight confirms matching size/type metadata; this is not byte-for-byte
   identity proof and real-browser interception still needs verification.
-- The video overlay is off by default for every site and queues only verified
-  progressive sources. See [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b).
+- The video overlay is off by default for every site. It queues verified
+  progressive sources, detected HLS/DASH manifests and completed yt-dlp
+  analyses. See [opt-in video overlay](#browser-extension-opt-in-video-overlay-milestone-2b).
 - The toolbar badge shows `OK` only after the desktop app has accepted the URL;
   `!` means the action failed. The popup shows the specific error. No
   notifications permission is needed.
@@ -351,10 +357,12 @@ the exact verified progressive MP4/WebM-family sources exposed by that player;
 decoded dimensions may label a proven URL but never prove a download source.
 Each row has one Download action and queues through the authenticated native
 bridge with durable SQLite acceptance. Optional `webRequest` response evidence
-can verify extensionless progressive sources and exact sizes. HLS/DASH, blob/MSE,
-and cross-origin iframe playback remain unsupported. See
-[`docs/automatic-browser-handoff.md`](docs/automatic-browser-handoff.md) for
-permissions, focused tests and current limits.
+can verify extensionless progressive sources and exact sizes. Detected HLS/DASH
+manifests are listed and downloaded through the fixed yt-dlp path, and a
+blob/MSE player gets an explicit **Find qualities** analysis; a visible embed
+can be analyzed too, but the overlay is never injected into a cross-origin
+iframe. See [`docs/automatic-browser-handoff.md`](docs/automatic-browser-handoff.md)
+for permissions, focused tests and current limits.
 
 The overlay is **off by default** and applies only to sites you explicitly
 enable. If a site is not opted in, no overlay script or UI exists there.
@@ -376,8 +384,10 @@ video capture have not been verified for this checkpoint.
   or the Chromium fork may show its normal per-site permission prompt. If the
   request is denied, no overlay is injected and nothing on the page changes.
 - `scripting` is used only to register a content-script registration whose
-  `matches` array contains that exact origin and to inject the two overlay files
-  into the current tab after the grant. It is not used for broad script
+  `matches` array contains that exact origin and to inject the ordered overlay
+  files into the current tab after the grant (`overlay-core.js`,
+  `overlay-runtime.js`, `overlay-ui.js`, `overlay-qualities.js`,
+  `overlay-capture.js` and `overlay.js`). It is not used for broad script
   execution or page-data collection.
 - `storage` is used only for `chrome.storage.session`: one pending exact
   origin/tab while the browser shows the permission prompt, and a short-lived
@@ -437,8 +447,10 @@ video capture have not been verified for this checkpoint.
   after playback starts. With the separate optional `webRequest` grant, the
   worker may attach exact response evidence (status, Content-Type,
   Content-Range, Content-Length, Content-Encoding) for that same URL in an
-  opted-in top frame. A `blob:`/Media Source or HLS/DASH source is reported as
-  unsupported rather than guessed. See `docs/automatic-browser-handoff.md` and
+  opted-in top frame. A `blob:`/Media Source or HLS/DASH source is never guessed:
+  the worker reports it as unsupported for direct capture and the overlay offers
+  an explicit **Find qualities** analysis, which may use yt-dlp. See
+  `docs/automatic-browser-handoff.md` and
   `docs/media-capture-progressive.md` for the evidence limits.
 - **Cookies are off by default for every site.** The options page has a
   per-exact-origin opt-in that also requests the optional `cookies` permission.
@@ -487,9 +499,11 @@ was verified against that pattern. No port-stripped or broader fallback is used.
   command toggles the overlay for the active tab. `Escape` closes the panel and
   returns focus to the button.
 - Respects `prefers-reduced-motion: reduce` by removing transitions.
-- The expanded panel shows only a progressive source that this exact player
-  actually played, with one Download action per row; the explicit yt-dlp
-  fallback lives in the popup/options/manual Media tab, not in the normal panel.
+- The expanded panel shows the progressive sources this exact player actually
+  played, detected HLS/DASH manifest rows, and explicit **Find qualities**
+  analysis results, with one Download action per row. Every entry comes from the
+  player, the response sniffer or a completed yt-dlp analysis; nothing is
+  invented.
 - Existing manual popup/right-click HTTP(S) capture and the exact-origin Native
   Messaging bridge are unchanged.
 
@@ -559,6 +573,10 @@ See [docs/testing-workflow.md](docs/testing-workflow.md) for tier commands,
 subsystem filters, historical and current timings, the strict no-desktop-input
 rule, manual-only real-browser permission checks, and the mocked-renderer vs
 native-Electron-IPC distinction.
+
+GitHub Actions runs `npm run lint`, `npm run typecheck`, the full Vitest suite and
+`electron-vite build` on `windows-latest` with Node 24
+(`.github/workflows/ci.yml`).
 
 The opt-in production smoke test launches a packaged/unpacked build against a
 fresh isolated userData directory and reports machine-readable PASS/FAIL
@@ -863,9 +881,9 @@ with no way to restore it.
   `MutationObserver`, with repositioning on scroll, resize and fullscreen.
 - Interaction guards so overlay clicks never reach the page player and never
   call `play()`/`pause()`.
-- Truthful unavailable UI: the panel states that media downloading, format
-  detection, quality choices and source-URL inspection are not implemented and
-  offers no fake formats, qualities or success.
+- Truthful UI: the panel lists only sources and qualities it actually verified
+  (player playback, the response sniffer or a completed yt-dlp analysis) and
+  states unavailable formats honestly instead of inventing them.
 - Focused hermetic tests for permission policy, detection/observer behavior,
   placement, interaction guards, keyboard access, disable/revoke flow and the
   unavailable-state copy.
@@ -878,13 +896,13 @@ These are intentionally **not** claimed by these milestones:
   interrupted instead of pretending they are still running).
 - Notifications, auto-start/launch-at-login, or background services.
 - Clipboard monitoring and drag-and-drop capture.
-- Universal media extraction, HLS/DASH representation/audio resolution, blob/MSE
-  downloads, DRM/auth/CAPTCHA bypass, and cross-origin iframe capture. The
-  extension supports only exact progressive sources it can verify during
-  playback; optional response evidence does not inspect credentials or bodies.
-- Media/stream downloads (HLS/DASH), file hosts, login/cookie handling.
+- DRM/auth/CAPTCHA bypass, injected playback inside cross-origin iframes (a
+  visible embed can still be analyzed through yt-dlp), and unverified stream
+  reconstruction. The extension supports exact progressive sources, detected
+  manifests and completed analyses; optional response evidence does not inspect
+  credentials or bodies.
 - BitTorrent, magnet links, Metalink, scheduling, bandwidth limits.
-- Windows installer/signing, auto-update, and bundled aria2.
+- Installer code signing (release builds are currently unsigned).
 - Multi-directory selection UI, categories, search, and settings screens.
 
 ## Project layout
@@ -898,6 +916,12 @@ src/main/                 Electron main process
   db/database.ts          SQLite history, migrations, prepared statements
   downloads/manager.ts    Download queue, polling, persistence and recovery
   downloads/recovery.ts   Pure startup reconciliation policy
+  media/engine.ts         Media engine public surface and download lifecycle
+  media/analysis.ts       yt-dlp analysis, format parsing and bounded display text
+  media/staging.ts        Staging directory, final-name reservation and cleanup
+  media/progress.ts       yt-dlp progress parsing
+  media/collections.ts    Ephemeral playlist previews and entry resolution
+  media/toolchain.ts      yt-dlp/FFmpeg/Deno probing and versions
   nativeBridge/server.ts  Authenticated loopback browser bridge
   nativeHost/registration.ts Zero-config native messaging manifest/registry
   lifecycle.ts            Pure tray close/quit policy
@@ -952,8 +976,9 @@ git-ignored; compile it with `npm run build:native-host`.
   playback. A separate optional, off-by-default `webRequest` grant adds exact
   response evidence for the same URL and nothing else; it does not read request
   headers/cookies/credentials/bodies, decode media, or bypass DRM,
-  authentication or CAPTCHAs. Segmented Media Source and HLS/DASH playback are
-  reported as unsupported rather than guessed.
+  authentication or CAPTCHAs. Segmented Media Source and HLS/DASH playback is
+  never guessed: only detected manifests and completed yt-dlp analyses are
+  offered.
 - The overlay is registered for the top frame of the exact granted origin only.
   Videos inside cross-origin iframes are not covered, and restricted pages such
   as `chrome://`, `edge://`, the Chrome Web Store and `file://` are ineligible.

@@ -12,8 +12,8 @@ repository or produced by its build.
 | Tool | Verified version | Install source | Exact local path |
 | --- | --- | --- | --- |
 | yt-dlp | `2026.10.26` | Official Windows **one-folder** release `yt-dlp_win.zip` (`yt-dlp.exe` plus `_internal\`), staged into `build\vendor\yt-dlp\`; the WinGet one-file package may still be used for ad-hoc local runs | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe` (one-file); staged onedir copy under `build\vendor\yt-dlp\` |
-| FFmpeg | `9.0.2-full_build` (Gyan) | WinGet package `Gyan.FFmpeg` (full build) | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe` |
-| ffprobe | `9.0.2-full_build` (Gyan) | same Gyan package | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffprobe.exe` |
+| FFmpeg | `9.0.2-essentials_build` (Gyan) | Gyan essentials build staged from `%LOCALAPPDATA%\DonDownload\vendor\` by `scripts/stage-vendor.ps1`; the WinGet `Gyan.FFmpeg` full build is a local fallback source | `C:\Users\PC\AppData\Local\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe` |
+| ffprobe | `9.0.2-essentials_build` (Gyan) | same Gyan essentials build | `C:\Users\PC\AppData\Local\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffprobe.exe` |
 | Deno | `2.9.8` (stable, `x86_64-pc-windows-msvc`) | WinGet package `DenoLand.Deno`, user-scoped | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe` |
 
 Equivalent install commands:
@@ -24,10 +24,11 @@ winget install --id Gyan.FFmpeg -e
 winget install --id DenoLand.Deno -e
 ```
 
-The Gyan page maps `winget install ffmpeg` to the release **full** build; the
-package used here is `Gyan.FFmpeg`, whose installed folder is
-`ffmpeg-9.0.2-full_build`. Deno was installed for the current user, so its
-package directory is user-scoped rather than machine-wide.
+The staging script prefers the Gyan **essentials** build from
+`%LOCALAPPDATA%\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\`; the WinGet
+`Gyan.FFmpeg` full build remains a local fallback source. Deno was installed for
+the current user, so its package directory is user-scoped rather than
+machine-wide.
 
 ## How DonDownload uses these tools
 
@@ -126,17 +127,17 @@ terms, are aggregated in `THIRD_PARTY_LICENSES.txt`:
 Redistributing the executable therefore requires the Unlicense text plus the
 applicable third-party notices, not just the Unlicense alone.
 
-### FFmpeg (Gyan full build)
+### FFmpeg (Gyan essentials build)
 
 FFmpeg is a separate project: <https://ffmpeg.org/> and
 <https://ffmpeg.org/legal.html>.
 
-Gyan's build page states that all of its builds are **GPLv3**, and that its
-release full build is GPLv3 rather than LGPL:
-<https://www.gyan.dev/ffmpeg/builds/>. This matters because the full build
-enables GPL-covered components. A GPLv3 redistribution carries source
-availability, license-text and notice obligations; the exact obligations depend
-on how the binaries are distributed.
+Gyan's build page states that all of its builds are **GPLv3**, and the
+**essentials** build staged by `scripts/stage-vendor.ps1` is GPLv3:
+<https://www.gyan.dev/ffmpeg/builds/>. It omits some optional components of the
+full build while keeping the codecs DonDownload needs. A GPLv3 redistribution
+carries source availability, license-text and notice obligations; the exact
+obligations depend on how the binaries are distributed.
 
 ### Deno
 

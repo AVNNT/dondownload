@@ -184,6 +184,11 @@ Also run for this checkpoint:
 npm run typecheck
 node --check extension/background.js
 node --check extension/network-evidence.js
+node --check extension/overlay-core.js
+node --check extension/overlay-runtime.js
+node --check extension/overlay-ui.js
+node --check extension/overlay-qualities.js
+node --check extension/overlay-capture.js
 node --check extension/overlay.js
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-native-host.ps1 \
   -OutputPath C:\Users\PC\AppData\Local\Temp\opencode\dondownload-native-host-check.exe

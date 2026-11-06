@@ -17,7 +17,9 @@ The built installer was checked with Windows Authenticode inspection and is
 payload in `dist/win-unpacked/resources/vendor/`. Every `licenseFiles` hash in
 the staged manifest matched its repository file under `third-party/licenses/`.
 The manifest and the executable hashes are build-specific; the staged binaries
-are ignored and must not be committed.
+are ignored and must not be committed. The FFmpeg/ffprobe rows record the
+SHA-256 values of the staged Gyan **essentials** build used by the current
+staging script.
 
 ## Binary inventory
 
@@ -25,8 +27,8 @@ are ignored and must not be committed.
 | --- | --- | --- | --- | --- |
 | aria2 | 1.37.0 | GPL-2.0-or-later | `be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2` | GPL text and OpenSSL license included. Exact Windows dependency/build inputs and complete corresponding source are not assembled. |
 | yt-dlp standalone | 2026.10.26 | Unlicense plus bundled third-party components | `f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d` | Unlicense and upstream aggregated `THIRD_PARTY_LICENSES.txt` included. Standalone build recipe/provenance archive is not assembled. |
-| Gyan FFmpeg full build | 9.0.2, source commit `946fcce07b` | GPL-3.0-or-later per Gyan's full-build notice | `589e50b766d251afdf181dd664d40bd94407e200b019989fd7468c7d118a28d0` | GPL text and Gyan build README included. Exact source plus scripts/configuration and any required external assets are not archived as a release package. |
-| Gyan ffprobe full build | 9.0.2, same build | GPL-3.0-or-later per Gyan's full-build notice | `02264dfa4f56baaa31e443ece8aa16d397f6b008200e7fd184d22b9009e75fd3` | Same source/build notice gap as FFmpeg. |
+| Gyan FFmpeg essentials build | 9.0.2, source commit `946fcce07b` | GPL-3.0-or-later per Gyan's essentials-build notice | `3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec` | GPL text and Gyan build README included. Exact source plus scripts/configuration and any required external assets are not archived as a release package. |
+| Gyan ffprobe essentials build | 9.0.2, same build | GPL-3.0-or-later per Gyan's essentials-build notice | `f0d36ecbbdd3bcfac3efa078c96c7271c2e68b3810595552ac3b7f17e9a65c52` | Same source/build notice gap as FFmpeg. |
 | Deno | 2.9.8 | MIT project license | `924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266` | Deno MIT text included. Human review should establish whether the redistributed executable's embedded third-party components require additional notices/source material beyond this file. |
 
 The DonDownload application is MIT-licensed; that does not relicense these
@@ -44,8 +46,8 @@ distribution model. At minimum:
    configuration, and covered linked components; or have counsel approve a
    valid written offer for that exact source. Upstream project source alone is
    not evidence that the Windows binaries can be rebuilt.
-2. **Gyan full build:** preserve the exact Gyan build README/configuration and
-   source commit used for 9.0.2; determine whether any separately distributed
+2. **Gyan essentials build:** preserve the exact Gyan build README/configuration
+   and source commit used for 9.0.2; determine whether any separately distributed
    external assets and their licenses are implicated. Do not substitute the
    FFmpeg project license page for the build-specific notice.
 3. **aria2 Windows executable:** identify the WinGet package recipe and full

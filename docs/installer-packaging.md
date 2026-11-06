@@ -37,8 +37,8 @@ documented in [media-tools.md](media-tools.md):
 | --- | --- | --- |
 | aria2 | 1.37.0 | `resources/vendor/aria2/aria2c.exe` |
 | yt-dlp | 2026.10.26 | `resources/vendor/yt-dlp/yt-dlp.exe` |
-| FFmpeg | 9.0.2 Gyan full build | `resources/vendor/ffmpeg/ffmpeg.exe` |
-| ffprobe | 9.0.2 Gyan full build | `resources/vendor/ffmpeg/ffprobe.exe` |
+| FFmpeg | 9.0.2 Gyan essentials build | `resources/vendor/ffmpeg/ffmpeg.exe` |
+| ffprobe | 9.0.2 Gyan essentials build | `resources/vendor/ffmpeg/ffprobe.exe` |
 | Deno | 2.9.8 | `resources/vendor/deno/deno.exe` |
 
 Deno is bundled because current yt-dlp YouTube extraction requires a
@@ -225,7 +225,9 @@ with separate terms:
 - aria2: GPL-2.0-or-later.
 - yt-dlp: Unlicense plus bundled third-party licenses in the standalone
   executable.
-- Gyan FFmpeg/ffprobe full build: GPL-3.0-or-later.
+- Gyan FFmpeg/ffprobe essentials build: GPL-3.0-or-later. The essentials build
+  is the staged default; a locally installed full build is only a fallback
+  source for the same executables.
 - Deno: MIT.
 
 Read [../third-party/NOTICE.md](../third-party/NOTICE.md) for the per-tool

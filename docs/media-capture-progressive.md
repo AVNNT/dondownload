@@ -164,7 +164,9 @@ npm run test:extension:chromium
 npx vitest run tests/native-host.test.ts -t "captured"
 $env:ARIA2_TEST_BINARY = '<local aria2c>'
 npx vitest run tests/aria2.integration.test.ts -t "captured progressive"
-node --check extension/overlay.js extension/overlay-core.js \
+node --check extension/overlay-core.js extension/overlay-runtime.js \
+  extension/overlay-ui.js extension/overlay-qualities.js \
+  extension/overlay-capture.js extension/overlay.js \
   extension/bridge.js extension/media-bridge.js extension/background.js
 ```
 
