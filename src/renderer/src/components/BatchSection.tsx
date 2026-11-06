@@ -16,6 +16,7 @@ import {
 import { formatBytes, formatPercent } from '@shared/format'
 import type { ApiResult, AppErrorInfo, BatchSnapshot } from '@shared/types'
 import type { UnifiedRow } from '../lib/unified'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Icon, type IconName } from './Icon'
 
 const BATCH_KIND_ICON: Record<BatchKind, IconName> = {
@@ -104,6 +105,8 @@ export function BatchSection({
   const [actionPending, setActionPending] = useState(false)
   const [actionError, setActionError] = useState<AppErrorInfo | null>(null)
   const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({})
+  /** Batch awaiting "cancel remaining" confirmation via ConfirmDialog. */
+  const [cancelBatch, setCancelBatch] = useState<Batch | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -377,9 +380,7 @@ export function BatchSection({
                 }))
               }}
               onCancelBatch={() => {
-                void runSnapshotAction(() =>
-                  window.donDownload.cancelBatch({ batchId: batch.id })
-                )
+                setCancelBatch(batch)
               }}
               onRemoveBatch={() => {
                 void runSnapshotAction(() =>
@@ -414,6 +415,25 @@ export function BatchSection({
           })
         )}
       </div>
+
+      {cancelBatch !== null ? (
+        <ConfirmDialog
+          request={{
+            title: 'Cancel batch?',
+            message:
+              'Cancel the remaining downloads in this batch? Finished files are kept.',
+            confirmLabel: 'Cancel remaining',
+            onConfirm: () => {
+              void runSnapshotAction(() =>
+                window.donDownload.cancelBatch({ batchId: cancelBatch.id })
+              )
+            }
+          }}
+          onClose={() => {
+            setCancelBatch(null)
+          }}
+        />
+      ) : null}
     </section>
   )
 }
@@ -581,9 +601,10 @@ function BatchCard({
                     : null,
                   active
                     ? {
-                        id: 'pause',
-                        label: 'Pause',
-                        icon: 'pause' as const,
+                        id: 'cancel',
+                        label: 'Cancel remaining',
+                        icon: 'x' as const,
+                        danger: true,
                         onSelect: onCancelBatch
                       }
                     : null,
@@ -769,7 +790,8 @@ interface BatchMenuEntry {
 
 /**
  * The batch card's "more" (⋯) menu: keeps the card header calm while every
- * group action — open folder, retry/resume, pause, remove — stays reachable.
+ * group action — open folder, retry/resume, cancel remaining, remove — stays
+ * reachable.
  * Closes on outside click and Escape; items are regular buttons so Tab/Enter
  * keyboard flows keep working in all themes.
  */
