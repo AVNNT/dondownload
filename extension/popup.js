@@ -1,7 +1,8 @@
 import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload, sendScanPage } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
-import { rememberPendingScan, scanCookiesReady } from './scan-pending.js'
+import { rememberPendingScan, rememberPendingScans, scanCookiesReady } from './scan-pending.js'
+import { buildScanSends, groupScanUrlsByOrigin, parseScanUrlList } from './scan-urls.js'
 import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
   popupConnectionLine,
@@ -25,6 +26,9 @@ import {
 
 const sendButton = document.getElementById('send')
 const scanButton = document.getElementById('scan-page')
+const scanLinksInput = document.getElementById('scan-links')
+const scanLinksStatus = document.getElementById('scan-links-status')
+const scanLinksButton = document.getElementById('scan-links-button')
 const downloadAgainButton = document.getElementById('download-again')
 const statusElement = document.getElementById('status')
 const urlElement = document.getElementById('page-url')
@@ -70,6 +74,7 @@ function setSending(next) {
     scanButton.disabled = next || scanning || pageUrl === null
     scanButton.textContent = scanning ? 'Opening scan…' : 'Scan this page with DonDownload'
   }
+  refreshScanLinks()
 }
 
 function errorHint(error) {
@@ -721,6 +726,142 @@ async function sendPage(force) {
   }
 }
 
+/**
+ * Read the multi-line list for feedback only. The same parser runs again when
+ * the user clicks, so edits between render and click stay safe.
+ */
+function refreshScanLinks() {
+  if (scanLinksButton === null) return
+  const parsed = parseScanUrlList(scanLinksInput === null ? '' : scanLinksInput.value)
+  const notes = []
+  if (parsed.invalid.length > 0) {
+    notes.push(
+      `${parsed.invalid.length} line${parsed.invalid.length === 1 ? '' : 's'} ignored: not an http(s) link`
+    )
+  }
+  if (parsed.overLimit > 0) {
+    notes.push(`${parsed.overLimit} over the 10-link limit ignored`)
+  }
+  if (parsed.duplicates > 0) {
+    notes.push(`${parsed.duplicates} duplicate${parsed.duplicates === 1 ? '' : 's'} ignored`)
+  }
+  if (scanLinksStatus !== null) {
+    scanLinksStatus.textContent = notes.join(' · ')
+  }
+  const count = parsed.urls.length
+  scanLinksButton.textContent =
+    count === 0 ? 'Scan links' : `Scan ${count} link${count === 1 ? '' : 's'}`
+  scanLinksButton.disabled = scanning || sending || count === 0
+}
+
+/**
+ * "Scan several links" walks the paste once. Each URL is sent in its own
+ * scan-page message, sequentially, so the native host protocol stays
+ * unchanged. Cookies are read per exact URL origin; a site that still needs
+ * the one-time grant keeps its URLs in storage.session while the grant page
+ * opens for the first such site.
+ */
+async function scanLinks() {
+  if (scanning || sending) return
+  const parsed = parseScanUrlList(scanLinksInput === null ? '' : scanLinksInput.value)
+  if (parsed.urls.length === 0) {
+    setStatus('error', 'Paste at least one http:// or https:// page link, one per line.')
+    return
+  }
+
+  scanning = true
+  setSending(false)
+  setStatus(
+    '',
+    `Scanning ${parsed.urls.length} link${
+      parsed.urls.length === 1 ? '' : 's'
+    } in DonDownload…`
+  )
+
+  try {
+    const groups = groupScanUrlsByOrigin(parsed.urls)
+    const ready = []
+    const missing = []
+    for (const group of groups) {
+      if (await scanCookiesReady(chrome, group.origin)) ready.push(group)
+      else missing.push(group)
+    }
+
+    const entries = []
+    for (const group of ready) {
+      for (const url of group.urls) {
+        const cookie = await readOptInCookieHeader(chrome, url, url)
+        entries.push({
+          origin: group.origin,
+          url,
+          ...(cookie === undefined ? {} : { cookie })
+        })
+      }
+    }
+
+    let sent = 0
+    let failure = null
+    for (const send of buildScanSends(entries)) {
+      const result = await sendScanPage(send.url, send.cookie)
+      if (result.ok) {
+        sent += 1
+        continue
+      }
+      failure = result.error
+      break
+    }
+
+    if (missing.length > 0) {
+      const next = missing[0]
+      const pendingUrls = []
+      for (const group of missing) {
+        for (const url of group.urls) pendingUrls.push(url)
+      }
+      const stored = await rememberPendingScans(chrome, pendingUrls)
+      const grantUrl = stored
+        ? grantPageUrl(welcomeUrl(chrome), next.origin, { cookies: true })
+        : null
+      if (grantUrl !== null) {
+        try {
+          chrome.tabs.create({ url: grantUrl })
+          setStatus(
+            failure === null ? '' : 'error',
+            `${
+              failure === null
+                ? `${sent} scan${sent === 1 ? '' : 's'} started. `
+                : `${errorHint(failure)} `
+            }Allow DonDownload to use your sign-in on ${next.origin} in the tab that opened; the rest start after you allow each site.`
+          )
+          return
+        } catch {
+          // Fall through to the plain failure below.
+        }
+      }
+      setStatus(
+        'error',
+        `${
+          failure === null
+            ? ''
+            : `${errorHint(failure)} `
+        }The sign-in grant for ${next.origin} could not be opened. Try again from the toolbar popup.`
+      )
+      return
+    }
+
+    if (failure !== null) {
+      reportSendFailure(failure)
+      return
+    }
+    setStatus(
+      'success',
+      `Scan opened for ${sent} link${sent === 1 ? '' : 's'} in DonDownload. Review the grouped topics and choose files there.`
+    )
+  } finally {
+    scanning = false
+    setSending(false)
+  }
+}
+
 async function scanPage() {
   if (scanning || pageUrl === null) return
   scanning = true
@@ -771,6 +912,14 @@ sendButton.addEventListener('click', () => {
 scanButton?.addEventListener('click', () => {
   void scanPage()
 })
+
+scanLinksButton?.addEventListener('click', () => {
+  void scanLinks()
+})
+
+scanLinksInput?.addEventListener('input', refreshScanLinks)
+
+refreshScanLinks()
 
 downloadAgainButton.addEventListener('click', () => {
   void sendPage(true)

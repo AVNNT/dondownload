@@ -150,6 +150,14 @@ export interface NativeBridgeOptions {
       url: string,
       options: { origin: 'extension'; cookie?: string }
     ): ScanSession
+    /**
+     * Queue-capable start. Extension batches send one URL per message, so a
+     * third scan must wait for a slot instead of failing with SCAN_LIMIT.
+     */
+    startMany?(
+      urls: string[],
+      options: { origin: 'extension'; cookie?: string }
+    ): ScanSession[]
   }
   /** Focus the desktop and open the scanner view after an extension request. */
   onScanRequested?: (session: ScanSession) => void
@@ -868,10 +876,24 @@ export async function startNativeBridge(
 
     let session: ScanSession
     try {
-      session = options.scanner.start(input.url, {
-        origin: 'extension',
+      const scanOptions = {
+        origin: 'extension' as const,
         ...(input.cookie === undefined ? {} : { cookie: input.cookie })
-      })
+      }
+      // Prefer the queue-capable start so a multi-link extension batch beyond
+      // MAX_ACTIVE_SCANS waits for a slot instead of being rejected.
+      if (typeof options.scanner.startMany === 'function') {
+        const [queued] = options.scanner.startMany([input.url], scanOptions)
+        if (queued === undefined) {
+          throw new AppError(
+            'SCAN_UNAVAILABLE',
+            'The page scan could not be started.'
+          )
+        }
+        session = queued
+      } else {
+        session = options.scanner.start(input.url, scanOptions)
+      }
     } catch (error) {
       const info = toErrorInfo(error)
       logger(`Native bridge could not start a page scan (${info.code}).`)

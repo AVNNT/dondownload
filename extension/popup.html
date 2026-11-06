@@ -64,6 +64,21 @@
         <button id="scan-page" type="button" class="secondary" disabled>
           Scan this page with DonDownload
         </button>
+        <details id="scan-many" class="scan-many">
+          <summary>Scan several links</summary>
+          <div class="scan-many-body">
+            <label for="scan-links">One page or topic link per line, up to 10.</label>
+            <textarea
+              id="scan-links"
+              rows="5"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="https://site.example/t/topic/123&#10;https://site.example/t/topic/456"
+            ></textarea>
+            <p id="scan-links-status" class="scan-hint" role="status" aria-live="polite"></p>
+            <button id="scan-links-button" type="button" disabled>Scan links</button>
+          </div>
+        </details>
         <button id="download-again" type="button" class="secondary" hidden>
           Download again
         </button>

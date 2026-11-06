@@ -156,6 +156,10 @@ button.secondary:hover:not(:disabled) {
   margin-left: 8px;
 }
 
+#grant-next {
+  margin-left: 0;
+}
+
 .status {
   border-radius: 8px;
   font-size: 12px;
