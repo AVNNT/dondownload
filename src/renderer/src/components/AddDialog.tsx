@@ -415,7 +415,7 @@ export function AddDialog({
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-[rgb(0_0_0_/_0.55)] p-4 pt-[8vh]"
+      className="no-drag fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-[rgb(0_0_0_/_0.55)] p-4 pt-[8vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}

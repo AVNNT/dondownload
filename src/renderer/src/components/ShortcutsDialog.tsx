@@ -64,7 +64,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }): JSX.Eleme
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-[60] flex items-center justify-center overscroll-contain bg-[rgb(0_0_0_/_0.55)] p-4"
+      className="no-drag fixed inset-0 z-[60] flex items-center justify-center overscroll-contain bg-[rgb(0_0_0_/_0.55)] p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}

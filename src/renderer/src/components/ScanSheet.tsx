@@ -42,15 +42,15 @@ export function ScanSheet({
       role="dialog"
       aria-modal="true"
       aria-label="Scan pages"
-      className="fixed inset-0 z-50"
+      className="no-drag fixed inset-0 z-50"
     >
       <div
         aria-hidden="true"
-        className="absolute inset-0 bg-[rgb(0_0_0_/_0.55)]"
+        className="no-drag absolute inset-0 bg-[rgb(0_0_0_/_0.55)]"
         onMouseDown={onClose}
       />
-      <div className="absolute inset-y-0 right-0 flex w-full max-w-[780px] flex-col border-l border-white/10 bg-[var(--surface-app)] shadow-2xl shadow-black/60">
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-white/[0.07] px-5 py-4 pr-[calc(2rem+100vw-env(titlebar-area-x,0px)-env(titlebar-area-width,100vw))]">
+      <div className="no-drag absolute inset-y-0 right-0 flex w-full max-w-[780px] flex-col border-l border-white/10 bg-[var(--surface-app)] shadow-2xl shadow-black/60">
+        <div className="window-drag-bar flex shrink-0 items-center gap-2.5 border-b border-white/[0.07] px-5 py-4 pr-[calc(2rem+100vw-env(titlebar-area-x,0px)-env(titlebar-area-width,100vw))]">
           <div className="min-w-0 flex-1">
             <h1 className="text-base font-semibold text-zinc-100">Scan pages</h1>
             <p className="text-[12.5px] text-zinc-500">
