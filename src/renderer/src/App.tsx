@@ -67,6 +67,7 @@ import {
   canResumeRow,
   canRetryRow,
   clearCompletedConfirmation,
+  deleteFileConfirmation,
   executeActionPlan,
   planBulkAction,
   planRowAction,
@@ -127,6 +128,7 @@ export default function App(): JSX.Element {
   const [restarting, setRestarting] = useState(false)
   const [adding, setAdding] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [clipboardUrl, setClipboardUrl] = useState<string | null>(null)
   const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
   const dragDepth = useRef(0)
@@ -159,6 +161,31 @@ export default function App(): JSX.Element {
     if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
     else if (downloadResult.ok) setBanner(mediaResult.error)
   }, [])
+
+  useEffect(() => {
+    const unsubscribeClipboard = window.donDownload.onClipboardLink((url) => {
+      setClipboardUrl(url)
+    })
+    return () => {
+      unsubscribeClipboard()
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.donDownload.onRevealRow((key) => {
+      setPage('library')
+      setCategory('all')
+      setStatusFilter('all')
+      setQuery('')
+      setDetailsClosedFor(null)
+      setSelection({ selected: [key], anchor: key })
+      setFocusedKey(key)
+      void refreshAll()
+    })
+    return () => {
+      unsubscribe()
+    }
+  }, [refreshAll])
 
   useEffect(() => {
     let cancelled = false
@@ -328,8 +355,16 @@ export default function App(): JSX.Element {
 
   const copyText = useCallback(async (text: string): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(text)
-      setToast(text.includes('\n') ? 'Links copied' : 'Link copied')
+      // The main process writes the clipboard and records it as app-originated
+      // so the clipboard watcher never offers the same link back to the user.
+      const result = await window.donDownload.copyText(text)
+      setToast(
+        result.ok
+          ? text.includes('\n')
+            ? 'Links copied'
+            : 'Link copied'
+          : 'Could not copy the link'
+      )
     } catch {
       setToast('Could not copy the link')
     }
@@ -406,6 +441,20 @@ export default function App(): JSX.Element {
     [runPlan]
   )
 
+  const requestDeleteFile = useCallback(
+    (row: UnifiedRow): void => {
+      const plan = planRowAction('delete-file', [row])
+      if (plan.length === 0) return
+      setConfirm({
+        ...deleteFileConfirmation(row.title),
+        onConfirm: () => {
+          void runPlan(plan)
+        }
+      })
+    },
+    [runPlan]
+  )
+
   const handleRowClick = useCallback(
     (row: UnifiedRow, mode: SelectionMode): void => {
       setMenu(null)
@@ -468,9 +517,13 @@ export default function App(): JSX.Element {
         setAddRequest({ tab: 'media', url: '', nonce: ++addSequence.current })
         return
       }
+      if (action === 'delete-file') {
+        if (rows.length === 1 && rows[0]) requestDeleteFile(rows[0])
+        return
+      }
       void runPlan(planRowAction(action, rows))
     },
-    [menu, requestRemove, runPlan]
+    [menu, requestDeleteFile, requestRemove, runPlan]
   )
 
   const handleTableKeyDown = useCallback(
@@ -683,7 +736,7 @@ export default function App(): JSX.Element {
             <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-50">
               DonDownload
             </h1>
-            <p className="truncate text-[10.5px] text-zinc-500">
+            <p className="truncate text-[11px] text-zinc-500">
               Downloads &amp; media
             </p>
           </div>
@@ -692,7 +745,7 @@ export default function App(): JSX.Element {
             <div
               role="status"
               title={runtimeLabel(aria2)}
-              className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-2.5 py-1 text-[10px] text-zinc-400"
+              className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-2.5 py-1 text-[11px] text-zinc-400"
             >
               <span
                 aria-hidden="true"
@@ -752,14 +805,14 @@ export default function App(): JSX.Element {
               <button
                 type="button"
                 onClick={() => void installAppUpdate()}
-                className="h-7 rounded-md bg-emerald-400 px-2.5 text-[10.5px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+                className="h-7 rounded-md bg-emerald-400 px-2.5 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
               >
                 Restart and install
               </button>
               <button
                 type="button"
                 onClick={() => setAppUpdateDismissed(true)}
-                className="h-7 rounded-md border border-emerald-300/20 px-2 text-[10.5px] text-emerald-200/80 transition hover:bg-emerald-300/10"
+                className="h-7 rounded-md border border-emerald-300/20 px-2 text-[11px] text-emerald-200/80 transition hover:bg-emerald-300/10"
               >
                 Not now
               </button>
@@ -825,7 +878,7 @@ export default function App(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => setSelection(EMPTY_SELECTION)}
-                    className="ml-auto text-[10px] text-emerald-200/70 transition hover:text-emerald-100"
+                    className="ml-auto text-[11px] text-emerald-200/70 transition hover:text-emerald-100"
                   >
                     Clear selection
                   </button>
@@ -889,7 +942,7 @@ export default function App(): JSX.Element {
                 />
               ) : null}
 
-              <div className="flex shrink-0 items-center justify-between gap-3 px-1 py-2 text-[10px] text-zinc-600">
+              <div className="flex shrink-0 items-center justify-between gap-3 px-1 py-2 text-[11px] text-zinc-600">
                 <span className="truncate">
                   Double-click to open · Right-click for actions · Ctrl/Shift-click
                   to select
@@ -975,11 +1028,46 @@ export default function App(): JSX.Element {
         </div>
       ) : null}
 
+      {clipboardUrl ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 z-[70] w-[min(92vw,520px)] -translate-x-1/2 rounded-xl border border-white/10 bg-[var(--surface-card)] px-3 py-2 text-[11px] text-zinc-200 shadow-xl shadow-black/50"
+        >
+          <p className="truncate" title={clipboardUrl}>
+            <span className="font-medium text-zinc-100">Link on clipboard</span>
+            <span className="ml-2 text-zinc-400">{clipboardUrl}</span>
+          </p>
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setClipboardUrl(null)}
+              className="h-7 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/5"
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const route = routeDroppedUrl(clipboardUrl)
+                setClipboardUrl(null)
+                if (route) openAddDialog(route.target, route.url)
+              }}
+              className="h-7 rounded-md bg-emerald-400 px-2.5 text-[11px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+            >
+              Download
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {toast ? (
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-white/10 bg-[var(--surface-card)] px-3 py-1.5 text-[11px] text-zinc-200 shadow-xl shadow-black/50"
+          className={`fixed left-1/2 z-[70] -translate-x-1/2 rounded-full border border-white/10 bg-[var(--surface-card)] px-3 py-1.5 text-[11px] text-zinc-200 shadow-xl shadow-black/50 ${
+            clipboardUrl ? 'bottom-28' : 'bottom-4'
+          }`}
         >
           {toast}
         </div>
@@ -1041,7 +1129,7 @@ function BulkButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`h-7 rounded-md border px-2 text-[10.5px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+      className={`h-7 rounded-md border px-2 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
         danger
           ? 'border-red-400/25 text-red-300 hover:bg-red-400/10'
           : 'border-white/10 text-zinc-300 hover:bg-white/5 hover:text-zinc-100'

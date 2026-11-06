@@ -4,6 +4,7 @@ import type {
   AppSnapshot
 } from '@shared/types'
 import type { MediaSnapshot } from '@shared/media'
+import { isActiveMediaJobStatus } from '@shared/media'
 import type { UnifiedRow } from './unified'
 
 export type RowActionId =
@@ -15,6 +16,7 @@ export type RowActionId =
   | 'start-now'
   | 'retry'
   | 'analyze-again'
+  | 'delete-file'
   | 'remove'
 
 export interface ContextAction {
@@ -29,16 +31,22 @@ export interface ContextAction {
 export type BulkActionId = 'pause-all' | 'resume-all' | 'clear-completed'
 
 export function canPauseRow(row: UnifiedRow): boolean {
-  return (
-    row.download !== null &&
-    (row.download.status === 'active' ||
+  if (row.download !== null) {
+    return (
+      row.download.status === 'active' ||
       row.download.status === 'queued' ||
-      row.download.status === 'waiting')
-  )
+      row.download.status === 'waiting'
+    )
+  }
+  // Media pause keeps staging and `.part` files; a queued job can be held
+  // before it starts as well.
+  return row.media !== null && isActiveMediaJobStatus(row.media.status)
 }
 
 export function canResumeRow(row: UnifiedRow): boolean {
-  return row.download?.status === 'paused'
+  return (
+    row.download?.status === 'paused' || row.media?.status === 'paused'
+  )
 }
 
 export function canStartNowRow(row: UnifiedRow): boolean {
@@ -50,17 +58,35 @@ export function canStartNowRow(row: UnifiedRow): boolean {
 }
 
 export function canRetryRow(row: UnifiedRow): boolean {
+  if (row.download !== null) {
+    return (
+      row.download.status === 'error' || row.download.status === 'interrupted'
+    )
+  }
+  // Media retry reuses the already-pinned analysis/format without analyzing.
   return (
-    row.download?.status === 'error' ||
-    row.download?.status === 'interrupted'
+    row.media?.status === 'error' ||
+    row.media?.status === 'cancelled' ||
+    row.media?.status === 'interrupted'
   )
 }
 
-/** Media jobs have no re-queue IPC yet, so a failed job is re-analyzed. */
+/** Kept as a fallback when the pinned media analysis has expired. */
 export function canAnalyzeAgainRow(row: UnifiedRow): boolean {
   return (
-    row.media?.status === 'error' || row.media?.status === 'interrupted'
+    row.media?.status === 'error' ||
+    row.media?.status === 'cancelled' ||
+    row.media?.status === 'interrupted'
   )
+}
+
+export function canDeleteFileRow(row: UnifiedRow): boolean {
+  if (row.source === 'download') {
+    return (
+      row.download?.status === 'complete' && row.download.filePath !== null
+    )
+  }
+  return row.media?.status === 'complete'
 }
 
 export function canOpenRow(row: UnifiedRow): boolean {
@@ -114,6 +140,12 @@ export function buildContextActions(rows: readonly UnifiedRow[]): ContextAction[
       hint: 'Ctrl+C'
     },
     {
+      id: 'delete-file',
+      label: 'Delete file',
+      enabled: single && first !== undefined && canDeleteFileRow(first),
+      danger: true
+    },
+    {
       id: 'pause',
       label: rows.length > 1 ? 'Pause selected' : 'Pause',
       enabled: some(canPauseRow),
@@ -163,6 +195,7 @@ export type PlannedAction =
   | 'show'
   | 'copy'
   | 'analyze-again'
+  | 'delete-file'
 
 export interface ActionPlanEntry {
   action: PlannedAction
@@ -196,6 +229,8 @@ export function planRowAction(
       return planForRow('retry', rows, canRetryRow)
     case 'analyze-again':
       return planForRow('analyze-again', rows, canAnalyzeAgainRow)
+    case 'delete-file':
+      return planForRow('delete-file', rows, canDeleteFileRow)
     case 'remove':
       return rows.map((row) => ({ action: 'remove', row }))
     case 'copy-link': {
@@ -260,13 +295,26 @@ export function removeConfirmation(count: number): ConfirmationCopy {
   }
 }
 
+export function deleteFileConfirmation(title: string): ConfirmationCopy {
+  return {
+    title: 'Delete file?',
+    message: `“${title}” will be moved to the Recycle Bin and its history entry removed. This cannot be undone from DonDownload.`,
+    confirmLabel: 'Delete file'
+  }
+}
+
 export interface ActionApi {
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   resumeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   startDownloadNow: (id: string) => Promise<ApiResult<AppSnapshot>>
   retryDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   removeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
+  pauseMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
+  resumeMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
+  retryMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
   removeMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
+  deleteDownloadFile: (id: string) => Promise<ApiResult<AppSnapshot>>
+  deleteMediaFile: (id: string) => Promise<ApiResult<MediaSnapshot>>
   openFile: (id: string) => Promise<ApiResult<null>>
   openMediaFile: (id: string) => Promise<ApiResult<null>>
   showInFolder: (id: string) => Promise<ApiResult<null>>
@@ -282,8 +330,7 @@ export interface ActionExecution {
 /**
  * Execute a plan through the existing download/media IPC methods only.
  * `analyze-again` intentionally performs no backend call: it asks the caller
- * to open the Add dialog's media analyzer, because a failed media job exposes
- * no re-queue IPC and no safe page URL to prefill.
+ * to open the Add dialog's media analyzer when the pinned analysis expired.
  */
 export async function executeActionPlan(
   plan: readonly ActionPlanEntry[],
@@ -298,16 +345,39 @@ export async function executeActionPlan(
     try {
       switch (entry.action) {
         case 'pause':
-          collect(await api.pauseDownload(row.id), errors)
+          collect(
+            row.source === 'download'
+              ? await api.pauseDownload(row.id)
+              : await api.pauseMedia(row.id),
+            errors
+          )
           break
         case 'resume':
-          collect(await api.resumeDownload(row.id), errors)
+          collect(
+            row.source === 'download'
+              ? await api.resumeDownload(row.id)
+              : await api.resumeMedia(row.id),
+            errors
+          )
           break
         case 'start-now':
           collect(await api.startDownloadNow(row.id), errors)
           break
         case 'retry':
-          collect(await api.retryDownload(row.id), errors)
+          collect(
+            row.source === 'download'
+              ? await api.retryDownload(row.id)
+              : await api.retryMedia(row.id),
+            errors
+          )
+          break
+        case 'delete-file':
+          collect(
+            row.source === 'download'
+              ? await api.deleteDownloadFile(row.id)
+              : await api.deleteMediaFile(row.id),
+            errors
+          )
           break
         case 'remove':
           collect(

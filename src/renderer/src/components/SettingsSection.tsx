@@ -6,6 +6,11 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { formatSpeed } from '@shared/format'
+import {
+  INTERFACE_SIZES,
+  defaultDesktopSettings,
+  type DesktopSettings
+} from '@shared/desktopSettings'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -125,6 +130,15 @@ export function SettingsSection(): JSX.Element {
   )
   const [appUpdateBusy, setAppUpdateBusy] = useState(false)
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null)
+  const [desktopDraft, setDesktopDraft] = useState<DesktopSettings>(
+    defaultDesktopSettings()
+  )
+  const [desktopSaved, setDesktopSaved] = useState<DesktopSettings>(
+    defaultDesktopSettings()
+  )
+  const [desktopMessage, setDesktopMessage] = useState<string | null>(null)
+  const [desktopError, setDesktopError] = useState<string | null>(null)
+  const [desktopSaving, setDesktopSaving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -144,6 +158,26 @@ export function SettingsSection(): JSX.Element {
     })
     const unsubscribe = window.donDownload.onAppUpdateStateChanged((state) => {
       if (!cancelled) setAppUpdateState(state)
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const apply = (next: DesktopSettings): void => {
+      setDesktopDraft(next)
+      setDesktopSaved(next)
+    }
+    void window.donDownload.getDesktopSettings().then((result) => {
+      if (cancelled) return
+      if (result.ok) apply(result.value)
+      else setDesktopError(result.error.message)
+    })
+    const unsubscribe = window.donDownload.onDesktopSettingsChanged((next) => {
+      if (!cancelled) apply(next)
     })
     return () => {
       cancelled = true
@@ -428,7 +462,28 @@ export function SettingsSection(): JSX.Element {
     }
   }
 
+  const saveDesktop = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setDesktopSaving(true)
+    setDesktopError(null)
+    setDesktopMessage(null)
+    try {
+      const result = await window.donDownload.updateDesktopSettings(desktopDraft)
+      if (!result.ok) {
+        setDesktopError(result.error.message)
+        return
+      }
+      setDesktopDraft(result.value)
+      setDesktopSaved(result.value)
+      setDesktopMessage('Desktop preferences saved.')
+    } finally {
+      setDesktopSaving(false)
+    }
+  }
+
   const unchanged = JSON.stringify(settings) === JSON.stringify(draft)
+  const desktopUnchanged =
+    JSON.stringify(desktopSaved) === JSON.stringify(desktopDraft)
 
   return (
     <section
@@ -485,7 +540,7 @@ export function SettingsSection(): JSX.Element {
                     <span className="block text-xs font-medium">
                       {THEME_LABEL[theme]}
                     </span>
-                    <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                    <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
                       {THEME_DESCRIPTION[theme]}
                     </span>
                   </span>
@@ -493,7 +548,7 @@ export function SettingsSection(): JSX.Element {
               )
             })}
           </div>
-          <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+          <p className="mt-2 text-[11px] leading-4 text-zinc-500">
             Switches immediately, including the native title bar, and is restored
             the next time DonDownload starts. Downloads keep running.
           </p>
@@ -552,7 +607,7 @@ export function SettingsSection(): JSX.Element {
             />
             <span
               id="settings-speed-exact"
-              className="mt-1 block min-h-8 break-words text-[10px] leading-4 text-zinc-400"
+              className="mt-1 block min-h-8 break-words text-[11px] leading-4 text-zinc-400"
             >
               {speedInput.trim().length === 0
                 ? 'Unlimited'
@@ -608,7 +663,7 @@ export function SettingsSection(): JSX.Element {
               />
             </label>
           </div>
-          <p className="mt-2 text-[10px] leading-4 text-zinc-400">
+          <p className="mt-2 text-[11px] leading-4 text-zinc-400">
             An end before the start crosses midnight. Equal start and end mean
             all day. Downloads already active keep running when the window
             closes; queued and scheduled jobs wait for the next window.
@@ -627,7 +682,7 @@ export function SettingsSection(): JSX.Element {
         ) : null}
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
-          <p className="text-[10px] leading-4 text-zinc-400">
+          <p className="text-[11px] leading-4 text-zinc-400">
             {unchanged
               ? 'Settings match the saved values.'
               : 'You have unsaved changes.'}
@@ -661,7 +716,7 @@ export function SettingsSection(): JSX.Element {
               <span className="block font-medium">
                 Keep yt-dlp up to date automatically
               </span>
-              <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+              <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
                 Checks at most once every 24 hours in the background. Updates
                 are verified against GitHub&apos;s SHA-256 sums and are applied
                 to the next media job, never under a running download.
@@ -731,7 +786,7 @@ export function SettingsSection(): JSX.Element {
               <span className="block font-medium">
                 Check for app updates automatically
               </span>
-              <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+              <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
                 At most once every 24 hours. Checks are disabled until an update
                 source is configured.
               </span>
@@ -792,7 +847,7 @@ export function SettingsSection(): JSX.Element {
         </dl>
         {appUpdateState?.releaseNotes ? (
           <div className="mt-3 rounded-lg border border-white/5 surface-card px-2.5 py-2">
-            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">
+            <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500">
               Release notes
             </p>
             <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-4 text-zinc-300">
@@ -806,6 +861,133 @@ export function SettingsSection(): JSX.Element {
           </p>
         ) : null}
       </fieldset>
+
+      <form onSubmit={(event) => void saveDesktop(event)}>
+        <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
+          <legend className="px-1 text-[11px] font-medium text-zinc-400">
+            Desktop &amp; startup
+          </legend>
+          <div className="space-y-2">
+            <DesktopToggle
+              label="Resume interrupted downloads on startup"
+              description="Continues downloads that stopped mid-transfer with partial data. Paused jobs are never resumed."
+              checked={desktopDraft.resumeInterruptedOnStartup}
+              onChange={(checked) =>
+                setDesktopDraft((current) => ({
+                  ...current,
+                  resumeInterruptedOnStartup: checked
+                }))
+              }
+            />
+            <DesktopToggle
+              label="Show notifications"
+              description="Shows a Windows notification when a download or media job completes or fails."
+              checked={desktopDraft.showNotifications}
+              onChange={(checked) =>
+                setDesktopDraft((current) => ({
+                  ...current,
+                  showNotifications: checked
+                }))
+              }
+            />
+            <DesktopToggle
+              label="Watch clipboard for links"
+              description="Checks the clipboard every 1.5 seconds while DonDownload runs. Only a single http(s) link opens a Download / Dismiss prompt; nothing starts automatically."
+              checked={desktopDraft.watchClipboard}
+              onChange={(checked) =>
+                setDesktopDraft((current) => ({
+                  ...current,
+                  watchClipboard: checked
+                }))
+              }
+            />
+            <DesktopToggle
+              label="Start DonDownload when I sign in"
+              description="Uses the hidden-start flag. Only applies to an installed build, never to development runs."
+              checked={desktopDraft.launchAtLogin}
+              onChange={(checked) =>
+                setDesktopDraft((current) => ({
+                  ...current,
+                  launchAtLogin: checked
+                }))
+              }
+            />
+            <label className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
+              <span>
+                <span className="block font-medium">Interface size</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
+                  Ctrl+= and Ctrl+- step the scale; Ctrl+0 resets to 100%.
+                </span>
+              </span>
+              <select
+                aria-label="Interface size"
+                value={desktopDraft.interfaceSizePercent}
+                onChange={(event) =>
+                  setDesktopDraft((current) => ({
+                    ...current,
+                    interfaceSizePercent: Number(event.currentTarget.value) as DesktopSettings['interfaceSizePercent']
+                  }))
+                }
+                className="h-9 rounded-lg border border-white/10 surface-input px-2.5 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/50"
+              >
+                {INTERFACE_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}%
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {desktopError ? (
+            <p role="alert" className="mt-2 text-xs text-red-300">
+              {desktopError}
+            </p>
+          ) : null}
+          {desktopMessage ? (
+            <p role="status" aria-live="polite" className="mt-2 text-xs text-emerald-300">
+              {desktopMessage}
+            </p>
+          ) : null}
+          <div className="mt-3 flex items-center justify-end border-t border-white/5 pt-3">
+            <button
+              type="submit"
+              disabled={desktopSaving || desktopUnchanged}
+              className="min-h-9 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+            >
+              {desktopSaving ? 'Saving…' : 'Save desktop preferences'}
+            </button>
+          </div>
+        </fieldset>
+      </form>
     </section>
+  )
+}
+
+function DesktopToggle({
+  label,
+  description,
+  checked,
+  onChange
+}: {
+  label: string
+  description: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}): JSX.Element {
+  return (
+    <label className="flex items-start gap-2 text-xs text-zinc-300">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+      />
+      <span className="min-w-0">
+        <span className="block font-medium">{label}</span>
+        <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">
+          {description}
+        </span>
+      </span>
+    </label>
   )
 }

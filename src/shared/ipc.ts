@@ -15,6 +15,11 @@ export const IPC = {
   getMediaSnapshot: 'media:get-snapshot',
   getMediaJob: 'media:get-job',
   cancelMedia: 'media:cancel',
+  pauseMedia: 'media:pause',
+  resumeMedia: 'media:resume',
+  retryMedia: 'media:retry',
+  deleteDownloadFile: 'download:delete-file',
+  deleteMediaFile: 'media:delete-file',
   removeMedia: 'media:remove',
   showMediaInFolder: 'media:show-in-folder',
   openMediaFile: 'media:open-file',
@@ -37,6 +42,15 @@ export const IPC = {
   // trusted-sender wrapper; values are the exact-key download-settings DTO.
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  getDesktopSettings: 'desktop-settings:get',
+  updateDesktopSettings: 'desktop-settings:update',
+  desktopSettingsChanged: 'desktop-settings:changed',
+  // Desktop integration (additive). `clipboardLink` and `revealRow` are
+  // main-to-renderer only; `copyText` records the app's own clipboard write so
+  // the watcher never offers it back.
+  copyText: 'clipboard:copy-text',
+  clipboardLink: 'clipboard:link-detected',
+  revealRow: 'app:reveal-row',
   // Managed yt-dlp updater (additive). Settings persist separately from the
   // aria2 download settings; state and manual checks never expose a URL/path.
   getMediaToolSettings: 'media-tools:get-settings',

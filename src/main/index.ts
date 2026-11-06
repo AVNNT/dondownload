@@ -1,9 +1,16 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, clipboard } from 'electron'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
 import { isAllowedAt } from '@shared/schedule'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
+import {
+  START_HIDDEN_ARG,
+  nextInterfaceSize,
+  zoomFactorFor,
+  type DesktopSettings,
+  type InterfaceSize
+} from '@shared/desktopSettings'
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
@@ -19,6 +26,10 @@ import {
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
 import { SettingsManager } from './settings/manager'
+import { DesktopSettingsManager } from './settings/desktopManager'
+import { ClipboardWatcher } from './clipboard/watcher'
+import { CompletionNotificationService } from './notifications/service'
+import { loginItemSettings, shouldManageLoginItem } from './desktop/loginItem'
 import {
   decideBeforeQuit,
   decideWindowClose,
@@ -59,6 +70,9 @@ let manager: DownloadManager | null = null
 let mediaJobs: MediaJobsManager | null = null
 let batches: BatchManager | null = null
 let settingsManager: SettingsManager | null = null
+let desktopSettingsManager: DesktopSettingsManager | null = null
+let clipboardWatcher: ClipboardWatcher | null = null
+let notifications: CompletionNotificationService | null = null
 let mediaUpdater: YtdlpUpdater | null = null
 let appUpdate: AppUpdateChecker | null = null
 let nativeBridge: NativeBridge | null = null
@@ -178,12 +192,86 @@ function refreshTray(): void {
   appTray?.refresh()
 }
 
+function applyInterfaceZoom(size: InterfaceSize): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    mainWindow.webContents.setZoomFactor(zoomFactorFor(size))
+  } catch {
+    // A closing/hidden window must never block a settings save.
+  }
+}
+
+function applyLoginItem(settings: DesktopSettings): void {
+  if (
+    !shouldManageLoginItem({
+      isPackaged: app.isPackaged,
+      platform: process.platform
+    })
+  ) {
+    return
+  }
+  try {
+    app.setLoginItemSettings(
+      loginItemSettings(process.execPath, settings.launchAtLogin)
+    )
+  } catch {
+    // A locked-down policy may refuse login-item changes; the app still works.
+  }
+}
+
+function applyDesktopSettings(settings: DesktopSettings): void {
+  applyInterfaceZoom(settings.interfaceSizePercent)
+  applyLoginItem(settings)
+  clipboardWatcher?.setEnabled(settings.watchClipboard)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC.desktopSettingsChanged, settings)
+  }
+}
+
+/** Ctrl+= / Ctrl+- step the persisted zoom; Ctrl+0 resets to 100%. */
+async function changeInterfaceSize(direction: -1 | 0 | 1): Promise<void> {
+  if (!desktopSettingsManager) return
+  const current = desktopSettingsManager.getSettings()
+  const next = nextInterfaceSize(current.interfaceSizePercent, direction)
+  if (next === current.interfaceSizePercent) return
+  try {
+    await desktopSettingsManager.update({
+      ...current,
+      interfaceSizePercent: next
+    })
+  } catch {
+    // Keep the previous zoom; the next keypress can retry.
+  }
+}
+
 function openMainWindow(
   show = true,
   offscreen = false,
   theme: AppTheme = settingsManager?.getSettings().theme ?? DEFAULT_THEME
 ): BrowserWindow {
   const window = createMainWindow({ show, offscreen, theme })
+  if (!offscreen) {
+    try {
+      window.webContents.setZoomFactor(
+        zoomFactorFor(
+          desktopSettingsManager?.getSettings().interfaceSizePercent ?? 100
+        )
+      )
+    } catch {
+      // Zoom is a preference; the window is still usable with the default.
+    }
+    window.webContents.on('before-input-event', (event, input) => {
+      if (!input.control || input.alt || input.meta) return
+      const key = input.key
+      let direction: -1 | 0 | 1 | null = null
+      if (key === '=' || key === '+') direction = 1
+      else if (key === '-' || key === '_') direction = -1
+      else if (key === '0') direction = 0
+      if (direction === null) return
+      event.preventDefault()
+      void changeInterfaceSize(direction)
+    })
+  }
 
   window.on('close', (event) => {
     const action = decideWindowClose({
@@ -288,16 +376,51 @@ if (unregisterRequested) {
     settingsManager = settings
     aria2.onBeforeReady = (client) => settings.applyStartup(client)
 
+    // Desktop preferences are separate from the aria2 settings above. Their
+    // side effects are applied here so a save through IPC takes effect at once.
+    desktopSettingsManager = new DesktopSettingsManager({
+      store: database,
+      onChanged: (next) => applyDesktopSettings(next)
+    })
+    clipboardWatcher = new ClipboardWatcher({
+      readText: () => clipboard.readText(),
+      isEnabled: () => desktopSettingsManager?.getSettings().watchClipboard ?? false,
+      onUrl: (url) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.clipboardLink, url)
+        }
+      }
+    })
+    clipboardWatcher.setEnabled(
+      desktopSettingsManager.getSettings().watchClipboard
+    )
+    applyLoginItem(desktopSettingsManager.getSettings())
+
+    notifications = new CompletionNotificationService({
+      isEnabled: () =>
+        desktopSettingsManager?.getSettings().showNotifications ?? false,
+      onActivate: (kind, id) => {
+        showMainWindow()
+        mainWindow?.webContents.send(IPC.revealRow, `${kind}:${id}`)
+      }
+    })
+
     manager = new DownloadManager(
       aria2,
       downloadDir,
       (snapshot: AppSnapshot) => {
+        notifications?.observeDownloads(snapshot)
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.snapshotChanged, snapshot)
         }
       },
       database,
-      { settings: () => settings.getSettings() }
+      {
+        settings: () => settings.getSettings(),
+        autoResume: () =>
+          desktopSettingsManager?.getSettings().resumeInterruptedOnStartup ??
+          false
+      }
     )
 
     const mediaDir = path.join(downloadDir, 'Media')
@@ -358,6 +481,7 @@ if (unregisterRequested) {
         // A deferred verified update becomes visible only after every active
         // media job has settled; no executable is swapped mid-run.
         mediaUpdater?.onJobsChanged()
+        notifications?.observeMedia(snapshot)
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
         }
@@ -432,6 +556,13 @@ if (unregisterRequested) {
       mediaJobs,
       batches,
       settings,
+      desktopSettings: desktopSettingsManager,
+      clipboardWriter: {
+        writeText: (text: string) => {
+          clipboard.writeText(text)
+          clipboardWatcher?.rememberSelfCopied(text)
+        }
+      },
       mediaUpdater,
       browserExtension: nativeHostRegistrar ?? undefined,
       appUpdate,
@@ -527,8 +658,15 @@ if (unregisterRequested) {
       })
     }
 
-    const window = openMainWindow(smoke === null, interactiveSmoke)
+    // The login item passes --hidden so signing in does not focus the app; the
+    // tray remains available and a second launch focuses the same window.
+    const startHidden =
+      process.argv.includes(START_HIDDEN_ARG) && appTray !== null
+    const window = openMainWindow(smoke === null && !startHidden, interactiveSmoke)
     mainWindow = window
+    applyInterfaceZoom(
+      desktopSettingsManager.getSettings().interfaceSizePercent
+    )
 
     // Diagnostics exist only in smoke mode. They observe the real hidden
     // window before startup work continues, so early renderer failures are
@@ -747,6 +885,12 @@ if (unregisterRequested) {
       } catch {
         // Never block quitting on a database close.
       }
+      try {
+        clipboardWatcher?.stop()
+      } catch {
+        // Never block quitting on clipboard polling.
+      }
+      clipboardWatcher = null
       try {
         appTray?.destroy()
       } catch {

@@ -26,6 +26,7 @@ import type {
   SmartBatchSubmitResult
 } from '../shared/types'
 import type { DownloadSettings } from '../shared/settings'
+import type { DesktopSettings } from '../shared/desktopSettings'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -53,6 +54,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.showInFolder, id) as Promise<ApiResult<null>>,
   openFile: (id: string) =>
     ipcRenderer.invoke(IPC.openFile, id) as Promise<ApiResult<null>>,
+  deleteDownloadFile: (id: string) =>
+    ipcRenderer.invoke(IPC.deleteDownloadFile, id) as Promise<
+      ApiResult<AppSnapshot>
+    >,
   restartAria2: () =>
     ipcRenderer.invoke(IPC.restartAria2) as Promise<ApiResult<AppSnapshot>>,
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => {
@@ -74,8 +79,18 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.getMediaJob, jobId) as Promise<ApiResult<MediaJob>>,
   cancelMedia: (jobId: string) =>
     ipcRenderer.invoke(IPC.cancelMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
+  pauseMedia: (jobId: string) =>
+    ipcRenderer.invoke(IPC.pauseMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
+  resumeMedia: (jobId: string) =>
+    ipcRenderer.invoke(IPC.resumeMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
+  retryMedia: (jobId: string) =>
+    ipcRenderer.invoke(IPC.retryMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
   removeMedia: (jobId: string) =>
     ipcRenderer.invoke(IPC.removeMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
+  deleteMediaFile: (jobId: string) =>
+    ipcRenderer.invoke(IPC.deleteMediaFile, jobId) as Promise<
+      ApiResult<MediaSnapshot>
+    >,
   showMediaInFolder: (jobId: string) =>
     ipcRenderer.invoke(IPC.showMediaInFolder, jobId) as Promise<ApiResult<null>>,
   openMediaFile: (jobId: string) =>
@@ -150,6 +165,49 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.updateSettings, settings) as Promise<
       ApiResult<DownloadSettings>
     >,
+  getDesktopSettings: () =>
+    ipcRenderer.invoke(IPC.getDesktopSettings) as Promise<
+      ApiResult<DesktopSettings>
+    >,
+  updateDesktopSettings: (settings: DesktopSettings) =>
+    ipcRenderer.invoke(IPC.updateDesktopSettings, settings) as Promise<
+      ApiResult<DesktopSettings>
+    >,
+  onDesktopSettingsChanged: (listener: (settings: DesktopSettings) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      settings: DesktopSettings
+    ): void => {
+      listener(settings)
+    }
+    ipcRenderer.on(IPC.desktopSettingsChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.desktopSettingsChanged, handler)
+    }
+  },
+  copyText: (text: string) =>
+    ipcRenderer.invoke(IPC.copyText, text) as Promise<ApiResult<null>>,
+  onClipboardLink: (listener: (url: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, url: string): void => {
+      listener(url)
+    }
+    ipcRenderer.on(IPC.clipboardLink, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.clipboardLink, handler)
+    }
+  },
+  onRevealRow: (listener: (rowKey: string) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      rowKey: string
+    ): void => {
+      listener(rowKey)
+    }
+    ipcRenderer.on(IPC.revealRow, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.revealRow, handler)
+    }
+  },
   getMediaToolSettings: () =>
     ipcRenderer.invoke(IPC.getMediaToolSettings) as Promise<
       ApiResult<MediaToolSettings>

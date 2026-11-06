@@ -31,6 +31,10 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import {
+  parseDesktopSettings,
+  type DesktopSettings
+} from '@shared/desktopSettings'
+import {
   parseMediaToolSettings,
   type MediaToolSettings
 } from '@shared/mediaTools'
@@ -47,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -384,6 +388,79 @@ const MIGRATIONS: readonly Migration[] = [
         id, auto_check, last_check_at, updated_at
       ) VALUES (1, 1, NULL, 0);
     `
+  },
+  {
+    // A media job can now be paused by the user. SQLite cannot widen a CHECK
+    // constraint in place, so the table is rebuilt with the same columns and
+    // rows plus `paused` in the status list. Separately, desktop-only
+    // preferences get their own single row so they never rewrite aria2's
+    // download settings. Defaults keep new behavior opt-in: notifications and
+    // startup resume on, clipboard watching and launch-at-login off.
+    version: 11,
+    sql: `
+      CREATE TABLE media_jobs_v11 (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_url TEXT NOT NULL,
+        analysis_id TEXT NOT NULL,
+        option_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('video', 'audio')),
+        title TEXT NOT NULL,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'analyzing', 'downloading', 'merging', 'paused',
+            'complete', 'error', 'cancelled', 'interrupted'
+          )
+        ),
+        completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+        total_bytes INTEGER CHECK (total_bytes IS NULL OR total_bytes >= 0),
+        error_message TEXT,
+        dir TEXT NOT NULL,
+        file_path TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        max_bytes INTEGER
+          CHECK (max_bytes IS NULL OR max_bytes BETWEEN 1 AND 107374182400)
+      );
+
+      INSERT INTO media_jobs_v11 (
+        id, source_url, analysis_id, option_id, kind, title, label, status,
+        completed_bytes, total_bytes, error_message, dir, file_path,
+        created_at, updated_at, completed_at, max_bytes
+      )
+      SELECT
+        id, source_url, analysis_id, option_id, kind, title, label, status,
+        completed_bytes, total_bytes, error_message, dir, file_path,
+        created_at, updated_at, completed_at, max_bytes
+      FROM media_jobs;
+
+      DROP TABLE media_jobs;
+      ALTER TABLE media_jobs_v11 RENAME TO media_jobs;
+
+      CREATE INDEX media_jobs_created_at_idx ON media_jobs (created_at DESC);
+      CREATE INDEX media_jobs_status_idx ON media_jobs (status);
+
+      CREATE TABLE IF NOT EXISTS desktop_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        resume_interrupted_on_startup INTEGER NOT NULL DEFAULT 1
+          CHECK (resume_interrupted_on_startup IN (0, 1)),
+        show_notifications INTEGER NOT NULL DEFAULT 1
+          CHECK (show_notifications IN (0, 1)),
+        watch_clipboard INTEGER NOT NULL DEFAULT 0
+          CHECK (watch_clipboard IN (0, 1)),
+        launch_at_login INTEGER NOT NULL DEFAULT 0
+          CHECK (launch_at_login IN (0, 1)),
+        interface_size_percent INTEGER NOT NULL DEFAULT 100
+          CHECK (interface_size_percent IN (90, 100, 110, 125)),
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT OR IGNORE INTO desktop_settings (
+        id, resume_interrupted_on_startup, show_notifications,
+        watch_clipboard, launch_at_login, interface_size_percent, updated_at
+      ) VALUES (1, 1, 1, 0, 0, 100, 0);
+    `
   }
 ]
 
@@ -540,6 +617,17 @@ function rowToAppUpdateSettings(
   })
 }
 
+function rowToDesktopSettings(row: Record<string, unknown>): DesktopSettings {
+  return parseDesktopSettings({
+    resumeInterruptedOnStartup:
+      number(row, 'resume_interrupted_on_startup', 1) === 1,
+    showNotifications: number(row, 'show_notifications', 1) === 1,
+    watchClipboard: number(row, 'watch_clipboard', 0) === 1,
+    launchAtLogin: number(row, 'launch_at_login', 0) === 1,
+    interfaceSizePercent: number(row, 'interface_size_percent', 100)
+  })
+}
+
 function rowToMediaRecord(row: Record<string, unknown>): MediaJobRecord | null {
   const id = text(row, 'id')
   const sourceUrl = text(row, 'source_url')
@@ -678,6 +766,8 @@ export class DownloadDatabase {
   private readonly mediaToolSettingsUpsertStatement: StatementSync
   private readonly appUpdateSettingsSelectStatement: StatementSync
   private readonly appUpdateSettingsUpsertStatement: StatementSync
+  private readonly desktopSettingsSelectStatement: StatementSync
+  private readonly desktopSettingsUpsertStatement: StatementSync
   private readonly mediaUpsertStatement: StatementSync
   private readonly mediaSelectAllStatement: StatementSync
   private readonly mediaDeleteStatement: StatementSync
@@ -789,6 +879,23 @@ export class DownloadDatabase {
           updated_at = excluded.updated_at
       `)
 
+      this.desktopSettingsSelectStatement = this.db.prepare(
+        'SELECT * FROM desktop_settings WHERE id = 1'
+      )
+      this.desktopSettingsUpsertStatement = this.db.prepare(`
+        INSERT INTO desktop_settings (
+          id, resume_interrupted_on_startup, show_notifications,
+          watch_clipboard, launch_at_login, interface_size_percent, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          resume_interrupted_on_startup =
+            excluded.resume_interrupted_on_startup,
+          show_notifications = excluded.show_notifications,
+          watch_clipboard = excluded.watch_clipboard,
+          launch_at_login = excluded.launch_at_login,
+          interface_size_percent = excluded.interface_size_percent,
+          updated_at = excluded.updated_at
+      `)
       this.mediaUpsertStatement = this.db.prepare(`
         INSERT INTO media_jobs (
           id, source_url, analysis_id, option_id, kind, title, label, status,
@@ -1146,6 +1253,45 @@ export class DownloadDatabase {
       throw error instanceof AppError
         ? error
         : databaseError('Could not save app update settings', error)
+    }
+  }
+
+  loadDesktopSettings(): DesktopSettings {
+    this.assertOpen()
+    try {
+      const row = this.desktopSettingsSelectStatement.get() as
+        | Record<string, unknown>
+        | undefined
+      if (!row) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not load desktop settings: the settings row is missing.'
+        )
+      }
+      return rowToDesktopSettings(row)
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not load desktop settings', error)
+    }
+  }
+
+  saveDesktopSettings(settings: DesktopSettings): void {
+    this.assertOpen()
+    try {
+      const parsed = parseDesktopSettings(settings)
+      this.desktopSettingsUpsertStatement.run(
+        parsed.resumeInterruptedOnStartup ? 1 : 0,
+        parsed.showNotifications ? 1 : 0,
+        parsed.watchClipboard ? 1 : 0,
+        parsed.launchAtLogin ? 1 : 0,
+        parsed.interfaceSizePercent,
+        Date.now()
+      )
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not save desktop settings', error)
     }
   }
 

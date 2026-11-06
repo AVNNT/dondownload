@@ -36,7 +36,16 @@ import {
 import type { Aria2Service } from '../aria2/service'
 import type { DownloadDatabase } from '../db/database'
 import { AppError } from '../errors'
-import { INTERRUPTED_MESSAGE, decideStartupRecovery } from './recovery'
+import {
+  checkDeleteTarget,
+  deleteTargetError,
+  type DeleteTargetEntry
+} from './deleteFile'
+import {
+  INTERRUPTED_MESSAGE,
+  decideStartupRecovery,
+  shouldAutoResumeOnStartup
+} from './recovery'
 
 const POLL_INTERVAL_MS = 1_000
 /** Progress is flushed at most this often; critical transitions write at once. */
@@ -92,6 +101,11 @@ export interface DownloadManagerOptions {
   now?: () => number
   /** Runtime settings (allowed hours are read fresh on every policy pass). */
   settings?: () => DownloadSettings
+  /**
+   * Desktop preference "Resume interrupted downloads on startup". Defaults to
+   * false for narrow tests; production wires the persisted value.
+   */
+  autoResume?: () => boolean
 }
 
 /** A receipt is returned only after the strict SQLite write was verified. */
@@ -118,6 +132,7 @@ export class DownloadManager {
   private readonly startNowIds = new Set<string>()
   private readonly submittingIds = new Set<string>()
   private readonly now: () => number
+  private readonly autoResumeProvider: () => boolean
   private settingsProvider: () => DownloadSettings
   private mediaPolicy: DownloadPolicyMediaPort | null = null
   private readonly dirtyIds = new Set<string>()
@@ -144,6 +159,7 @@ export class DownloadManager {
   ) {
     this.database = database
     this.now = options.now ?? Date.now
+    this.autoResumeProvider = options.autoResume ?? (() => false)
     this.settingsProvider =
       options.settings ?? (() => defaultDownloadSettings())
     this.loadPersistedDownloads()
@@ -273,6 +289,34 @@ export class DownloadManager {
         // when aria2 still tracks the GID: reattaching would apply aria2's
         // active/waiting status and silently unpause the download.
         // keep-terminal likewise preserves completed/failed/interrupted state.
+      }
+
+      // Automatic resume is deliberately narrow: only recovery-interrupted
+      // rows with partial data, an intact retry budget and the desktop
+      // preference enabled. It reuses the exact explicit Retry path, so any
+      // partial file is continued by aria2 instead of downloaded again.
+      if (client !== null && this.autoResumeProvider()) {
+        for (const record of [...this.records.values()]) {
+          if (!this.records.has(record.id)) continue
+          if (
+            !shouldAutoResumeOnStartup({
+              resumeEnabled: true,
+              status: record.status,
+              blockReason: this.blockReasons.get(record.id) ?? null,
+              completedBytes: record.completedBytes,
+              attempts: record.attempts,
+              maxAttempts: record.maxAttempts
+            })
+          ) {
+            continue
+          }
+          try {
+            await this.retry(record.id)
+          } catch {
+            // Keep the interrupted row and its partial file when aria2 or the
+            // network refuses the automatic retry. The user can retry again.
+          }
+        }
       }
 
       await this.pumpPolicy(client)
@@ -720,6 +764,48 @@ export class DownloadManager {
       )
     }
     return null
+  }
+
+  /**
+   * Move the exact recorded output of a finished download to the Recycle Bin,
+   * then remove its history row. The path is re-validated against the job's own
+   * recorded directory, `lstat` refuses a symlink, and nothing is ever deleted
+   * with an unlink/rm.
+   */
+  async deleteFile(rawId: unknown): Promise<AppSnapshot> {
+    const record = this.getRecord(rawId)
+    let entry: DeleteTargetEntry | null = null
+    if (record.filePath !== null) {
+      try {
+        const stat = await fs.lstat(record.filePath)
+        entry = { isFile: stat.isFile(), isSymbolicLink: stat.isSymbolicLink() }
+      } catch {
+        entry = null
+      }
+    }
+
+    const check = checkDeleteTarget({
+      root: record.dir,
+      filePath: record.filePath,
+      finished: record.status === 'complete',
+      entry
+    })
+    if (!check.ok) {
+      const info = deleteTargetError(check.problem)
+      throw new AppError(info.code, info.message, info.hint)
+    }
+
+    try {
+      await shell.trashItem(record.filePath as string)
+    } catch {
+      throw new AppError(
+        'FILE_DELETE_FAILED',
+        'The file could not be moved to the Recycle Bin.',
+        'The download history entry was kept.'
+      )
+    }
+
+    return this.remove(record.id)
   }
 
   /** Flush bounded progress snapshots. Call before closing the database. */

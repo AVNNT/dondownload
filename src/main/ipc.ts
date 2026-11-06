@@ -19,6 +19,7 @@ import type {
   SmartBatchSubmitResult
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -30,6 +31,7 @@ import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
 import type { SettingsManager } from './settings/manager'
+import type { DesktopSettingsManager } from './settings/desktopManager'
 import type { YtdlpUpdater } from './media/updater'
 import type { NativeHostRegistrar } from './nativeHost/registration'
 import type { AppUpdateChecker } from './appUpdate/checker'
@@ -48,6 +50,10 @@ export interface IpcContext {
   batches?: BatchManager
   /** Additive Milestone 5A runtime download settings. */
   settings?: SettingsManager
+  /** Desktop-only preferences (notifications, clipboard, startup, zoom). */
+  desktopSettings?: DesktopSettingsManager
+  /** Main-process clipboard writer so self-copied links can be ignored. */
+  clipboardWriter?: { writeText: (text: string) => void }
   /** Verified managed yt-dlp updater (optional until wired in index.ts). */
   mediaUpdater?: YtdlpUpdater
   /** Zero-config browser bridge registration. */
@@ -124,6 +130,9 @@ export function registerIpc(context: IpcContext): void {
     context.manager.showInFolder(id)
   )
   invoke<null>(IPC.openFile, (_event, id) => context.manager.openFile(id))
+  invoke<AppSnapshot>(IPC.deleteDownloadFile, (_event, id) =>
+    context.manager.deleteFile(id)
+  )
 
   // Additive media channels. They reuse the same trusted-sender wrapper and
   // never widen the existing download capabilities.
@@ -158,8 +167,24 @@ export function registerIpc(context: IpcContext): void {
     return manager.getMediaSnapshot()
   })
 
+  invoke<MediaSnapshot>(IPC.pauseMedia, (_event, jobId) =>
+    media().pauseMedia(jobId)
+  )
+
+  invoke<MediaSnapshot>(IPC.resumeMedia, (_event, jobId) =>
+    media().resumeMedia(jobId)
+  )
+
+  invoke<MediaSnapshot>(IPC.retryMedia, (_event, jobId) =>
+    media().retryMedia(jobId)
+  )
+
   invoke<MediaSnapshot>(IPC.removeMedia, (_event, jobId) =>
     media().removeMedia(jobId)
+  )
+
+  invoke<MediaSnapshot>(IPC.deleteMediaFile, (_event, jobId) =>
+    media().deleteMediaFile(jobId)
   )
 
   invoke<null>(IPC.showMediaInFolder, (_event, jobId) =>
@@ -251,6 +276,41 @@ export function registerIpc(context: IpcContext): void {
       applyThemeToWindow(window, updated.theme)
     }
     return updated
+  })
+
+  // Desktop-only settings are separate from aria2's download settings so a
+  // notification, clipboard or zoom change never rewrites live engine options.
+  const desktopSettings = (): DesktopSettingsManager => {
+    if (!context.desktopSettings) {
+      throw new AppError(
+        'SETTINGS_UNAVAILABLE',
+        'Desktop settings are not available.'
+      )
+    }
+    return context.desktopSettings
+  }
+
+  invoke<DesktopSettings>(IPC.getDesktopSettings, () =>
+    desktopSettings().getSettings()
+  )
+
+  invoke<DesktopSettings>(IPC.updateDesktopSettings, (_event, input) =>
+    desktopSettings().update(input)
+  )
+
+  invoke<null>(IPC.copyText, (_event, rawText) => {
+    if (
+      typeof rawText !== 'string' ||
+      rawText.length === 0 ||
+      rawText.length > 100_000
+    ) {
+      throw new AppError(
+        'INVALID_CLIPBOARD_TEXT',
+        'That text cannot be copied.'
+      )
+    }
+    context.clipboardWriter?.writeText(rawText)
+    return null
   })
 
   // Managed yt-dlp update channels. The updater performs only fixed HTTPS

@@ -15,6 +15,7 @@ import type {
   MediaSnapshot
 } from './media'
 import type { DownloadControls, DownloadSettings } from './settings'
+import type { DesktopSettings } from './desktopSettings'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -217,6 +218,8 @@ export interface DonDownloadApi {
   showInFolder: (id: string) => Promise<ApiResult<null>>
   /** Open a completed download's verified file with the OS default app. */
   openFile: (id: string) => Promise<ApiResult<null>>
+  /** Move a finished download's recorded output to the Recycle Bin. */
+  deleteDownloadFile: (id: string) => Promise<ApiResult<AppSnapshot>>
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
 
@@ -227,7 +230,12 @@ export interface DonDownloadApi {
   getMediaSnapshot: () => Promise<ApiResult<MediaSnapshot>>
   getMediaJob: (jobId: string) => Promise<ApiResult<MediaJob>>
   cancelMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  pauseMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  resumeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  retryMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   removeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  /** Move a finished media job's recorded output to the Recycle Bin. */
+  deleteMediaFile: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   showMediaInFolder: (jobId: string) => Promise<ApiResult<null>>
   /** Open a completed media output with the OS default app. */
   openMediaFile: (jobId: string) => Promise<ApiResult<null>>
@@ -271,6 +279,22 @@ export interface DonDownloadApi {
   updateSettings: (
     settings: DownloadSettings
   ) => Promise<ApiResult<DownloadSettings>>
+
+  // Desktop-only preferences (notifications, clipboard, startup, zoom).
+  getDesktopSettings: () => Promise<ApiResult<DesktopSettings>>
+  updateDesktopSettings: (
+    settings: DesktopSettings
+  ) => Promise<ApiResult<DesktopSettings>>
+  onDesktopSettingsChanged: (
+    listener: (settings: DesktopSettings) => void
+  ) => () => void
+
+  /** Copy text through the main process so the clipboard watcher ignores it. */
+  copyText: (text: string) => Promise<ApiResult<null>>
+  /** A single changed http(s) URL when clipboard watching is enabled. */
+  onClipboardLink: (listener: (url: string) => void) => () => void
+  /** Notification click: reveal (select) one download or media row. */
+  onRevealRow: (listener: (rowKey: string) => void) => () => void
 
   // Managed yt-dlp updater. The update request only carries the automatic
   // toggle; a check can report up-to-date, updated, deferred or a safe failure.

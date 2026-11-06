@@ -1,4 +1,4 @@
-import type { DownloadStatus } from '@shared/types'
+import type { DownloadBlockReason, DownloadStatus } from '@shared/types'
 
 /**
  * Startup reconciliation policy. It is deliberately conservative:
@@ -21,6 +21,36 @@ export type RecoveryOutcome =
 
 export const INTERRUPTED_MESSAGE =
   'Interrupted before it finished because DonDownload or aria2 stopped. Your partial file is kept. Use Retry to continue it.'
+
+export interface AutoResumeSelection {
+  /** User preference "Resume interrupted downloads on startup". */
+  resumeEnabled: boolean
+  status: DownloadStatus
+  blockReason: DownloadBlockReason | null
+  /** Bytes already written by the previous process. */
+  completedBytes: number
+  attempts: number
+  maxAttempts: number
+}
+
+/**
+ * Decide whether a persisted download is safe to resume automatically.
+ *
+ * Only the recovery-owned `interrupted` state is eligible. A manual pause is a
+ * persisted user intent and is never resumed, even when it has partial bytes.
+ * A policy hold is also kept for the next window/start, and terminal or
+ * queued/waiting rows are left to their explicit user actions. At least one
+ * byte must have been written, and the existing retry budget still applies.
+ */
+export function shouldAutoResumeOnStartup(
+  input: AutoResumeSelection
+): boolean {
+  if (!input.resumeEnabled) return false
+  if (input.status !== 'interrupted') return false
+  if (input.blockReason !== null) return false
+  if (input.completedBytes <= 0) return false
+  return input.attempts >= 1 && input.attempts < input.maxAttempts
+}
 
 export function decideStartupRecovery(
   status: DownloadStatus,

@@ -129,7 +129,14 @@ function fakeApi() {
     startDownloadNow: vi.fn<ActionApi['startDownloadNow']>(async () => ok(snapshot)),
     retryDownload: vi.fn<ActionApi['retryDownload']>(async () => ok(snapshot)),
     removeDownload: vi.fn<ActionApi['removeDownload']>(async () => ok(snapshot)),
+    pauseMedia: vi.fn<ActionApi['pauseMedia']>(async () => ok(media)),
+    resumeMedia: vi.fn<ActionApi['resumeMedia']>(async () => ok(media)),
+    retryMedia: vi.fn<ActionApi['retryMedia']>(async () => ok(media)),
     removeMedia: vi.fn<ActionApi['removeMedia']>(async () => ok(media)),
+    deleteDownloadFile: vi.fn<ActionApi['deleteDownloadFile']>(async () =>
+      ok(snapshot)
+    ),
+    deleteMediaFile: vi.fn<ActionApi['deleteMediaFile']>(async () => ok(media)),
     openFile: vi.fn<ActionApi['openFile']>(async () => ok(null)),
     openMediaFile: vi.fn<ActionApi['openMediaFile']>(async () => ok(null)),
     showInFolder: vi.fn<ActionApi['showInFolder']>(async () => ok(null)),
@@ -461,13 +468,20 @@ describe('context menu and action plans', () => {
     await executeActionPlan(planRowAction('copy-link', [active, complete]), api)
   })
 
-  it('routes failed media to Analyze again without inventing a re-queue IPC', async () => {
+  it('routes failed media to the pinned retry IPC, with analyze-again kept as a fallback', async () => {
     const api = fakeApi()
+    const retried = await executeActionPlan(
+      planRowAction('retry', [mediaFailed, mediaComplete]),
+      api
+    )
+    expect(retried.errors).toEqual([])
+    expect(api.retryMedia).toHaveBeenCalledWith('media-failed')
+    expect(api.retryDownload).not.toHaveBeenCalled()
+
     const plan = planRowAction('analyze-again', [mediaFailed, mediaComplete])
     const result = await executeActionPlan(plan, api)
     expect(result.analyzeAgain.map((row) => row.id)).toEqual(['media-failed'])
     expect(api.removeMedia).not.toHaveBeenCalled()
-    expect(api.retryDownload).not.toHaveBeenCalled()
   })
 
   it('collects copy URLs and reports backend errors', async () => {

@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(10)
+    expect(SCHEMA_VERSION).toBe(11)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
