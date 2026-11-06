@@ -38,6 +38,7 @@ const readyProbe: ProbeScanItemFn = async (input) => {
       : 'application/zip',
     contentDisposition: null,
     sizeBytes: 2048,
+    finalUrl: input.url,
     classification,
     reason: null
   }
@@ -152,6 +153,43 @@ describe('explicit scan queue selection', () => {
     expect(added[0]).toMatchObject({
       url: 'https://forum.example/uploads/a.zip',
       filename: 'a.zip',
+      resolvedUrl: 'https://forum.example/uploads/a.zip',
+      requestHeaders: { cookie: 'auth=1' }
+    })
+  })
+
+  it('reuses the queue-time probe final URL for a cross-host redirect', async () => {
+    const sessions = new ScanSessionManager({
+      fetchPage: page,
+      probeItem: readyProbe,
+      onUpdate: () => undefined
+    })
+    const { batches, added } = createBatchManager()
+    const finalUrl = 'https://storage.example/uploads/a.zip?signature=abc'
+    const crossHostProbe: ProbeScanItemFn = async (input) => ({
+      ...(await readyProbe(input)),
+      finalUrl
+    })
+    const queue = new ScanQueueService({
+      sessions,
+      batches,
+      probeItem: crossHostProbe
+    })
+
+    const started = sessions.start(PAGE_URL, {
+      origin: 'extension',
+      cookie: 'auth=1'
+    })
+    await sessions.waitForScan(started.sessionId)
+    const done = sessions.getSession(started.sessionId)
+    const archive = done.items.find((item) => item.category === 'archive')
+
+    await queue.queueSelection(started.sessionId, [archive!.id])
+    await batches.waitForIdle()
+
+    expect(added[0]).toMatchObject({
+      url: 'https://forum.example/uploads/a.zip',
+      resolvedUrl: finalUrl,
       requestHeaders: { cookie: 'auth=1' }
     })
   })
@@ -174,6 +212,7 @@ describe('explicit scan queue selection', () => {
       contentType: 'text/html',
       contentDisposition: null,
       sizeBytes: null,
+      finalUrl: null,
       classification: classifyScanCandidate({
         url: input.url,
         contentType: 'text/html'

@@ -36,6 +36,12 @@ export interface ScanProbeResult {
   contentType: string | null
   contentDisposition: string | null
   sizeBytes: number | null
+  /**
+   * The redirect-resolved target the preflight actually verified. The explicit
+   * queue path reuses it so aria2 is never handed the original URL with a
+   * one-job Cookie that would follow a cross-host redirect.
+   */
+  finalUrl: string | null
   classification: ClassifiedScanCandidate
   reason: string | null
 }
@@ -85,6 +91,7 @@ export async function probeScanItem(
       contentType: null,
       contentDisposition: null,
       sizeBytes: null,
+      finalUrl: null,
       classification: classifyFromProbe(input, null),
       reason: 'The scan was cancelled.'
     }
@@ -113,6 +120,7 @@ export async function probeScanItem(
       contentType: result.contentType,
       contentDisposition: result.contentDisposition,
       sizeBytes: result.totalBytes,
+      finalUrl: result.finalUrl,
       classification,
       reason: null
     }
@@ -125,6 +133,7 @@ export async function probeScanItem(
         contentType: null,
         contentDisposition: null,
         sizeBytes: null,
+        finalUrl: null,
         classification: classifyFromProbe(input, null),
         reason: 'This file needs your browser sign-in.'
       }
@@ -137,6 +146,7 @@ export async function probeScanItem(
       contentType: null,
       contentDisposition: null,
       sizeBytes: null,
+      finalUrl: null,
       classification: classifyFromProbe(input, null),
       reason: null
     }

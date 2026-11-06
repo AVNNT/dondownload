@@ -220,6 +220,8 @@ export interface BatchScanTarget {
   url: string
   title: string
   filename?: string
+  /** Redirect-resolved target proven by the queue-time scanner probe. */
+  resolvedUrl?: string
   requestHeaders?: DownloadRequestHeaders
 }
 
@@ -488,6 +490,8 @@ export class BatchManager {
    * items interrupted and never resumes them, so a Cookie can never touch disk.
    */
   private readonly scanRequestHeaders = new Map<string, DownloadRequestHeaders>()
+  /** Redirect-resolved targets proven by the scanner probe, memory-only. */
+  private readonly scanResolvedUrls = new Map<string, string>()
   private readonly scanFilenames = new Map<string, string>()
   private readonly idleWaiters: Array<() => void> = []
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -918,6 +922,7 @@ export class BatchManager {
           key !== 'url' &&
           key !== 'title' &&
           key !== 'filename' &&
+          key !== 'resolvedUrl' &&
           key !== 'requestHeaders'
         ) {
           throw new ValidationError(
@@ -933,6 +938,10 @@ export class BatchManager {
           throw new ValidationError('The scan batch filename is invalid.')
         }
         filename = sanitizeFilename(target.filename)
+      }
+      let resolvedUrl: string | undefined
+      if (target.resolvedUrl !== undefined) {
+        resolvedUrl = normalizeBatchSourceUrl(target.resolvedUrl)
       }
       let requestHeaders: DownloadRequestHeaders | undefined
       if (target.requestHeaders !== undefined) {
@@ -960,6 +969,7 @@ export class BatchManager {
         url,
         title,
         ...(filename === undefined ? {} : { filename }),
+        ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
         ...(requestHeaders === undefined ? {} : { requestHeaders })
       }
     })
@@ -988,6 +998,9 @@ export class BatchManager {
       })
       if (target.requestHeaders !== undefined) {
         this.scanRequestHeaders.set(itemId, target.requestHeaders)
+      }
+      if (target.resolvedUrl !== undefined) {
+        this.scanResolvedUrls.set(itemId, target.resolvedUrl)
       }
       if (target.filename !== undefined) {
         this.scanFilenames.set(itemId, target.filename)
@@ -1238,6 +1251,7 @@ export class BatchManager {
     for (const item of batch.items.values()) {
       this.dirtyItems.delete(item.id)
       this.scanRequestHeaders.delete(item.id)
+      this.scanResolvedUrls.delete(item.id)
       this.scanFilenames.delete(item.id)
     }
     this.removePersistedBatch(batch.record.id)
@@ -1374,6 +1388,7 @@ export class BatchManager {
 
     this.flushPersistence()
     this.scanRequestHeaders.clear()
+    this.scanResolvedUrls.clear()
     this.scanFilenames.clear()
     this.resolveIdleWaiters()
   }
@@ -1519,9 +1534,14 @@ export class BatchManager {
         filename = resolution.name
       }
 
+      const resolvedScanUrl =
+        targetUrl === sourceUrl ? this.scanResolvedUrls.get(item.id) : undefined
       const snapshot = (await this.downloads.add({
         url: targetUrl,
         ...(filename ? { filename } : {}),
+        ...(resolvedScanUrl === undefined
+          ? {}
+          : { resolvedUrl: resolvedScanUrl }),
         ...(this.scanRequestHeaders.has(item.id)
           ? { requestHeaders: this.scanRequestHeaders.get(item.id) }
           : {})

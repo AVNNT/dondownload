@@ -224,7 +224,9 @@ describe('aria2 per-download headers', () => {
     const manager = new DownloadManager(
       aria2,
       path.join(dir, 'downloads'),
-      () => undefined
+      () => undefined,
+      null,
+      { resolveCookieTarget: async (input) => ({ finalUrl: input.url }) }
     )
     managers.push(manager)
 

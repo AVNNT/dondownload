@@ -19,6 +19,12 @@ export interface ScanBatchTarget {
   url: string
   title: string
   filename?: string
+  /**
+   * The redirect-resolved target proven by the queue-time probe. Reusing it
+   * lets DownloadManager keep the one-job Cookie only on the exact original
+   * host, instead of sending it across a redirect.
+   */
+  resolvedUrl?: string
   requestHeaders?: {
     cookie: string
   }
@@ -141,6 +147,7 @@ export class ScanQueueService {
         url: target.url,
         title: cleanTitle(target.name),
         ...(target.name.length > 0 ? { filename: target.name } : {}),
+        ...(probe.finalUrl === null ? {} : { resolvedUrl: probe.finalUrl }),
         ...(target.cookie === undefined
           ? {}
           : { requestHeaders: { cookie: target.cookie } })

@@ -2,6 +2,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { IncomingMessage } from 'node:http'
 import { AppError } from '../errors'
+import { isCookieHopSafe } from '../net/cookieScope'
 import {
   resolvePublicTargetAddresses,
   type PublicTargetLookup
@@ -11,9 +12,9 @@ import {
  * Bounded page fetch used only by the Smart Link Scanner.
  *
  * Every redirect hop is resolved and revalidated against the public-target
- * policy before it is contacted. A Cookie is attached only to the exact host of
- * the initial URL and is never forwarded to a different host. No cookie jar and
- * no persistence exists.
+ * policy before it is contacted. A Cookie is attached only to the exact host
+ * and scheme of the initial URL and is never forwarded to a different host or
+ * downgraded from HTTPS to HTTP. No cookie jar and no persistence exists.
  */
 
 export const SCAN_FETCH_TIMEOUT_MS = 15_000
@@ -121,7 +122,7 @@ function requestOnce(
   input: ScanFetchInput,
   options: ScanFetchOptions,
   connectLookup: ScanFetchConnectLookup,
-  cookieHost: string,
+  cookieOrigin: URL,
   maxBytes: number
 ): Promise<RawResponse> {
   let parsed: URL
@@ -149,7 +150,7 @@ function requestOnce(
     'Accept-Encoding': 'identity',
     'User-Agent': 'DonDownload/0.1.0'
   }
-  if (input.cookie !== undefined && parsed.host === cookieHost) {
+  if (input.cookie !== undefined && isCookieHopSafe(cookieOrigin, parsed)) {
     headers.Cookie = input.cookie
   }
 
@@ -294,7 +295,7 @@ export async function fetchScanPage(
   } catch {
     throw failure('SCAN_FETCH_INVALID', 'Enter a valid page URL.')
   }
-  const cookieHost = new URL(current).host
+  const cookieOrigin = new URL(current)
   const maximumRedirects = SCAN_FETCH_MAX_REDIRECTS
   const maxBytes = Math.min(
     Number.isSafeInteger(input.maxBytes) && (input.maxBytes ?? 0) > 0
@@ -326,7 +327,7 @@ export async function fetchScanPage(
       input,
       options,
       connectLookup,
-      cookieHost,
+      cookieOrigin,
       maxBytes
     )
 
@@ -346,10 +347,10 @@ export async function fetchScanPage(
       if (next.username || next.password) {
         throw failure('SCAN_FETCH_INVALID', 'The redirect target contains credentials.')
       }
-      if (input.cookie !== undefined && next.host !== cookieHost) {
+      if (input.cookie !== undefined && !isCookieHopSafe(cookieOrigin, next)) {
         throw failure(
           'SCAN_COOKIE_REDIRECT',
-          'The signed-in page redirected to a different host, so its cookie was not sent.'
+          'The signed-in page redirected to a different host or a less secure scheme, so its cookie was not sent.'
         )
       }
       current = next.href

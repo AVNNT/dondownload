@@ -105,6 +105,12 @@ export interface DurableHandoffInput {
    * never be written to SQLite, an aria2 session file or a log.
    */
   requestHeaders?: DownloadRequestHeaders
+  /**
+   * Internal only: the bridge sets this after its own preflight so the manager
+   * can reuse the resolved target instead of probing twice. It is never parsed
+   * from the wire.
+   */
+  resolvedUrl?: string
 }
 
 export interface DurableHandoffReceipt {

@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import type { IncomingMessage } from 'node:http'
 import type { DownloadRequestHeaders } from '@shared/types'
 import { AppError } from '../errors'
+import { isCookieHopSafe } from './cookieScope'
 import {
   resolvePublicTargetAddresses,
   type PublicTargetLookup
@@ -51,8 +52,9 @@ export interface PublicResourcePreflightInput {
   allowMedia?: boolean
   /**
    * Opt-in browser headers for the exact download host. A Cookie is attached
-   * only when the hop host still equals the initial input URL host; Referer and
-   * User-Agent may follow a same-site redirect. Nothing is persisted.
+   * only while the hop host and scheme still equal the initial input URL;
+   * Referer and User-Agent may follow a same-site redirect. Nothing is
+   * persisted.
    */
   requestHeaders?: DownloadRequestHeaders
 }
@@ -164,7 +166,7 @@ function requestHeaders(
   url: string,
   options: PublicResourcePreflightOptions,
   input: PublicResourcePreflightInput,
-  cookieHost: string
+  cookieOrigin: URL
 ): Promise<HeaderResponse> {
   const parsed = new URL(url)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -187,7 +189,10 @@ function requestHeaders(
     if (requestHeaders.userAgent !== undefined) {
       headers['User-Agent'] = requestHeaders.userAgent
     }
-    if (requestHeaders.cookie !== undefined && parsed.host === cookieHost) {
+    if (
+      requestHeaders.cookie !== undefined &&
+      isCookieHopSafe(cookieOrigin, parsed)
+    ) {
       headers.Cookie = requestHeaders.cookie
     }
   }
@@ -423,7 +428,7 @@ export async function preflightPublicResource(
   }
 
   const lookup = options.lookup
-  const cookieHost = new URL(current).host
+  const cookieOrigin = new URL(current)
   const maximumRedirects =
     Number.isSafeInteger(options.maxRedirects) && (options.maxRedirects ?? 0) >= 0
       ? Math.min(options.maxRedirects ?? PREFLIGHT_MAX_REDIRECTS, 10)
@@ -437,7 +442,7 @@ export async function preflightPublicResource(
         current,
         { ...options, connectLookup },
         input,
-        cookieHost
+        cookieOrigin
       )
       if (response.redirect !== null) {
         if (redirect === maximumRedirects) {
@@ -455,17 +460,12 @@ export async function preflightPublicResource(
         if (next.username || next.password) {
           throw failure('The redirect target contains credentials.')
         }
-        // aria2 sends one per-job header set across redirects. A Cookie is only
-        // safe when every hop stays on the exact original host.
-        if (
-          input.requestHeaders &&
-          input.requestHeaders.cookie !== undefined &&
-          next.host !== cookieHost
-        ) {
-          throw failure(
-            'An authenticated download redirected to a different host, so its cookie cannot be sent safely.'
-          )
-        }
+        // The Cookie is attached only on hops that still match the exact
+        // original host and scheme. Following a cross-host (or HTTPS -> HTTP)
+        // redirect anonymously is safe: the caller learns the final URL and can
+        // hand that target to aria2 without a Cookie header. If the anonymous
+        // hop needs the cookie, this probe fails closed like any other
+        // unverifiable resource.
         current = next.href
         continue
       }
