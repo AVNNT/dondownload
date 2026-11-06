@@ -183,9 +183,16 @@
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
+/*
+ * The native caption buttons (minimize/maximize/close) are drawn by Windows on
+ * top of the web content. The Window Controls Overlay env variables report the
+ * area they occupy; the 140px/0px/56px fallbacks match the overlay we request
+ * from Electron (see TITLE_BAR_OVERLAY_HEIGHT) and the browser preview.
+ */
 .window-drag-region {
-  width: calc(100% - 140px);
-  height: 40px;
+  left: env(titlebar-area-x, 0px);
+  width: env(titlebar-area-width, calc(100% - 140px));
+  height: env(titlebar-area-height, 56px);
   background: var(--drag-region);
   app-region: drag;
   -webkit-app-region: drag;
@@ -197,6 +204,10 @@
 }
 
 .window-app-header-content {
+  /* Keep header controls (Settings, Add) clear of the native caption buttons. */
+  padding-right: calc(
+    1rem + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)
+  );
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
