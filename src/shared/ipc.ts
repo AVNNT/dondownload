@@ -74,9 +74,11 @@ export const IPC = {
   // queues anything; only the explicit queue-selection channel can create
   // downloads, and it accepts opaque session/item IDs only.
   scanStart: 'scan:start',
+  scanStartMany: 'scan:start-many',
   scanCancel: 'scan:cancel',
   scanUpdated: 'scan:updated',
   scanQueueSelection: 'scan:queue-selection',
+  scanQueueSelections: 'scan:queue-selections',
   scanOpenInBrowser: 'scan:open-in-browser',
   scanPickMatchVideo: 'scan:pick-match-video'
 } as const

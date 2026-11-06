@@ -38,6 +38,8 @@ import type {
   ScanManualMatchInput,
   ScanManualMatchResult,
   ScanQueueResult,
+  ScanQueueSelectionInput,
+  ScanQueueSelectionsResult,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
   ScanSession,
@@ -280,6 +282,10 @@ const api: DonDownloadApi = {
   },
   startScan: (input: ScanStartInput) =>
     ipcRenderer.invoke(IPC.scanStart, input) as Promise<ApiResult<ScanSession>>,
+  startScans: (urls: string[]) =>
+    ipcRenderer.invoke(IPC.scanStartMany, { urls }) as Promise<
+      ApiResult<ScanSession[]>
+    >,
   cancelScan: (sessionId: string) =>
     ipcRenderer.invoke(IPC.scanCancel, { sessionId }) as Promise<
       ApiResult<ScanSession>
@@ -296,6 +302,10 @@ const api: DonDownloadApi = {
       ...(videoOptions === undefined ? {} : { videoOptions }),
       ...(pairings === undefined ? {} : { pairings })
     }) as Promise<ApiResult<ScanQueueResult>>,
+  queueScanSelections: (selections: ScanQueueSelectionInput[]) =>
+    ipcRenderer.invoke(IPC.scanQueueSelections, { selections }) as Promise<
+      ApiResult<ScanQueueSelectionsResult>
+    >,
   openScanInBrowser: (
     sessionId: string,
     itemId: string,

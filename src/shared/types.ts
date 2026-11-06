@@ -27,6 +27,8 @@ import type {
   ScanManualMatchInput,
   ScanManualMatchResult,
   ScanQueueResult,
+  ScanQueueSelectionInput,
+  ScanQueueSelectionsResult,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
   ScanSession,
@@ -348,6 +350,8 @@ export interface DonDownloadApi {
   // Smart Link Scanner phase 1. A scan only discovers and verifies candidates;
   // it has no queue path. Downloading requires the explicit item selection.
   startScan: (input: ScanStartInput) => Promise<ApiResult<ScanSession>>
+  /** Start several topic scans at once; extras queue behind MAX_ACTIVE_SCANS. */
+  startScans: (urls: string[]) => Promise<ApiResult<ScanSession[]>>
   cancelScan: (sessionId: string) => Promise<ApiResult<ScanSession>>
   queueScanSelection: (
     sessionId: string,
@@ -355,6 +359,10 @@ export interface DonDownloadApi {
     videoOptions?: ScanQueueVideoOption[],
     pairings?: ScanScriptPairingInput[]
   ) => Promise<ApiResult<ScanQueueResult>>
+  /** One click across topics: each session is validated independently. */
+  queueScanSelections: (
+    selections: ScanQueueSelectionInput[]
+  ) => Promise<ApiResult<ScanQueueSelectionsResult>>
   /**
    * Open a browser-only card. The renderer sends opaque IDs only; the stored
    * URL never crosses IPC. With a pairing, main also arms the browser hand-off.
