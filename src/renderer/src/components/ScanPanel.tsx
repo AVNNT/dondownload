@@ -8,7 +8,9 @@ import {
 } from 'react'
 import {
   MAX_SCAN_SELECTION,
+  MAX_SCAN_OTHER_LINKS,
   MAX_SCAN_URLS,
+  isMarkableAsVideoScanItem,
   isQueueableScanItem,
   parseScanUrlList,
   type ScanBrowserScriptSelection,
@@ -49,7 +51,7 @@ interface ScanPanelProps {
 }
 
 interface GroupDefinition {
-  category: Exclude<ScanCategory, 'page'>
+  category: ScanCategory
   label: string
   icon: IconName
   accent: string
@@ -72,7 +74,8 @@ const GROUPS: readonly GroupDefinition[] = [
     accent: 'text-orange-300'
   },
   { category: 'script', label: 'Scripts', icon: 'program', accent: 'text-fuchsia-300' },
-  { category: 'other', label: 'Other', icon: 'other', accent: 'text-zinc-300' }
+  { category: 'other', label: 'Other', icon: 'other', accent: 'text-zinc-300' },
+  { category: 'page', label: 'Other links', icon: 'link', accent: 'text-sky-300' }
 ]
 
 type FilterMode = 'all' | 'script-video'
@@ -289,6 +292,8 @@ export function ScanPanel({
   )
   const [matchingKey, setMatchingKey] = useState<string | null>(null)
   const [openingItemId, setOpeningItemId] = useState<string | null>(null)
+  const [markingItemId, setMarkingItemId] = useState<string | null>(null)
+  const [linksExpanded, setLinksExpanded] = useState(false)
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
   const sessionsRef = useRef<ScanSession[]>([...seededSessions])
@@ -591,7 +596,13 @@ export function ScanPanel({
                 (item) => item.category === 'script' || item.category === 'video'
               )
             : groupItems
-        return { group, items: filtered }
+        return {
+          group,
+          items:
+            group.category === 'page'
+              ? filtered.slice(0, MAX_SCAN_OTHER_LINKS)
+              : filtered
+        }
       }).filter((entry) => entry.items.length > 0)
     },
     [filter]
@@ -958,6 +969,45 @@ export function ScanPanel({
             reason instanceof Error
               ? reason.message
               : 'The link could not be opened in the browser.'
+        })
+      })
+  }
+
+  const markAsVideo = (session: ScanSession, item: ScanItem): void => {
+    if (markingItemId !== null) return
+    setMarkingItemId(item.id)
+    setError(null)
+    setNotice(null)
+    void window.donDownload
+      .markScanItemAsVideo(session.sessionId, item.id)
+      .then((result) => {
+        setMarkingItemId(null)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+        applyUpdate(result.value)
+        const updated = result.value.items.find(
+          (candidate) => candidate.id === item.id
+        )
+        if (updated?.status === 'browser-only') {
+          setNotice(
+            'Checked as a video. This one can only be opened in your browser.'
+          )
+        } else if (updated?.status === 'ready') {
+          setNotice('Checked as a video. Choose a quality and click Download.')
+        } else if (updated?.status === 'unavailable') {
+          setNotice('Checked, but this link could not be resolved as a video.')
+        }
+      })
+      .catch((reason: unknown) => {
+        setMarkingItemId(null)
+        setError({
+          code: 'SCAN_MARK_VIDEO_FAILED',
+          message:
+            reason instanceof Error
+              ? reason.message
+              : 'The link could not be checked as a video.'
         })
       })
   }
@@ -1604,25 +1654,50 @@ export function ScanPanel({
                   const groupSelected =
                     selectable.length > 0 &&
                     selectable.every((item) => selection.has(item.id))
+                  const isLinksGroup = group.category === 'page'
+                  const showItems = !isLinksGroup || linksExpanded
                   return (
                     <div key={`${session.sessionId}-${group.category}`}>
                       <div className="flex items-center gap-2 border-y border-white/[0.04] bg-white/[0.02] px-3 py-1.5">
-                        <Icon name={group.icon} size={13} />
+                        {isLinksGroup ? (
+                          <button
+                            type="button"
+                            onClick={() => setLinksExpanded((value) => !value)}
+                            aria-expanded={linksExpanded}
+                            aria-label={
+                              linksExpanded
+                                ? 'Collapse other links'
+                                : 'Expand other links'
+                            }
+                            className="text-[11px] text-zinc-400 transition hover:text-zinc-200"
+                          >
+                            {linksExpanded ? '▾' : '▸'}
+                          </button>
+                        ) : (
+                          <Icon name={group.icon} size={13} />
+                        )}
                         <span className="text-[11px] font-semibold text-zinc-200">
                           {group.label}
                         </span>
                         <span className="text-[11px] text-zinc-500">
                           {groupItems.length}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => toggleGroup(groupItems)}
-                          disabled={selectable.length === 0}
-                          className="ml-auto text-[11px] text-emerald-300 transition hover:text-emerald-200 disabled:text-zinc-600"
-                        >
-                          {groupSelected ? 'Clear' : 'Select all'}
-                        </button>
+                        {isLinksGroup ? (
+                          <span className="ml-auto text-[10px] text-zinc-500">
+                            Mark one as a video
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleGroup(groupItems)}
+                            disabled={selectable.length === 0}
+                            className="ml-auto text-[11px] text-emerald-300 transition hover:text-emerald-200 disabled:text-zinc-600"
+                          >
+                            {groupSelected ? 'Clear' : 'Select all'}
+                          </button>
+                        )}
                       </div>
+                      {showItems ? (
                       <ul className="divide-y divide-white/[0.05]">
                         {group.category === 'script' ? renderScriptSets(session, sets) : null}
                         {groupItems
@@ -1694,11 +1769,36 @@ export function ScanPanel({
                                       </>
                                     ) : null}
                                   </div>
+                                  {isMarkableAsVideoScanItem(item) ? (
+                                    <div className="mt-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => markAsVideo(session, item)}
+                                        disabled={
+                                          disabled || markingItemId !== null
+                                        }
+                                        className="h-7 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                      >
+                                        {markingItemId === item.id ? (
+                                          <span className="inline-flex items-center gap-1.5">
+                                            <span
+                                              aria-hidden="true"
+                                              className="h-3 w-3 animate-spin rounded-full border border-sky-200/60 border-t-transparent"
+                                            />
+                                            Checking…
+                                          </span>
+                                        ) : (
+                                          'This is a video'
+                                        )}
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 </div>
                               </li>
                             )
                           })}
                       </ul>
+                      ) : null}
                     </div>
                   )
                 })}

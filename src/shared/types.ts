@@ -372,6 +372,14 @@ export interface DonDownloadApi {
     itemId: string,
     pairing?: ScanBrowserScriptSelection
   ) => Promise<ApiResult<null>>
+  /**
+   * Mark a listed page link as a video page. The renderer sends opaque IDs only;
+   * main re-validates the stored URL and resolves it with the usual budget.
+   */
+  markScanItemAsVideo: (
+    sessionId: string,
+    itemId: string
+  ) => Promise<ApiResult<ScanSession>>
   /** Ask main for a local video file and queue the chosen scripts into it. */
   pickScanMatchVideo: (
     input: ScanManualMatchInput

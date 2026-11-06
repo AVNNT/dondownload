@@ -316,6 +316,11 @@ const api: DonDownloadApi = {
       itemId,
       ...(pairing === undefined ? {} : { pairing })
     }) as Promise<ApiResult<null>>,
+  markScanItemAsVideo: (sessionId: string, itemId: string) =>
+    ipcRenderer.invoke(IPC.scanMarkAsVideo, {
+      sessionId,
+      itemId
+    }) as Promise<ApiResult<ScanSession>>,
   pickScanMatchVideo: (input: ScanManualMatchInput) =>
     ipcRenderer.invoke(IPC.scanPickMatchVideo, input) as Promise<
       ApiResult<ScanManualMatchResult | null>

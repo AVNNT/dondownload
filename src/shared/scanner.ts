@@ -81,6 +81,8 @@ export const MAX_SCAN_CONCURRENT_ITEMS = 4
 /** Phase 2: per-session yt-dlp metadata analyses. */
 export const MAX_SCAN_VIDEO_ANALYSES = 15
 export const MAX_SCAN_VIDEO_ANALYSIS_CONCURRENCY = 2
+/** Plain page links shown in the collapsed "Other links" group. */
+export const MAX_SCAN_OTHER_LINKS = 50
 /**
  * Phase 2: pages the scanner may fetch itself (includes the pasted page).
  *
@@ -485,6 +487,20 @@ export function isQueueableScanItem(
   )
 }
 
+/**
+ * A listed page link the user can explicitly re-check as a video page. Already
+ * resolved video cards and non-link files are excluded.
+ */
+export function isMarkableAsVideoScanItem(
+  item: Pick<ScanItem, 'category' | 'kind' | 'status'>
+): boolean {
+  return (
+    item.kind === 'page-link' &&
+    item.category !== 'video' &&
+    (item.status === 'found' || item.status === 'probing')
+  )
+}
+
 export function isScanSessionStatus(
   value: unknown
 ): value is ScanSessionStatus {
@@ -623,6 +639,23 @@ export function parseScanCancelInput(value: unknown): ScanCancelInput {
   const record = asPlainObject(value, 'scan cancel')
   exactKeys(record, ['sessionId'], [], 'scan cancel')
   return { sessionId: parseScanSessionId(record.sessionId) }
+}
+
+/** Explicit "This is a video" action. Only opaque IDs cross IPC. */
+export interface ScanMarkAsVideoInput {
+  sessionId: string
+  itemId: string
+}
+
+export function parseScanMarkAsVideoInput(
+  value: unknown
+): ScanMarkAsVideoInput {
+  const record = asPlainObject(value, 'scan mark as video')
+  exactKeys(record, ['sessionId', 'itemId'], [], 'scan mark as video')
+  return {
+    sessionId: parseScanSessionId(record.sessionId),
+    itemId: parseScanItemId(record.itemId)
+  }
 }
 
 export function parseScanQueueSelectionInput(

@@ -29,6 +29,7 @@ import type { ScanQueueResult, ScanManualMatchResult, ScanSession, ScanQueueSele
 import {
   parseScanCancelInput,
   parseScanManualMatchInput,
+  parseScanMarkAsVideoInput,
   parseScanOpenInBrowserInput,
   parseScanQueueSelectionInput,
   parseScanQueueSelectionsInput,
@@ -523,6 +524,13 @@ export function registerIpc(context: IpcContext): void {
       )
     }
     return null
+  })
+
+  // "This is a video": opaque IDs only. Main re-validates the stored URL and
+  // runs the same bounded analyzer as a normal video page. It never queues.
+  invoke<ScanSession>(IPC.scanMarkAsVideo, (_event, input) => {
+    const parsed = parseScanMarkAsVideoInput(input)
+    return scanner().markAsVideo(parsed.sessionId, parsed.itemId)
   })
 
   invoke<ScanManualMatchResult | null>(

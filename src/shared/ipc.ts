@@ -80,5 +80,6 @@ export const IPC = {
   scanQueueSelection: 'scan:queue-selection',
   scanQueueSelections: 'scan:queue-selections',
   scanOpenInBrowser: 'scan:open-in-browser',
-  scanPickMatchVideo: 'scan:pick-match-video'
+  scanPickMatchVideo: 'scan:pick-match-video',
+  scanMarkAsVideo: 'scan:mark-as-video'
 } as const
