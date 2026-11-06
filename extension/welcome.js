@@ -1,4 +1,6 @@
-import { probeNativeConnection } from './bridge.js'
+import { probeNativeConnection, sendScanPage } from './bridge.js'
+import { readOptInCookieHeader } from './capture-settings.js'
+import { takePendingScan } from './scan-pending.js'
 import { connectionView, siteEnableLabel } from './onboarding.js'
 import { readGrantParameter } from './grant-parameter.js'
 import {
@@ -148,9 +150,35 @@ grantButton.addEventListener('click', () => {
         return
       }
       renderGranted()
+      if (grantCookies) void startPendingScan(grantOrigin)
     }
   )
 })
+
+/**
+ * Finish a "Scan this page" that needed the one-time cookies grant. Only a
+ * fresh pending scan for exactly this origin runs; the cookie is read now,
+ * sent once and never stored.
+ */
+async function startPendingScan(origin) {
+  const pageUrl = await takePendingScan(chrome, origin)
+  if (pageUrl === null) return
+  setGrantStatus('', 'Starting the scan in DonDownload…')
+  const cookie = await readOptInCookieHeader(chrome, pageUrl, pageUrl)
+  const result = await sendScanPage(pageUrl, cookie)
+  if (result.ok) {
+    setGrantStatus(
+      'success',
+      'Scan opened in DonDownload with your sign-in. You can close this tab; next time scans on this site start right away.'
+    )
+    return
+  }
+  setGrantStatus(
+    'error',
+    (result.error && result.error.message) ||
+      'The scan could not be started. Make sure DonDownload is running and scan again.'
+  )
+}
 
 renderGrantSection()
 void checkConnection()

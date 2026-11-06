@@ -28,7 +28,10 @@ export function parseScanPageRequest(value: unknown): ScanPageRequest {
       throw new ValidationError('The scan request contains unsupported fields.')
     }
   }
-  if (record.type !== SCAN_PAGE_CHANNEL) {
+  // The native host forwards `{ url, cookie? }` to the dedicated /scan-page
+  // route, so the route itself names the operation. A `type`, when present,
+  // must still be exactly `scan-page`.
+  if (record.type !== undefined && record.type !== SCAN_PAGE_CHANNEL) {
     throw new ValidationError('Unsupported scan operation.')
   }
   const url = normalizeHttpUrl(record.url)

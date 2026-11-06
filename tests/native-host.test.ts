@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
+import { parseScanPageRequest } from '../src/shared/scanBridge'
 
 const hostExecutable =
   process.env.DONDOWNLOAD_NATIVE_HOST_EXE?.trim() ||
@@ -298,6 +299,28 @@ describeWindows('Windows native messaging host', () => {
         }
       }
     ])
+  })
+
+  it('forwards scan-page in a shape the desktop scan route accepts', async () => {
+    const app = await startFakeApp()
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+    const url = 'https://discuss.example/t/topic/346779'
+
+    await runHost(
+      [frame(JSON.stringify({ type: 'scan-page', url, cookie: '_t=session' }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(app.requests).toHaveLength(1)
+    expect(app.requests[0]).toMatchObject({ method: 'POST', url: '/scan-page' })
+    // Contract check across the process boundary: the exact forwarded body
+    // must pass the desktop parser used by the /scan-page route.
+    expect(parseScanPageRequest(app.requests[0]?.body)).toEqual({
+      type: 'scan-page',
+      url,
+      cookie: '_t=session'
+    })
   })
 
   it('forwards exactly one validated queue-download request to the app', async () => {

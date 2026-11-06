@@ -1,6 +1,7 @@
 import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload, sendScanPage } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
+import { rememberPendingScan, scanCookiesReady } from './scan-pending.js'
 import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
   popupConnectionLine,
@@ -726,16 +727,33 @@ async function scanPage() {
   setSending(false)
   setStatus('', 'Scanning this page in DonDownload…')
   try {
-    // Cookies are read only when the exact page origin is already on the
-    // per-origin opt-in list and the optional cookies permission is granted.
+    // Scans always use the browser sign-in for this exact page origin. The
+    // first scan on a site needs Chrome's one-time cookies grant; that prompt
+    // would close this popup, so it opens in a tab and the scan starts there
+    // right after the grant.
+    if (pageOrigin !== null && !(await scanCookiesReady(chrome, pageOrigin))) {
+      const grantUrl = grantPageUrl(welcomeUrl(chrome), pageOrigin, { cookies: true })
+      if (grantUrl !== null && (await rememberPendingScan(chrome, pageUrl))) {
+        try {
+          chrome.tabs.create({ url: grantUrl })
+          setStatus(
+            '',
+            `Allow DonDownload to use your sign-in on ${pageOrigin} in the tab that opened. The scan starts right after; this is asked once per site.`
+          )
+          return
+        } catch {
+          // Fall through to an anonymous scan below.
+        }
+      }
+    }
     const cookie = await readOptInCookieHeader(chrome, pageUrl, pageUrl)
     const result = await sendScanPage(pageUrl, cookie)
     if (result.ok) {
       setStatus(
         'success',
         cookie === undefined
-          ? 'Scan opened in DonDownload. No browser cookies were sent; if the page needs a sign-in, allow cookies for this site and scan again.'
-          : 'Scan opened in DonDownload. Review the grouped results and choose files there.'
+          ? 'Scan opened in DonDownload without browser cookies. If the page needs a sign-in, open it signed in and scan again.'
+          : 'Scan opened in DonDownload with your sign-in. Review the grouped results and choose files there.'
       )
       return
     }

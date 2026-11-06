@@ -1029,6 +1029,27 @@ describe('detected media route', () => {
 describe('native bridge scan-page route', () => {
   beforeEach(() => start({ scanner: true }))
 
+  it('accepts the exact body the native host forwards (no type field)', async () => {
+    const response = await post(
+      JSON.stringify({
+        url: 'https://discuss.example/t/topic/346779',
+        cookie: 'auth=1'
+      }),
+      { path: '/scan-page' }
+    )
+
+    expect(response.status).toBe(200)
+    expect(scanCalls).toHaveLength(1)
+  })
+
+  it('still rejects a different operation type on the scan route', async () => {
+    const response = await post(
+      JSON.stringify({ type: 'download', url: 'https://discuss.example/t/1' }),
+      { path: '/scan-page' }
+    )
+    expect(response.status).toBe(400)
+  })
+
   it('starts a discovery-only scan and brings the desktop view forward', async () => {
     const response = await post(
       JSON.stringify({
