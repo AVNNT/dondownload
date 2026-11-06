@@ -253,6 +253,7 @@ export function MediaAnalyzer({
                   alt=""
                   loading="lazy"
                   referrerPolicy="no-referrer"
+                  draggable={false}
                   className="mt-2 max-h-36 w-full rounded-lg object-cover"
                 />
               ) : null}
