@@ -136,8 +136,10 @@ function relativeChecked(timestamp: number | null | undefined): string | null {
 function ytdlpStatusInfo(state: YtdlpUpdateState | null): {
   label: string
   tone: 'ok' | 'warn' | 'err'
-} {
-  if (!state) return { label: 'Checking…', tone: 'warn' }
+} | null {
+  // "Working" only after a successful check. Before anything has been checked
+  // (no state yet, or idle) there is no known-good result, so render no pill.
+  if (!state || state.status === 'idle') return null
   switch (state.status) {
     case 'failed':
       return { label: 'Failed', tone: 'err' }
@@ -150,7 +152,11 @@ function ytdlpStatusInfo(state: YtdlpUpdateState | null): {
   }
 }
 
-export function SettingsSection(): JSX.Element {
+export function SettingsSection({
+  onBack
+}: {
+  onBack?: () => void
+}): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [draft, setDraft] = useState<DownloadSettings | null>(null)
   const [speedInput, setSpeedInput] = useState('')
@@ -244,13 +250,16 @@ export function SettingsSection(): JSX.Element {
     return (
       <div aria-labelledby="settings-heading" className="space-y-6">
         <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
-          <button
-            type="button"
-            aria-label="Back"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:text-zinc-100"
-          >
-            <Icon name="chevron-left" size={16} />
-          </button>
+          {onBack ? (
+            <button
+              type="button"
+              aria-label="Back"
+              onClick={onBack}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:text-zinc-100"
+            >
+              <Icon name="chevron-left" size={16} />
+            </button>
+          ) : null}
           <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
             Settings
           </h1>
@@ -533,20 +542,19 @@ export function SettingsSection(): JSX.Element {
   return (
     <div aria-labelledby="settings-heading" className="space-y-7">
       <header className="flex h-14 items-center gap-3 border-b border-white/[0.07]">
-        <button
-          type="button"
-          aria-label="Back"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
-        >
-          <Icon name="chevron-left" size={16} />
-        </button>
+        {onBack ? (
+          <button
+            type="button"
+            aria-label="Back"
+            onClick={onBack}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100"
+          >
+            <Icon name="chevron-left" size={16} />
+          </button>
+        ) : null}
         <h1 id="settings-heading" className="text-[15px] font-semibold text-zinc-100">
           Settings
         </h1>
-        <span className="ml-auto flex items-center gap-1.5 text-xs text-zinc-500">
-          <Icon name="check" size={14} className="text-emerald-400" />
-          Changes save automatically
-        </span>
       </header>
 
       <section aria-labelledby="settings-downloads">
@@ -763,7 +771,9 @@ export function SettingsSection(): JSX.Element {
               </>
             }
           >
-            <StatusPill label={ytdlpStatus.label} tone={ytdlpStatus.tone} />
+            {ytdlpStatus ? (
+              <StatusPill label={ytdlpStatus.label} tone={ytdlpStatus.tone} />
+            ) : null}
             <button
               type="button"
               onClick={() => void checkForUpdate()}
@@ -929,14 +939,16 @@ export function SettingsSection(): JSX.Element {
                 ? 'Checking…'
                 : 'Check now'}
             </button>
-            <button
-              type="button"
-              onClick={() => void installAppUpdate()}
-              disabled={appUpdateBusy || !appReady}
-              className={BTN_PRIMARY}
-            >
-              Restart and install
-            </button>
+            {appReady ? (
+              <button
+                type="button"
+                onClick={() => void installAppUpdate()}
+                disabled={appUpdateBusy}
+                className={BTN_PRIMARY}
+              >
+                Restart and install
+              </button>
+            ) : null}
           </SettingRow>
           <SettingRow
             title="Check for updates automatically"
