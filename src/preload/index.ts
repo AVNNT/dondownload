@@ -33,6 +33,11 @@ import type {
 } from '../shared/mediaTools'
 import type { BrowserExtensionStatus } from '../shared/browserExtension'
 import type { AppUpdateState } from '../shared/appUpdate'
+import type {
+  ScanQueueResult,
+  ScanSession,
+  ScanStartInput
+} from '../shared/scanner'
 
 const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
@@ -266,6 +271,28 @@ const api: DonDownloadApi = {
     ipcRenderer.on(IPC.appUpdateStateChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC.appUpdateStateChanged, handler)
+    }
+  },
+  startScan: (input: ScanStartInput) =>
+    ipcRenderer.invoke(IPC.scanStart, input) as Promise<ApiResult<ScanSession>>,
+  cancelScan: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.scanCancel, { sessionId }) as Promise<
+      ApiResult<ScanSession>
+    >,
+  queueScanSelection: (sessionId: string, itemIds: string[]) =>
+    ipcRenderer.invoke(IPC.scanQueueSelection, { sessionId, itemIds }) as Promise<
+      ApiResult<ScanQueueResult>
+    >,
+  onScanUpdated: (listener: (session: ScanSession) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      session: ScanSession
+    ): void => {
+      listener(session)
+    }
+    ipcRenderer.on(IPC.scanUpdated, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.scanUpdated, handler)
     }
   }
 }

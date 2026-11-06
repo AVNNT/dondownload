@@ -25,6 +25,12 @@ import type {
   YtdlpUpdateState
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
+import type { ScanQueueResult, ScanSession } from '@shared/scanner'
+import {
+  parseScanCancelInput,
+  parseScanQueueSelectionInput,
+  parseScanStartInput
+} from '@shared/scanner'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
 import type { DownloadManager } from './downloads/manager'
@@ -35,6 +41,8 @@ import type { DesktopSettingsManager } from './settings/desktopManager'
 import type { YtdlpUpdater } from './media/updater'
 import type { NativeHostRegistrar } from './nativeHost/registration'
 import type { AppUpdateChecker } from './appUpdate/checker'
+import type { ScanSessionManager } from './scanner/session'
+import type { ScanQueueService } from './scanner/queue'
 import { applyThemeToWindow } from './settings/theme'
 
 export interface IpcContext {
@@ -60,6 +68,10 @@ export interface IpcContext {
   browserExtension?: NativeHostRegistrar
   /** GitHub Releases application updater (optional until wired in index.ts). */
   appUpdate?: AppUpdateChecker
+  /** Smart Link Scanner sessions (discovery only, no queue path). */
+  scanner?: ScanSessionManager
+  /** Explicit scanner selection queue path. */
+  scanQueue?: ScanQueueService
   getWindow: () => BrowserWindow | null
 }
 
@@ -415,4 +427,36 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppUpdateState>(IPC.setAppUpdateAutoCheck, (_event, input) =>
     appUpdate().setAutoCheck(input)
   )
+
+  // Smart Link Scanner. Renderer input is strict and opaque; the scanner never
+  // receives a path, header or Cookie from the renderer. Starting/cancelling
+  // cannot queue anything.
+  const scanner = (): ScanSessionManager => {
+    if (!context.scanner) {
+      throw new AppError('SCAN_UNAVAILABLE', 'Page scanning is not available.')
+    }
+    return context.scanner
+  }
+
+  const scanQueue = (): ScanQueueService => {
+    if (!context.scanQueue) {
+      throw new AppError('SCAN_UNAVAILABLE', 'Page scanning is not available.')
+    }
+    return context.scanQueue
+  }
+
+  invoke<ScanSession>(IPC.scanStart, (_event, input) => {
+    const parsed = parseScanStartInput(input)
+    return scanner().start(parsed.url, { origin: 'paste' })
+  })
+
+  invoke<ScanSession>(IPC.scanCancel, (_event, input) => {
+    const parsed = parseScanCancelInput(input)
+    return scanner().cancel(parsed.sessionId)
+  })
+
+  invoke<ScanQueueResult>(IPC.scanQueueSelection, (_event, input) => {
+    const parsed = parseScanQueueSelectionInput(input)
+    return scanQueue().queueSelection(parsed.sessionId, parsed.itemIds)
+  })
 }

@@ -22,6 +22,11 @@ import type {
 } from './mediaTools'
 import type { BrowserExtensionStatus } from './browserExtension'
 import type { AppUpdateState } from './appUpdate'
+import type {
+  ScanQueueResult,
+  ScanSession,
+  ScanStartInput
+} from './scanner'
 
 export type DownloadStatus =
   | 'queued'
@@ -327,4 +332,14 @@ export interface DonDownloadApi {
   onAppUpdateStateChanged: (
     listener: (state: AppUpdateState) => void
   ) => () => void
+
+  // Smart Link Scanner phase 1. A scan only discovers and verifies candidates;
+  // it has no queue path. Downloading requires the explicit item selection.
+  startScan: (input: ScanStartInput) => Promise<ApiResult<ScanSession>>
+  cancelScan: (sessionId: string) => Promise<ApiResult<ScanSession>>
+  queueScanSelection: (
+    sessionId: string,
+    itemIds: string[]
+  ) => Promise<ApiResult<ScanQueueResult>>
+  onScanUpdated: (listener: (session: ScanSession) => void) => () => void
 }

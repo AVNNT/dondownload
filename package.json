@@ -43,6 +43,7 @@
     "test:gate": "npm test && npm run build"
   },
   "dependencies": {
+    "htmlparser2": "^10.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

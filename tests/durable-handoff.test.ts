@@ -243,6 +243,7 @@ describe('strict durable hand-off', () => {
           finalUrl: input.url,
           status: 206,
           contentType: 'application/zip',
+          contentDisposition: null,
           totalBytes: 4
         }
       }
