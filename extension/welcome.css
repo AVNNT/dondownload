@@ -79,25 +79,39 @@ h1 {
   font-size: 15px;
 }
 
-.dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
+/* Done circle with a check, mirroring the mock's "Connected" step badge. */
+.conn-check {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line2);
+  background: var(--s3);
+  color: var(--t3);
+  display: grid;
+  place-items: center;
   flex: none;
-  background: var(--warn);
 }
 
-.connection.ok {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px var(--accent-bg);
+.conn-check svg.i {
+  width: 13px;
+  height: 13px;
+  opacity: 0;
 }
 
-.connection.ok .dot {
+.connection.ok .conn-check {
   background: var(--ok);
+  border-color: var(--ok);
+  color: #000;
 }
 
-.connection.error .dot {
+.connection.ok .conn-check svg.i {
+  opacity: 1;
+}
+
+.connection.error .conn-check {
   background: var(--err);
+  border-color: var(--err);
+  color: #fff;
 }
 
 .steps {

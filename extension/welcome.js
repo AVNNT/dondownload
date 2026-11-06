@@ -34,7 +34,7 @@ function setChoicesStatus(kind, message) {
 
 function renderConnection(result) {
   const view = connectionView(result)
-  connection.className = `connection ${view.connected ? 'ok' : view.tone}`
+  connection.className = `connection step ${view.connected ? 'ok' : view.tone}`
   connectionTitle.textContent = view.title
   connectionDetail.textContent = view.detail
 

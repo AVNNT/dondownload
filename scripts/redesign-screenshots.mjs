@@ -310,52 +310,86 @@ function startServer() {
 }
 
 // ---------------------------------------------------------------------------
-// popup state stub (injected before popup.js runs)
+// popup state stubs (injected before popup.js runs)
 // ---------------------------------------------------------------------------
-const POPUP_STUB = `(() => {
-  const stubNative = () => {
-    chrome.runtime.sendNativeMessage = (host, msg, cb) => {
-      if (msg && msg.type === 'probe') return cb({ ok: true, operation: 'probe' })
-      cb({ ok: true, accepted: true })
-    }
-  }
-  const stubTabs = () => {
+const CAPTURE_FOUND = `{
+  ok: true,
+  sources: [{ url: 'https://media.example.com/sample.mp4', filename: 'sample.mp4', qualityLabel: '720p', current: true }],
+  streaming: { detected: true },
+  analysis: {
+    analysisId: 'analysis0000000000000001',
+    title: 'Product launch keynote — full event with live Q&A',
+    options: [
+      { kind: 'video', optionId: 'opt000000000000000001', label: '1080p', container: 'mp4', height: 1080, hasAudio: true, estimatedBytes: 671088640 },
+      { kind: 'video', optionId: 'opt000000000000000002', label: '720p', container: 'mp4', height: 720, hasAudio: true, estimatedBytes: 325058560 }
+    ]
+  },
+  status: 'ready',
+  queuedOptionIds: []
+}`
+
+const CAPTURE_EMPTY = `{
+  ok: true,
+  sources: [],
+  streaming: { detected: false },
+  status: 'idle',
+  queuedOptionIds: []
+}`
+
+function popupStub(scene) {
+  const offline = scene === 'offline'
+  const empty = scene === 'empty'
+  const links = scene === 'links'
+  const login = scene === 'login'
+
+  const native = offline
+    ? `chrome.runtime.sendNativeMessage = (host, msg, cb) => {
+        if (msg && msg.type === 'probe') return cb({ ok: false })
+        cb({ ok: true, accepted: true })
+      }`
+    : `chrome.runtime.sendNativeMessage = (host, msg, cb) => {
+        if (msg && msg.type === 'probe') return cb({ ok: true, operation: 'probe' })
+        cb({ ok: true, accepted: true })
+      }`
+
+  const capture = empty ? CAPTURE_EMPTY : CAPTURE_FOUND
+
+  const storage = links || login
+    ? `(() => {
+        if (chrome.storage && chrome.storage.session) {
+          const data = {
+            ${links ? `'dondownload:scan-links-draft': 'https://forum.example.com/t/weekly-design-notes/123\\nhttps://forum.example.com/t/launch-event/456\\nhttps://media.example.com/watch/keynote-2026'` : ''}
+            ${links && login ? ',' : ''}
+            ${login ? `'dondownloadHandoffNeedsLogin': { origin: 'https://media.example.com', host: 'media.example.com', at: ${Date.now()} }` : ''}
+          }
+          chrome.storage.session.get = (keys, cb) => {
+            if (typeof cb === 'function') return cb(data)
+            return Promise.resolve(data)
+          }
+        }
+      })()`
+    : ''
+
+  return `(() => {
+    ${native}
     chrome.tabs.query = (q, cb) => cb([{ id: 1, url: 'https://media.example.com/watch/keynote-2026' }])
     chrome.tabs.sendMessage = (tabId, msg, cb) => {
       if (msg && msg.type === 'dondownload:capture-query') {
-        cb({
-          ok: true,
-          sources: [{ url: 'https://media.example.com/sample.mp4', filename: 'sample.mp4', qualityLabel: '720p', current: true }],
-          streaming: { detected: true },
-          analysis: {
-            analysisId: 'analysis0000000000000001',
-            title: 'Product launch keynote — full event with live Q&A',
-            options: [
-              { kind: 'video', optionId: 'opt000000000000000001', label: '1080p', container: 'mp4', height: 1080, hasAudio: true, estimatedBytes: 671088640 },
-              { kind: 'video', optionId: 'opt000000000000000002', label: '720p', container: 'mp4', height: 720, hasAudio: true, estimatedBytes: 325058560 }
-            ]
-          },
-          status: 'ready',
-          queuedOptionIds: []
-        })
+        cb(${capture})
         return
       }
       cb({ ok: true })
     }
-  }
-  const stubPermissions = () => {
     if (chrome.permissions) chrome.permissions.contains = (p, cb) => cb(true)
-  }
-  const stubRuntime = () => {
     chrome.runtime.sendMessage = (msg, cb) => {
       if (msg && msg.type && String(msg.type).indexOf('sniffed-query') !== -1) {
         return cb({ ok: true, media: [] })
       }
       cb({ ok: true })
     }
-  }
-  stubNative(); stubTabs(); stubPermissions(); stubRuntime()
-})()`
+    ${storage}
+  })()`
+}
 
 // ---------------------------------------------------------------------------
 // run
@@ -364,6 +398,7 @@ const report = []
 const shot = (name) => path.join(OUT_DIR, `${name}.png`)
 
 async function main() {
+  fs.rmSync(OUT_DIR, { recursive: true, force: true })
   fs.mkdirSync(OUT_DIR, { recursive: true })
   const server = await startServer()
   const port = server.address().port
@@ -374,20 +409,18 @@ async function main() {
     const extId = await findExtensionId(browser.cdp)
     console.log(`extension id: ${extId}`)
 
-    // popup — "found" state (stubbed), dark
-    {
-      const { targetId } = await browser.cdp.send('Target.createTarget', {
-        url: 'about:blank'
-      })
-      const { sessionId } = await browser.cdp.send('Target.attachToTarget', { targetId, flatten: true })
-      await browser.cdp.send('Page.enable', {}, sessionId)
-      await browser.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: POPUP_STUB }, sessionId)
-      await browser.cdp.send('Page.navigate', { url: `chrome-extension://${extId}/popup.html` }, sessionId)
+    let shotIndex = 0
+    const nextName = (label) => {
+      shotIndex += 1
+      return `${String(shotIndex).padStart(2, '0')}-${label}`
+    }
+
+    async function waitReady(cdp, sessionId, label) {
       const deadline = Date.now() + 15000
       for (;;) {
-        if (Date.now() > deadline) throw new Error('popup load timeout')
+        if (Date.now() > deadline) throw new Error(`${label} load timeout`)
         try {
-          const r = await browser.cdp.send(
+          const r = await cdp.send(
             'Runtime.evaluate',
             { expression: 'document.readyState', returnByValue: true },
             sessionId
@@ -398,74 +431,162 @@ async function main() {
         }
         await sleep(120)
       }
-      await sleep(400) // allow async render
-      const size = await contentSize(browser.cdp, sessionId)
-      const h = Math.max(320, Math.min(1200, size.height + 8))
-      await screenshot(browser.cdp, sessionId, shot('01-popup-found'), { width: 380, height: h })
-      const bg = await computed(
-        browser.cdp,
-        sessionId,
-        'getComputedStyle(document.body).backgroundColor'
-      )
-      const bgVar = await computed(
-        browser.cdp,
-        sessionId,
-        'getComputedStyle(document.documentElement).getPropertyValue("--bg")'
-      )
-      const sheets = await computed(
-        browser.cdp,
-        sessionId,
-        'Array.from(document.styleSheets).map(s => (s.href || "inline") + ":" + s.cssRules.length).join(" | ")'
-      )
-      report.push(`popup body background: ${bg}`)
-      report.push(`popup --bg: ${bgVar}`)
-      report.push(`popup sheets: ${sheets}`)
-      const rows = await computed(
-        browser.cdp,
-        sessionId,
-        '({ rows: document.querySelectorAll("#capture-list .capture-row").length, detected: (document.getElementById("detected-state")||{}).textContent, conn: (document.getElementById("connection-label")||{}).textContent })'
-      )
-      report.push(`popup content: ${JSON.stringify(rows)}`)
     }
 
-    // popup — light mode
+    const scrollWidths = []
+
+    // popup — every state, dark then light
     {
-      const { targetId } = await browser.cdp.send('Target.createTarget', { url: 'about:blank' })
+      const POPUP_SCENES = [
+        { id: 'found', name: 'found' },
+        { id: 'empty', name: 'empty' },
+        { id: 'offline', name: 'offline' },
+        { id: 'links', name: 'links' },
+        { id: 'login', name: 'login' }
+      ]
+      for (const theme of ['dark', 'light']) {
+        for (const scene of POPUP_SCENES) {
+          const { targetId } = await browser.cdp.send('Target.createTarget', {
+            url: 'about:blank'
+          })
+          const { sessionId } = await browser.cdp.send('Target.attachToTarget', { targetId, flatten: true })
+          await browser.cdp.send('Page.enable', {}, sessionId)
+          await browser.cdp.send(
+            'Page.addScriptToEvaluateOnNewDocument',
+            { source: popupStub(scene.id) },
+            sessionId
+          )
+          if (theme === 'light') {
+            await browser.cdp.send(
+              'Emulation.setEmulatedMedia',
+              { features: [{ name: 'prefers-color-scheme', value: 'light' }] },
+              sessionId
+            )
+          }
+          await browser.cdp.send(
+            'Page.navigate',
+            { url: `chrome-extension://${extId}/popup.html` },
+            sessionId
+          )
+          await waitReady(browser.cdp, sessionId, `popup ${scene.name} ${theme}`)
+          await sleep(500) // allow async render + draft/needs-login restore
+          // Pin the viewport to the popup width before measuring overflow.
+          await browser.cdp.send(
+            'Emulation.setDeviceMetricsOverride',
+            { width: 380, height: 600, deviceScaleFactor: 1, mobile: false },
+            sessionId
+          )
+          await sleep(80)
+          const scrollWidth = await computed(
+            browser.cdp,
+            sessionId,
+            'document.documentElement.scrollWidth'
+          )
+          const size = await contentSize(browser.cdp, sessionId)
+          const h = Math.max(320, Math.min(1200, size.height + 8))
+          const name = nextName(`popup-${scene.name}${theme === 'light' ? '-light' : ''}`)
+          await screenshot(browser.cdp, sessionId, shot(name), { width: 380, height: h })
+          scrollWidths.push({ scene: scene.name, theme, scrollWidth })
+          report.push(`popup ${scene.name} (${theme}) scrollWidth: ${scrollWidth}`)
+          if (scene.name === 'found' && theme === 'dark') {
+            const acts = await computed(
+              browser.cdp,
+              sessionId,
+              `(() => {
+                const scan = document.getElementById('scan-page')
+                const many = document.getElementById('scan-many')
+                const summary = many && many.querySelector('summary')
+                const label = document.getElementById('scan-page-label')
+                return {
+                  scanLabel: label ? label.textContent : null,
+                  scanWidth: scan ? Math.round(scan.getBoundingClientRect().width) : null,
+                  scanManyLabel: summary ? summary.textContent.trim() : null,
+                  scanManyWidth: summary ? Math.round(summary.getBoundingClientRect().width) : null
+                }
+              })()`
+            )
+            report.push(`popup acts (found): ${JSON.stringify(acts)}`)
+          }
+        }
+      }
+    }
+
+    // options — dark then light
+    for (const theme of ['dark', 'light']) {
+      const { targetId } = await browser.cdp.send('Target.createTarget', {
+        url: 'about:blank'
+      })
       const { sessionId } = await browser.cdp.send('Target.attachToTarget', { targetId, flatten: true })
       await browser.cdp.send('Page.enable', {}, sessionId)
-      await browser.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: POPUP_STUB }, sessionId)
-      await browser.cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }, sessionId)
-      await browser.cdp.send('Page.navigate', { url: `chrome-extension://${extId}/popup.html` }, sessionId)
-      await sleep(1500)
+      if (theme === 'light') {
+        await browser.cdp.send(
+          'Emulation.setEmulatedMedia',
+          { features: [{ name: 'prefers-color-scheme', value: 'light' }] },
+          sessionId
+        )
+      }
+      await browser.cdp.send(
+        'Page.navigate',
+        { url: `chrome-extension://${extId}/options.html` },
+        sessionId
+      )
+      await waitReady(browser.cdp, sessionId, `options ${theme}`)
+      await sleep(600)
       const size = await contentSize(browser.cdp, sessionId)
-      const h = Math.max(320, Math.min(1200, size.height + 8))
-      await screenshot(browser.cdp, sessionId, shot('02-popup-light'), { width: 380, height: h })
-      const bg = await computed(
+      const name = nextName(`options${theme === 'light' ? '-light' : ''}`)
+      await screenshot(browser.cdp, sessionId, shot(name), { width: 760, height: size.height })
+      const bg = await computed(browser.cdp, sessionId, 'getComputedStyle(document.body).backgroundColor')
+      report.push(`options (${theme}) body background: ${bg}`)
+      if (theme === 'dark') {
+        const hintStrong = await computed(
+          browser.cdp,
+          sessionId,
+          `(() => {
+            const row = document.getElementById('site-cookies')
+            const hint = row && row.closest('.toggle-row').querySelector('.hint strong')
+            if (!hint) return null
+            return { text: hint.textContent, display: getComputedStyle(hint).display }
+          })()`
+        )
+        report.push(`options hint strong display: ${JSON.stringify(hintStrong)}`)
+      }
+    }
+
+    // welcome — connected state (native probe stubbed to succeed)
+    {
+      const { targetId } = await browser.cdp.send('Target.createTarget', {
+        url: 'about:blank'
+      })
+      const { sessionId } = await browser.cdp.send('Target.attachToTarget', { targetId, flatten: true })
+      await browser.cdp.send('Page.enable', {}, sessionId)
+      await browser.cdp.send(
+        'Page.addScriptToEvaluateOnNewDocument',
+        {
+          source: `(() => {
+            chrome.runtime.sendNativeMessage = (host, msg, cb) => {
+              if (msg && msg.type === 'probe') return cb({ ok: true, operation: 'probe' })
+              cb({ ok: true, accepted: true })
+            }
+          })()`
+        },
+        sessionId
+      )
+      await browser.cdp.send(
+        'Page.navigate',
+        { url: `chrome-extension://${extId}/welcome.html` },
+        sessionId
+      )
+      await waitReady(browser.cdp, sessionId, 'welcome')
+      await sleep(700)
+      const size = await contentSize(browser.cdp, sessionId)
+      const name = nextName('welcome')
+      await screenshot(browser.cdp, sessionId, shot(name), { width: 760, height: size.height })
+      const conn = await computed(
         browser.cdp,
         sessionId,
-        'getComputedStyle(document.body).backgroundColor'
+        '({ className: (document.getElementById("connection")||{}).className, title: (document.getElementById("connection-title")||{}).textContent })'
       )
-      report.push(`popup (light) body background: ${bg}`)
-    }
-
-    // options
-    {
-      const s = await openTarget(browser.cdp, `chrome-extension://${extId}/options.html`)
-      await sleep(600)
-      const size = await contentSize(browser.cdp, s)
-      await screenshot(browser.cdp, s, shot('03-options'), { width: 760, height: size.height })
-      const bg = await computed(browser.cdp, s, 'getComputedStyle(document.body).backgroundColor')
-      report.push(`options body background: ${bg}`)
-    }
-
-    // welcome
-    {
-      const s = await openTarget(browser.cdp, `chrome-extension://${extId}/welcome.html`)
-      await sleep(600)
-      const size = await contentSize(browser.cdp, s)
-      await screenshot(browser.cdp, s, shot('04-welcome'), { width: 760, height: size.height })
-      const bg = await computed(browser.cdp, s, 'getComputedStyle(document.body).backgroundColor')
-      report.push(`welcome body background: ${bg}`)
+      report.push(`welcome connection: ${JSON.stringify(conn)}`)
     }
 
     // overlay fixture
@@ -478,7 +599,32 @@ async function main() {
         'Boolean(document.getElementById("dondownload-overlay-host") && document.getElementById("dondownload-overlay-host").shadowRoot && document.getElementById("dondownload-overlay-host").shadowRoot.querySelector(".trigger"))'
       )
       report.push(`overlay host/trigger present: ${ready}`)
-      await screenshot(browser.cdp, s, shot('05-overlay'), { width: 1280, height: 800 })
+      const panelStyle = await computed(
+        browser.cdp,
+        s,
+        `(() => {
+          const host = document.getElementById('dondownload-overlay-host')
+          if (!host || !host.shadowRoot) return null
+          const panel = host.shadowRoot.querySelector('.panel')
+          if (!panel) return null
+          const cs = getComputedStyle(panel)
+          return { border: cs.border, outline: cs.outline, boxShadow: cs.boxShadow }
+        })()`
+      )
+      report.push(`overlay panel style: ${JSON.stringify(panelStyle)}`)
+      await screenshot(browser.cdp, s, shot(nextName('overlay')), { width: 1280, height: 800 })
+    }
+
+    report.push(
+      `scrollWidth summary: ${scrollWidths
+        .map((m) => `${m.scene}/${m.theme}=${m.scrollWidth}`)
+        .join(' ')}`
+    )
+    const overflow = scrollWidths.filter((m) => m.scrollWidth > 380)
+    if (overflow.length > 0) {
+      report.push(`OVERFLOW: ${JSON.stringify(overflow)}`)
+      console.error('popup horizontal overflow detected:', overflow)
+      exitCode = 1
     }
 
     console.log('\n' + report.join('\n'))

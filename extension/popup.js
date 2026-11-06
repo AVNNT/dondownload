@@ -32,6 +32,7 @@ import {
 
 const sendButton = document.getElementById('send')
 const scanButton = document.getElementById('scan-page')
+const scanButtonLabel = document.getElementById('scan-page-label')
 const scanMany = document.getElementById('scan-many')
 const scanLinksInput = document.getElementById('scan-links')
 const scanLinksStatus = document.getElementById('scan-links-status')
@@ -85,7 +86,9 @@ function setSending(next) {
   downloadAgainButton.disabled = next
   if (scanButton !== null) {
     scanButton.disabled = next || scanning || pageUrl === null
-    scanButton.textContent = scanning ? 'Opening scan…' : 'Scan this page with DonDownload'
+    if (scanButtonLabel !== null) {
+      scanButtonLabel.textContent = scanning ? 'Opening scan…' : 'Scan this page'
+    }
   }
   refreshScanLinks()
 }

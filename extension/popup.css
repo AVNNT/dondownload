@@ -229,6 +229,7 @@ body {
 
 .acts > .btn,
 .acts summary.btn {
+  min-width: 0;
   justify-content: center;
   height: 36px;
   width: 100%;
@@ -429,7 +430,14 @@ body {
 
 .card.login .bt .btn {
   flex: 1;
+  min-width: 0;
   justify-content: center;
+  height: auto;
+  min-height: 32px;
+  padding: 5px 12px;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .card.login .bt .stay {
