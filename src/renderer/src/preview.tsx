@@ -25,8 +25,8 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * details, optional ?theme=light|dark|oled, and ?overflow=1 renders a badge
- * with the horizontal-overflow metrics.
+ * details|shortcuts, optional ?theme=light|dark|oled, and ?overflow=1 renders
+ * a badge with the horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
   // React StrictMode runs effects twice in dev; the automation must run once.
@@ -111,6 +111,11 @@ function runPreviewAutomation(): void {
     }
     if (state === 'batches') {
       await clickByText('Batches')
+    }
+    if (state === 'shortcuts') {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true })
+      )
     }
     if (state === 'done-chip') {
       await clickByText('Done')

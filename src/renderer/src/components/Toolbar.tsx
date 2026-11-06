@@ -79,7 +79,7 @@ export function Toolbar({
           type="search"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search downloads"
+          placeholder="Search downloads  /"
           aria-label="Search downloads"
           spellCheck={false}
           autoComplete="off"
