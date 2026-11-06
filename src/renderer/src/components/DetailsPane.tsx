@@ -54,7 +54,7 @@ export function DetailsPane({
           <button
             type="button"
             onClick={() => onOpen(row)}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-emerald-400/25 px-2 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-400/10"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-accent-400/25 px-2 text-[11px] font-medium text-accent-300 transition hover:bg-accent-400/10"
           >
             <Icon name="external" size={12} />
             Open

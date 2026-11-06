@@ -40,7 +40,7 @@ const BATCH_STATUS_LABEL: Record<BatchStatus, string> = {
 
 const BATCH_STATUS_STYLE: Record<BatchStatus, string> = {
   queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  running: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  running: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
   partial: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
   error: 'border-red-400/30 bg-red-400/10 text-red-300',
@@ -50,7 +50,7 @@ const BATCH_STATUS_STYLE: Record<BatchStatus, string> = {
 
 const BATCH_BAR_STYLE: Record<BatchStatus, string> = {
   queued: 'bg-zinc-600',
-  running: 'bg-emerald-400',
+  running: 'bg-accent-400',
   complete: 'bg-emerald-400',
   partial: 'bg-amber-400',
   error: 'bg-red-400',
@@ -71,7 +71,7 @@ const ITEM_STATUS_LABEL: Record<BatchItemStatus, string> = {
 
 const ITEM_STATUS_STYLE: Record<BatchItemStatus, string> = {
   queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  running: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  running: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
   error: 'border-red-400/30 bg-red-400/10 text-red-300',
   unavailable: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
@@ -489,7 +489,7 @@ export function BatchSection(): JSX.Element {
             }
             disabled={submitting}
             aria-describedby="batch-urls-help"
-            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+            className="min-h-[80px] w-full resize-y rounded-lg border border-white/10 surface-input px-3 py-2.5 text-sm leading-6 text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
           />
           <p
             id="batch-urls-help"
@@ -519,7 +519,7 @@ export function BatchSection(): JSX.Element {
             <button
               type="submit"
               disabled={submitting || parsedUrlCount === 0}
-              className="h-10 rounded-xl bg-emerald-400 px-5 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              className="h-10 rounded-xl bg-accent-500 px-5 text-sm font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               {submitting ? 'Submitting…' : 'Submit batch'}
             </button>
@@ -904,7 +904,7 @@ function PreviewCard({
                   disabled={disabled}
                   onChange={() => onToggleEntry(entry.id)}
                   aria-describedby={reasonId}
-                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 surface-input accent-emerald-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed"
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 surface-input accent-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed"
                 />
                 <label
                   htmlFor={checkboxId}
@@ -1017,7 +1017,7 @@ function PreviewCard({
           type="button"
           onClick={() => onQueue(quality, maxBytes)}
           disabled={busy || selectedCount === 0 || (preview.kind === 'playlist' && (!availability || matchingCount === 0 || !validMaxBytes))}
-          className="h-10 shrink-0 rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-xl bg-accent-500 px-4 text-sm font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {queueing
             ? 'Queueing…'
@@ -1320,7 +1320,7 @@ function CardAction({
   danger?: boolean
 }): JSX.Element {
   const tone = accent
-    ? 'border-emerald-400/30 text-emerald-300 hover:bg-emerald-400/10'
+    ? 'border-accent-400/30 text-accent-300 hover:bg-accent-400/10'
     : danger
       ? 'border-white/10 text-zinc-500 hover:border-red-400/30 hover:text-red-300'
       : 'border-white/10 text-zinc-300 hover:bg-white/5'

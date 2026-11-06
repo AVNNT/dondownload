@@ -81,7 +81,7 @@ export function DownloadTable({
             onChange={onSelectAll}
             disabled={rows.length === 0}
             aria-label="Select all visible downloads"
-            className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-emerald-400 disabled:opacity-30"
+            className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-accent-400 disabled:opacity-30"
           />
         </div>
         <div role="columnheader" aria-label="Type" />
@@ -206,9 +206,9 @@ function TableRow({
       onContextMenu={(event) => onContextMenu(row, event)}
       className={`${GRID_COLUMNS} group min-h-[52px] cursor-default border-b border-white/[0.055] px-3 py-1.5 text-xs outline-none transition-colors ${
         selected
-          ? 'bg-emerald-400/[0.085] shadow-[inset_2px_0_0_0_rgb(52_211_153_/_0.9)]'
+          ? 'bg-accent-400/[0.085] shadow-[inset_2px_0_0_0_rgb(59_130_246_/_0.9)]'
           : 'hover:bg-white/[0.035]'
-      } focus-visible:bg-emerald-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400/60`}
+      } focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
     >
       <div role="gridcell" className="flex items-center">
         <input
@@ -217,7 +217,7 @@ function TableRow({
           onClick={(event) => event.stopPropagation()}
           onChange={() => onToggleRow(row)}
           aria-label={`Select ${row.title}`}
-          className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-emerald-400"
+          className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-accent-400"
         />
       </div>
 
@@ -287,7 +287,7 @@ function TableRow({
                         ? 'bg-zinc-500'
                         : row.statusTone === 'queued'
                           ? 'bg-zinc-600'
-                          : 'bg-emerald-400'
+                          : 'bg-accent-400'
                 }`}
                 style={{ width: `${percent}%` }}
               />

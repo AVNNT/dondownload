@@ -215,21 +215,21 @@ function SidebarButton({
       aria-current={current ? 'page' : undefined}
       className={`group flex h-8 w-full items-center justify-center gap-2 rounded-lg px-0 text-left text-[12px] font-medium transition min-[901px]:justify-start min-[901px]:px-2 ${
         active
-          ? 'bg-emerald-400/10 text-emerald-200 shadow-[inset_2px_0_0_0_rgb(52_211_153_/_0.85)]'
+          ? 'bg-accent-400/10 text-accent-200 shadow-[inset_2px_0_0_0_rgb(59_130_246_/_0.85)]'
           : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
       }`}
     >
       <Icon
         name={icon}
         size={16}
-        className={active ? 'text-emerald-300' : 'text-zinc-500 group-hover:text-zinc-300'}
+        className={active ? 'text-accent-300' : 'text-zinc-500 group-hover:text-zinc-300'}
       />
       <span className={`min-w-0 flex-1 truncate ${labelClass}`}>{label}</span>
       {typeof count === 'number' ? (
         <span
           className={`shrink-0 rounded-full px-1.5 text-[11px] font-semibold tabular-nums ${
             active
-              ? 'bg-emerald-400/15 text-emerald-200'
+              ? 'bg-accent-400/15 text-accent-200'
               : 'bg-white/[0.05] text-zinc-500'
           } ${countClass}`}
         >

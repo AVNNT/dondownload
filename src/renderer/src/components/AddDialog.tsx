@@ -307,7 +307,7 @@ function TabButton({
       onClick={onClick}
       className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium transition ${
         active
-          ? 'bg-emerald-400/10 text-emerald-200 ring-1 ring-inset ring-emerald-400/25'
+          ? 'bg-accent-400/10 text-accent-200 ring-1 ring-inset ring-accent-400/25'
           : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
       }`}
     >

@@ -138,7 +138,7 @@ export function MediaAnalyzer({
         key={option.optionId}
         className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition ${
           checked
-            ? 'border-emerald-400/40 bg-emerald-400/[0.06]'
+            ? 'border-accent-400/40 bg-accent-400/[0.06]'
             : 'border-white/10 hover:border-white/20'
         } ${controlsDisabled || busy ? 'cursor-not-allowed opacity-70' : ''}`}
       >
@@ -149,7 +149,7 @@ export function MediaAnalyzer({
           checked={checked}
           disabled={controlsDisabled || busy}
           onChange={() => setSelectedOptionId(option.optionId)}
-          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent-400"
         />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
@@ -157,7 +157,7 @@ export function MediaAnalyzer({
               {displayLabel}
             </span>
             {best || bestAudio ? (
-              <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
+              <span className="shrink-0 rounded border border-accent-400/30 bg-accent-400/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent-300">
                 {best ? 'Best' : 'Best audio'}
               </span>
             ) : null}
@@ -209,7 +209,7 @@ export function MediaAnalyzer({
           placeholder="https://example.com/watch?v=..."
           disabled={disabled}
           aria-busy={analyzing}
-          className="h-10 w-full rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 w-full rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
         />
       </div>
       <p className="mt-2 px-1 text-[11px] leading-5 text-zinc-400">
@@ -339,7 +339,7 @@ export function MediaAnalyzer({
           ) : null}
 
           <details className="mt-4 border-t border-white/10 pt-3">
-            <summary className="cursor-pointer text-[11px] font-medium text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+            <summary className="cursor-pointer text-[11px] font-medium text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-accent-400">
               Advanced details
             </summary>
             <fieldset className="mt-3">
@@ -402,7 +402,7 @@ export function MediaAnalyzer({
                   )
                 }
                 disabled={controlsDisabled || busy || !validMaxBytes}
-                className="h-9 shrink-0 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                className="h-9 shrink-0 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
               >
                 {queuingOptionId === selectedOption.optionId
                   ? 'Queueing…'

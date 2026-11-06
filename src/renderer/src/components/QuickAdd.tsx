@@ -187,7 +187,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: Quick
           }}
           placeholder="https://example.com/file.zip"
           disabled={disabled}
-          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50"
         />
         <label className="sr-only" htmlFor="download-filename">
           Custom file name (optional)
@@ -204,12 +204,12 @@ export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: Quick
           }}
           placeholder="File name (optional)"
           disabled={disabled}
-          className="h-10 min-w-0 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50 sm:w-40 lg:w-48"
+          className="h-10 min-w-0 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15 disabled:opacity-50 sm:w-40 lg:w-48"
         />
         <button
           type="submit"
           disabled={disabled || url.trim().length === 0}
-          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+          className="h-10 shrink-0 rounded-lg bg-accent-500 px-4 text-sm font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
           {disabled ? 'Adding…' : 'Add download'}
         </button>
@@ -231,7 +231,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: Quick
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 outline-none transition focus:border-accent-400/50 disabled:opacity-50"
             />
           </label>
           <label className="text-[11px] text-zinc-400">
@@ -250,7 +250,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: Quick
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/50 disabled:opacity-50"
             />
             <span
               id="download-speed-help"
@@ -276,7 +276,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl, onScanSuggested }: Quick
                 resetDuplicate()
               }}
               disabled={disabled}
-              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
+              className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/50 disabled:opacity-50"
             />
             <span className="mt-1 block min-h-4 text-[11px] leading-4 text-zinc-400">
               Blank uses the global setting.

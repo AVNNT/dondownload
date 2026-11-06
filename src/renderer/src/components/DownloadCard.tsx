@@ -25,7 +25,7 @@ const STATUS_LABEL: Record<DownloadStatus, string> = {
 
 const STATUS_STYLE: Record<DownloadStatus, string> = {
   queued: 'border-zinc-700 bg-zinc-900 text-zinc-300',
-  active: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  active: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
   waiting: 'border-amber-400/25 bg-amber-400/10 text-amber-300',
   paused: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
@@ -35,7 +35,7 @@ const STATUS_STYLE: Record<DownloadStatus, string> = {
 
 const BAR_STYLE: Record<DownloadStatus, string> = {
   queued: 'bg-zinc-600',
-  active: 'bg-emerald-400',
+  active: 'bg-accent-400',
   waiting: 'bg-amber-400',
   paused: 'bg-zinc-500',
   complete: 'bg-emerald-400',
@@ -297,7 +297,7 @@ function CardAction({
   danger?: boolean
 }): JSX.Element {
   const tone = accent
-    ? 'border-emerald-400/30 text-emerald-300 hover:bg-emerald-400/10'
+    ? 'border-accent-400/30 text-accent-300 hover:bg-accent-400/10'
     : danger
       ? 'border-white/10 text-zinc-400 hover:border-red-400/30 hover:text-red-300'
       : 'border-white/10 text-zinc-300 hover:bg-white/5'

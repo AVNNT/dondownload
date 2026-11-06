@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 import type { StatusTone } from '../lib/unified'
 
 const TONE_STYLE: Record<StatusTone, string> = {
-  active: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  active: 'border-accent-400/30 bg-accent-400/10 text-accent-300',
   queued: 'border-white/10 bg-white/[0.04] text-zinc-300',
   paused: 'border-zinc-600/70 bg-zinc-800/60 text-zinc-300',
   complete: 'border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-300',
@@ -11,7 +11,7 @@ const TONE_STYLE: Record<StatusTone, string> = {
 }
 
 const DOT_STYLE: Record<StatusTone, string> = {
-  active: 'bg-emerald-400',
+  active: 'bg-accent-400',
   queued: 'bg-zinc-500',
   paused: 'bg-zinc-400',
   complete: 'bg-emerald-400',
