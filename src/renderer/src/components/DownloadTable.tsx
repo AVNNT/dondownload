@@ -4,7 +4,8 @@ import {
   type MouseEvent,
   type ReactNode
 } from 'react'
-import type { UnifiedRow } from '../lib/unified'
+import { retryCountdownText, type UnifiedRow } from '../lib/unified'
+import { useNowUntil } from '../lib/useNow'
 import {
   isSelected,
   type SelectionMode,
@@ -59,6 +60,12 @@ export function DownloadTable({
   onKeyDown
 }: DownloadTableProps): JSX.Element {
   const selectMode = selection.selected.length > 1
+  // Only tick while a visible row is actually waiting for an automatic retry,
+  // so the "Retrying in Ns…" text counts down without a permanent timer.
+  const now = useNowUntil(
+    1_000,
+    rows.map((row) => row.retryAt)
+  )
 
   return (
     <div
@@ -77,6 +84,7 @@ export function DownloadTable({
             <TableRow
               key={row.key}
               row={row}
+              now={now}
               selected={isSelected(selection, row.key)}
               open={selection.selected.length === 1 && isSelected(selection, row.key)}
               selectMode={selectMode}
@@ -116,7 +124,7 @@ type RowVisual =
   | { kind: 'failed'; text: string }
   | { kind: 'interrupted'; percent: number }
 
-function describeRow(row: UnifiedRow): RowVisual {
+function describeRow(row: UnifiedRow, now: number): RowVisual {
   const download = row.download
   if (download !== null) {
     switch (download.status) {
@@ -154,16 +162,9 @@ function describeRow(row: UnifiedRow): RowVisual {
       case 'error': {
         // A scheduled automatic retry is not a hard failure: show it as a
         // waiting state until the retry runs or the budget runs out.
-        const retryAt = download.retryAt ?? null
-        const retrySeconds =
-          retryAt === null
-            ? null
-            : Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000))
-        if (retrySeconds !== null) {
-          return {
-            kind: 'scheduled',
-            text: `Retrying in ${retrySeconds}s…`
-          }
+        const retryText = retryCountdownText(download.retryAt ?? null, now)
+        if (retryText !== null) {
+          return { kind: 'scheduled', text: retryText }
         }
         return { kind: 'failed', text: download.errorMessage ?? 'Failed' }
       }
@@ -218,6 +219,7 @@ function describeRow(row: UnifiedRow): RowVisual {
 
 function TableRow({
   row,
+  now,
   selected,
   open,
   selectMode,
@@ -233,6 +235,8 @@ function TableRow({
   onContextMenu
 }: {
   row: UnifiedRow
+  /** Clock reading for the retry countdown; refreshed by the table's tick. */
+  now: number
   selected: boolean
   open: boolean
   selectMode: boolean
@@ -247,7 +251,7 @@ function TableRow({
   onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
 }): JSX.Element {
-  const visual = describeRow(row)
+  const visual = describeRow(row, now)
   const percent = Math.round(row.progress)
   const sizeLabel =
     row.sizeBytes !== null

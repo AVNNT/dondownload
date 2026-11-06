@@ -11,6 +11,9 @@ import {
   filterRows,
   isRunningRow,
   mediaJobToRow,
+  retryCountdownText,
+  retrySecondsLeft,
+  rowStatusGroup,
   runningCount,
   sortRows,
   statusCounts,
@@ -287,6 +290,63 @@ describe('search, filters and counts', () => {
     expect(counts).toEqual({ all: 4, active: 1, queued: 0, completed: 2, failed: 1 })
     const videoCounts = statusCounts(rows, 'video', '')
     expect(videoCounts).toEqual({ all: 2, active: 0, queued: 0, completed: 1, failed: 1 })
+  })
+})
+
+describe('rows waiting for an automatic retry', () => {
+  const retrying = rowFor({
+    id: 'retrying',
+    filename: 'retrying.mp4',
+    status: 'error',
+    errorMessage: 'Connection reset',
+    retryAt: NOW + 8_000
+  })
+  const failed = rowFor({
+    id: 'failed',
+    filename: 'broken.mp4',
+    status: 'error',
+    errorMessage: 'Not found'
+  })
+  const rows = [retrying, failed]
+
+  it('counts a pending retry as queued, not failed', () => {
+    expect(rowStatusGroup(retrying)).toBe('queued')
+    expect(rowStatusGroup(failed)).toBe('failed')
+    expect(statusCounts(rows, 'all', '')).toEqual({
+      all: 2,
+      active: 0,
+      queued: 1,
+      completed: 0,
+      failed: 1
+    })
+  })
+
+  it('filters a pending retry out of Failed and into Queued', () => {
+    expect(
+      filterRows(rows, { category: 'all', status: 'failed', query: '' }).map(
+        (row) => row.id
+      )
+    ).toEqual(['failed'])
+    expect(
+      filterRows(rows, { category: 'all', status: 'queued', query: '' }).map(
+        (row) => row.id
+      )
+    ).toEqual(['retrying'])
+  })
+
+  it('derives a clamped retry countdown', () => {
+    expect(retrySecondsLeft(NOW + 8_000, NOW)).toBe(8)
+    expect(retrySecondsLeft(NOW + 8_100, NOW)).toBe(9)
+    expect(retrySecondsLeft(NOW - 5_000, NOW)).toBe(0)
+    expect(retrySecondsLeft(null, NOW)).toBeNull()
+    expect(retryCountdownText(NOW + 8_000, NOW)).toBe('Retrying in 8s…')
+    expect(retryCountdownText(NOW - 1_000, NOW)).toBe('Retrying now…')
+    expect(retryCountdownText(null, NOW)).toBeNull()
+  })
+
+  it('keeps the status label and tone of a pending retry', () => {
+    expect(retrying.statusLabel).toBe('Failed')
+    expect(retrying.statusTone).toBe('failed')
   })
 })
 

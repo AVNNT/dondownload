@@ -487,6 +487,38 @@ export interface RowFilter {
   query: string
 }
 
+/**
+ * The status bucket a row belongs to in the filter chips. A download that is
+ * waiting for an automatic retry still carries status 'error', but it is not a
+ * hard failure: it is counted and filtered with the queued rows instead.
+ */
+export function rowStatusGroup(row: UnifiedRow): RowStatusGroup {
+  if (row.retryAt !== null) return 'queued'
+  return row.statusGroup
+}
+
+/**
+ * Whole seconds left before a pending automatic retry, clamped at zero.
+ * Returns null when the row has no scheduled retry.
+ */
+export function retrySecondsLeft(
+  retryAt: number | null,
+  now: number
+): number | null {
+  if (retryAt === null || !Number.isFinite(retryAt)) return null
+  return Math.max(0, Math.ceil((retryAt - now) / 1_000))
+}
+
+/** "Retrying in Ns…" text, or "Retrying now…" once the deadline has passed. */
+export function retryCountdownText(
+  retryAt: number | null,
+  now: number
+): string | null {
+  const seconds = retrySecondsLeft(retryAt, now)
+  if (seconds === null) return null
+  return seconds > 0 ? `Retrying in ${seconds}s…` : 'Retrying now…'
+}
+
 export function filterRows(
   rows: readonly UnifiedRow[],
   filter: RowFilter
@@ -495,7 +527,7 @@ export function filterRows(
     if (filter.category !== 'all' && row.category !== filter.category) {
       return false
     }
-    if (filter.status !== 'all' && row.statusGroup !== filter.status) {
+    if (filter.status !== 'all' && rowStatusGroup(row) !== filter.status) {
       return false
     }
     return matchesSearch(row, filter.query)
@@ -538,7 +570,7 @@ export function statusCounts(
     if (category !== 'all' && row.category !== category) continue
     if (!matchesSearch(row, query)) continue
     counts.all += 1
-    counts[row.statusGroup] += 1
+    counts[rowStatusGroup(row)] += 1
   }
   return counts
 }

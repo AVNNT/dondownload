@@ -1,7 +1,8 @@
 import { formatBytes, formatEta, formatSpeed } from '@shared/format'
 import type { JSX } from 'react'
 import type { StatusTone, UnifiedRow } from '../lib/unified'
-import { CATEGORY_LABELS } from '../lib/unified'
+import { CATEGORY_LABELS, retryCountdownText } from '../lib/unified'
+import { useNowUntil } from '../lib/useNow'
 import { canOpenRow, canShowRow } from '../lib/actions'
 import { CATEGORY_ACCENT, CATEGORY_ICON, Icon, type IconName } from './Icon'
 
@@ -47,7 +48,7 @@ function shortDateTime(value: number): string {
  * Plain-language size/progress summary. Active rows keep their live speed and
  * ETA; finished rows state when they landed; everything else shows bytes only.
  */
-function progressLine(row: UnifiedRow): string {
+export function progressLine(row: UnifiedRow, now: number = Date.now()): string {
   const totalBytes = row.sizeBytes
   const sizeKnown = totalBytes !== null && totalBytes > 0
   // A job that has not received any bytes yet and has no known total has
@@ -57,6 +58,15 @@ function progressLine(row: UnifiedRow): string {
     : row.completedBytes > 0
       ? formatBytes(row.completedBytes)
       : 'Waiting to start'
+
+  // A failed row never "waits to start": say so, and show the retry countdown
+  // while an automatic retry is pending.
+  if (row.statusGroup === 'failed') {
+    const retryText = retryCountdownText(row.retryAt, now)
+    if (retryText !== null) return retryText
+    const failure = row.errorMessage ?? 'Failed'
+    return sizeKnown || row.completedBytes > 0 ? `${failure} · ${range}` : failure
+  }
 
   if (row.statusGroup === 'active') {
     if (row.speedBps > 0 && row.etaSeconds !== null) {
@@ -89,6 +99,8 @@ export function DetailsPane({
 }): JSX.Element {
   const openable = canOpenRow(row)
   const showable = canShowRow(row)
+  // Keep the retry countdown live, and only run a timer while one is pending.
+  const now = useNowUntil(1_000, [row.retryAt])
 
   return (
     <section
@@ -136,7 +148,7 @@ export function DetailsPane({
       </div>
 
       <div className="flex flex-col gap-1.5 px-3 py-2.5 text-[11.5px] text-zinc-400">
-        <p className="tabular-nums">{progressLine(row)}</p>
+        <p className="tabular-nums">{progressLine(row, now)}</p>
         {row.media ? (
           <p className="truncate" title={row.media.label}>
             {row.media.label}
