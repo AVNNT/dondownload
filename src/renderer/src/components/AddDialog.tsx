@@ -13,6 +13,7 @@ import type {
   AppErrorInfo,
   AppSnapshot
 } from '@shared/types'
+import { formatBytes } from '@shared/format'
 import {
   type MediaAnalysis,
   type MediaOutputFormat,
@@ -146,6 +147,9 @@ export function AddDialog({
     single !== null &&
     single.kind === 'page'
   const fileMode = single?.kind === 'file' || forcedFile
+  const fileSize = useProbedFileSize(
+    !batchMode && !mediaMode && fileMode && single !== null ? single.url : null
+  )
 
   const handleTextChange = useCallback((value: string): void => {
     setText(value)
@@ -282,9 +286,19 @@ export function AddDialog({
       </div>
     )
   } else if (single !== null && fileMode) {
+    const sizeLabel = fileSize.probing
+      ? '…'
+      : fileSize.size !== null
+        ? formatBytes(fileSize.size)
+        : null
     body = (
       <div className="flex flex-col gap-2.5">
-        <LinkRow link={{ ...single, kind: 'file' }} subtitle={hostOf(single.url)} />
+        <LinkRow
+          link={{ ...single, kind: 'file' }}
+          subtitle={[hostOf(single.url), sizeLabel]
+            .filter((part) => part !== null)
+            .join(' · ')}
+        />
         <QuickAdd
           disabled={busy}
           onAdd={async (input) => {
@@ -489,6 +503,57 @@ export function AddDialog({
       </div>
     </div>
   )
+}
+
+const PROBE_SIZE_DEBOUNCE_MS = 400
+
+/**
+ * Debounced size probe for the single direct-file row. The settled probe is
+ * stored keyed by its URL, so results that arrive after the URL (or dialog
+ * state) changed are ignored by the request counter; a failed or size-less
+ * probe just leaves the size hidden. Whether anything is in flight is
+ * derived: anything not yet settled for the current URL still shows "…".
+ */
+function useProbedFileSize(
+  url: string | null
+): { size: number | null; probing: boolean } {
+  const requestRef = useRef(0)
+  const [settled, setSettled] = useState<{
+    url: string
+    probing: boolean
+    size: number | null
+  }>({ url: '', probing: false, size: null })
+
+  useEffect(() => {
+    if (url === null) return
+    const request = ++requestRef.current
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await window.donDownload.probeUrlSize(url)
+          if (requestRef.current === request) {
+            setSettled({
+              url,
+              probing: false,
+              size: result.ok ? result.value.size : null
+            })
+          }
+        } catch {
+          if (requestRef.current === request) {
+            setSettled({ url, probing: false, size: null })
+          }
+        }
+      })()
+    }, PROBE_SIZE_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(timer)
+      requestRef.current += 1
+    }
+  }, [url])
+
+  if (url === null) return { size: null, probing: false }
+  if (settled.url !== url) return { size: null, probing: true }
+  return { size: settled.size, probing: settled.probing }
 }
 
 /** Mock "det" row: type tag, name, host/summary and optional inline actions. */

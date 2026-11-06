@@ -48,7 +48,8 @@ import type {
   DonDownloadApi,
   DownloadItem,
   SmartBatchSubmitEntry,
-  SmartBatchSubmitResult
+  SmartBatchSubmitResult,
+  UrlSizeProbe
 } from '@shared/types'
 import {
   isQueueableScanItem,
@@ -1021,6 +1022,15 @@ export function createPreviewApi(
     },
 
     getSnapshot: async () => ok(downloadSnapshot()),
+
+    probeUrlSize: async (url: string) => {
+      // Deterministic pseudo-size so preview rows show a plausible value.
+      let hash = 7
+      for (let index = 0; index < url.length; index += 1) {
+        hash = (hash * 31 + url.charCodeAt(index)) >>> 0
+      }
+      return ok<UrlSizeProbe>({ size: 1_500_000 + (hash % 998_500_000) })
+    },
 
     addDownload: async (input: AddDownloadInput) => {
       let url: string

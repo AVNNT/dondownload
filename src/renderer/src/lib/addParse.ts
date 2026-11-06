@@ -21,8 +21,40 @@ export interface ParsedAddInput {
   invalid: string[]
 }
 
+/**
+ * Path extensions that can only be a web page rather than a direct file.
+ * Anything outside this set defaults the link to a direct file download.
+ */
+const WEB_PAGE_EXTENSIONS = new Set([
+  'html',
+  'htm',
+  'php',
+  'asp',
+  'aspx',
+  'jsp',
+  'cfm',
+  'shtml'
+])
+
+function hasFileExtension(url: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+  const segments = parsed.pathname.split('/').filter(Boolean)
+  const last = segments[segments.length - 1]
+  if (!last) return false
+  const dot = last.lastIndexOf('.')
+  if (dot <= 0) return false
+  const extension = last.slice(dot + 1).toLowerCase()
+  return extension.length > 0 && !WEB_PAGE_EXTENSIONS.has(extension)
+}
+
 export function classifyAddUrl(url: string): AddLinkKind {
   if (isObviousDirectFileUrl(url)) return 'file'
+  if (hasFileExtension(url)) return 'file'
   if (isLikelyMediaUrl(url)) return 'media'
   return 'page'
 }

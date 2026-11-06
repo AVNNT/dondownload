@@ -19,6 +19,30 @@ describe('add dialog link parsing', () => {
     )
   })
 
+  it('defaults unknown file extensions to a direct file', () => {
+    expect(classifyAddUrl('https://proof.ovh.net/files/1Mb.dat')).toBe('file')
+    expect(classifyAddUrl('https://cdn.example.net/assets/blob.bin')).toBe(
+      'file'
+    )
+    expect(classifyAddUrl('https://example.com/x/archive.tar.gz')).toBe('file')
+  })
+
+  it('keeps extensionless and web-page links as pages', () => {
+    expect(classifyAddUrl('https://example.com/download?file=setup.zip')).toBe(
+      'page'
+    )
+    expect(classifyAddUrl('https://example.com/files/index.php')).toBe('page')
+    expect(classifyAddUrl('https://example.com/files/list.asp')).toBe('page')
+    expect(classifyAddUrl('https://example.com/blog/post.aspx')).toBe('page')
+    expect(classifyAddUrl('https://example.com/blog/post')).toBe('page')
+  })
+
+  it('keeps web-page links in the parsed plan as pages with both actions', () => {
+    const parsed = parseAddInput('https://example.com/files/index.php')
+    expect(parsed.links[0]?.kind).toBe('page')
+    expect(addPlanSummary(parsed)).toEqual({ downloadCount: 0, scanCount: 1 })
+  })
+
   it('parses one link per line, ignoring blanks and duplicates', () => {
     const parsed = parseAddInput(
       [

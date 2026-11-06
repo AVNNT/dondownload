@@ -179,6 +179,12 @@ export type ApiResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: AppErrorInfo }
 
+/** Result of the main process's bounded HEAD size probe for a direct link. */
+export interface UrlSizeProbe {
+  /** Total `content-length` bytes, or null when the size cannot be known. */
+  size: number | null
+}
+
 /* ------------------------------------------------------------------------- *
  * Milestone 3B batch orchestration (renderer-safe)
  * ------------------------------------------------------------------------- */
@@ -245,6 +251,8 @@ export interface DonDownloadApi {
   /** Move a finished download's recorded output to the Recycle Bin. */
   deleteDownloadFile: (id: string) => Promise<ApiResult<AppSnapshot>>
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
+  /** Bounded anonymous HEAD probe: total bytes of a direct file URL, or null. */
+  probeUrlSize: (url: string) => Promise<ApiResult<UrlSizeProbe>>
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
 
   // Media (Milestone 3A). These are additive and do not change the download
