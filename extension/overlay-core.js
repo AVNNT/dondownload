@@ -36,10 +36,92 @@
     return { width: width, height: height }
   }
 
+  function toBox(rect) {
+    if (!rect || typeof rect !== 'object') return null
+    var left = rect.left
+    var top = rect.top
+    var width = rect.width
+    var height = rect.height
+    if (![left, top, width, height].every(isFiniteNumber)) return null
+    return { left: left, top: top, width: width, height: height }
+  }
+
+  function boxArea(box) {
+    if (!box) return 0
+    return Math.max(0, box.width) * Math.max(0, box.height)
+  }
+
+  /**
+   * Intersect two plain rects. Returns null when they do not overlap, so an
+   * empty intersection is never mistaken for a zero-size anchor.
+   */
+  function intersectRects(first, second) {
+    var a = toBox(first)
+    var b = toBox(second)
+    if (!a || !b) return null
+    var left = Math.max(a.left, b.left)
+    var top = Math.max(a.top, b.top)
+    var right = Math.min(a.left + a.width, b.left + b.width)
+    var bottom = Math.min(a.top + a.height, b.top + b.height)
+    if (!(right > left) || !(bottom > top)) return null
+    return { left: left, top: top, width: right - left, height: bottom - top }
+  }
+
+  function viewportRect(viewport) {
+    var view = validViewport(viewport)
+    if (!view) return null
+    return { left: 0, top: 0, width: view.width, height: view.height }
+  }
+
+  /**
+   * The visible part of a video: its rect intersected with every clipping
+   * ancestor (nearest first, as `clipRects`) and with the viewport.
+   *
+   * Some players (YouTube before playback) report a video rect that is shifted
+   * far above the visible player while the player container clips it away. When
+   * the intersection is empty or tiny but a clipping ancestor is itself large
+   * and visible, that ancestor is the real player surface and becomes the
+   * anchor. A fully offscreen video still yields null.
+   *
+   * input: { rect, clipRects?, viewport }
+   * result: { anchor, source: 'video' | 'container' | 'none', visible }
+   */
+  function chooseAnchor(input) {
+    var view = validViewport(input && input.viewport)
+    if (!view) return { anchor: null, source: 'none', visible: null }
+    var rect = toBox(input && input.rect)
+    if (!rect) return { anchor: null, source: 'none', visible: null }
+
+    var viewBox = viewportRect(view)
+    var visible = intersectRects(rect, viewBox)
+    var clips = Array.isArray(input.clipRects) ? input.clipRects : []
+    var containers = []
+    for (var index = 0; index < clips.length; index += 1) {
+      var clip = toBox(clips[index])
+      if (!clip) continue
+      containers.push(clip)
+      visible = visible ? intersectRects(visible, clip) : null
+    }
+
+    if (visible && visible.width >= MIN_VIDEO_WIDTH && visible.height >= MIN_VIDEO_HEIGHT) {
+      return { anchor: visible, source: 'video', visible: visible }
+    }
+
+    var fallback = null
+    for (var containerIndex = 0; containerIndex < containers.length; containerIndex += 1) {
+      var candidate = intersectRects(containers[containerIndex], viewBox)
+      if (!candidate) continue
+      if (candidate.width < MIN_VIDEO_WIDTH || candidate.height < MIN_VIDEO_HEIGHT) continue
+      if (boxArea(candidate) > boxArea(fallback)) fallback = candidate
+    }
+    if (fallback) return { anchor: fallback, source: 'container', visible: fallback }
+    return { anchor: null, source: 'none', visible: visible }
+  }
+
   /**
    * Decide whether a candidate is a usable, visible video. `candidate` is a
    * plain description so this can be tested without a DOM:
-   * { tagName, isConnected, hidden, rect, styles? }
+   * { tagName, isConnected, hidden, rect, clipRects?, styles? }
    */
   function evaluateVideoCandidate(candidate, viewport) {
     var view = validViewport(viewport)
@@ -80,23 +162,32 @@
       return { usable: false, reason: 'too-small' }
     }
 
-    var right = left + width
-    var bottom = top + height
-    var overlapsViewport =
-      right > EDGE_INSET &&
-      bottom > EDGE_INSET &&
-      left < view.width - EDGE_INSET &&
-      top < view.height - EDGE_INSET
-    if (!overlapsViewport) return { usable: false, reason: 'offscreen' }
+    // A video clipped to nothing is offscreen even when its raw rect overlaps
+    // the viewport; a shifted video whose visible player container is large
+    // still counts as usable, anchored to that container.
+    var chosen = chooseAnchor({
+      rect: rect,
+      clipRects: candidate.clipRects,
+      viewport: view
+    })
+    if (!chosen.anchor) {
+      return {
+        usable: false,
+        reason: chosen.visible ? 'offscreen' : 'clipped',
+        anchorRect: null
+      }
+    }
 
     return {
       usable: true,
       reason: 'ok',
+      anchorRect: chosen.anchor,
+      anchorSource: chosen.source,
       visibleRect: {
-        left: Math.max(left, 0),
-        top: Math.max(top, 0),
-        right: Math.min(right, view.width),
-        bottom: Math.min(bottom, view.height)
+        left: chosen.anchor.left,
+        top: chosen.anchor.top,
+        right: chosen.anchor.left + chosen.anchor.width,
+        bottom: chosen.anchor.top + chosen.anchor.height
       }
     }
   }
@@ -194,13 +285,13 @@
     return Math.min(Math.max(value, minimum), maximum)
   }
 
-  /** Small button anchored to the top-right corner of the video. */
+  /** Small button anchored to the top-left corner of the visible video. */
   function placeTrigger(rect, viewport) {
     var view = validViewport(viewport)
     if (!view || !rect) return null
     var maxLeft = Math.max(EDGE_INSET, view.width - BUTTON_SIZE - EDGE_INSET)
     var maxTop = Math.max(EDGE_INSET, view.height - BUTTON_SIZE - EDGE_INSET)
-    var left = clamp(rect.left + rect.width - BUTTON_SIZE - EDGE_INSET, EDGE_INSET, maxLeft)
+    var left = clamp(rect.left + EDGE_INSET, EDGE_INSET, maxLeft)
     var top = clamp(rect.top + EDGE_INSET, EDGE_INSET, maxTop)
     return { left: left, top: top, width: BUTTON_SIZE, height: BUTTON_SIZE }
   }
@@ -1146,6 +1237,8 @@
     SHORTCUT_LABEL: SHORTCUT_LABEL,
     MEDIA_SIZE_UNKNOWN: MEDIA_SIZE_UNKNOWN,
     evaluateVideoCandidate: evaluateVideoCandidate,
+    intersectRects: intersectRects,
+    chooseAnchor: chooseAnchor,
     findVideoInPath: findVideoInPath,
     evaluateIframeCandidate: evaluateIframeCandidate,
     findIframeInPath: findIframeInPath,

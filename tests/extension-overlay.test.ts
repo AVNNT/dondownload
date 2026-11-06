@@ -23,10 +23,11 @@ interface CoreApi {
       isConnected?: boolean
       hidden?: boolean
       rect?: Rect
+      clipRects?: Rect[]
       styles?: { display?: string; visibility?: string; opacity?: string }
     },
     viewport: { width: number; height: number }
-  ) => { usable: boolean; reason: string }
+  ) => { usable: boolean; reason: string; anchorRect?: Rect | null; anchorSource?: string }
   findVideoInPath: (path: unknown[]) => unknown
   findIframeInPath: (path: unknown[]) => unknown
   evaluateIframeCandidate: (
@@ -54,6 +55,12 @@ interface CoreApi {
     rect: Rect,
     viewport: { width: number; height: number }
   ) => { left: number; top: number; width: number; height: number } | null
+  intersectRects: (first: Rect | null, second: Rect | null) => Rect | null
+  chooseAnchor: (input: {
+    rect: Rect | null
+    clipRects?: Rect[]
+    viewport: { width: number; height: number }
+  }) => { anchor: Rect | null; source: string; visible: Rect | null }
   placePanel: (
     trigger: { left: number; top: number },
     viewport: { width: number; height: number },
@@ -269,16 +276,16 @@ describe('video detection and placement policy', () => {
     expect(core.optionById(null, 'option_720')).toBeNull()
   })
 
-  it('places the button at the video top-right and clamps it into the viewport', () => {
+  it('places the button at the visible video top-left and clamps it into the viewport', () => {
     expect(
       core.placeTrigger({ left: 100, top: 100, width: 640, height: 360 }, viewport)
-    ).toEqual({ left: 702, top: 108, width: 30, height: 30 })
+    ).toEqual({ left: 108, top: 108, width: 30, height: 30 })
 
     const clamped = core.placeTrigger(
-      { left: 1000, top: 0, width: 400, height: 300 },
+      { left: -400, top: -50, width: 400, height: 300 },
       viewport
     )
-    expect(clamped).toEqual({ left: 1242, top: 8, width: 30, height: 30 })
+    expect(clamped).toEqual({ left: 8, top: 8, width: 30, height: 30 })
 
     expect(core.placeTrigger({ left: 0, top: 0, width: 10, height: 10 }, viewport)).toEqual({
       left: 8,
@@ -286,6 +293,80 @@ describe('video detection and placement policy', () => {
       width: 30,
       height: 30
     })
+  })
+
+  it('anchors a clipped, offset video to the visible player container', () => {
+    // Measured on YouTube before playback: the video rect sits far above the
+    // visible #movie_player, which clips it.
+    const videoRect = { left: 23, top: -565, width: 844, height: 633 }
+    const playerRect = { left: 24, top: 68, width: 844, height: 633 }
+    const chosen = core.chooseAnchor({
+      rect: videoRect,
+      clipRects: [playerRect],
+      viewport
+    })
+    expect(chosen.source).toBe('container')
+    expect(chosen.anchor).toEqual(playerRect)
+
+    const result = core.evaluateVideoCandidate(
+      {
+        tagName: 'VIDEO',
+        isConnected: true,
+        rect: videoRect,
+        clipRects: [playerRect]
+      },
+      viewport
+    )
+    expect(result).toMatchObject({ usable: true, reason: 'ok', anchorSource: 'container' })
+    expect(result.anchorRect).toEqual(playerRect)
+    expect(core.placeTrigger(result.anchorRect as Rect, viewport)).toEqual({
+      left: 32,
+      top: 76,
+      width: 30,
+      height: 30
+    })
+  })
+
+  it('leaves a normal video anchored to its own visible rect', () => {
+    const rect = { left: 100, top: 80, width: 640, height: 360 }
+    const chosen = core.chooseAnchor({
+      rect,
+      clipRects: [{ left: 0, top: 0, width: 1280, height: 720 }],
+      viewport
+    })
+    expect(chosen.source).toBe('video')
+    expect(chosen.anchor).toEqual(rect)
+
+    // A partially scrolled-off video is anchored to the visible remainder.
+    const scrolled = core.chooseAnchor({
+      rect: { left: -200, top: 40, width: 640, height: 360 },
+      clipRects: [],
+      viewport
+    })
+    expect(scrolled.anchor).toEqual({ left: 0, top: 40, width: 440, height: 360 })
+  })
+
+  it('hides a fully offscreen or fully clipped video', () => {
+    const offscreen = { left: -3000, top: 0, width: 640, height: 360 }
+    expect(
+      core.evaluateVideoCandidate(
+        { tagName: 'VIDEO', isConnected: true, rect: offscreen },
+        viewport
+      ).usable
+    ).toBe(false)
+
+    // Clipped away by a container that is itself offscreen.
+    const clipped = core.evaluateVideoCandidate(
+      {
+        tagName: 'VIDEO',
+        isConnected: true,
+        rect: { left: 100, top: 100, width: 640, height: 360 },
+        clipRects: [{ left: 0, top: -2000, width: 640, height: 360 }]
+      },
+      viewport
+    )
+    expect(clipped.usable).toBe(false)
+    expect(core.chooseAnchor({ rect: offscreen, clipRects: [], viewport }).anchor).toBeNull()
   })
 
   it('places the expandable panel below or above and clamps it inside the viewport', () => {
@@ -599,7 +680,14 @@ class FakeNode {
   videoHeight = 0
   shadowRoot: FakeShadowRoot | null = null
   rect: FakeRect = { left: 0, top: 0, width: 0, height: 0 }
-  computed: { display?: string; visibility?: string; opacity?: string } = {
+  computed: {
+    display?: string
+    visibility?: string
+    opacity?: string
+    overflow?: string
+    overflowX?: string
+    overflowY?: string
+  } = {
     display: 'block',
     visibility: 'visible',
     opacity: '1'
@@ -1222,7 +1310,7 @@ describe('overlay interaction in a minimal DOM', () => {
     pointerOver(harness.video)
     expect(harness.host.hidden).toBe(false)
     expect(harness.trigger.hidden).toBe(false)
-    expect(harness.trigger.style.left).toBe('702px')
+    expect(harness.trigger.style.left).toBe('108px')
     expect(harness.trigger.style.top).toBe('108px')
     expect(harness.resizeObserver.targets).toContain(harness.video)
 
@@ -1238,7 +1326,7 @@ describe('overlay interaction in a minimal DOM', () => {
       pointerEvent(harness.document.body, [harness.document.body], { clientX: 20, clientY: 20 })
     )
     harness.dispatchDocument('pointerup', pointerEvent(harness.document.body, [harness.document.body]))
-    expect(harness.trigger.style.left).toBe('702px')
+    expect(harness.trigger.style.left).toBe('108px')
     expect(harness.trigger.style.top).toBe('108px')
 
     const click = pointerEvent(harness.trigger, [harness.trigger, harness.host])
@@ -1501,6 +1589,37 @@ describe('overlay interaction in a minimal DOM', () => {
     )
     expect(closed).toEqual({ ok: true })
     expect(harness.panel.hidden).toBe(true)
+  })
+
+  it('anchors the button to the visible player when the video rect is clipped away', () => {
+    harness = createHarness()
+    // YouTube before playback: the video rect sits above the visible player,
+    // which clips it with overflow:hidden.
+    harness.video.rect = { left: 23, top: -565, width: 844, height: 633 }
+    const player = new FakeNode('div')
+    player.rect = { left: 24, top: 68, width: 844, height: 633 }
+    player.computed = {
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+      overflow: 'hidden'
+    }
+    // The fake document element is only a 0x0 rect; a real one is the viewport.
+    harness.document.documentElement.rect = { left: 0, top: 0, width: 1280, height: 720 }
+    harness.document.body.appendChild(player)
+    player.appendChild(harness.video)
+
+    pointerOver(harness.video)
+    expect(harness.host.hidden).toBe(false)
+    expect(harness.trigger.hidden).toBe(false)
+    expect(harness.trigger.style.left).toBe('32px')
+    expect(harness.trigger.style.top).toBe('76px')
+
+    // A fully offscreen video still hides the overlay.
+    harness.video.rect = { left: 23, top: -2000, width: 844, height: 633 }
+    player.rect = { left: 24, top: -2000, width: 844, height: 633 }
+    harness.mutationObserver.trigger()
+    expect(harness.host.hidden).toBe(true)
   })
 })
 
