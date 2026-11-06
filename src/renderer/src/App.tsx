@@ -25,6 +25,7 @@ import { formatSpeed } from '@shared/format'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { SettingsSection } from './components/SettingsSection'
+import { BrowserExtensionSection } from './components/BrowserExtensionSection'
 import { Sidebar, type SidebarPage } from './components/Sidebar'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
@@ -873,6 +874,7 @@ export default function App(): JSX.Element {
             <div className="min-h-0 flex-1 overflow-y-auto pb-8">
               <div className="mx-auto w-full max-w-3xl">
                 <SettingsSection />
+                <BrowserExtensionSection />
               </div>
             </div>
           ) : null}
