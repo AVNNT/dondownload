@@ -321,6 +321,59 @@ describe('scan script pairing DTOs', () => {
 })
 
 describe('scan script pairing queue validation', () => {
+  it('accepts the preload payload for a video download with scripts', () => {
+    // Exactly the shape the preload builds for
+    // queueScanSelection(sessionId, itemIds, videoOptions, pairings): the
+    // script IDs are part of itemIds, and both optional lists are present.
+    const payload = {
+      sessionId: 'scan_0123456789abcdef',
+      itemIds: ['item_video', 'item_script_main', 'item_script_hard'],
+      videoOptions: [
+        {
+          itemId: 'item_video',
+          optionId: 'opt_720p',
+          outputFormat: 'mp4'
+        }
+      ],
+      pairings: [
+        {
+          videoItemId: 'item_video',
+          setId: 'set:fancam-01-wonyoung@1',
+          scriptItemIds: ['item_script_main', 'item_script_hard'],
+          primaryVariant: 'Hard',
+          rename: true
+        }
+      ]
+    }
+
+    const parsed = parseScanQueueSelectionInput(payload)
+    expect(parsed).toEqual({
+      sessionId: 'scan_0123456789abcdef',
+      itemIds: ['item_video', 'item_script_main', 'item_script_hard'],
+      videoOptions: [
+        {
+          itemId: 'item_video',
+          optionId: 'opt_720p',
+          outputFormat: 'mp4'
+        }
+      ],
+      pairings: [
+        {
+          videoItemId: 'item_video',
+          setId: 'set:fancam-01-wonyoung@1',
+          scriptItemIds: ['item_script_main', 'item_script_hard'],
+          primaryVariant: 'hard',
+          rename: true
+        }
+      ]
+    })
+
+    // Strict validation is unchanged: an unknown top-level key still fails.
+    expect(() =>
+      parseScanQueueSelectionInput({ ...payload, extra: true })
+    ).toThrow(/unsupported fields/)
+  })
+
   it('accepts an explicit multi-axis pairing and passes it to the batch port', async () => {
     const { sessions, session } = await scanned()
     const video = itemByName(session, 'Fancam 01 Wonyoung')
