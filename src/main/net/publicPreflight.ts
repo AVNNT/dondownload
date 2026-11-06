@@ -473,7 +473,14 @@ export async function preflightPublicResource(
       const validated = validateResponse({ ...input, url: current }, response)
       return { ...validated, finalUrl: current }
     } catch (error) {
-      if (error instanceof AppError) throw error
+      if (error instanceof AppError) {
+        if (error.code === 'MEDIA_TARGET_UNRESOLVED') {
+          throw failure(
+            "Couldn't reach that site. Check the address or your internet connection."
+          )
+        }
+        throw error
+      }
       throw failure('The public resource target is not public.')
     }
   }

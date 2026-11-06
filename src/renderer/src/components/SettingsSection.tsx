@@ -691,13 +691,16 @@ export function SettingsSection(): JSX.Element {
   if (!draft) {
     return (
       <div aria-labelledby="settings-heading" className="space-y-6">
-        <header className="flex h-14 items-center border-b border-white/[0.07]">
+        <header className="border-b border-white/[0.07] pb-4">
           <h1
             id="settings-heading"
-            className="text-[15px] font-semibold text-zinc-100"
+            className="text-xl font-semibold tracking-tight text-zinc-100"
           >
             Settings
           </h1>
+          <p className="mt-1 text-[13px] text-zinc-500">
+            Changes save automatically.
+          </p>
         </header>
         <p
           role={loadError ? 'alert' : undefined}
@@ -720,13 +723,16 @@ export function SettingsSection(): JSX.Element {
 
   return (
     <div aria-labelledby="settings-heading" className="space-y-7">
-      <header className="flex h-14 items-center border-b border-white/[0.07]">
+      <header className="border-b border-white/[0.07] pb-4">
         <h1
           id="settings-heading"
-          className="text-[15px] font-semibold text-zinc-100"
+          className="text-xl font-semibold tracking-tight text-zinc-100"
         >
           Settings
         </h1>
+        <p className="mt-1 text-[13px] text-zinc-500">
+          Changes save automatically.
+        </p>
       </header>
 
       <section aria-labelledby="settings-transfers">

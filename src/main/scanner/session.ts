@@ -2185,6 +2185,9 @@ function safeFailureMessage(error: unknown): string {
   if (code === 'SCAN_TARGET_NOT_PUBLIC') {
     return 'Local and private network pages cannot be scanned.'
   }
+  if (code === 'SCAN_TARGET_UNRESOLVED') {
+    return "Couldn't reach that site. Check the address or your internet connection."
+  }
   if (code === 'SCAN_FETCH_TYPE') {
     return 'That link is not an HTML page. Add a direct file link instead.'
   }
