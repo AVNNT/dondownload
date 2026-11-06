@@ -184,12 +184,25 @@ export function DetailsPane({
       </div>
 
       {row.errorMessage ? (
-        <p
-          role="alert"
-          className="mx-3 mb-2.5 rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1.5 text-[11px] leading-5 text-red-300"
-        >
-          {row.errorMessage}
-        </p>
+        <div className="mx-3 mb-2.5">
+          <p
+            role="alert"
+            className="rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1.5 text-[11px] leading-5 text-red-300"
+          >
+            {row.errorMessage}
+          </p>
+          {row.errorDetail ? (
+            <p className="mt-1 px-1 text-[10.5px] leading-4 text-zinc-500">
+              <span className="font-semibold uppercase tracking-wide">
+                Technical details
+              </span>
+              {': '}
+              <span className="select-text" title={row.errorDetail}>
+                {row.errorDetail}
+              </span>
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </section>
   )

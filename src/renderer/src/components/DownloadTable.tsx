@@ -151,8 +151,22 @@ function describeRow(row: UnifiedRow): RowVisual {
         }
       case 'complete':
         return { kind: 'done', when: relativeWhen(download.completedAt) }
-      case 'error':
+      case 'error': {
+        // A scheduled automatic retry is not a hard failure: show it as a
+        // waiting state until the retry runs or the budget runs out.
+        const retryAt = download.retryAt ?? null
+        const retrySeconds =
+          retryAt === null
+            ? null
+            : Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000))
+        if (retrySeconds !== null) {
+          return {
+            kind: 'scheduled',
+            text: `Retrying in ${retrySeconds}s…`
+          }
+        }
         return { kind: 'failed', text: download.errorMessage ?? 'Failed' }
+      }
       case 'interrupted':
         return { kind: 'interrupted', percent: row.progress }
     }

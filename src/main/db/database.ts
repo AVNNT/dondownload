@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -478,6 +478,14 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE downloads ADD COLUMN needs_login INTEGER NOT NULL DEFAULT 0
         CHECK (needs_login IN (0, 1));
     `
+  },
+  {
+    // Additive only: the raw aria2 failure text is kept beside the
+    // plain-language error message so it can be shown as technical detail.
+    version: 13,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN error_detail TEXT;
+    `
   }
 ]
 
@@ -584,6 +592,7 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
       speedBps: 0,
       etaSeconds: null,
       errorMessage: text(row, 'error_message'),
+      errorDetail: text(row, 'error_detail'),
       attempts,
       maxAttempts,
       createdAt: Math.trunc(number(row, 'created_at')),
@@ -816,9 +825,9 @@ export class DownloadDatabase {
       this.upsertStatement = this.db.prepare(`
         INSERT INTO downloads (
           id, gid, url, filename, explicit_filename, dir, file_path, status,
-          total_bytes, completed_bytes, error_message, attempts, max_attempts,
-          created_at, updated_at, completed_at, needs_login
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          total_bytes, completed_bytes, error_message, error_detail, attempts,
+          max_attempts, created_at, updated_at, completed_at, needs_login
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           gid = excluded.gid,
           url = excluded.url,
@@ -830,6 +839,7 @@ export class DownloadDatabase {
           total_bytes = excluded.total_bytes,
           completed_bytes = excluded.completed_bytes,
           error_message = excluded.error_message,
+          error_detail = excluded.error_detail,
           attempts = excluded.attempts,
           max_attempts = excluded.max_attempts,
           created_at = excluded.created_at,
@@ -1531,6 +1541,7 @@ export class DownloadDatabase {
       Math.max(0, Math.trunc(record.totalBytes)),
       Math.max(0, Math.trunc(record.completedBytes)),
       record.errorMessage,
+      record.errorDetail ?? null,
       Math.max(1, Math.trunc(record.attempts)),
       Math.max(1, Math.trunc(record.maxAttempts)),
       Math.trunc(record.createdAt),

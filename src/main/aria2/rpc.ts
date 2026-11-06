@@ -153,44 +153,91 @@ export function mapAria2Status(status: string): DownloadStatus {
   }
 }
 
+/**
+ * Raw aria2 messages that identify the real failure even when aria2 reports the
+ * generic "unknown error" code (1). Matched case-insensitively.
+ */
+const MESSAGE_HINTS: ReadonlyArray<{ pattern: RegExp; errorCode: number }> = [
+  { pattern: /\btimeout\b/i, errorCode: 2 },
+  { pattern: /\bno uri available\b/i, errorCode: 22 },
+  { pattern: /too slow/i, errorCode: 5 },
+  { pattern: /connection.*(?:reset|refused|closed|aborted)|network/i, errorCode: 6 },
+  { pattern: /not found|no such file/i, errorCode: 3 },
+  { pattern: /unauthori[sz]ed|authentication|forbidden|\b401\b|\b403\b/i, errorCode: 24 },
+  { pattern: /no space left/i, errorCode: 9 }
+]
+
+/**
+ * Plain-language, actionable text for an aria2 error code. The raw aria2
+ * message is deliberately not part of this text; it is kept separately as
+ * technical detail on the download record.
+ */
 export function aria2ErrorHint(errorCode: number): string {
   switch (errorCode) {
+    case 2:
+      return 'The server stopped responding.'
     case 3:
     case 4:
-      return 'The server could not find the file. Check the URL or try again later.'
+      return "The file isn't on the server (anymore)."
     case 5:
-      return 'The download was too slow and aria2 stopped it. Try again or use another source.'
+      return 'The download got too slow and was stopped.'
     case 6:
-      return 'A network error interrupted the download. Check your connection and retry.'
+      return 'The connection was interrupted.'
     case 9:
-      return 'There is not enough free disk space for this download.'
+      return 'Not enough free disk space.'
     case 13:
-      return 'A file with this name already exists. Choose a different file name.'
+      return 'A file with this name already exists. Choose a different name.'
     case 17:
-      return 'Windows could not write the file. Check the download folder permissions or free space.'
+      return 'Windows could not write the file. Check the folder permissions or free space.'
     case 18:
-      return 'The download folder could not be created. Choose another folder or check permissions.'
+      return 'The download folder could not be created. Choose another folder.'
     case 19:
-      return 'The host name could not be resolved. Check the URL and your internet connection.'
+      return "Couldn't find that website. Check the address or your connection."
     case 22:
-      return 'The server returned an invalid HTTP response.'
+      return 'The server sent a broken response.'
     case 23:
       return 'The server redirected too many times.'
     case 24:
-      return 'The server rejected the request because authentication is required.'
+      return 'This file needs a sign-in.'
     default:
-      return 'aria2 could not complete this download.'
+      return "The download couldn't finish."
   }
 }
 
+/**
+ * The hint for a failure, preferring the raw message when aria2 reported the
+ * generic "unknown error" code but the message names a known cause.
+ */
+export function aria2FailureHint(errorCode: number, errorMessage: string): string {
+  if (errorCode === 0 || errorCode === 1) {
+    const detail = errorMessage.trim()
+    if (detail.length > 0) {
+      for (const entry of MESSAGE_HINTS) {
+        if (entry.pattern.test(detail)) return aria2ErrorHint(entry.errorCode)
+      }
+    }
+  }
+  return aria2ErrorHint(errorCode)
+}
+
+/** User-facing, plain-language failure text (without technical detail). */
 export function describeAria2Failure(
   errorCode: number,
   errorMessage: string
 ): string {
+  return aria2FailureHint(errorCode, errorMessage)
+}
+
+/**
+ * Raw aria2 detail kept next to the friendly text so a user can copy it when
+ * asking for help. Never shown in the row itself.
+ */
+export function aria2FailureDetail(
+  errorCode: number,
+  errorMessage: string
+): string {
   const detail = errorMessage.trim()
-  const hint = aria2ErrorHint(errorCode)
-  if (detail.length > 0) {
-    return `${hint} (${detail})`
-  }
-  return `${hint} (aria2 code ${errorCode})`
+  return detail.length > 0
+    ? `aria2 code ${errorCode}: ${detail}`
+    : `aria2 code ${errorCode}`
 }

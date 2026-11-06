@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(12)
+    expect(SCHEMA_VERSION).toBe(13)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -752,7 +752,9 @@ describe('per-download control persistence', () => {
       ...record,
       // Speed and ETA are transient and start fresh after a relaunch.
       speedBps: 0,
-      etaSeconds: null
+      etaSeconds: null,
+      // The raw aria2 detail column is empty for a record without a failure.
+      errorDetail: null
     })
     close(second)
   })
@@ -809,7 +811,8 @@ describe('per-download control persistence', () => {
       'speed_limit_bps',
       'connections',
       'block_reason',
-      'needs_login'
+      'needs_login',
+      'error_detail'
     ])
     const invalidUpdates = [
       'UPDATE downloads SET scheduled_at = -1',
@@ -1016,7 +1019,8 @@ describe('v5 to v8 migration', () => {
       'speed_limit_bps',
       'connections',
       'block_reason',
-      'needs_login'
+      'needs_login',
+      'error_detail'
     ])
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(before, DOWNLOAD_COLUMNS)
@@ -1044,6 +1048,7 @@ describe('v7 to v8 theme migration', () => {
     legacy.exec(`
       ALTER TABLE download_settings DROP COLUMN theme;
       ALTER TABLE downloads DROP COLUMN needs_login;
+      ALTER TABLE downloads DROP COLUMN error_detail;
       UPDATE download_settings
       SET max_concurrent_downloads = 9,
           per_host_connections = 7,

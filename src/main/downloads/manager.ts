@@ -29,6 +29,7 @@ import {
 } from '@shared/validation'
 import type { Aria2Client } from '../aria2/client'
 import {
+  aria2FailureDetail,
   describeAria2Failure,
   mapAria2Status,
   parseAria2Status,
@@ -52,6 +53,7 @@ import {
   decideStartupRecovery,
   shouldAutoResumeOnStartup
 } from './recovery'
+import { planAutoRetry } from './autoRetry'
 
 const POLL_INTERVAL_MS = 1_000
 /** Progress is flushed at most this often; critical transitions write at once. */
@@ -215,6 +217,17 @@ export class DownloadManager {
    * the same canonical URL cannot both reach aria2.
    */
   private readonly pendingAddUrls = new Map<string, number>()
+  /**
+   * One automatic retry per failure, capped per record. Memory-only: after a
+   * restart the ordinary attempt budget and startup recovery apply instead.
+   */
+  private readonly autoRetriesUsed = new Map<string, number>()
+  private readonly autoRetryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
+  /** Epoch ms when the pending automatic retry of a record will start. */
+  private readonly autoRetryDeadlines = new Map<string, number>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private polling = false
@@ -262,7 +275,8 @@ export class DownloadManager {
       scheduledAt: controls.scheduledAt,
       speedLimitBps: controls.speedLimitBps,
       connections: controls.connections,
-      blockReason: this.blockReasons.get(record.id) ?? null
+      blockReason: this.blockReasons.get(record.id) ?? null,
+      retryAt: this.autoRetryDeadlines.get(record.id) ?? null
     }
   }
 
@@ -709,6 +723,8 @@ export class DownloadManager {
     if (gid !== '' && client !== null) {
       await this.removeFromAria2(client, gid)
     }
+    this.clearAutoRetry(id)
+    this.autoRetriesUsed.delete(id)
     this.records.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
@@ -756,6 +772,7 @@ export class DownloadManager {
     }
 
     this.startNowIds.delete(record.id)
+    this.clearAutoRetry(record.id)
     this.updateRecord(record, { status: 'paused', speedBps: 0, etaSeconds: null })
     this.setBlockReason(record, null)
     this.persistNow(record)
@@ -772,6 +789,7 @@ export class DownloadManager {
 
     // Resume is an explicit user action, so it starts now even when the
     // original schedule or allowed-hours window would hold a fresh job back.
+    this.clearAutoRetry(record.id)
     this.startNowIds.add(record.id)
     const client = await this.aria2.getClient()
 
@@ -823,6 +841,7 @@ export class DownloadManager {
       )
     }
 
+    this.clearAutoRetry(record.id)
     this.startNowIds.add(record.id)
     const client = await this.aria2.getClient()
 
@@ -863,6 +882,22 @@ export class DownloadManager {
         'Only interrupted or failed downloads can be retried.'
       )
     }
+    // An explicit retry replaces any scheduled automatic retry.
+    this.clearAutoRetry(record.id)
+    await this.restartDownload(record, record.status === 'interrupted', false)
+    return this.getSnapshot()
+  }
+
+  /**
+   * Shared body of the explicit Retry action and the automatic retry. A retry
+   * re-adds the job with aria2's global --continue so any partial file is
+   * resumed rather than downloaded again.
+   */
+  private async restartDownload(
+    record: DownloadItem,
+    interruptedRecovery: boolean,
+    automatic: boolean
+  ): Promise<void> {
     if (
       this.needsLoginIds.has(record.id) &&
       !this.requestHeaders.has(record.id)
@@ -873,7 +908,6 @@ export class DownloadManager {
         'Click the same link in the browser so DonDownload can use your login again.'
       )
     }
-    const interruptedRecovery = record.status === 'interrupted'
     if (!interruptedRecovery && !canRetry(record.attempts, record.maxAttempts)) {
       throw new AppError(
         'RETRY_LIMIT_REACHED',
@@ -908,6 +942,7 @@ export class DownloadManager {
       speedBps: 0,
       etaSeconds: null,
       errorMessage: null,
+      errorDetail: null,
       filePath: null,
       attempts: interruptedRecovery ? record.attempts : record.attempts + 1,
       completedAt: null
@@ -917,7 +952,12 @@ export class DownloadManager {
     this.persistBlockReason(record)
     this.publish(true)
     this.ensurePolling()
-    return this.getSnapshot()
+    if (automatic) {
+      this.autoRetriesUsed.set(
+        record.id,
+        (this.autoRetriesUsed.get(record.id) ?? 0) + 1
+      )
+    }
   }
 
   async remove(rawId: unknown): Promise<AppSnapshot> {
@@ -928,6 +968,8 @@ export class DownloadManager {
       await this.removeFromAria2(client, record.gid)
     }
 
+    this.clearAutoRetry(record.id)
+    this.autoRetriesUsed.delete(record.id)
     this.records.delete(record.id)
     this.explicitFilenames.delete(record.id)
     this.requestHeaders.delete(record.id)
@@ -1065,6 +1107,9 @@ export class DownloadManager {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
+    for (const id of [...this.autoRetryTimers.keys()]) {
+      this.clearAutoRetry(id)
+    }
     this.flushPersistence()
     if (this.database) {
       try {
@@ -1167,7 +1212,8 @@ export class DownloadManager {
         errorMessage:
           error instanceof AppError
             ? error.message
-            : 'The scheduled download could not be started.'
+            : 'The scheduled download could not be started.',
+        errorDetail: null
       })
       this.setBlockReason(record, null)
       this.persistNow(record)
@@ -1688,6 +1734,71 @@ export class DownloadManager {
     }
   }
 
+  private clearAutoRetry(id: string): void {
+    const timer = this.autoRetryTimers.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.autoRetryTimers.delete(id)
+    }
+    this.autoRetryDeadlines.delete(id)
+  }
+
+  /**
+   * Schedule one automatic retry for a transient aria2 failure. The row keeps
+   * its `error` status while it waits (so nothing else tries to resume it) but
+   * carries a retry deadline the UI shows as "Retrying in Ns…". Non-transient
+   * failures, exhausted budgets, paused/removed rows and login-lost hand-offs
+   * are never retried automatically.
+   */
+  private scheduleAutoRetry(
+    record: DownloadItem,
+    errorCode: number,
+    errorMessage: string
+  ): void {
+    const delay = planAutoRetry({
+      errorCode,
+      errorMessage,
+      attempts: record.attempts,
+      maxAttempts: record.maxAttempts,
+      autoRetriesUsed: this.autoRetriesUsed.get(record.id) ?? 0
+    })
+    if (delay === null) return
+    if (
+      this.needsLoginIds.has(record.id) &&
+      !this.requestHeaders.has(record.id)
+    ) {
+      return
+    }
+
+    this.clearAutoRetry(record.id)
+    this.autoRetryDeadlines.set(record.id, this.now() + delay)
+    const timer = setTimeout(() => {
+      this.autoRetryTimers.delete(record.id)
+      this.autoRetryDeadlines.delete(record.id)
+      void this.runAutoRetry(record.id)
+    }, delay)
+    // A pending retry must not keep the main process alive by itself.
+    timer.unref?.()
+    this.autoRetryTimers.set(record.id, timer)
+  }
+
+  private async runAutoRetry(id: string): Promise<void> {
+    const record = this.records.get(id)
+    // Removed, paused, resumed or already restarted meanwhile: do nothing.
+    if (!record || record.status !== 'error') {
+      this.autoRetryDeadlines.delete(id)
+      return
+    }
+    try {
+      await this.restartDownload(record, false, true)
+    } catch {
+      // The automatic retry could not be handed to aria2. Keep the failure
+      // visible; the user can still retry explicitly.
+      this.autoRetryDeadlines.delete(id)
+      this.publish(true)
+    }
+  }
+
   private updateRecord(
     record: DownloadItem,
     patch: Partial<DownloadItem>
@@ -1733,6 +1844,10 @@ export class DownloadManager {
       nextStatus === 'error'
         ? describeAria2Failure(status.errorCode, status.errorMessage)
         : null
+    const errorDetail =
+      nextStatus === 'error'
+        ? aria2FailureDetail(status.errorCode, status.errorMessage)
+        : null
 
     const patch: Partial<DownloadItem> = {}
     if (record.status !== nextStatus) patch.status = nextStatus
@@ -1743,6 +1858,7 @@ export class DownloadManager {
     if (record.speedBps !== speedBps) patch.speedBps = speedBps
     if (record.etaSeconds !== etaSeconds) patch.etaSeconds = etaSeconds
     if (record.errorMessage !== errorMessage) patch.errorMessage = errorMessage
+    if ((record.errorDetail ?? null) !== errorDetail) patch.errorDetail = errorDetail
     if (nextStatus === 'complete' && record.completedAt === null) {
       patch.completedAt = this.now()
     } else if (nextStatus !== 'complete' && record.completedAt !== null) {
@@ -1758,6 +1874,12 @@ export class DownloadManager {
       }
       if (nextStatus === 'complete' || nextStatus === 'error') {
         this.startNowIds.delete(record.id)
+      }
+      if (nextStatus === 'error' && statusChanged) {
+        // One automatic retry per failure, only for transient causes.
+        this.scheduleAutoRetry(record, status.errorCode, status.errorMessage)
+      } else if (nextStatus !== 'error') {
+        this.clearAutoRetry(record.id)
       }
       if (statusChanged || nextStatus === 'complete' || nextStatus === 'error') {
         this.persistNow(record)
@@ -1943,7 +2065,8 @@ export class DownloadManager {
                 status: 'interrupted',
                 speedBps: 0,
                 etaSeconds: null,
-                errorMessage: INTERRUPTED_MESSAGE
+                errorMessage: INTERRUPTED_MESSAGE,
+                errorDetail: null
               })
               this.setBlockReason(record, null)
               this.persistNow(record)
