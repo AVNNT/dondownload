@@ -10,6 +10,7 @@ import type {
   MediaToolSettings,
   YtdlpUpdateState
 } from '@shared/mediaTools'
+import type { AppUpdateState } from '@shared/appUpdate'
 import { applyRendererTheme } from '../theme'
 
 const THEME_LABEL: Record<AppTheme, string> = {
@@ -55,11 +56,47 @@ function updateStatusLabel(state: YtdlpUpdateState | null): string {
   }
 }
 
+function appUpdateStatusLabel(state: AppUpdateState | null): string {
+  if (!state) return 'Not checked yet'
+  if (!state.configured || state.status === 'not-configured') {
+    return 'Update source not configured'
+  }
+  switch (state.status) {
+    case 'idle':
+      return 'Not checked yet'
+    case 'checking':
+      return 'Checking…'
+    case 'up-to-date':
+      return 'Up to date'
+    case 'available':
+      return state.latestVersion
+        ? `v${state.latestVersion} is available`
+        : 'Update available'
+    case 'downloading':
+      return state.latestVersion
+        ? `Downloading v${state.latestVersion} ${
+            state.progressPercent ?? 0
+          }%`
+        : 'Downloading…'
+    case 'ready':
+      return state.latestVersion
+        ? `Ready to install v${state.latestVersion}`
+        : 'Ready to install'
+    case 'installing':
+      return 'Restarting to install…'
+    case 'failed':
+      return state.message ? `Failed: ${state.message}` : 'Failed'
+    case 'disabled':
+      return state.message ?? 'Automatic updates are off'
+    case 'throttled':
+      return 'Checked recently'
+  }
+}
+
 /**
  * Render the stored bytes/sec value in MB/s for humans without ever writing
  * this rounded text back unless the user actually edits the field.
- */
-function speedInputValue(bytesPerSecond: number): string {
+ */function speedInputValue(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''
   const mb = bytesPerSecond / BYTES_PER_MB
   const rounded = Number(mb.toFixed(mb >= 1 ? 3 : 6))
@@ -83,6 +120,11 @@ export function SettingsSection(): JSX.Element {
   const [updateState, setUpdateState] = useState<YtdlpUpdateState | null>(null)
   const [updating, setUpdating] = useState(false)
   const [mediaToolsError, setMediaToolsError] = useState<string | null>(null)
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(
+    null
+  )
+  const [appUpdateBusy, setAppUpdateBusy] = useState(false)
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -95,8 +137,17 @@ export function SettingsSection(): JSX.Element {
       if (cancelled) return
       if (result.ok) setUpdateState(result.value)
     })
+    void window.donDownload.getAppUpdateState().then((result) => {
+      if (cancelled) return
+      if (result.ok) setAppUpdateState(result.value)
+      else setAppUpdateError(result.error.message)
+    })
+    const unsubscribe = window.donDownload.onAppUpdateStateChanged((state) => {
+      if (!cancelled) setAppUpdateState(state)
+    })
     return () => {
       cancelled = true
+      unsubscribe()
     }
   }, [])
 
@@ -280,6 +331,80 @@ export function SettingsSection(): JSX.Element {
       )
     } finally {
       setUpdating(false)
+    }
+  }
+
+  const toggleAppAutoCheck = async (checked: boolean): Promise<void> => {
+    setAppUpdateError(null)
+    setAppUpdateState((current) =>
+      current ? { ...current, autoCheck: checked } : current
+    )
+    try {
+      const result = await window.donDownload.setAppUpdateAutoCheck({
+        autoCheck: checked
+      })
+      if (!result.ok) {
+        setAppUpdateError(result.error.message)
+        setAppUpdateState((current) =>
+          current ? { ...current, autoCheck: !checked } : current
+        )
+        return
+      }
+      setAppUpdateState(result.value)
+    } catch (error) {
+      setAppUpdateError(
+        error instanceof Error
+          ? error.message
+          : 'The application update preference could not be saved.'
+      )
+      setAppUpdateState((current) =>
+        current ? { ...current, autoCheck: !checked } : current
+      )
+    }
+  }
+
+  const checkForAppUpdate = async (): Promise<void> => {
+    setAppUpdateBusy(true)
+    setAppUpdateError(null)
+    setAppUpdateState((current) =>
+      current ? { ...current, status: 'checking', message: null } : current
+    )
+    try {
+      const result = await window.donDownload.checkAppUpdate()
+      if (!result.ok) {
+        setAppUpdateError(result.error.message)
+        return
+      }
+      setAppUpdateState(result.value)
+    } catch (error) {
+      setAppUpdateError(
+        error instanceof Error
+          ? error.message
+          : 'The application update check failed.'
+      )
+    } finally {
+      setAppUpdateBusy(false)
+    }
+  }
+
+  const installAppUpdate = async (): Promise<void> => {
+    setAppUpdateBusy(true)
+    setAppUpdateError(null)
+    try {
+      const result = await window.donDownload.installAppUpdate()
+      if (!result.ok) {
+        setAppUpdateError(result.error.message)
+        return
+      }
+      setAppUpdateState(result.value)
+    } catch (error) {
+      setAppUpdateError(
+        error instanceof Error
+          ? error.message
+          : 'The application installer could not be started.'
+      )
+    } finally {
+      setAppUpdateBusy(false)
     }
   }
 
@@ -583,6 +708,101 @@ export function SettingsSection(): JSX.Element {
         {mediaToolsError ? (
           <p role="alert" className="mt-2 text-xs text-red-300">
             {mediaToolsError}
+          </p>
+        ) : null}
+      </fieldset>
+
+      <fieldset className="mt-4 rounded-lg border border-white/10 surface-soft px-3 py-3">
+        <legend className="px-1 text-[11px] font-medium text-zinc-400">
+          App updates
+        </legend>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <label className="flex min-w-0 items-start gap-2 text-xs text-zinc-300">
+            <input
+              type="checkbox"
+              checked={appUpdateState?.autoCheck ?? true}
+              disabled={appUpdateState === null}
+              onChange={(event) => {
+                void toggleAppAutoCheck(event.currentTarget.checked)
+              }}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-400"
+            />
+            <span>
+              <span className="block font-medium">
+                Check for app updates automatically
+              </span>
+              <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                At most once every 24 hours. Checks are disabled until an update
+                source is configured.
+              </span>
+            </span>
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void checkForAppUpdate()}
+              disabled={appUpdateBusy || !appUpdateState?.configured}
+              className="min-h-9 rounded-lg border border-white/10 surface-card px-3 text-xs font-medium text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {appUpdateBusy && appUpdateState?.status === 'checking'
+                ? 'Checking…'
+                : 'Check now'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void installAppUpdate()}
+              disabled={
+                appUpdateBusy ||
+                appUpdateState?.status !== 'ready' ||
+                appUpdateState?.canInstall !== true
+              }
+              className="min-h-9 rounded-lg bg-emerald-400 px-3 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+            >
+              Restart and install
+            </button>
+          </div>
+        </div>
+        <dl className="mt-3 grid gap-1 text-[11px] text-zinc-400 sm:grid-cols-2">
+          <div className="flex gap-1">
+            <dt className="text-zinc-500">Current:</dt>
+            <dd className="text-zinc-300">
+              {appUpdateState?.currentVersion ?? 'Unknown'}
+            </dd>
+          </div>
+          <div className="flex gap-1">
+            <dt className="text-zinc-500">Latest:</dt>
+            <dd className="text-zinc-300">
+              {appUpdateState?.latestVersion ?? 'Not checked'}
+            </dd>
+          </div>
+          <div className="flex gap-1 sm:col-span-2">
+            <dt className="text-zinc-500">Status:</dt>
+            <dd
+              role={appUpdateState?.status === 'failed' ? 'alert' : 'status'}
+              aria-live="polite"
+              className={
+                appUpdateState?.status === 'failed'
+                  ? 'text-red-300'
+                  : 'text-zinc-300'
+              }
+            >
+              {appUpdateStatusLabel(appUpdateState)}
+            </dd>
+          </div>
+        </dl>
+        {appUpdateState?.releaseNotes ? (
+          <div className="mt-3 rounded-lg border border-white/5 surface-card px-2.5 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">
+              Release notes
+            </p>
+            <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-4 text-zinc-300">
+              {appUpdateState.releaseNotes}
+            </p>
+          </div>
+        ) : null}
+        {appUpdateError ? (
+          <p role="alert" className="mt-2 text-xs text-red-300">
+            {appUpdateError}
           </p>
         ) : null}
       </fieldset>

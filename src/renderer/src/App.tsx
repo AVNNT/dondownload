@@ -21,6 +21,7 @@ import type {
   MediaOutputFormat,
   MediaSnapshot
 } from '@shared/media'
+import type { AppUpdateState } from '@shared/appUpdate'
 import { formatSpeed } from '@shared/format'
 import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
@@ -125,6 +126,8 @@ export default function App(): JSX.Element {
   const [restarting, setRestarting] = useState(false)
   const [adding, setAdding] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [appUpdate, setAppUpdate] = useState<AppUpdateState | null>(null)
+  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
   const dragDepth = useRef(0)
   const addSequence = useRef(0)
 
@@ -133,8 +136,15 @@ export default function App(): JSX.Element {
     void window.donDownload.getSettings().then((result) => {
       if (!cancelled && result.ok) applyRendererTheme(result.value.theme)
     })
+    void window.donDownload.getAppUpdateState().then((result) => {
+      if (!cancelled && result.ok) setAppUpdate(result.value)
+    })
+    const unsubscribe = window.donDownload.onAppUpdateStateChanged((state) => {
+      if (!cancelled) setAppUpdate(state)
+    })
     return () => {
       cancelled = true
+      unsubscribe()
     }
   }, [])
 
@@ -573,6 +583,15 @@ export default function App(): JSX.Element {
     }
   }, [applyDownloadResult])
 
+  const installAppUpdate = useCallback(async (): Promise<void> => {
+    const result = await window.donDownload.installAppUpdate()
+    if (!result.ok) {
+      setBanner(result.error)
+      return
+    }
+    setAppUpdate(result.value)
+  }, [])
+
   const pauseAll = useCallback((): void => {
     void runPlan(planBulkAction('pause-all', allRows))
   }, [allRows, runPlan])
@@ -712,6 +731,34 @@ export default function App(): JSX.Element {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col px-3 pb-0 pt-3 sm:px-4">
           {banner ? (
             <ErrorBanner banner={banner} onDismiss={() => setBanner(null)} />
+          ) : null}
+
+          {appUpdate?.status === 'ready' &&
+          appUpdate.canInstall &&
+          !appUpdateDismissed ? (
+            <div
+              role="status"
+              className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[11px] text-emerald-100"
+            >
+              <span className="min-w-0 flex-1">
+                DonDownload {appUpdate.latestVersion ?? 'update'} is ready to
+                install.
+              </span>
+              <button
+                type="button"
+                onClick={() => void installAppUpdate()}
+                className="h-7 rounded-md bg-emerald-400 px-2.5 text-[10.5px] font-semibold text-emerald-950 transition hover:bg-emerald-300"
+              >
+                Restart and install
+              </button>
+              <button
+                type="button"
+                onClick={() => setAppUpdateDismissed(true)}
+                className="h-7 rounded-md border border-emerald-300/20 px-2 text-[10.5px] text-emerald-200/80 transition hover:bg-emerald-300/10"
+              >
+                Not now
+              </button>
+            </div>
           ) : null}
 
           {page === 'library' ? (
