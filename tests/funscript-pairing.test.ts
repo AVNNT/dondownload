@@ -515,6 +515,25 @@ describe('planRenames', () => {
     ])
   })
 
+  it('keeps the original files as an alternate when a variant is promoted', () => {
+    const set = singleSet([
+      'Mix.funscript',
+      'Mix.roll.funscript',
+      'Mix.twist.funscript',
+      'Mix.hard.funscript',
+      'Mix.hard.roll.funscript'
+    ])
+
+    expect(planRenames(set, 'Fancam Mix.mp4', { primaryVariant: 'hard' })).toEqual([
+      { fileId: 'f0', targetName: 'Fancam Mix.original.funscript' },
+      { fileId: 'f1', targetName: 'Fancam Mix.original.roll.funscript' },
+      // `hard` has no twist, so the only twist script stays canonical.
+      { fileId: 'f2', targetName: 'Fancam Mix.twist.funscript' },
+      { fileId: 'f3', targetName: 'Fancam Mix.funscript' },
+      { fileId: 'f4', targetName: 'Fancam Mix.roll.funscript' }
+    ])
+  })
+
   it('keeps every variant in the name when no primary is chosen', () => {
     const set = singleSet([
       'LooksCanKill_Wonyoung.hard.funscript',

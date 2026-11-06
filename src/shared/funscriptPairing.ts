@@ -748,12 +748,17 @@ export function matchSetsToVideos(
  * - Axis: `<videoBase>.<axis>.funscript`.
  * - Non-primary variant: `<videoBase>.<variant>.funscript`.
  * - Non-primary variant axis: `<videoBase>.<variant>.<axis>.funscript`.
- * - The variant equal to `primaryVariant` is promoted to the canonical name.
+ * - The variant equal to `primaryVariant` is promoted to the canonical name;
+ *   an un-suffixed file on an axis it covers becomes
+ *   `<videoBase>.original[.<axis>].funscript`.
  * - A combined single multi-axis file is just `<videoBase>.funscript`.
  * - Main is never synthesized: only existing files are planned.
  * - Every target runs through `sanitizeFilename`; duplicate targets (compared
  *   case-insensitively) throw `FunscriptRenameCollisionError`.
  */
+/** Suffix for an un-suffixed file displaced by a promoted variant. */
+export const ORIGINAL_VARIANT_LABEL = 'original'
+
 export function planRenames(
   set: ScriptSet,
   videoFilename: string,
@@ -780,6 +785,18 @@ export function planRenames(
   const plan: RenamePlanEntry[] = []
   const byTarget = new Map<string, RenameCollision>()
 
+  // Axes (main = '') that the promoted variant covers. An un-suffixed file on
+  // one of those axes would collide with the promoted name, so it is kept as
+  // the `original` alternate instead of failing the whole plan.
+  const promotedAxes = new Set<string>()
+  if (primaryVariant !== null) {
+    for (const file of set.files) {
+      if (file.variant !== null && file.variant.toLowerCase() === primaryVariant) {
+        promotedAxes.add((file.axis ?? '').toLowerCase())
+      }
+    }
+  }
+
   for (const file of set.files) {
     const variantIsPrimary =
       file.variant !== null &&
@@ -789,6 +806,11 @@ export function planRenames(
     const segments = [videoBase]
     if (file.variant !== null && !variantIsPrimary) {
       segments.push(file.variant)
+    } else if (
+      file.variant === null &&
+      promotedAxes.has((file.axis ?? '').toLowerCase())
+    ) {
+      segments.push(ORIGINAL_VARIANT_LABEL)
     }
     if (file.axis !== null) {
       segments.push(file.axis)
