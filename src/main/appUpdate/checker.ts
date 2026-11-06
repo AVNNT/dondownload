@@ -1,4 +1,9 @@
-import { createHash } from 'node:crypto'
+import {
+  createHash,
+  createPublicKey,
+  verify,
+  type KeyObject
+} from 'node:crypto'
 import { promises as fsPromises } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
@@ -19,6 +24,8 @@ import {
 import {
   requireValidUpdateRepo,
   UPDATE_REPO,
+  UPDATE_SIGNING_KEY_NOT_CONFIGURED,
+  UPDATE_SIGNING_PUBLIC_KEY,
   type UpdateRepo
 } from '@shared/release'
 import {
@@ -61,6 +68,9 @@ export const GITHUB_ASSET_HOSTS = new Set([
 
 export const MAX_APP_UPDATE_JSON_BYTES = 1024 * 1024
 export const MAX_APP_UPDATE_SUMS_BYTES = 1024 * 1024
+export const MAX_APP_UPDATE_SIGNATURE_BYTES = 4 * 1024
+export const APP_UPDATE_SIGNATURE_NAME = 'SHA256SUMS.txt.sig'
+export const UPDATE_SIGNATURE_INVALID = 'Update signing key is not valid'
 export const APP_UPDATE_REQUEST_TIMEOUT_MS = 15_000
 export const APP_UPDATE_DOWNLOAD_TIMEOUT_MS = 120_000
 const MAX_REDIRECTS = 5
@@ -95,6 +105,11 @@ export interface AppUpdateCheckerOptions {
   appVersion: string
   /** Defaults to the shared `UPDATE_REPO`; null means no source configured. */
   repo?: UpdateRepo | null
+  /**
+   * Defaults to the shared `UPDATE_SIGNING_PUBLIC_KEY`. A configured repository
+   * without a key never offers an update.
+   */
+  signingPublicKey?: string | null
   store?: AppUpdateSettingsStore | null
   fetchImpl?: UpdaterFetch
   fs?: AppUpdateFs
@@ -125,6 +140,7 @@ interface LatestRelease {
   installerUrl: string
   installerSize: number
   sumsUrl: string
+  signatureUrl: string
   releaseNotes: string | null
 }
 
@@ -188,6 +204,56 @@ function sha256(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
 }
 
+/** Parse an SPKI PEM or base64 SPKI DER Ed25519 public key. */
+function loadUpdateSigningKey(value: string): KeyObject {
+  const text = value.trim()
+  if (text.length === 0) throw new Error('empty update signing key')
+  const key = text.startsWith('-----BEGIN')
+    ? createPublicKey(text)
+    : createPublicKey({
+        key: Buffer.from(text, 'base64'),
+        format: 'der',
+        type: 'spki'
+      })
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('update signing key is not Ed25519')
+  }
+  return key
+}
+
+/**
+ * Decode the release signature strictly. It must be a base64 encoding of
+ * exactly one raw 64-byte Ed25519 signature.
+ */
+export function decodeUpdateSignature(value: string): Buffer | null {
+  const text = value.trim()
+  if (text.length === 0 || text.length > MAX_APP_UPDATE_SIGNATURE_BYTES) {
+    return null
+  }
+  if (text.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) {
+    return null
+  }
+  let bytes: Buffer
+  try {
+    bytes = Buffer.from(text, 'base64')
+  } catch {
+    return null
+  }
+  return bytes.byteLength === 64 ? bytes : null
+}
+
+function signatureVerifies(
+  publicKey: KeyObject,
+  data: Uint8Array,
+  signature: Uint8Array
+): boolean {
+  try {
+    return verify(null, data, publicKey, signature) === true
+  } catch {
+    return false
+  }
+}
+
 function decodeUtf8(data: Uint8Array): string {
   return new TextDecoder('utf-8').decode(data)
 }
@@ -245,6 +311,7 @@ function parseLatestRelease(info: ParsedReleaseInfo): LatestRelease {
   let installerUrl: string | null = null
   let installerSize: number | null = null
   let sumsUrl: string | null = null
+  let signatureUrl: string | null = null
 
   for (const asset of record.assets) {
     if (typeof asset !== 'object' || asset === null) continue
@@ -270,12 +337,22 @@ function parseLatestRelease(info: ParsedReleaseInfo): LatestRelease {
       typeof entry.browser_download_url === 'string'
     ) {
       sumsUrl = entry.browser_download_url
+    } else if (
+      entry.name === APP_UPDATE_SIGNATURE_NAME &&
+      typeof entry.browser_download_url === 'string'
+    ) {
+      signatureUrl = entry.browser_download_url
     }
   }
 
-  if (installerName === null || installerUrl === null || sumsUrl === null) {
+  if (
+    installerName === null ||
+    installerUrl === null ||
+    sumsUrl === null ||
+    signatureUrl === null
+  ) {
     fail(
-      `The latest application release is missing the ${version} installer or its checksum file.`
+      `The latest application release is missing the ${version} installer, its checksum file or its signature file.`
     )
   }
   if (installerSize === null) {
@@ -284,7 +361,11 @@ function parseLatestRelease(info: ParsedReleaseInfo): LatestRelease {
   if (installerSize > MAX_APP_UPDATE_BYTES) {
     fail('The application installer was larger than the safety limit.')
   }
-  if (!isAllowedAppAssetUrl(installerUrl) || !isAllowedAppAssetUrl(sumsUrl)) {
+  if (
+    !isAllowedAppAssetUrl(installerUrl) ||
+    !isAllowedAppAssetUrl(sumsUrl) ||
+    !isAllowedAppAssetUrl(signatureUrl)
+  ) {
     fail('The latest application release points outside the approved GitHub hosts.')
   }
 
@@ -294,6 +375,7 @@ function parseLatestRelease(info: ParsedReleaseInfo): LatestRelease {
     installerUrl,
     installerSize,
     sumsUrl,
+    signatureUrl,
     releaseNotes: truncateReleaseNotes(record.body)
   }
 }
@@ -322,6 +404,27 @@ export function createAppUpdateChecker(
     repo = null
   }
 
+  const signingKeyValue =
+    options.signingPublicKey === undefined
+      ? UPDATE_SIGNING_PUBLIC_KEY
+      : options.signingPublicKey
+  let signingKey: KeyObject | null = null
+  let signingKeyProblem: string | null = null
+  if (signingKeyValue !== null) {
+    try {
+      signingKey = loadUpdateSigningKey(signingKeyValue)
+    } catch {
+      signingKeyProblem = UPDATE_SIGNATURE_INVALID
+    }
+  }
+  const signingKeyMissing = repo !== null && signingKeyValue === null
+  const unavailableMessage =
+    repo === null
+      ? 'Update source not configured'
+      : signingKeyMissing
+        ? UPDATE_SIGNING_KEY_NOT_CONFIGURED
+        : signingKeyProblem
+
   let settings: AppUpdateSettings
   try {
     settings = options.store
@@ -335,12 +438,12 @@ export function createAppUpdateChecker(
   let inFlight: Promise<AppUpdateState> | null = null
 
   let state: AppUpdateState = {
-    status: repo === null ? 'not-configured' : 'idle',
-    configured: repo !== null,
+    status: unavailableMessage === null ? 'idle' : 'not-configured',
+    configured: repo !== null && signingKey !== null,
     currentVersion: appVersion,
     latestVersion: null,
     progressPercent: null,
-    message: repo === null ? 'Update source not configured' : null,
+    message: unavailableMessage,
     releaseNotes: null,
     lastCheckedAt: settings.lastCheckedAt,
     autoCheck: settings.autoCheck,
@@ -377,6 +480,20 @@ export function createAppUpdateChecker(
       status: 'not-configured',
       configured: false,
       message: 'Update source not configured',
+      progressPercent: null,
+      canInstall: false
+    })
+  }
+
+  /**
+   * Refuse every update action before any request when the repository is
+   * missing or the configured repository has no valid Ed25519 public key.
+   */
+  function updateSourceUnavailable(): AppUpdateState {
+    return publish({
+      status: 'not-configured',
+      configured: false,
+      message: unavailableMessage ?? UPDATE_SIGNING_KEY_NOT_CONFIGURED,
       progressPercent: null,
       canInstall: false
     })
@@ -492,6 +609,20 @@ export function createAppUpdateChecker(
       fail(`GitHub returned HTTP ${response.status} for the checksum file.`)
     }
     return readBody(response, MAX_APP_UPDATE_SUMS_BYTES)
+  }
+
+  async function downloadSignature(url: string): Promise<string> {
+    const response = await request(
+      url,
+      { 'User-Agent': `DonDownload/${appVersion}` },
+      APP_UPDATE_REQUEST_TIMEOUT_MS,
+      GITHUB_ASSET_HOSTS
+    )
+    if (!response.ok) {
+      fail(`GitHub returned HTTP ${response.status} for the checksum signature.`)
+    }
+    const bytes = await readBody(response, MAX_APP_UPDATE_SIGNATURE_BYTES)
+    return decodeUtf8(bytes)
   }
 
   function updateDirectory(version: string): string {
@@ -630,6 +761,7 @@ export function createAppUpdateChecker(
 
   async function runCheck(force: boolean): Promise<AppUpdateState> {
     if (repo === null) return notConfigured()
+    if (signingKey === null) return updateSourceUnavailable()
 
     if (!force) {
       const last = settings.lastCheckedAt
@@ -672,6 +804,11 @@ export function createAppUpdateChecker(
       publish({ releaseNotes: release.releaseNotes })
 
       const sums = await downloadSums(release.sumsUrl)
+      const signatureText = await downloadSignature(release.signatureUrl)
+      const signature = decodeUpdateSignature(signatureText)
+      if (signature === null || !signatureVerifies(signingKey, sums, signature)) {
+        fail('The application checksum file signature could not be verified.')
+      }
       const expectedSha = parseSha256Sums(
         decodeUtf8(sums),
         release.installerName
@@ -744,6 +881,9 @@ export function createAppUpdateChecker(
 
     autoCheck(): Promise<AppUpdateState> {
       if (repo === null) return Promise.resolve(notConfigured())
+      if (signingKey === null) {
+        return Promise.resolve(updateSourceUnavailable())
+      }
       if (!autoCheckAllowed) {
         return Promise.resolve(
           publish({
@@ -765,6 +905,7 @@ export function createAppUpdateChecker(
 
     async install(): Promise<AppUpdateState> {
       if (repo === null) return notConfigured()
+      if (signingKey === null) return updateSourceUnavailable()
 
       if (ready === null) {
         return publish({

@@ -8,10 +8,15 @@
  *
  * Each line is `<sha256>  <filename>` (two spaces), which is the format the
  * application updater parses before it accepts a GitHub release asset.
+ *
+ * When DONDOWNLOAD_UPDATE_SIGNING_KEY points to a PKCS#8 PEM Ed25519 private
+ * key, the exact bytes of SHA256SUMS.txt are signed and the base64 signature is
+ * written to SHA256SUMS.txt.sig. Without it the release cannot be served as an
+ * automatic update.
  */
-import { createHash } from 'node:crypto'
+import { createHash, createPrivateKey, sign } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { readdir, writeFile } from 'node:fs/promises'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -63,6 +68,36 @@ async function main() {
       installers.length === 1 ? '' : 's'
     }.\n`
   )
+
+  const signingKeyPath = process.env.DONDOWNLOAD_UPDATE_SIGNING_KEY
+  if (!signingKeyPath) {
+    process.stderr.write(
+      'Warning: DONDOWNLOAD_UPDATE_SIGNING_KEY is not set, so SHA256SUMS.txt.sig was not written. ' +
+        'The application updater refuses releases without a valid signature.\n'
+    )
+    return
+  }
+
+  let key
+  try {
+    key = createPrivateKey(await readFile(path.resolve(signingKeyPath), 'utf8'))
+  } catch {
+    throw new Error(
+      `The update signing key could not be read: ${path.resolve(signingKeyPath)}`
+    )
+  }
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('The update signing key must be an Ed25519 private key.')
+  }
+
+  const sumsBytes = await readFile(outputPath)
+  const signaturePath = `${outputPath}.sig`
+  await writeFile(
+    signaturePath,
+    `${sign(null, sumsBytes, key).toString('base64')}\n`,
+    'utf8'
+  )
+  process.stdout.write(`Wrote ${signaturePath}.\n`)
 }
 
 main().catch((error) => {

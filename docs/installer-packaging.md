@@ -249,6 +249,13 @@ The source is deliberately opt-in: `src/shared/release.ts` exports
 validated `{ owner, repo }` only when the repository and release assets are
 public.
 
+Updates are authenticated as well as integrity-checked. Every release must
+include a raw 64-byte Ed25519 signature over the exact bytes of
+`SHA256SUMS.txt`, base64 encoded as `SHA256SUMS.txt.sig`. The matching public
+key goes in `UPDATE_SIGNING_PUBLIC_KEY` as an SPKI PEM or its base64 SPKI DER.
+If `UPDATE_REPO` is set while the public key is `null`, the checker makes no
+request and reports **"Update signing key not configured"**.
+
 When configured, the main process:
 
 - requests `https://api.github.com/repos/{owner}/{repo}/releases/latest` with
@@ -257,10 +264,15 @@ When configured, the main process:
   timeout and a 1 MiB response cap;
 - ignores drafts and prereleases, requires a strict `vX.Y.Z`/`X.Y.Z` tag, and
   offers the release only when it is strictly newer than `app.getVersion()`;
-- requires `DonDownload-<version>-x64-setup.exe` (version equal to the tag) and
-  `SHA256SUMS.txt`;
+- requires `DonDownload-<version>-x64-setup.exe` (version equal to the tag),
+  `SHA256SUMS.txt` and `SHA256SUMS.txt.sig`;
 - follows only HTTPS `github.com`, `objects.githubusercontent.com` and
   `release-assets.githubusercontent.com` URLs, validating every redirect hop;
+  the signature download uses the same host allowlist, redirect validation and
+  a 4 KiB cap;
+- verifies the Ed25519 signature before trusting any hash in
+  `SHA256SUMS.txt`; a missing, malformed, oversized or invalid signature means
+  no update is offered;
 - downloads through `<userData>/updates/<version>/<file>.partial`, caps the
   installer at 600 MiB and requires the asset's declared size and SHA-256;
 - deletes the file on a checksum mismatch and removes older update directories;
@@ -282,19 +294,38 @@ Release notes are shown as plain text only, truncated to 4 KiB.
    npm run build:installer
    ```
 
-3. Generate the checksum file for every `dist/DonDownload-*-setup.exe`:
+3. Generate an Ed25519 update signing key pair outside this repository, once,
+   and keep the private key secret:
 
    ```powershell
+   node scripts/generate-update-signing-key.mjs C:\secure\dondownload-update-key.pem
+   ```
+
+   The script refuses paths inside the repository. It prints the public key as
+   base64 SPKI DER; paste that into `UPDATE_SIGNING_PUBLIC_KEY` in
+   `src/shared/release.ts`. Never commit the private key.
+
+4. Generate the checksum file for every `dist/DonDownload-*-setup.exe` and sign
+   it in the same step:
+
+   ```powershell
+   $env:DONDOWNLOAD_UPDATE_SIGNING_KEY = 'C:\secure\dondownload-update-key.pem'
    npm run release:checksums
    ```
 
-   This writes `dist/SHA256SUMS.txt` in `<sha256>  <filename>` format.
-4. Create a GitHub release whose tag matches the app version (`vX.Y.Z` or
-   `X.Y.Z`) and upload both:
+   This writes `dist/SHA256SUMS.txt` in `<sha256>  <filename>` format and
+   `dist/SHA256SUMS.txt.sig` (base64 of the raw 64-byte Ed25519 signature over
+   the exact `SHA256SUMS.txt` bytes). Without the environment variable the
+   checksum file is written unsigned and a warning explains that the release
+   cannot be served as an automatic update.
+
+5. Create a GitHub release whose tag matches the app version (`vX.Y.Z` or
+   `X.Y.Z`) and upload all three:
    - `dist/DonDownload-<version>-x64-setup.exe`
    - `dist/SHA256SUMS.txt`
+   - `dist/SHA256SUMS.txt.sig`
 
-5. Point `UPDATE_REPO` at that public repository. The installed app checks it
+6. Point `UPDATE_REPO` at that public repository. The installed app checks it
    on the next startup at most once per 24 hours.
 
 ## Verification
@@ -342,6 +373,19 @@ testing as a manual step.
   from `dist/win-unpacked/` and `dist/builder-debug.yml`; a real install test
   remains manual and must use a fresh unique temporary path.
 - The artifact is unsigned and uses electron-builder's default icon.
+
+### Verification record (2026-11-06)
+
+- Current installer size is approximately **234 MB** with the Gyan
+  FFmpeg/ffprobe essentials build.
+- A silent per-user install into a fresh temporary folder completed without
+  elevation. The installed app passed the packaged smoke test.
+- The silent uninstall removed the installed files, shortcuts and the per-user
+  uninstall entry. `userData` was left intact, and a development native-host
+  registration that pointed outside the install folder was also left intact.
+- The real-browser native end-to-end suite passed **20 checks in both Chromium
+  and Helium**.
+- The installer is still unsigned and was not signed by these checks.
 
 ## Known gaps
 
