@@ -1231,6 +1231,16 @@ describe('overlay interaction in a minimal DOM', () => {
     expect(pointerDown.propagationStopped).toBe(true)
     expect(pointerDown.defaultPrevented).toBe(false)
 
+    // The icon is fixed: pressing and moving the pointer never drags it to a
+    // new spot, and the following click still opens the panel.
+    harness.dispatchDocument(
+      'pointermove',
+      pointerEvent(harness.document.body, [harness.document.body], { clientX: 20, clientY: 20 })
+    )
+    harness.dispatchDocument('pointerup', pointerEvent(harness.document.body, [harness.document.body]))
+    expect(harness.trigger.style.left).toBe('702px')
+    expect(harness.trigger.style.top).toBe('108px')
+
     const click = pointerEvent(harness.trigger, [harness.trigger, harness.host])
     harness.trigger.dispatch('click', click)
     expect(harness.panel.hidden).toBe(false)

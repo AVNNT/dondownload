@@ -268,7 +268,7 @@
     installRuntimeListener()
     ns.installSettingsListener()
     ns.restoreCaptureSettings()
-    ns.restoreTriggerOffsets()
+    ns.clearLegacyTriggerOffsets()
     announceReady()
   } catch {
     // Fail closed: a broken overlay must never interfere with the page player.

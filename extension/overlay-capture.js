@@ -122,7 +122,6 @@
     state.capture.sniffedButtons = []
     state.capture.sniffedToken += 1
     state.capture.queueing = false
-    state.triggerOffset = null
     state.activeEmbed = null
     // A fallback analysis also belongs to the previous document/page. Clear it
     // so its opaque option IDs can never be applied to a new SPA page.
@@ -144,7 +143,6 @@
     ns.setMediaStatus('', '')
     ns.hideNow()
     renderCapturedSources()
-    ns.restoreTriggerOffsets()
     installSourceObservers()
     // The reused player may already be playing for the new page. Show the icon
     // immediately and let the debounced prefetch start for the new URL.

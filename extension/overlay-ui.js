@@ -457,20 +457,13 @@
     state.disableButton = disableButton
     state.status = status
 
-    ns.on(trigger, 'pointerdown', beginTriggerDrag)
+    ns.on(trigger, 'pointerdown', stopPointerEvent)
     ns.on(trigger, 'click', function (event) {
       stopPlayerEvent(event)
-      if (state.suppressTriggerClick) {
-        state.suppressTriggerClick = false
-        return
-      }
       togglePanel()
     })
     ns.on(trigger, 'pointerenter', cancelHide)
     ns.on(trigger, 'pointerleave', scheduleHide)
-    ns.on(document, 'pointermove', moveTriggerDrag, true)
-    ns.on(document, 'pointerup', endTriggerDrag, true)
-    ns.on(document, 'pointercancel', endTriggerDrag, true)
 
     ns.on(panel, 'pointerdown', stopPointerEvent)
     // Isolate panel clicks from page player handlers without cancelling the
@@ -577,96 +570,21 @@
   }
 
 
-  function restoreTriggerOffsets() {
+  /**
+   * Older builds let the floating icon be dragged and saved its position per
+   * site. The icon is fixed now, so remove any saved position once; otherwise
+   * a previously dragged icon would stay stuck where it was dropped.
+   */
+  function clearLegacyTriggerOffsets() {
     var local = ns.storageFor('local')
-    if (!local || typeof local.get !== 'function') return
+    if (!local || typeof local.remove !== 'function') return
     try {
-      local.get('dondownloadTriggerOffsets', function (stored) {
+      local.remove('dondownloadTriggerOffsets', function () {
         if (chrome && chrome.runtime && chrome.runtime.lastError) return
-        var offsets = stored && stored.dondownloadTriggerOffsets
-        if (!offsets || typeof offsets !== 'object') return
-        var value = offsets[location.origin]
-        if (!value || typeof value !== 'object') return
-        if (
-          typeof value.x !== 'number' ||
-          typeof value.y !== 'number' ||
-          !Number.isFinite(value.x) ||
-          !Number.isFinite(value.y)
-        ) {
-          return
-        }
-        state.triggerOffset = {
-          x: ns.clampNumber(value.x, 0, 1),
-          y: ns.clampNumber(value.y, 0, 1)
-        }
-        position()
       })
     } catch {
-      // A missing saved position only means the default placement is used.
+      // Nothing saved, or storage unavailable: the default placement is used.
     }
-  }
-
-
-  function saveTriggerOffset(offset) {
-    state.triggerOffset = offset
-    var local = ns.storageFor('local')
-    if (!local || typeof local.set !== 'function') return
-    try {
-      local.get('dondownloadTriggerOffsets', function (stored) {
-        if (chrome && chrome.runtime && chrome.runtime.lastError) return
-        var offsets =
-          stored && stored.dondownloadTriggerOffsets &&
-          typeof stored.dondownloadTriggerOffsets === 'object'
-            ? Object.assign({}, stored.dondownloadTriggerOffsets)
-            : {}
-        offsets[location.origin] = offset
-        local.set({ dondownloadTriggerOffsets: offsets }, function () {
-          if (chrome && chrome.runtime && chrome.runtime.lastError) return
-        })
-      })
-    } catch {
-      // Position is a convenience; the icon still works with local memory.
-    }
-  }
-
-
-  function beginTriggerDrag(event) {
-    // Do not preventDefault: the follow-up click remains native and is
-    // suppressed only when an actual drag occurred.
-    stopPropagationOnly(event)
-    if (!state.activeVideo) return
-    state.suppressTriggerClick = false
-    state.drag = {
-      startX: typeof event.clientX === 'number' ? event.clientX : 0,
-      startY: typeof event.clientY === 'number' ? event.clientY : 0,
-      moved: false
-    }
-  }
-
-
-  function moveTriggerDrag(event) {
-    if (!state.drag || !state.activeVideo) return
-    if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return
-    var dx = event.clientX - state.drag.startX
-    var dy = event.clientY - state.drag.startY
-    if (!state.drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return
-    state.drag.moved = true
-    state.suppressTriggerClick = true
-    var rect = ns.rectFor(state.activeVideo)
-    if (!rect || rect.width <= 0 || rect.height <= 0) return
-    state.triggerOffset = {
-      x: ns.clampNumber((event.clientX - rect.left) / rect.width, 0, 1),
-      y: ns.clampNumber((event.clientY - rect.top) / rect.height, 0, 1)
-    }
-    position()
-  }
-
-
-  function endTriggerDrag() {
-    if (!state.drag) return
-    var moved = state.drag.moved
-    state.drag = null
-    if (moved && state.triggerOffset) saveTriggerOffset(state.triggerOffset)
   }
 
 
@@ -879,23 +797,7 @@
     }
 
     var rect = state.activeVideo ? ns.rectFor(state.activeVideo) : target.getBoundingClientRect()
-    var triggerRect
-    if (
-      state.triggerOffset &&
-      typeof state.triggerOffset.x === 'number' &&
-      typeof state.triggerOffset.y === 'number' &&
-      rect.width > 0 &&
-      rect.height > 0
-    ) {
-      var maxLeft = Math.max(0, (window.innerWidth || document.documentElement.clientWidth || 0) - 30 - 8)
-      var maxTop = Math.max(0, (window.innerHeight || document.documentElement.clientHeight || 0) - 30 - 8)
-      triggerRect = {
-        left: ns.clampNumber(rect.left + state.triggerOffset.x * rect.width, 8, maxLeft),
-        top: ns.clampNumber(rect.top + state.triggerOffset.y * rect.height, 8, maxTop)
-      }
-    } else {
-      triggerRect = core.placeTrigger(rect, ns.viewport())
-    }
+    var triggerRect = core.placeTrigger(rect, ns.viewport())
     if (!triggerRect) {
       hideNow()
       return
@@ -1151,11 +1053,7 @@
   ns.stopPlayerEvent = stopPlayerEvent
   ns.installSettingsListener = installSettingsListener
   ns.restoreCaptureSettings = restoreCaptureSettings
-  ns.restoreTriggerOffsets = restoreTriggerOffsets
-  ns.saveTriggerOffset = saveTriggerOffset
-  ns.beginTriggerDrag = beginTriggerDrag
-  ns.moveTriggerDrag = moveTriggerDrag
-  ns.endTriggerDrag = endTriggerDrag
+  ns.clearLegacyTriggerOffsets = clearLegacyTriggerOffsets
   ns.syncFloatingTrigger = syncFloatingTrigger
   ns.shouldKeepVisible = shouldKeepVisible
   ns.scheduleTriggerBurst = scheduleTriggerBurst
