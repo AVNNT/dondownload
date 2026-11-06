@@ -11,7 +11,7 @@ import type { MediaAnalysis, MediaToolState } from '@shared/media'
 import { ValidationError } from '@shared/validation'
 import { AppError } from '../errors'
 import { buildAnalyzeArgs } from './args'
-import { MediaInfoError, buildMediaAnalysis } from './formats'
+import { MediaInfoError, buildMediaAnalysis, applyProbedHeights, resolutionProbeTargets } from './formats'
 import type { InternalMediaOption } from './formats'
 import {
   ProcessAbortedError,
@@ -24,6 +24,9 @@ import type { Toolchain } from './toolchain'
 import { looksLikeExtractorFailure } from './updater'
 
 export const MAX_ANALYSIS_OUTPUT_BYTES = 32 * 1024 * 1024
+/** Bounded header-only ffprobe read for a format without a usable label. */
+export const RESOLUTION_PROBE_TIMEOUT_MS = 2_500
+export const RESOLUTION_PROBE_CONCURRENCY = 2
 const MAX_RAW_COLLECTION_TITLE_LENGTH = 4096
 const FALLBACK_ENTRY_TITLE = 'Untitled entry'
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
@@ -553,6 +556,69 @@ export async function filterPublicThumbnail(
     }
   }
 
+async function probeFormatHeights(
+  ffprobePath: string,
+  targets: readonly { formatId: string; url: string }[],
+  signal: AbortSignal | undefined,
+  runCaptured: MediaAnalyzerOptions['runCaptured']
+): Promise<Map<string, number>> {
+  const heights = new Map<string, number>()
+  if (targets.length === 0) return heights
+  let cursor = 0
+  const workers = Array.from(
+    { length: Math.min(RESOLUTION_PROBE_CONCURRENCY, targets.length) },
+    async () => {
+      for (;;) {
+        if (signal?.aborted === true) return
+        const target = targets[cursor]
+        cursor += 1
+        if (target === undefined) return
+        try {
+          const result = await runCaptured(
+            ffprobePath,
+            [
+              '-v',
+              'error',
+              '-hide_banner',
+              '-select_streams',
+              'v:0',
+              '-show_entries',
+              'stream=height',
+              '-of',
+              'csv=p=0',
+              '-rw_timeout',
+              String(RESOLUTION_PROBE_TIMEOUT_MS * 1_000),
+              '-analyzeduration',
+              '1000000',
+              '-probesize',
+              '1000000',
+              '-i',
+              target.url
+            ],
+            {
+              timeoutMs: RESOLUTION_PROBE_TIMEOUT_MS,
+              maxOutputBytes: 4 * 1024,
+              ...(signal === undefined ? {} : { signal })
+            }
+          )
+          const value = Number(result.stdout.trim().split(/[,\s]+/)[0])
+          if (
+            Number.isSafeInteger(value) &&
+            value >= 144 &&
+            value <= 65_535
+          ) {
+            heights.set(target.formatId, value)
+          }
+        } catch {
+          // A stream that refuses a header read simply keeps its friendly label.
+        }
+      }
+    }
+  )
+  await Promise.all(workers)
+  return heights
+}
+
 export interface MediaAnalyzerOptions {
   now: () => number
   analysisTtlMs: number
@@ -744,6 +810,29 @@ export function createMediaAnalyzer(
         ffmpegAvailable: toolchain.ffmpegPath !== null,
         newOptionId: () => newOpaqueId('option')
       })
+
+      // A format with no reported dimensions but a real stream URL can still
+      // be labelled from its headers. This is a bounded ffprobe read (never a
+      // download), only when ffprobe was already located, and only for the few
+      // formats actually exposed in the picker.
+      if (toolchain.ffprobePath !== null) {
+        const targets = resolutionProbeTargets(built, verifiedInfo)
+        const heights = await probeFormatHeights(
+          toolchain.ffprobePath,
+          targets,
+          analyzeOptions.signal,
+          runCaptured
+        )
+        if (heights.size > 0) {
+          built = buildMediaAnalysis(
+            applyProbedHeights(verifiedInfo, heights),
+            {
+              ffmpegAvailable: toolchain.ffmpegPath !== null,
+              newOptionId: () => newOpaqueId('option')
+            }
+          )
+        }
+      }
       built.thumbnailUrl = thumbnailUrl
     } catch (error) {
       if (error instanceof MediaInfoError) {

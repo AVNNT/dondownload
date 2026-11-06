@@ -51,6 +51,8 @@ export interface ScanVideoBatchTarget {
   optionId: string
   outputFormat?: MediaOutputFormat
   cookie?: string
+  /** Renderer-safe quality label, written into the queued row (no URL). */
+  qualityLabel?: string
   /** Internal scan item ID used only to wire funscript pairings. */
   scanItemId?: string
 }
@@ -182,6 +184,33 @@ export class ScanQueueService {
     this.concurrency = Math.max(1, Math.min(options.concurrency ?? 4, 4))
     this.now = options.now ?? Date.now
     this.probeItem = options.probeItem
+  }
+
+  /**
+   * Queue one explicit selection per topic in a single renderer click. Each
+   * session is resolved independently, so a script pairing can only reference
+   * items that belong to its own topic.
+   */
+  async queueSelections(
+    selections: readonly {
+      sessionId: string
+      itemIds: readonly string[]
+      videoOptions?: readonly ScanQueueVideoOption[]
+      pairings?: readonly ScanScriptPairingInput[]
+    }[]
+  ): Promise<{ results: ScanQueueResult[] }> {
+    const results: ScanQueueResult[] = []
+    for (const selection of selections) {
+      results.push(
+        await this.queueSelection(
+          selection.sessionId,
+          selection.itemIds,
+          selection.videoOptions ?? [],
+          selection.pairings ?? []
+        )
+      )
+    }
+    return { results }
   }
 
   async queueSelection(
@@ -320,7 +349,7 @@ export class ScanQueueService {
       )
     }
 
-    const title = `Scan: ${cleanTitle(session.hostname)}`
+    const title = `Scan: ${cleanTitle(session.title ?? session.hostname)}`
     let batch: Batch
     if (videos.length > 0) {
       if (typeof this.batches.createScanMediaBatch !== 'function') {
@@ -399,6 +428,7 @@ export class ScanQueueService {
         title: cleanTitle(target.name),
         analysisId: video.analysisId,
         optionId: requestedFormat.optionId,
+        qualityLabel: requestedFormat.label,
         scanItemId: target.itemId,
         ...(outputFormat === 'auto' ? {} : { outputFormat }),
         ...(target.cookie === undefined ? {} : { cookie: target.cookie })
@@ -455,6 +485,7 @@ export class ScanQueueService {
       title: cleanTitle(target.name),
       analysisId: analysis.analysisId,
       optionId: match.optionId,
+      qualityLabel: requestedFormat.label,
       scanItemId: target.itemId,
       ...(outputFormat === 'auto' ? {} : { outputFormat }),
       ...(target.cookie === undefined ? {} : { cookie: target.cookie })

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MediaInfoError, buildMediaAnalysis } from '../src/main/media/formats'
+import { MediaInfoError, applyProbedHeights, buildMediaAnalysis, resolutionProbeTargets } from '../src/main/media/formats'
 
 function optionIds(): () => string {
   let next = 0
@@ -31,6 +31,144 @@ function analyze(name: string, ffmpegAvailable = true) {
     newOptionId: optionIds()
   })
 }
+
+describe('real quality labels', () => {
+  function analyzeFormats(formats: Record<string, unknown>[]) {
+    return buildMediaAnalysis(
+      {
+        title: 'Quality labels',
+        formats
+      },
+      { ffmpegAvailable: false, newOptionId: optionIds() }
+    )
+  }
+
+  it('reads a resolution hint from format_note, format id and the stream URL', () => {
+    const fromNote = analyzeFormats([
+      format({
+        format_id: '1',
+        format_note: '1080p',
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    expect(fromNote.options[0]?.dto.label).toContain('1080p MP4')
+
+    const fromId = analyzeFormats([
+      format({
+        format_id: 'hls-720',
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    expect(fromId.options[0]?.dto.label).toContain('720p MP4')
+
+    const fromUrl = analyzeFormats([
+      format({
+        format_id: '1',
+        url: 'https://cdn.example.com/movie-1080.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    expect(fromUrl.options[0]?.dto.label).toContain('1080p MP4')
+  })
+
+  it('reads a resolution out of a 640x360 resolution string', () => {
+    const analysis = analyzeFormats([
+      format({
+        format_id: '1',
+        resolution: '640x360',
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    expect(analysis.options[0]?.dto.label).toContain('360p MP4')
+  })
+
+  it('never shows a raw format id as quality and uses a friendly fallback', () => {
+    const analysis = analyzeFormats([
+      format({
+        format_id: '1',
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    const label = analysis.options[0]?.dto.label ?? ''
+    expect(label).toContain('Source quality (MP4)')
+    expect(label).not.toContain('Quality 1')
+    expect(label).not.toMatch(/\bQuality\b/)
+  })
+
+  it('uses a bitrate hint so two unknown renditions stay distinguishable', () => {
+    const analysis = analyzeFormats([
+      format({
+        format_id: '1',
+        url: 'https://cdn.example.com/a.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a',
+        tbr: 4200
+      }),
+      format({
+        format_id: '2',
+        url: 'https://cdn.example.com/b.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a',
+        tbr: 1400
+      })
+    ])
+    const labels = analysis.options.map((option) => option.dto.label)
+    expect(labels).toHaveLength(2)
+    expect(labels[0]).toContain('Source quality (MP4) · 4200 kbps')
+    expect(labels[1]).toContain('Source quality (MP4) · 1400 kbps')
+  })
+
+  it('probes only unknown direct formats and merges a learned height', () => {
+    const raw = {
+      title: 'Probe',
+      formats: [
+        format({
+          format_id: '1',
+          url: 'https://cdn.example.com/unknown.mp4',
+          vcodec: 'avc1',
+          acodec: 'mp4a'
+        }),
+        format({
+          format_id: 'hls',
+          protocol: 'm3u8_native',
+          url: 'https://cdn.example.com/unknown.m3u8',
+          vcodec: 'avc1',
+          acodec: 'mp4a'
+        }),
+        format({
+          format_id: 'known',
+          width: 1280,
+          height: 720,
+          vcodec: 'avc1',
+          acodec: 'mp4a'
+        })
+      ]
+    }
+    const built = buildMediaAnalysis(raw, {
+      ffmpegAvailable: true,
+      newOptionId: optionIds()
+    })
+    const targets = resolutionProbeTargets(built, raw)
+    // The known format needs no probe; the HLS playlist is never header-probed.
+    expect(targets).toEqual([
+      { formatId: '1', url: 'https://cdn.example.com/unknown.mp4' }
+    ])
+
+    const refined = buildMediaAnalysis(
+      applyProbedHeights(raw, new Map([['1', 1080]])),
+      { ffmpegAvailable: true, newOptionId: optionIds() }
+    )
+    expect(
+      refined.options.find((option) => option.dto.formatIds?.[0] === '1')?.dto
+        .label
+    ).toContain('1080p MP4')
+  })
+})
 
 describe('media format DRM detection', () => {
   it('rejects a metadata set whose every rendition is DRM-protected', () => {
@@ -272,7 +410,7 @@ describe('media formats with unknown codecs', () => {
 
     expect(analysis.options).toHaveLength(1)
     const option = analysis.options[0]!
-    expect(option.dto.label).toBe('Quality 0 MP4')
+    expect(option.dto.label).toBe('Source quality (MP4)')
     expect(option.dto.formatIds).toEqual(['0'])
     expect(option.dto.outputFormats).toEqual(['auto', 'mkv'])
     expect(option.dto.width).toBeNull()
@@ -304,13 +442,13 @@ describe('media formats with unknown codecs', () => {
     const analysis = analyze('html5-media-embed.json')
 
     expect(analysis.options.map((option) => option.dto.label)).toEqual([
-      'Quality 0 MP4',
-      'Quality 2 MP4',
-      'Quality 1 WEBM'
+      '320p MP4',
+      'Source quality (MP4)',
+      'Source quality (WEBM)'
     ])
     expect(analysis.options.map((option) => option.dto.formatIds)).toEqual([
-      ['0'],
       ['2'],
+      ['0'],
       ['1']
     ])
   })
@@ -331,9 +469,9 @@ describe('media formats with unknown codecs', () => {
     const analysis = analyze('edge-cases.json')
 
     expect(analysis.options.map((option) => option.dto.label)).toEqual([
-      'Quality mystery MP4',
       '720p60 MP4',
-      '640x360 WEBM',
+      '360p WEBM',
+      'Source quality (MP4)',
       'Audio only · M4A · mp4a.40.2 · 128 kbps',
       'Audio only · M4A · mp4a.40.2 · 64 kbps',
       'Audio only · M4A'

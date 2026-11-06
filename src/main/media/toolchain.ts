@@ -19,6 +19,8 @@ export interface Toolchain {
   state: MediaToolState
   ytdlpPath: string | null
   ffmpegPath: string | null
+  /** Bundled/located ffprobe, used only for bounded header reads. */
+  ffprobePath: string | null
   denoPath: string | null
   /** True only when the active yt-dlp build lists a Chrome impersonate target. */
   impersonate: boolean
@@ -106,6 +108,7 @@ export function createToolchainResolver(
         },
         ytdlpPath: null,
         ffmpegPath: null,
+        ffprobePath: null,
         denoPath: null,
         impersonate: false
       }
@@ -126,6 +129,7 @@ export function createToolchainResolver(
         },
         ytdlpPath: null,
         ffmpegPath: null,
+        ffprobePath: null,
         denoPath: null,
         impersonate: false
       }
@@ -136,6 +140,7 @@ export function createToolchainResolver(
       ytdlpProbe.version
     )
     const ffmpeg = await locateMediaTool('ffmpeg', locationOptions)
+    const ffprobe = await locateMediaTool('ffprobe', locationOptions)
     const deno = await locateMediaTool('deno', locationOptions)
     let ffmpegPath: string | null = null
     let ffmpegVersionValue: string | null = null
@@ -160,6 +165,16 @@ export function createToolchainResolver(
       }
     }
 
+    let ffprobePath: string | null = null
+    if (ffprobe.path !== null) {
+      const ffprobeProbe = await probeTool(
+        ffprobe.path,
+        ['-version'],
+        firstLineVersion
+      )
+      if (ffprobeProbe.ok) ffprobePath = ffprobe.path
+    }
+
     const version = ffmpegVersionValue
       ? `yt-dlp ${ytdlpProbe.version ?? 'unknown'}; ffmpeg ${ffmpegVersionValue}`.slice(
           0,
@@ -176,6 +191,7 @@ export function createToolchainResolver(
       },
       ytdlpPath: ytdlp.path,
       ffmpegPath,
+      ffprobePath,
       denoPath: deno.path,
       impersonate
     }

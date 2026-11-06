@@ -83,6 +83,8 @@ export interface InternalOutputChoice {
 export interface InternalMediaOption {
   dto: MediaFormatOption
   choices: Map<MediaOutputFormat, InternalOutputChoice>
+  /** The label is a friendly fallback; a bounded header probe may refine it. */
+  needsResolutionProbe?: boolean
 }
 
 export interface BuiltMediaAnalysis {
@@ -133,6 +135,10 @@ interface FormatDescriptor {
   formatNote: string
   /** yt-dlp `resolution` string, another dimension fallback. */
   resolutionText: string
+  /** yt-dlp `format` display name, another quality hint. */
+  formatName: string
+  /** Stream URL path, used only to read a resolution hint (never exposed). */
+  urlPath: string
   tbr: number
   vbr: number
   abr: number
@@ -152,6 +158,8 @@ interface DisplaySize {
 interface VideoDraft {
   dto: Omit<MediaFormatOption, 'optionId'>
   choices: Map<MediaOutputFormat, InternalOutputChoice>
+  /** True when the quality is a fallback and a bounded probe may learn more. */
+  needsResolutionProbe: boolean
   /** Short side of the frame, so portrait and landscape rank sensibly. */
   sortShortSide: number
   sortFps: number
@@ -371,6 +379,7 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
 
   const formatNote = cleanText(record.format_note) ?? ''
   const formatNoteLower = formatNote.toLowerCase()
+  const formatName = cleanText(record.format) ?? ''
   if (
     formatId.toLowerCase().startsWith('sb') ||
     formatNoteLower.includes('storyboard')
@@ -420,6 +429,14 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
   const hasDimensions = width !== null || height !== null
   const resolutionText = cleanText(record.resolution) ?? ''
   const resolutionLower = resolutionText.toLowerCase()
+  const urlPath = (() => {
+    if (typeof record.url !== 'string') return ''
+    try {
+      return new URL(record.url).pathname
+    } catch {
+      return ''
+    }
+  })()
   const noteSaysAudio = AUDIO_NOTE.test(formatNoteLower)
   const noteSaysVideo = !noteSaysAudio && VIDEO_NOTE.test(formatNoteLower)
   const resolutionSaysAudio = /\baudio\b/.test(resolutionLower)
@@ -472,6 +489,8 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
     filesizeApprox,
     formatNote,
     resolutionText,
+    formatName,
+    urlPath,
     tbr,
     vbr,
     abr,
@@ -492,22 +511,79 @@ function shortSideOf(descriptor: FormatDescriptor): number | null {
   return descriptor.height ?? descriptor.width
 }
 
-function resolutionLabel(descriptor: FormatDescriptor): string {
+const KNOWN_HEIGHTS = new Set([
+  144, 180, 240, 288, 320, 360, 400, 432, 480, 540, 576, 720, 1080, 1440,
+  2160, 4320
+])
+
+/**
+ * Read a resolution hint from free-form metadata. Only known frame heights are
+ * accepted, so a year or an arbitrary format id number can never become a
+ * quality label. Examples: `1080p`, `720`, `-1080.mp4`, `hls-720`, `640x360`.
+ */
+function resolutionHintFrom(text: string): number | null {
+  const lower = text.toLowerCase()
+  if (/\b(?:8k|4320p?)\b/.test(lower)) return 4320
+  if (/\b(?:4k|2160p?)\b/.test(lower)) return 2160
+  if (/\b(?:2k|1440p?)\b/.test(lower)) return 1440
+  const pattern = /(?:^|[^0-9])(\d{3,4})(?:p(?![a-z])|(?![0-9]))/g
+  for (const match of lower.matchAll(pattern)) {
+    const value = Number(match[1])
+    if (KNOWN_HEIGHTS.has(value)) return value
+  }
+  return null
+}
+
+function descriptorResolutionHint(descriptor: FormatDescriptor): number | null {
+  return (
+    resolutionHintFrom(descriptor.formatNote) ??
+    resolutionHintFrom(descriptor.resolutionText) ??
+    resolutionHintFrom(descriptor.formatName) ??
+    resolutionHintFrom(descriptor.formatId) ??
+    resolutionHintFrom(descriptor.urlPath)
+  )
+}
+
+interface ResolutionLabel {
+  text: string
+  /** False when the label is a friendly fallback, not a real resolution. */
+  known: boolean
+}
+
+function resolutionLabel(descriptor: FormatDescriptor): ResolutionLabel {
   const shortSide = shortSideOf(descriptor)
   let base: string
+  let known = true
+  let height: number | null = shortSide
   if (shortSide !== null) {
     base = `${shortSide}p`
-  } else if (descriptor.formatNote !== '') {
-    base = descriptor.formatNote
-  } else if (descriptor.resolutionText !== '') {
-    base = descriptor.resolutionText
   } else {
-    base = `Quality ${descriptor.formatId}`
+    const hint = descriptorResolutionHint(descriptor)
+    if (hint !== null) {
+      base = `${hint}p`
+      height = hint
+    } else {
+      // Never show a raw yt-dlp format id as a quality: `Quality 1` means
+      // nothing to a user. The container is added by the label builder.
+      base = 'Source quality'
+      known = false
+    }
   }
-  if (shortSide !== null && descriptor.fps !== null && descriptor.fps >= 50) {
-    base = `${base}${Math.round(descriptor.fps)}`
+  let fps = descriptor.fps
+  if (fps === null) {
+    const noteFps = /(?:^|[^0-9])\d{3,4}p(\d{2})(?![0-9])/i.exec(
+      descriptor.formatNote
+    )
+    if (noteFps !== null) fps = Number(noteFps[1])
   }
-  return base
+  if (height !== null && fps !== null && fps >= 50) {
+    base = `${base}${Math.round(fps)}`
+  }
+  return { text: base, known }
+}
+
+function sortableShortSide(descriptor: FormatDescriptor): number {
+  return shortSideOf(descriptor) ?? descriptorResolutionHint(descriptor) ?? 0
 }
 
 function mergeContainer(videoExt: string, audioExt: string): string {
@@ -715,13 +791,46 @@ function dedupeKeyOf(
   if (shortSideOf(descriptor) === null) {
     // Distinct formats whose only quality signal is a note/resolution string
     // must not collapse into one indistinguishable option.
-    parts.push(descriptor.formatNote, descriptor.resolutionText)
+    parts.push(
+      descriptor.formatNote,
+      descriptor.resolutionText,
+      descriptor.formatName,
+      String(descriptorResolutionHint(descriptor) ?? ''),
+      descriptor.urlPath
+    )
     // Generic HTML5 embeds have no signal at all; keep every format_id.
-    if (descriptor.formatNote === '' && descriptor.resolutionText === '') {
+    if (
+      descriptor.formatNote === '' &&
+      descriptor.resolutionText === '' &&
+      descriptor.formatName === '' &&
+      descriptorResolutionHint(descriptor) === null
+    ) {
       parts.push(descriptor.formatId)
     }
   }
   return parts.join('|')
+}
+
+/** Video quality prefix for a human label; unknown quality is never a format id. */
+function videoQualityPrefix(
+  descriptor: FormatDescriptor,
+  container: string
+): { label: string; known: boolean } {
+  const resolution = resolutionLabel(descriptor)
+  if (resolution.known) {
+    return { label: `${resolution.text} ${container.toUpperCase()}`, known: true }
+  }
+  // Two unknown renditions must still be distinguishable in the picker. The
+  // reported bitrate is the only remaining quality signal and is display-only.
+  const bitrate = descriptor.tbr || descriptor.vbr
+  const bitrateSuffix =
+    Number.isFinite(bitrate) && bitrate >= 1
+      ? ` · ${Math.round(bitrate)} kbps`
+      : ''
+  return {
+    label: `${resolution.text} (${container.toUpperCase()})${bitrateSuffix}`,
+    known: false
+  }
 }
 
 function buildVideoDrafts(
@@ -737,7 +846,7 @@ function buildVideoDrafts(
     if (descriptor.kind === 'audio') continue
 
     const videoCodec = descriptor.videoCodec ?? 'video'
-    const resolution = resolutionLabel(descriptor)
+    const muxedQuality = videoQualityPrefix(descriptor, descriptor.ext)
 
     if (descriptor.kind === 'muxed') {
       const container = descriptor.ext
@@ -748,8 +857,7 @@ function buildVideoDrafts(
         dto: {
           kind: 'video',
           label: truncateLabel(
-            `${resolution} ${container.toUpperCase()}` +
-              (codecs === null ? '' : ` · ${codecs}`)
+            `${muxedQuality.label}` + (codecs === null ? '' : ` · ${codecs}`)
           ),
           container,
           width: descriptor.width,
@@ -768,7 +876,8 @@ function buildVideoDrafts(
           formatIds: choices.get('auto')?.formatIds
         },
         choices,
-        sortShortSide: shortSideOf(descriptor) ?? 0,
+        needsResolutionProbe: !muxedQuality.known,
+        sortShortSide: sortableShortSide(descriptor),
         sortFps: descriptor.fps ?? 0,
         sortBitrate: descriptor.tbr,
         sortFilesize: size.bytes ?? 0,
@@ -792,12 +901,13 @@ function buildVideoDrafts(
         (audio) => autoChoice.formatIds[1] === audio.formatId
       ) ?? bestAudio
     const container = autoChoice.outputExt
+    const quality = videoQualityPrefix(descriptor, container)
     const size = mergedDisplaySize(descriptor, autoAudio, durationSeconds)
     drafts.push({
       dto: {
         kind: 'video',
         label: truncateLabel(
-          `${resolution} ${container.toUpperCase()} · ${videoCodec} + ${autoAudio.audioCodec ?? 'audio'} (merged)`
+          `${quality.label} · ${videoCodec} + ${autoAudio.audioCodec ?? 'audio'} (merged)`
         ),
         container,
         width: descriptor.width,
@@ -824,7 +934,8 @@ function buildVideoDrafts(
         formatIds: autoChoice.formatIds
       },
       choices,
-      sortShortSide: shortSideOf(descriptor) ?? 0,
+      needsResolutionProbe: !quality.known,
+      sortShortSide: sortableShortSide(descriptor),
       sortFps: descriptor.fps ?? 0,
       sortBitrate: descriptor.tbr,
       sortFilesize: size.bytes ?? 0,
@@ -906,6 +1017,82 @@ function dedupeAndSort<T extends { dedupeKey: string }>(
     result.push(draft)
   }
   return result
+}
+
+export const MAX_RESOLUTION_PROBES = 3
+
+export interface ResolutionProbeTarget {
+  formatId: string
+  /** Exact public HTTPS stream URL, already verified by the analyzer. */
+  url: string
+}
+
+/**
+ * Pick the formats that still carry only a friendly fallback label. Only
+ * formats actually exposed in the analysis are probed, and only direct HTTP(S)
+ * files: probing an HLS playlist could fetch segments instead of headers.
+ */
+export function resolutionProbeTargets(
+  built: BuiltMediaAnalysis,
+  rawInfo: unknown,
+  maximum = MAX_RESOLUTION_PROBES
+): ResolutionProbeTarget[] {
+  const info = asRecord(rawInfo)
+  const rawFormats = Array.isArray(info?.formats) ? info.formats : []
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const value of rawFormats) {
+    const record = asRecord(value)
+    const formatId = typeof record?.format_id === 'string' ? record.format_id : null
+    if (record !== null && formatId !== null) byId.set(formatId, record)
+  }
+
+  const targets: ResolutionProbeTarget[] = []
+  const seen = new Set<string>()
+  for (const option of built.options) {
+    if (option.needsResolutionProbe !== true) continue
+    if (option.dto.kind !== 'video') continue
+    const formatId = option.choices.get('auto')?.formatIds[0]
+    if (formatId === undefined || seen.has(formatId)) continue
+    seen.add(formatId)
+    const record = byId.get(formatId)
+    if (record === undefined) continue
+    if (record.protocol !== undefined && record.protocol !== 'https' && record.protocol !== 'http') {
+      continue
+    }
+    if (typeof record.url !== 'string') continue
+    try {
+      const parsed = new URL(record.url)
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') continue
+      targets.push({ formatId, url: parsed.href })
+    } catch {
+      continue
+    }
+    if (targets.length >= Math.max(0, Math.min(maximum, MAX_RESOLUTION_PROBES))) {
+      break
+    }
+  }
+  return targets
+}
+
+/** Merge probed frame heights back into yt-dlp's raw format records. */
+export function applyProbedHeights(
+  rawInfo: unknown,
+  heights: ReadonlyMap<string, number>
+): unknown {
+  if (heights.size === 0) return rawInfo
+  const info = asRecord(rawInfo)
+  if (info === null || !Array.isArray(info.formats)) return rawInfo
+  const formats = info.formats.map((value) => {
+    const record = asRecord(value)
+    if (record === null) return value
+    const formatId = typeof record.format_id === 'string' ? record.format_id : null
+    const height = formatId === null ? undefined : heights.get(formatId)
+    if (height === undefined || safeInteger(record.height, 1, 65_535) !== null) {
+      return value
+    }
+    return { ...record, height }
+  })
+  return { ...info, formats }
 }
 
 /**
@@ -1014,7 +1201,10 @@ export function buildMediaAnalysis(
         : nextOptionId()
     internalOptions.push({
       dto: { ...draft.dto, optionId },
-      choices: draft.choices
+      choices: draft.choices,
+      ...(draft.needsResolutionProbe
+        ? { needsResolutionProbe: true }
+        : {})
     })
   })
 
