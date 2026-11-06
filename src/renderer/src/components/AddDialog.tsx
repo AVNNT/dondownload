@@ -21,6 +21,7 @@ import { MediaAnalyzer } from './MediaAnalyzer'
 import { QuickAdd } from './QuickAdd'
 import { ScanPanel } from './ScanPanel'
 import { Icon } from './Icon'
+import { useWheelScrollLock } from '../lib/useWheelScrollLock'
 
 export type AddDialogTab = 'direct' | 'media' | 'scan'
 
@@ -55,6 +56,7 @@ export function AddDialog({
   onAnalyze,
   onQueue
 }: AddDialogProps): JSX.Element {
+  const backdropRef = useRef<HTMLDivElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const requestRef = useRef(0)
   const [analysis, setAnalysis] = useState<MediaAnalysis | null>(null)
@@ -64,6 +66,8 @@ export function AddDialog({
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [scanSeed, setScanSeed] = useState(initialUrl)
+
+  useWheelScrollLock(backdropRef)
 
   useEffect(() => {
     const target = dialogRef.current?.querySelector<HTMLElement>(
@@ -157,7 +161,8 @@ export function AddDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/65 p-4 pt-[8vh]"
+      ref={backdropRef}
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-black/65 p-4 pt-[8vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
@@ -222,7 +227,7 @@ export function AddDialog({
                 ? 'Media page'
                 : 'Scan page'
           }
-          className="min-h-0 flex-1 overflow-y-auto p-3"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
         >
           {tab === 'direct' ? (
             <QuickAdd
