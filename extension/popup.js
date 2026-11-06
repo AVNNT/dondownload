@@ -1198,7 +1198,7 @@ async function stopImageRun() {
     // The tab may be gone; the run ends with it.
   }
   setCollectingImages(false)
-  setStatus('', 'Image collection stopped. Press Send in the page to open the picker.')
+  setStatus('', 'Image collection stopped. Sending the images found so far…')
 }
 
 function toggleImageRun() {
