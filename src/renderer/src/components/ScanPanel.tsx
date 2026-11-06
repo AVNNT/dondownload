@@ -239,6 +239,53 @@ function topicTitle(session: ScanSession): string {
   return session.hostname || 'Scanned page'
 }
 
+/** Per-topic header status from the existing session state. */
+function topicStatus(session: ScanSession): {
+  label: string
+  dotClass: string
+  textClass: string
+  pulse: boolean
+} {
+  if (session.status === 'failed') {
+    return {
+      label: 'Failed',
+      dotClass: 'bg-red-400',
+      textClass: 'text-red-300',
+      pulse: false
+    }
+  }
+  if (session.signinRequired) {
+    return {
+      label: 'Needs sign-in',
+      dotClass: 'bg-amber-400',
+      textClass: 'text-amber-300',
+      pulse: false
+    }
+  }
+  if (session.status === 'scanning') {
+    return {
+      label: 'Scanning…',
+      dotClass: 'bg-accent-400',
+      textClass: 'text-accent-200',
+      pulse: true
+    }
+  }
+  if (session.status === 'cancelled') {
+    return {
+      label: 'Cancelled',
+      dotClass: 'bg-zinc-500',
+      textClass: 'text-zinc-400',
+      pulse: false
+    }
+  }
+  return {
+    label: 'Done',
+    dotClass: 'bg-emerald-400',
+    textClass: 'text-emerald-300',
+    pulse: false
+  }
+}
+
 export function ScanPanel({
   initialUrl,
   initialSessions = null,
@@ -251,6 +298,12 @@ export function ScanPanel({
   )
   const [urlText, setUrlText] = useState(initialUrl)
   const [sessions, setSessions] = useState<ScanSession[]>([...seededSessions])
+  /**
+   * Topic URL per session, remembered only for scans this panel started:
+   * the session DTO never carries a URL and extension-started topics cannot
+   * be reopened from here.
+   */
+  const [topicUrls, setTopicUrls] = useState<Record<string, string>>({})
   const [error, setError] = useState<AppErrorInfo | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [preselectNotice, setPreselectNotice] = useState<string | null>(null)
@@ -415,6 +468,7 @@ export function ScanPanel({
     setPrimaryChoice({})
     setRenameChoice({})
     setPreselectNotice(null)
+    setTopicUrls({})
   }, [])
 
   useEffect(() => {
@@ -434,6 +488,7 @@ export function ScanPanel({
           setUrlText(value)
           resetScanState()
           replaceSessions([])
+          setTopicUrls({ [result.value.sessionId]: value })
           adoptSessions([result.value])
         } else {
           setError(result.error)
@@ -652,6 +707,14 @@ export function ScanPanel({
         const next = Array.isArray(result.value) ? result.value : [result.value]
         resetScanState()
         replaceSessions([])
+        // Main returns one session per deduplicated URL, in the same order
+        // the URLs were sent, so the pairs match positionally.
+        const nextUrls: Record<string, string> = {}
+        next.forEach((session, index) => {
+          const url = parsedUrls[index]
+          if (url !== undefined) nextUrls[session.sessionId] = url
+        })
+        setTopicUrls(nextUrls)
         adoptSessions(next)
       })().catch((reason: unknown) => {
         setStarting(false)
@@ -1840,6 +1903,8 @@ export function ScanPanel({
 
   const renderSession = (session: ScanSession): JSX.Element => {
     const sets = setsBySession.get(session.sessionId) ?? []
+    const status = topicStatus(session)
+    const topicUrl = topicUrls[session.sessionId] ?? null
     const sessionScriptItemIds = new Set(
       sets.flatMap((set) => set.files.map((file) => file.id))
     )
@@ -1878,6 +1943,21 @@ export function ScanPanel({
               {session.hostname}
             </span>
           </button>
+          <span
+            className={`flex shrink-0 items-center gap-1.5 text-[12px] font-semibold ${status.textClass}`}
+          >
+            <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
+              {status.pulse ? (
+                <span
+                  className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 ${status.dotClass}`}
+                />
+              ) : null}
+              <span
+                className={`relative inline-flex h-2 w-2 rounded-full ${status.dotClass}`}
+              />
+            </span>
+            {status.label}
+          </span>
           <span className="ml-auto flex shrink-0 items-center gap-2 text-[12px] text-zinc-400">
             {session.status === 'scanning' ? (
               <>
@@ -1907,6 +1987,18 @@ export function ScanPanel({
                 <span>{sessionTicked} ticked</span>
               </span>
             )}
+            {topicUrl !== null ? (
+              <a
+                href={topicUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={topicUrl}
+                className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 px-2.5 text-[11.5px] font-semibold text-zinc-400 transition hover:bg-white/[0.05] hover:text-zinc-200"
+              >
+                <Icon name="external" size={13} />
+                Open topic
+              </a>
+            ) : null}
             {session.status === 'scanning' ? (
               <button
                 type="button"
@@ -2336,6 +2428,13 @@ export function ScanPanel({
                   </>
                 )}
               </div>
+              <span
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 px-2.5 text-[12.5px] text-zinc-400"
+                title="Downloads\DonDownload — the folder downloads are saved to"
+              >
+                <Icon name="folder" size={14} className="shrink-0" />
+                Downloads\DonDownload
+              </span>
               <button
                 type="button"
                 onClick={queueSelected}
