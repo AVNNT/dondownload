@@ -46,6 +46,14 @@ describe('desktop theme contract', () => {
     expect(light.titleBarOverlay.symbolColor).toBe('#18181b')
   })
 
+  it('sizes the overlay to the renderer header row', () => {
+    // The header row is `h-14` (56px); the caption buttons must match it.
+    expect(TITLE_BAR_OVERLAY_HEIGHT).toBe(56)
+    for (const theme of APP_THEMES) {
+      expect(themeWindowColors(theme).titleBarOverlay.height).toBe(56)
+    }
+  })
+
   it('updates the native window immediately and tolerates a closed window', () => {
     const window = {
       setBackgroundColor: vi.fn(),

@@ -14,7 +14,11 @@ export interface ThemeWindowColors {
   }
 }
 
-export const TITLE_BAR_OVERLAY_HEIGHT = 40
+/**
+ * Matches the renderer header row (`h-14` = 56px) so the caption buttons are
+ * vertically centered with it and the drag region covers the same strip.
+ */
+export const TITLE_BAR_OVERLAY_HEIGHT = 56
 
 export function themeWindowColors(theme: AppTheme): ThemeWindowColors {
   switch (theme) {

@@ -955,7 +955,7 @@ export default function App(): JSX.Element {
     >
       <header className="window-app-header relative shrink-0 border-b border-white/[0.07] surface-app">
         <div aria-hidden="true" className="window-drag-region absolute left-0 top-0" />
-        <div className="window-app-header-content relative z-10 flex h-14 items-center gap-3 px-4">
+        <div className="window-app-header-content relative z-10 flex h-14 items-center gap-3 pl-4">
           <button
             type="button"
             onClick={() => setPage('library')}
