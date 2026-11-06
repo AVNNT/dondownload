@@ -1402,6 +1402,7 @@ export class ScanSessionManager {
         const decision = scoreFollowLink({
           url: normalized,
           baseUrl: pageUrl,
+          forumHost: session.hostname,
           isEmbed: candidate.isEmbed,
           rel: candidate.rel,
           text: candidate.text

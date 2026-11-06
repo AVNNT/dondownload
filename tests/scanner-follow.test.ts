@@ -151,6 +151,30 @@ describe('follow scoring', () => {
     ).toMatchObject({ reason: 'video-text' })
   })
 
+  it('applies forum navigation only to the scanned forum host', () => {
+    const forum = 'https://discuss.eroscripts.com/t/example-topic/346779'
+    const forumHost = 'discuss.eroscripts.com'
+
+    // Other sites use these first path segments for real content.
+    for (const url of [
+      'https://pixeldrain.com/u/abc123',
+      'https://example.com/t/clip',
+      'https://example.com/new/video1'
+    ]) {
+      expect(scoreFollowLink({ url, baseUrl: forum, forumHost })).not.toBeNull()
+    }
+
+    // The scanned forum's own navigation is still never followed.
+    for (const url of [
+      'https://discuss.eroscripts.com/t/other-topic/1',
+      'https://discuss.eroscripts.com/u/user',
+      'https://discuss.eroscripts.com/c/cat',
+      'https://discuss.eroscripts.com/new'
+    ]) {
+      expect(scoreFollowLink({ url, baseUrl: forum, forumHost })).toBeNull()
+    }
+  })
+
   it('never follows pagination, login or external non-video links', () => {
     expect(
       scoreFollowLink({ url: 'https://site.example/page/2', baseUrl: BASE })
