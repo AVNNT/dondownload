@@ -28,8 +28,8 @@ export type AddDialogTab = 'direct' | 'media' | 'scan'
 export interface AddDialogProps {
   tab: AddDialogTab
   initialUrl: string
-  /** Extension-created session that should be shown immediately. */
-  scanSession?: ScanSession | null
+  /** Extension-created sessions that should be shown together immediately. */
+  scanSessions?: ScanSession[] | null
   busy?: boolean
   onTabChange: (tab: AddDialogTab) => void
   onClose: () => void
@@ -48,7 +48,7 @@ export interface AddDialogProps {
 export function AddDialog({
   tab,
   initialUrl,
-  scanSession = null,
+  scanSessions = null,
   busy = false,
   onTabChange,
   onClose,
@@ -276,10 +276,10 @@ export function AddDialog({
             />
           ) : (
             <ScanPanel
-              key={`scan:${scanSeed}:${scanSession?.sessionId ?? 'new'}`}
+              key={`scan:${scanSeed}`}
               disabled={busy}
               initialUrl={scanSeed}
-              initialSession={scanSession}
+              initialSessions={scanSessions}
             />
           )}
         </div>

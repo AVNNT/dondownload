@@ -77,6 +77,10 @@ import {
   type RowActionId
 } from './lib/actions'
 import {
+  groupExtensionScan,
+  type ExtensionScanBatchState
+} from './lib/extensionScanBatch'
+import {
   IDLE_DRAG_ORIGIN,
   extractDroppedUrl,
   reduceDragOrigin,
@@ -90,8 +94,8 @@ interface AddRequest {
   tab: AddDialogTab
   url: string
   nonce: number
-  /** Extension-created scan session to seed the Scan page view. */
-  scanSessionId?: string
+  /** Extension-created scan sessions to seed the Scan page view together. */
+  scanSessionIds?: string[]
 }
 
 interface MenuState {
@@ -109,6 +113,21 @@ function mergeScanSession(
   for (const item of update.items) items.set(item.id, item)
   for (const removed of update.removedItemIds) items.delete(removed)
   return { ...update, items: [...items.values()] }
+}
+
+function mergeScanSessionList(
+  current: readonly ScanSession[],
+  update: ScanSession
+): ScanSession[] {
+  const existing = current.find(
+    (session) => session.sessionId === update.sessionId
+  )
+  if (existing === undefined) return [...current, update]
+  return current.map((session) =>
+    session.sessionId === update.sessionId
+      ? mergeScanSession(session, update)
+      : session
+  )
 }
 
 function runtimeLabel(aria2: Aria2State | null): string {
@@ -143,7 +162,7 @@ export default function App(): JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null)
-  const [scanSession, setScanSession] = useState<ScanSession | null>(null)
+  const [scanSessions, setScanSessions] = useState<ScanSession[]>([])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -155,7 +174,7 @@ export default function App(): JSX.Element {
   const dragDepth = useRef(0)
   const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
   const addSequence = useRef(0)
-  const openedExtensionScans = useRef<Set<string>>(new Set())
+  const extensionScanBatch = useRef<ExtensionScanBatchState | null>(null)
 
   // Track drags that start inside the window (logo, selected text, table rows).
   // Their payload is internal UI data and must never open the Add dialog, while
@@ -207,17 +226,36 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const unsubscribe = window.donDownload.onScanUpdated((session) => {
-      setScanSession((current) => mergeScanSession(current, session))
+      setScanSessions((current) => mergeScanSessionList(current, session))
       if (session.origin !== 'extension') return
-      if (openedExtensionScans.current.has(session.sessionId)) return
-      openedExtensionScans.current.add(session.sessionId)
+      const decision = groupExtensionScan(
+        extensionScanBatch.current,
+        session.sessionId,
+        Date.now()
+      )
+      extensionScanBatch.current = decision.batch
+      const sessionIds = decision.batch.sessionIds
       // The extension explicitly asked the desktop to show this scan. Focus is
-      // handled in the main process; this opens the matching view once.
-      setAddRequest({
-        tab: 'scan',
-        url: '',
-        nonce: ++addSequence.current,
-        scanSessionId: session.sessionId
+      // handled in the main process; this opens one view per batch and keeps
+      // adding later sessions from the same click instead of opening a dialog
+      // for every URL.
+      setAddRequest((current) => {
+        if (decision.isContinuation) {
+          if (
+            current === null ||
+            current.tab !== 'scan' ||
+            current.scanSessionIds === undefined
+          ) {
+            return current
+          }
+          return { ...current, scanSessionIds: sessionIds }
+        }
+        return {
+          tab: 'scan',
+          url: '',
+          nonce: ++addSequence.current,
+          scanSessionIds: sessionIds
+        }
       })
     })
     return unsubscribe
@@ -1057,11 +1095,15 @@ export default function App(): JSX.Element {
           key={addRequest.nonce}
           tab={addRequest.tab}
           initialUrl={addRequest.url}
-          scanSession={
-            addRequest.scanSessionId !== undefined &&
-            scanSession?.sessionId === addRequest.scanSessionId
-              ? scanSession
-              : null
+          scanSessions={
+            addRequest.scanSessionIds === undefined
+              ? null
+              : addRequest.scanSessionIds.flatMap((sessionId) => {
+                  const session = scanSessions.find(
+                    (candidate) => candidate.sessionId === sessionId
+                  )
+                  return session === undefined ? [] : [session]
+                })
           }
           busy={adding}
           onTabChange={(tab) =>

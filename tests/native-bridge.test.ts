@@ -12,6 +12,7 @@ import type { MediaBridgeTarget } from '../src/shared/mediaBridge'
 import type { ScanSession } from '../src/shared/scanner'
 import { ValidationError } from '../src/shared/validation'
 import { AppError } from '../src/main/errors'
+import { MAX_ACTIVE_SCANS } from '../src/main/scanner/session'
 import {
   startNativeBridge,
   type BridgeDownloadManager,
@@ -223,7 +224,9 @@ const SCAN_SESSION: ScanSession = {
   updatedAt: 1_800_000_000_000
 }
 
-async function start(options: { media?: boolean; scanner?: boolean } = {}): Promise<void> {
+async function start(
+  options: { media?: boolean; scanner?: boolean; queueScanner?: boolean } = {}
+): Promise<void> {
   tempDir = await mkdtemp(path.join(os.tmpdir(), 'dondownload-bridge-'))
   manager = createManager()
   media = options.media ? createMediaTarget() : null
@@ -237,17 +240,61 @@ async function start(options: { media?: boolean; scanner?: boolean } = {}): Prom
     ...(media ? { mediaBridge: media } : {}),
     ...(options.scanner
       ? {
-          scanner: {
-            start: (url: string, scanOptions: { origin: 'extension'; cookie?: string }) => {
-              scanCalls.push({
-                url,
-                ...(scanOptions.cookie === undefined
-                  ? {}
-                  : { cookie: scanOptions.cookie })
-              })
-              return SCAN_SESSION
-            }
-          },
+          scanner: options.queueScanner
+            ? {
+                start: (
+                  url: string,
+                  scanOptions: { origin: 'extension'; cookie?: string }
+                ) => {
+                  // Proves the route uses the queue-capable start: a plain
+                  // start would fail once MAX_ACTIVE_SCANS is reached.
+                  scanCalls.push({
+                    url,
+                    ...(scanOptions.cookie === undefined
+                      ? {}
+                      : { cookie: scanOptions.cookie })
+                  })
+                  throw new AppError(
+                    'SCAN_LIMIT',
+                    'Two page scans are already running.'
+                  )
+                },
+                startMany: (
+                  urls: string[],
+                  scanOptions: { origin: 'extension'; cookie?: string }
+                ) => {
+                  return urls.map((url) => {
+                    scanCalls.push({
+                      url,
+                      ...(scanOptions.cookie === undefined
+                        ? {}
+                        : { cookie: scanOptions.cookie })
+                    })
+                    return {
+                      ...SCAN_SESSION,
+                      sessionId: `scan_${String(scanCalls.length).padStart(16, '0')}`,
+                      message:
+                        scanCalls.length > MAX_ACTIVE_SCANS
+                          ? 'Waiting for an active scan to finish.'
+                          : null
+                    }
+                  })
+                }
+              }
+            : {
+                start: (
+                  url: string,
+                  scanOptions: { origin: 'extension'; cookie?: string }
+                ) => {
+                  scanCalls.push({
+                    url,
+                    ...(scanOptions.cookie === undefined
+                      ? {}
+                      : { cookie: scanOptions.cookie })
+                  })
+                  return SCAN_SESSION
+                }
+              },
           onScanRequested: (session: ScanSession) => {
             scanRequested = session
           }
@@ -1098,5 +1145,32 @@ describe('native bridge scan-page route', () => {
     )
     expect(injected.status).toBe(400)
     expect(scanCalls).toHaveLength(0)
+  })
+})
+
+describe('native bridge scan-page queueing', () => {
+  beforeEach(() => start({ scanner: true, queueScanner: true }))
+
+  it('accepts every URL in a multi-link batch beyond MAX_ACTIVE_SCANS', async () => {
+    const responses = []
+    for (let index = 0; index < MAX_ACTIVE_SCANS + 1; index += 1) {
+      responses.push(
+        await post(
+          JSON.stringify({
+            type: 'scan-page',
+            url: `https://discuss.example/t/topic/${index}`
+          }),
+          { path: '/scan-page' }
+        )
+      )
+    }
+
+    expect(responses.map((response) => response.status)).toEqual(
+      Array.from({ length: MAX_ACTIVE_SCANS + 1 }, () => 200)
+    )
+    expect(scanCalls).toHaveLength(MAX_ACTIVE_SCANS + 1)
+    // The queued session is still reported to the renderer, which groups it
+    // with the rest of the batch.
+    expect(scanRequested?.message).toMatch(/waiting/i)
   })
 })

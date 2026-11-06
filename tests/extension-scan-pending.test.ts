@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_PENDING_SCANS,
   PENDING_SCAN_KEY,
   PENDING_SCAN_TTL_MS,
+  pendingScanGroups,
   rememberPendingScan,
+  rememberPendingScans,
   scanCookiesReady,
-  takePendingScan
+  takePendingScan,
+  takePendingScans
 } from '../extension/scan-pending.js'
 import { CAPTURE_SETTINGS_KEY } from '../extension/capture-settings.js'
 
 const ORIGIN = 'https://discuss.eroscripts.com'
 const PAGE = `${ORIGIN}/t/fancam-mix/346779`
+const OTHER_ORIGIN = 'https://forum.example'
+const OTHER_PAGE = `${OTHER_ORIGIN}/t/topic/1`
 
 function area() {
   const data: Record<string, unknown> = {}
@@ -70,11 +76,12 @@ describe('pending scan after the one-time grant', () => {
     expect(await takePendingScan(mock.api, ORIGIN, 2_000)).toBeNull()
   })
 
-  it('never starts a scan for a different origin and clears the entry', async () => {
+  it('never starts a scan for a different origin and keeps the entry', async () => {
     const mock = chromeMock()
     await rememberPendingScan(mock.api, PAGE, 1_000)
     expect(await takePendingScan(mock.api, 'https://evil.example', 2_000)).toBeNull()
-    expect(mock.session.data[PENDING_SCAN_KEY]).toBeUndefined()
+    // Another origin's grant never consumes this site's pending scan.
+    expect(await takePendingScan(mock.api, ORIGIN, 2_000)).toBe(PAGE)
   })
 
   it('expires stale entries and rejects non-http URLs', async () => {
@@ -87,6 +94,79 @@ describe('pending scan after the one-time grant', () => {
   it('never stores a cookie value', async () => {
     const mock = chromeMock()
     await rememberPendingScan(mock.api, PAGE, 1_000)
-    expect(Object.keys(mock.session.data[PENDING_SCAN_KEY] as object).sort()).toEqual(['at', 'url'])
+    const stored = mock.session.data[PENDING_SCAN_KEY] as {
+      entries: Array<{ url: string; at: number }>
+    }
+    expect(Object.keys(stored)).toEqual(['entries'])
+    expect(Object.keys(stored.entries[0] ?? {}).sort()).toEqual(['at', 'url'])
+    expect(JSON.stringify(stored)).not.toMatch(/cookie/i)
+  })
+})
+
+describe('pending scan list for several origins', () => {
+  it('takes only the requested origin once and leaves the others pending', async () => {
+    const mock = chromeMock()
+    const ours = [`${ORIGIN}/t/a`, `${ORIGIN}/t/b`]
+    expect(
+      await rememberPendingScans(mock.api, [...ours, OTHER_PAGE], 1_000)
+    ).toBe(true)
+
+    expect(await takePendingScans(mock.api, ORIGIN, 2_000)).toEqual(ours)
+    // One-shot per origin.
+    expect(await takePendingScans(mock.api, ORIGIN, 2_000)).toEqual([])
+    expect(await takePendingScans(mock.api, OTHER_ORIGIN, 2_000)).toEqual([
+      OTHER_PAGE
+    ])
+  })
+
+  it('returns only fresh same-origin URLs and expires stale ones', async () => {
+    const mock = chromeMock()
+    await rememberPendingScans(mock.api, [PAGE, OTHER_PAGE], 1_000)
+    expect(
+      await takePendingScans(mock.api, ORIGIN, 1_000 + PENDING_SCAN_TTL_MS + 1)
+    ).toEqual([])
+    expect(
+      await takePendingScans(mock.api, OTHER_ORIGIN, 1_000 + PENDING_SCAN_TTL_MS + 1)
+    ).toEqual([])
+  })
+
+  it('deduplicates and caps the whole list at ten URLs', async () => {
+    const mock = chromeMock()
+    const urls = Array.from(
+      { length: MAX_PENDING_SCANS + 3 },
+      (_value, index) => `${ORIGIN}/t/${index}`
+    )
+    expect(await rememberPendingScans(mock.api, [...urls, urls[0]], 1_000)).toBe(
+      true
+    )
+    const stored = mock.session.data[PENDING_SCAN_KEY] as {
+      entries: Array<{ url: string }>
+    }
+    expect(stored.entries).toHaveLength(MAX_PENDING_SCANS)
+    const taken = await takePendingScans(mock.api, ORIGIN, 2_000)
+    expect(taken).toHaveLength(MAX_PENDING_SCANS)
+    expect(new Set(taken).size).toBe(taken.length)
+  })
+
+  it('groups the remaining pending URLs by origin for the next grant', async () => {
+    const mock = chromeMock()
+    await rememberPendingScans(
+      mock.api,
+      [PAGE, OTHER_PAGE, `${OTHER_ORIGIN}/t/topic/2`],
+      1_000
+    )
+    expect(await pendingScanGroups(mock.api, 2_000)).toEqual([
+      { origin: ORIGIN, urls: [PAGE] },
+      { origin: OTHER_ORIGIN, urls: [OTHER_PAGE, `${OTHER_ORIGIN}/t/topic/2`] }
+    ])
+    // Reading the groups never consumes them.
+    expect(await pendingScanGroups(mock.api, 2_000)).toHaveLength(2)
+  })
+
+  it('reads the legacy single-entry shape', async () => {
+    const mock = chromeMock()
+    mock.session.data[PENDING_SCAN_KEY] = { url: PAGE, at: 1_000 }
+    expect(await takePendingScan(mock.api, ORIGIN, 2_000)).toBe(PAGE)
+    expect(await takePendingScan(mock.api, ORIGIN, 2_000)).toBeNull()
   })
 })

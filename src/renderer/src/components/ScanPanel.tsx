@@ -43,7 +43,8 @@ import { createScanAutoStart, type ScanAutoStart } from '../scanAutoStart'
 
 interface ScanPanelProps {
   initialUrl: string
-  initialSession?: ScanSession | null
+  /** Extension-created sessions shown together in one multi-topic view. */
+  initialSessions?: readonly ScanSession[] | null
   disabled?: boolean
 }
 
@@ -260,13 +261,15 @@ function topicTitle(session: ScanSession): string {
 
 export function ScanPanel({
   initialUrl,
-  initialSession = null,
+  initialSessions = null,
   disabled = false
 }: ScanPanelProps): JSX.Element {
-  const [urlText, setUrlText] = useState(initialUrl)
-  const [sessions, setSessions] = useState<ScanSession[]>(
-    initialSession === null ? [] : [initialSession]
+  const seededSessions = useMemo<readonly ScanSession[]>(
+    () => initialSessions ?? [],
+    [initialSessions]
   )
+  const [urlText, setUrlText] = useState(initialUrl)
+  const [sessions, setSessions] = useState<ScanSession[]>([...seededSessions])
   const [error, setError] = useState<AppErrorInfo | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [preselectNotice, setPreselectNotice] = useState<string | null>(null)
@@ -288,11 +291,12 @@ export function ScanPanel({
   const [openingItemId, setOpeningItemId] = useState<string | null>(null)
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
-  const sessionsRef = useRef<ScanSession[]>(
-    initialSession === null ? [] : [initialSession]
-  )
+  const sessionsRef = useRef<ScanSession[]>([...seededSessions])
   const knownSessionIdsRef = useRef<Set<string>>(
-    new Set(initialSession === null ? [] : [initialSession.sessionId])
+    new Set(seededSessions.map((session) => session.sessionId))
+  )
+  const seededSignatureRef = useRef(
+    seededSessions.map((session) => session.sessionId).join('|')
   )
   const preselectedRef = useRef<Set<string>>(new Set())
   const pendingUpdatesRef = useRef<Map<string, ScanSession[]>>(new Map())
@@ -398,6 +402,20 @@ export function ScanPanel({
     [preselectIfReady, replaceSessions]
   )
 
+  /**
+   * A multi-link extension batch can add another session after this panel is
+   * already open. Adopt only newly named sessions; their own updates are
+   * buffered until their ID is known and are replayed here.
+   */
+  useEffect(() => {
+    const signature = seededSessions
+      .map((session) => session.sessionId)
+      .join('|')
+    if (signature === seededSignatureRef.current) return
+    seededSignatureRef.current = signature
+    adoptSessions(seededSessions)
+  }, [adoptSessions, seededSessions])
+
   /** Reset all per-scan state before a new scan request. */
   const resetScanState = useCallback((): void => {
     preselectedRef.current.clear()
@@ -451,14 +469,14 @@ export function ScanPanel({
   }, [adoptSessions, replaceSessions, resetScanState])
 
   useEffect(() => {
-    if (initialSession !== null) return
+    if (seededSessions.length > 0) return
     // A single URL still auto-starts as before. A multi-line paste waits for
     // the explicit Scan button (and never starts a browser-extension page).
     const parsed = parseScanUrlList(urlText)
     if (parsed.urls.length === 1 && parsed.invalid.length === 0 && !urlText.includes('\n')) {
       controllerRef.current?.update(urlText.trim())
     }
-  }, [initialSession, urlText])
+  }, [seededSessions, urlText])
 
   // Pre-selection is applied from the update/adopt callbacks above, so a
   // finished topic never needs a state-setting effect.
