@@ -1,17 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import {
   MAX_SCAN_AUTHOR_LENGTH,
+  MAX_SCAN_FOLLOW_DEPTH,
+  MAX_SCAN_FOLLOW_PAGES,
   MAX_SCAN_ITEMS,
   MAX_SCAN_MESSAGE_LENGTH,
   MAX_SCAN_NAME_LENGTH,
   MAX_SCAN_PROBES,
+  MAX_SCAN_VIDEO_ANALYSES,
+  SCAN_SESSION_BUDGET_MS,
+  isQueueableScanItem,
   type ScanCategory,
   type ScanCounters,
   type ScanItem,
   type ScanItemKind,
   type ScanOrigin,
   type ScanSession,
-  type ScanSessionStatus
+  type ScanSessionStatus,
+  type ScanVideoFormat
 } from '@shared/scanner'
 import { ValidationError, normalizeHttpUrl } from '@shared/validation'
 import type { PublicTargetLookup } from '../net/publicTarget'
@@ -35,10 +41,21 @@ import {
   type ScanFetchResult
 } from './fetchPage'
 import {
+  extractFollowCandidates,
+  scoreFollowLink
+} from './follow'
+import {
   probeScanCandidates,
   type ProbeScanItemFn,
   type ScanProbeResult
 } from './probe'
+import { ScanRobotsCache } from './robots'
+import {
+  resolveVideoCandidates,
+  videoIdentityForUrl,
+  type ScanMediaAnalyzer,
+  type VideoResolution
+} from './videoResolver'
 
 /**
  * Ephemeral Smart Link Scanner sessions.
@@ -68,6 +85,12 @@ export interface ScanSessionOptions {
   lookup?: PublicTargetLookup
   probeCap?: number
   probeItem?: ProbeScanItemFn
+  /** Metadata-only media analysis; absent keeps video page links unresolved. */
+  analyzeMedia?: ScanMediaAnalyzer
+  videoCap?: number
+  followPages?: number
+  followDepth?: number
+  sessionBudgetMs?: number
   onUpdate: (session: ScanSession) => void
 }
 
@@ -75,6 +98,13 @@ export interface StartScanOptions {
   origin?: ScanOrigin
   /** Extension-supplied Cookie for the exact initial host. Never persisted. */
   cookie?: string
+}
+
+export interface ResolvedVideoTarget {
+  analysisId: string
+  expiresAt: number
+  formats: ScanVideoFormat[]
+  bestOptionId: string | null
 }
 
 export interface ResolvedScanTarget {
@@ -86,16 +116,24 @@ export interface ResolvedScanTarget {
   cookie?: string
   postNumber: number | null
   author: string | null
+  /** Present only for a resolved video page link. */
+  video?: ResolvedVideoTarget
 }
 
 type ScanCandidate = ExtractedCandidate & {
   postNumber?: number | null
   author?: string | null
+  /** Followed video-path/embed/page: show it as a video page link. */
+  videoHint?: boolean
 }
 
 interface StoredScanItem extends ScanItem {
   /** Internal source URL. Never part of the public DTO. */
   url: string
+  /** Internal video identity used to merge repeated embeds. */
+  videoIdentity: string | null
+  /** Analysis association used by the explicit queue path. */
+  videoAnalysis: ResolvedVideoTarget | null
 }
 
 interface StoredScanSession {
@@ -117,6 +155,8 @@ interface StoredScanSession {
   expiresAt: number
   fetchedPages: number
   limited: boolean
+  limitedMessage: string | null
+  deadline: number
   controller: AbortController
   run: Promise<void> | null
   emitTimer: ReturnType<typeof setTimeout> | null
@@ -146,14 +186,18 @@ function countersFor(items: readonly ScanItem[]): ScanCounters {
     probing: 0,
     ready: 0,
     signin: 0,
-    unavailable: 0
+    protected: 0,
+    unavailable: 0,
+    toolUnavailable: 0
   }
   for (const item of items) {
     if (item.status === 'found') counters.found += 1
     else if (item.status === 'probing') counters.probing += 1
     else if (item.status === 'ready') counters.ready += 1
     else if (item.status === 'signin') counters.signin += 1
+    else if (item.status === 'protected') counters.protected += 1
     else if (item.status === 'unavailable') counters.unavailable += 1
+    else if (item.status === 'tool-unavailable') counters.toolUnavailable += 1
   }
   return counters
 }
@@ -184,6 +228,11 @@ export class ScanSessionManager {
   private readonly lookup: PublicTargetLookup | undefined
   private readonly probeCap: number
   private readonly probeItem: ProbeScanItemFn | undefined
+  private readonly analyzeMedia: ScanMediaAnalyzer | undefined
+  private readonly videoCap: number
+  private readonly followPages: number
+  private readonly followDepth: number
+  private readonly sessionBudgetMs: number
   private readonly onUpdate: (session: ScanSession) => void
   private readonly sessions = new Map<string, StoredScanSession>()
   private closed = false
@@ -201,6 +250,23 @@ export class ScanSessionManager {
       MAX_SCAN_PROBES
     )
     this.probeItem = options.probeItem
+    this.analyzeMedia = options.analyzeMedia
+    this.videoCap = Math.max(
+      0,
+      Math.min(options.videoCap ?? MAX_SCAN_VIDEO_ANALYSES, MAX_SCAN_VIDEO_ANALYSES)
+    )
+    this.followPages = Math.max(
+      1,
+      Math.min(options.followPages ?? MAX_SCAN_FOLLOW_PAGES, MAX_SCAN_FOLLOW_PAGES)
+    )
+    this.followDepth = Math.max(
+      0,
+      Math.min(options.followDepth ?? MAX_SCAN_FOLLOW_DEPTH, MAX_SCAN_FOLLOW_DEPTH)
+    )
+    this.sessionBudgetMs =
+      options.sessionBudgetMs !== undefined && options.sessionBudgetMs > 0
+        ? Math.min(options.sessionBudgetMs, SCAN_SESSION_BUDGET_MS)
+        : SCAN_SESSION_BUDGET_MS
     this.onUpdate = options.onUpdate
   }
 
@@ -253,6 +319,8 @@ export class ScanSessionManager {
       expiresAt: this.now() + this.ttlMs,
       fetchedPages: 0,
       limited: false,
+      limitedMessage: null,
+      deadline: this.now() + this.sessionBudgetMs,
       controller: new AbortController(),
       run: null,
       emitTimer: null,
@@ -319,16 +387,26 @@ export class ScanSessionManager {
           'The selected item does not belong to this scan.'
         )
       }
-      if (item.category === 'page' || item.kind === 'page-link') {
+      const readyVideo =
+        item.category === 'video' &&
+        item.kind === 'page-link' &&
+        item.status === 'ready' &&
+        item.videoAnalysis !== null
+      if (item.category === 'page' || (item.kind === 'page-link' && !readyVideo)) {
         throw new AppError(
           'SCAN_PAGE_NOT_QUEUEABLE',
-          'A web page cannot be queued as a file. Choose a file item instead.'
+          'A web page cannot be queued as a file. Choose a file or video item instead.'
         )
       }
-      if (item.status === 'unavailable') {
+      if (
+        item.status === 'unavailable' ||
+        item.status === 'protected' ||
+        item.status === 'tool-unavailable'
+      ) {
         throw new AppError(
           'SCAN_ITEM_UNAVAILABLE',
-          'The selected item is no longer available.'
+          item.unavailableReason ??
+            'The selected item is no longer available.'
         )
       }
       const cookie = this.cookieFor(session, item.url)
@@ -340,7 +418,17 @@ export class ScanSessionManager {
         kind: item.kind,
         ...(cookie === null ? {} : { cookie }),
         postNumber: item.postNumber,
-        author: item.author
+        author: item.author,
+        ...(readyVideo && item.videoAnalysis !== null
+          ? {
+              video: {
+                analysisId: item.videoAnalysis.analysisId,
+                expiresAt: item.videoAnalysis.expiresAt,
+                formats: item.videoAnalysis.formats,
+                bestOptionId: item.videoAnalysis.bestOptionId
+              }
+            }
+          : {})
       })
     }
     return targets
@@ -409,16 +497,28 @@ export class ScanSessionManager {
         if (this.addCandidate(session, candidate) === 'limited') break
       }
 
-      session.message =
-        session.items.size === 0
-          ? 'No downloadable content was found on that page.'
-          : null
       session.updatedAt = this.now()
       this.publish(session, true)
 
       if (session.controller.signal.aborted) return
+      await this.followVideoPages(session, page)
+      if (session.controller.signal.aborted) return
+      session.message =
+        session.items.size === 0
+          ? 'No downloadable content was found on that page.'
+          : null
+
       await this.probeItems(session)
       if (session.controller.signal.aborted) return
+
+      await this.resolveVideoItems(session)
+      if (session.controller.signal.aborted) return
+
+      if (this.now() >= session.deadline) {
+        session.limited = true
+        session.limitedMessage ??=
+          'The scan reached its time limit. Narrow the page selection and scan again.'
+      }
 
       session.status =
         session.limited || session.items.size >= MAX_SCAN_ITEMS
@@ -426,7 +526,10 @@ export class ScanSessionManager {
           : 'done'
       if (session.status === 'limited') {
         session.message = safeMessage(
-          `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+          session.limitedMessage ??
+            (session.items.size >= MAX_SCAN_ITEMS
+              ? `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+              : 'The scan reached a safety limit. Narrow the page selection.')
         )
       }
       session.updatedAt = this.now()
@@ -523,14 +626,26 @@ export class ScanSessionManager {
     } catch {
       return 'duplicate'
     }
+    const identity = videoIdentityForUrl(normalized)
     for (const item of session.items.values()) {
-      if (item.url === normalized) {
+      if (
+        item.url === normalized ||
+        (identity !== null && item.videoIdentity === identity)
+      ) {
         if (
           item.postNumber === null &&
           typeof candidate.postNumber === 'number'
         ) {
           item.postNumber = candidate.postNumber
           item.author = candidate.author ?? null
+        }
+        if (
+          candidate.videoHint === true &&
+          item.kind === 'page-link' &&
+          item.category === 'page'
+        ) {
+          item.category = 'video'
+          if (item.videoIdentity === null) item.videoIdentity = identity
         }
         return 'duplicate'
       }
@@ -548,10 +663,14 @@ export class ScanSessionManager {
       fromScript: candidate.fromScript,
       isEmbed: candidate.isEmbed
     })
+    const category: ScanCategory =
+      candidate.videoHint === true && classification.kind === 'page-link'
+        ? 'video'
+        : classification.category
     const id = this.newOpaqueId('item')
     const item: StoredScanItem = {
       id,
-      category: classification.category,
+      category,
       kind: classification.kind,
       name: cleanText(classification.name, MAX_SCAN_NAME_LENGTH),
       hostname: hostnameOf(normalized),
@@ -564,7 +683,9 @@ export class ScanSessionManager {
         typeof candidate.author === 'string'
           ? cleanText(candidate.author, MAX_SCAN_AUTHOR_LENGTH)
           : null,
-      url: normalized
+      url: normalized,
+      videoIdentity: identity,
+      videoAnalysis: null
     }
     session.items.set(id, item)
     session.order.push(id)
@@ -625,6 +746,348 @@ export class ScanSessionManager {
     })
   }
 
+  /**
+   * Follow a bounded number of video-looking pages one or two levels deep.
+   * Robots.txt is honoured for every page the scanner follows itself; the
+   * user's pasted URL was already fetched before this point.
+   */
+  private async followVideoPages(
+    session: StoredScanSession,
+    initial: ScanFetchResult
+  ): Promise<void> {
+    if (this.followDepth === 0) return
+
+    const visited = new Set<string>()
+    try {
+      visited.add(normalizeScanUrl(initial.finalUrl))
+    } catch {
+      visited.add(initial.finalUrl)
+    }
+
+    interface PendingFollow {
+      url: string
+      depth: number
+      score: number
+      nameHint: string | null
+      isEmbed: boolean
+      videoHint: boolean
+    }
+    const pending: PendingFollow[] = []
+    const knownIdentity = (url: string): boolean => {
+      const identity = videoIdentityForUrl(url)
+      if (identity === null) return false
+      for (const item of session.items.values()) {
+        if (item.videoIdentity === identity) return true
+      }
+      return false
+    }
+    const enqueue = (html: string, pageUrl: string, depth: number): void => {
+      if (depth > this.followDepth) return
+      for (const candidate of extractFollowCandidates(html, pageUrl)) {
+        let normalized: string
+        try {
+          normalized = normalizeScanUrl(candidate.url)
+        } catch {
+          continue
+        }
+        if (visited.has(normalized) || knownIdentity(normalized)) continue
+        const decision = scoreFollowLink({
+          url: normalized,
+          baseUrl: pageUrl,
+          isEmbed: candidate.isEmbed,
+          rel: candidate.rel,
+          text: candidate.text
+        })
+        if (decision === null) continue
+        visited.add(normalized)
+        pending.push({
+          url: normalized,
+          depth,
+          score: decision.score,
+          nameHint: candidate.nameHint,
+          isEmbed: candidate.isEmbed,
+          // A followed video path/embed is itself a video page link, even on a
+          // host that phase 1 would otherwise classify as a generic page.
+          videoHint: decision.reason !== 'video-text'
+        })
+      }
+    }
+
+    enqueue(initial.body, initial.finalUrl, 1)
+    const robots = new ScanRobotsCache({
+      fetchRobots: async (url, signal) => {
+        try {
+          const response = await this.fetchPage(
+            {
+              url,
+              maxBytes: 64 * 1024,
+              signal
+            },
+            this.lookup === undefined ? {} : { lookup: this.lookup }
+          )
+          return response.body
+        } catch {
+          return null
+        }
+      }
+    })
+
+    const signal = session.controller.signal
+    while (pending.length > 0) {
+      if (signal.aborted) return
+      if (this.now() >= session.deadline) {
+        session.limited = true
+        session.limitedMessage ??=
+          'The scan reached its time limit before every video page could be checked.'
+        return
+      }
+      if (session.fetchedPages >= this.followPages) {
+        session.limited = true
+        session.limitedMessage ??= `The scan reached the ${this.followPages}-page safety limit. Narrow the page selection.`
+        return
+      }
+
+      pending.sort((left, right) => right.score - left.score)
+      const batch: PendingFollow[] = []
+      const perHost = new Map<string, number>()
+      const available = Math.max(0, this.followPages - session.fetchedPages)
+      if (available === 0) {
+        session.limited = true
+        session.limitedMessage ??= `The scan reached the ${this.followPages}-page safety limit. Narrow the page selection.`
+        return
+      }
+      for (
+        let index = 0;
+        index < pending.length && batch.length < Math.min(4, available);
+      ) {
+        const candidate = pending[index]!
+        const host = hostnameOf(candidate.url)
+        const active = perHost.get(host) ?? 0
+        if (active >= 2) {
+          index += 1
+          continue
+        }
+        perHost.set(host, active + 1)
+        batch.push(candidate)
+        pending.splice(index, 1)
+      }
+      if (batch.length === 0) return
+
+      await Promise.all(
+        batch.map(async (candidate) => {
+          if (signal.aborted || this.now() >= session.deadline) return
+          let allowed: boolean
+          try {
+            allowed = await robots.allows(candidate.url, signal)
+          } catch {
+            allowed = true
+          }
+          if (!allowed || signal.aborted) return
+          if (session.fetchedPages >= this.followPages) {
+            session.limited = true
+            session.limitedMessage ??= `The scan reached the ${this.followPages}-page safety limit. Narrow the page selection.`
+            return
+          }
+          if (candidate.videoHint) {
+            this.addCandidate(session, {
+              url: candidate.url,
+              nameHint: candidate.nameHint,
+              downloadAttribute: false,
+              isAttachment: false,
+              fromScript: false,
+              isEmbed: candidate.isEmbed,
+              source: candidate.isEmbed ? 'embed' : 'anchor',
+              postNumber: null,
+              author: null,
+              videoHint: true
+            })
+          }
+          const cookie = this.cookieFor(session, candidate.url)
+          let response: ScanFetchResult
+          try {
+            response = await this.fetchPage(
+              {
+                url: candidate.url,
+                ...(cookie === null ? {} : { cookie }),
+                accept: 'html',
+                signal
+              },
+              this.lookup === undefined ? {} : { lookup: this.lookup }
+            )
+          } catch {
+            // A followed page that fails, needs a login or is not HTML is a
+            // discovery dead end, not a scan failure.
+            return
+          }
+          if (signal.aborted) return
+          session.fetchedPages += 1
+          session.expiresAt = this.now() + this.ttlMs
+          this.touch(session)
+
+          const finalNormalized = (() => {
+            try {
+              return normalizeScanUrl(response.finalUrl)
+            } catch {
+              return response.finalUrl
+            }
+          })()
+          visited.add(finalNormalized)
+          if (candidate.depth < this.followDepth) {
+            enqueue(response.body, response.finalUrl, candidate.depth + 1)
+          }
+          const extracted = extractCandidates(response.body, response.finalUrl)
+          for (const entry of extracted) {
+            if (
+              this.addCandidate(session, {
+                ...entry,
+                postNumber: null,
+                author: null
+              }) === 'limited'
+            ) {
+              break
+            }
+          }
+        })
+      )
+      session.updatedAt = this.now()
+      this.publish(session, false)
+    }
+  }
+
+  private applyVideoResolution(
+    session: StoredScanSession,
+    item: StoredScanItem,
+    resolution: VideoResolution
+  ): void {
+    item.status = resolution.status
+    item.verified = resolution.status === 'ready'
+    if (resolution.title !== null) {
+      item.name = cleanText(resolution.title, MAX_SCAN_NAME_LENGTH)
+    }
+    item.thumbnailUrl = resolution.thumbnailUrl
+    item.durationSeconds = resolution.durationSeconds
+    item.width = resolution.width
+    item.height = resolution.height
+    item.bestResolution = resolution.bestResolution
+    item.sizeBytes = resolution.sizeBytes
+    item.sizeIsEstimate = resolution.sizeIsEstimate
+    item.formats = resolution.formats
+    item.bestOptionId = resolution.bestOptionId
+    item.unavailableReason = resolution.reason
+    if (resolution.status === 'signin') session.signinRequired = true
+    item.videoAnalysis =
+      resolution.status === 'ready' &&
+      resolution.analysisId !== null &&
+      resolution.expiresAt !== null
+        ? {
+            analysisId: resolution.analysisId,
+            expiresAt: resolution.expiresAt,
+            formats: resolution.formats,
+            bestOptionId: resolution.bestOptionId
+          }
+        : null
+    this.touch(session)
+    this.scheduleEmit(session)
+  }
+
+  /**
+   * Resolve video page links through the media engine with bounded
+   * concurrency. A missing yt-dlp becomes a per-item state and never fails the
+   * whole scan.
+   */
+  private async resolveVideoItems(session: StoredScanSession): Promise<void> {
+    if (this.analyzeMedia === undefined) return
+    const targets = session.order
+      .map((id) => session.items.get(id))
+      .filter(
+        (item): item is StoredScanItem =>
+          item !== undefined &&
+          item.kind === 'page-link' &&
+          item.category === 'video' &&
+          item.status === 'found'
+      )
+    if (targets.length === 0) return
+
+    if (this.now() >= session.deadline) {
+      session.limited = true
+      session.limitedMessage ??=
+        'The scan reached its time limit before videos could be resolved.'
+      return
+    }
+
+    const selected = targets.slice(0, this.videoCap)
+    if (selected.length < targets.length) {
+      session.limited = true
+      session.limitedMessage ??= `The scan resolved the first ${this.videoCap} videos. Narrow the page selection to resolve more.`
+    }
+    for (const item of selected) item.status = 'probing'
+    this.touch(session)
+    this.publish(session, true)
+
+    const toolState: { resolution: VideoResolution | null } = {
+      resolution: null
+    }
+    await resolveVideoCandidates(
+      selected.map((item) => ({
+        url: item.url,
+        fallbackName: item.name
+      })),
+      {
+        analyze: async (url, analyzeOptions) => {
+          if (this.now() >= session.deadline) {
+            session.limited = true
+            session.limitedMessage ??=
+              'The scan reached its time limit before every video could be resolved.'
+            throw new AppError(
+              'MEDIA_ANALYSIS_TIMEOUT',
+              'The site took too long to analyze.'
+            )
+          }
+          return this.analyzeMedia!(url, analyzeOptions)
+        },
+        cookieHost: session.cookieHost,
+        cookie: session.cookie,
+        signal: session.controller.signal,
+        cap: this.videoCap,
+        onResult: (index, resolution) => {
+          const item = selected[index]
+          if (!item) return
+          const current = session.items.get(item.id)
+          if (!current) return
+          this.applyVideoResolution(session, current, resolution)
+          if (resolution.status === 'tool-unavailable') {
+            toolState.resolution = resolution
+          }
+        }
+      }
+    )
+
+    if (session.controller.signal.aborted) return
+
+    if (toolState.resolution !== null) {
+      const reason = toolState.resolution.reason
+      for (const target of targets) {
+        const current = session.items.get(target.id)
+        if (
+          !current ||
+          (current.status !== 'found' && current.status !== 'probing')
+        ) {
+          continue
+        }
+        current.status = 'tool-unavailable'
+        current.unavailableReason = reason
+        current.verified = false
+      }
+      if (session.message === null) {
+        session.message =
+          'yt-dlp is not available. Install or update it, then scan the page again.'
+      }
+    }
+
+    this.touch(session)
+    this.publish(session, true)
+  }
+
   private cookieFor(session: StoredScanSession, url: string): string | null {
     if (session.cookie === null || session.cookieHost === null) return null
     try {
@@ -650,7 +1113,28 @@ export class ScanSessionManager {
       verified: item.verified,
       status: item.status,
       postNumber: item.postNumber,
-      author: item.author
+      author: item.author,
+      ...(item.durationSeconds === undefined
+        ? {}
+        : { durationSeconds: item.durationSeconds }),
+      ...(item.width === undefined ? {} : { width: item.width }),
+      ...(item.height === undefined ? {} : { height: item.height }),
+      ...(item.thumbnailUrl === undefined
+        ? {}
+        : { thumbnailUrl: item.thumbnailUrl }),
+      ...(item.bestResolution === undefined
+        ? {}
+        : { bestResolution: item.bestResolution }),
+      ...(item.sizeIsEstimate === undefined
+        ? {}
+        : { sizeIsEstimate: item.sizeIsEstimate }),
+      ...(item.formats === undefined ? {} : { formats: item.formats }),
+      ...(item.bestOptionId === undefined
+        ? {}
+        : { bestOptionId: item.bestOptionId }),
+      ...(item.unavailableReason === undefined
+        ? {}
+        : { unavailableReason: item.unavailableReason })
     }
   }
 
@@ -670,9 +1154,7 @@ export class ScanSessionManager {
       progress: {
         fetchedPages: session.fetchedPages,
         totalItems: items.length,
-        queueableItems: items.filter(
-          (item) => item.category !== 'page' && item.kind === 'file'
-        ).length
+        queueableItems: items.filter(isQueueableScanItem).length
       },
       items,
       removedItemIds: [...session.removed],
@@ -735,9 +1217,7 @@ export class ScanSessionManager {
       progress: {
         fetchedPages: session.fetchedPages,
         totalItems: allPublic.length,
-        queueableItems: allPublic.filter(
-          (item) => item.category !== 'page' && item.kind === 'file'
-        ).length
+        queueableItems: allPublic.filter(isQueueableScanItem).length
       },
       items: changed,
       removedItemIds: removed,

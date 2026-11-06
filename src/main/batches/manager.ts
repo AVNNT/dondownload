@@ -27,11 +27,13 @@ import {
   type CollectionSelectionAvailability,
   type CreateCollectionBatchInput
 } from '@shared/batches'
+import { isMediaOutputFormat } from '@shared/media'
 import type {
   MediaAnalysis,
   MediaJob,
   MediaSnapshot,
-  MediaJobStatus
+  MediaJobStatus,
+  MediaOutputFormat
 } from '@shared/media'
 import type {
   AppSnapshot,
@@ -223,6 +225,16 @@ export interface BatchScanTarget {
   /** Redirect-resolved target proven by the queue-time scanner probe. */
   resolvedUrl?: string
   requestHeaders?: DownloadRequestHeaders
+}
+
+/** Internal scanner video target with an opaque, fresh analysis selection. */
+export interface BatchScanVideoTarget {
+  url: string
+  title: string
+  analysisId: string
+  optionId: string
+  outputFormat?: MediaOutputFormat
+  cookie?: string
 }
 
 /* ------------------------------------------------------------------------- *
@@ -493,6 +505,16 @@ export class BatchManager {
   /** Redirect-resolved targets proven by the scanner probe, memory-only. */
   private readonly scanResolvedUrls = new Map<string, string>()
   private readonly scanFilenames = new Map<string, string>()
+  /** Memory-only scanner video selections; never persisted. */
+  private readonly scanMediaSelections = new Map<
+    string,
+    {
+      analysisId: string
+      optionId: string
+      outputFormat?: MediaOutputFormat
+      cookie?: string
+    }
+  >()
   private readonly idleWaiters: Array<() => void> = []
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -1030,6 +1052,234 @@ export class BatchManager {
     return this.toPublicBatch(batch)
   }
 
+  /**
+   * Create one mixed scanner batch: verified direct files plus resolved video
+   * page links whose analysis/option pair was revalidated by the queue service.
+   * The scanner-side contracts stay memory-only: a Cookie is attached to the
+   * exact-host child and is never persisted.
+   */
+  async createScanMediaBatch(rawInput: unknown): Promise<Batch> {
+    this.assertOpen()
+    const record = asRecord(rawInput)
+    for (const key of Object.keys(record)) {
+      if (key !== 'title' && key !== 'files' && key !== 'videos') {
+        throw new ValidationError(
+          'The scan media batch contains unsupported fields.'
+        )
+      }
+    }
+    if (
+      typeof record.title !== 'string' ||
+      record.title.trim().length === 0 ||
+      record.title.length > MAX_BATCH_TITLE_LENGTH
+    ) {
+      throw new ValidationError('The scan batch title is invalid.')
+    }
+    const rawFiles = record.files
+    const rawVideos = record.videos
+    if (!Array.isArray(rawFiles) || !Array.isArray(rawVideos)) {
+      throw new ValidationError('The scan media batch selection is invalid.')
+    }
+    if (
+      rawFiles.length + rawVideos.length === 0 ||
+      rawFiles.length + rawVideos.length > MAX_COLLECTION_SELECTION
+    ) {
+      throw new ValidationError('The scan media batch selection is invalid.')
+    }
+
+    const readCookie = (value: unknown): string => {
+      if (
+        typeof value !== 'string' ||
+        value.length === 0 ||
+        value.length > 8192 ||
+        // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+        /[\u0000-\u001f\u007f]/.test(value)
+      ) {
+        throw new ValidationError('The scan batch cookie header is invalid.')
+      }
+      return value
+    }
+
+    const files: BatchScanTarget[] = rawFiles.map((rawTarget) => {
+      const target = asRecord(rawTarget)
+      for (const key of Object.keys(target)) {
+        if (
+          key !== 'url' &&
+          key !== 'title' &&
+          key !== 'filename' &&
+          key !== 'resolvedUrl' &&
+          key !== 'requestHeaders'
+        ) {
+          throw new ValidationError(
+            'A scan batch target contains unsupported fields.'
+          )
+        }
+      }
+      const url = normalizeBatchSourceUrl(target.url)
+      const title = cleanSafeText(target.title, MAX_BATCH_TITLE_LENGTH, 'Scanned file')
+      let filename: string | undefined
+      if (target.filename !== undefined) {
+        if (typeof target.filename !== 'string') {
+          throw new ValidationError('The scan batch filename is invalid.')
+        }
+        filename = sanitizeFilename(target.filename)
+      }
+      // Redirect-resolved target from the queue-time probe. DownloadManager
+      // still enforces exact host+scheme before it sends any Cookie.
+      const resolvedUrl =
+        target.resolvedUrl === undefined
+          ? undefined
+          : normalizeBatchSourceUrl(target.resolvedUrl)
+      let requestHeaders: DownloadRequestHeaders | undefined
+      if (target.requestHeaders !== undefined) {
+        const headers = asRecord(target.requestHeaders)
+        for (const key of Object.keys(headers)) {
+          if (key !== 'cookie') {
+            throw new ValidationError(
+              'A scan batch header contains unsupported fields.'
+            )
+          }
+        }
+        requestHeaders = { cookie: readCookie(headers.cookie) }
+      }
+      return {
+        url,
+        title,
+        ...(filename === undefined ? {} : { filename }),
+        ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
+        ...(requestHeaders === undefined ? {} : { requestHeaders })
+      }
+    })
+
+    const videos: BatchScanVideoTarget[] = rawVideos.map((rawTarget) => {
+      const target = asRecord(rawTarget)
+      for (const key of Object.keys(target)) {
+        if (
+          key !== 'url' &&
+          key !== 'title' &&
+          key !== 'analysisId' &&
+          key !== 'optionId' &&
+          key !== 'outputFormat' &&
+          key !== 'cookie'
+        ) {
+          throw new ValidationError(
+            'A scan video target contains unsupported fields.'
+          )
+        }
+      }
+      const opaque = (value: unknown): string => {
+        if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+          throw new ValidationError('A scan video identifier is invalid.')
+        }
+        return value
+      }
+      let outputFormat: MediaOutputFormat | undefined
+      if (target.outputFormat !== undefined) {
+        if (!isMediaOutputFormat(target.outputFormat)) {
+          throw new ValidationError('The scan video output format is invalid.')
+        }
+        outputFormat = target.outputFormat
+      }
+      return {
+        url: normalizeBatchSourceUrl(target.url),
+        title: cleanSafeText(target.title, MAX_BATCH_TITLE_LENGTH, 'Scanned video'),
+        analysisId: opaque(target.analysisId),
+        optionId: opaque(target.optionId),
+        ...(outputFormat === undefined ? {} : { outputFormat }),
+        ...(target.cookie === undefined
+          ? {}
+          : { cookie: readCookie(target.cookie) })
+      }
+    })
+
+    const createdAt = this.now()
+    const batchId = newOpaqueId('batch')
+    const items = new Map<string, BatchItemRecord>()
+
+    for (const target of files) {
+      const itemId = newOpaqueId('bitem')
+      items.set(itemId, {
+        id: itemId,
+        batchId,
+        position: items.size,
+        kind: 'download',
+        status: 'queued',
+        title: target.title,
+        label: 'Scanned file',
+        childId: null,
+        completedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+        sourceUrl: target.url,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null
+      })
+      if (target.requestHeaders !== undefined) {
+        this.scanRequestHeaders.set(itemId, target.requestHeaders)
+      }
+      if (target.resolvedUrl !== undefined) {
+        this.scanResolvedUrls.set(itemId, target.resolvedUrl)
+      }
+      if (target.filename !== undefined) {
+        this.scanFilenames.set(itemId, target.filename)
+      }
+    }
+
+    for (const target of videos) {
+      const itemId = newOpaqueId('bitem')
+      items.set(itemId, {
+        id: itemId,
+        batchId,
+        position: items.size,
+        kind: 'media',
+        status: 'queued',
+        title: target.title,
+        label: target.outputFormat === undefined
+          ? 'Scanned video'
+          : `Scanned video · ${target.outputFormat.toUpperCase()}`,
+        childId: null,
+        completedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+        sourceUrl: target.url,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null
+      })
+      this.scanMediaSelections.set(itemId, {
+        analysisId: target.analysisId,
+        optionId: target.optionId,
+        ...(target.outputFormat === undefined
+          ? {}
+          : { outputFormat: target.outputFormat }),
+        ...(target.cookie === undefined ? {} : { cookie: target.cookie })
+      })
+    }
+
+    const batchRecord: BatchRecord = {
+      id: batchId,
+      kind: 'direct-urls',
+      title: cleanSafeText(record.title, MAX_BATCH_TITLE_LENGTH, 'Scanned page'),
+      status: 'queued',
+      sourceUrl: null,
+      mediaQuality: null,
+      maxBytesPerItem: null,
+      errorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null
+    }
+
+    const batch = this.insertBatch(batchRecord, [...items.values()])
+    this.recomputeBatch(batch)
+    this.persistBatchNow(batch)
+    this.schedulePump()
+    this.ensurePolling()
+    this.publish(true)
+    return this.toPublicBatch(batch)
+  }
+
   /* ---------------------- batch creation from a preview ---------------------- */
 
   async createCollectionBatch(rawInput: unknown): Promise<Batch> {
@@ -1253,6 +1503,7 @@ export class BatchManager {
       this.scanRequestHeaders.delete(item.id)
       this.scanResolvedUrls.delete(item.id)
       this.scanFilenames.delete(item.id)
+      this.scanMediaSelections.delete(item.id)
     }
     this.removePersistedBatch(batch.record.id)
     this.stopPollingIfIdle()
@@ -1390,6 +1641,7 @@ export class BatchManager {
     this.scanRequestHeaders.clear()
     this.scanResolvedUrls.clear()
     this.scanFilenames.clear()
+    this.scanMediaSelections.clear()
     this.resolveIdleWaiters()
   }
 
@@ -1622,6 +1874,43 @@ export class BatchManager {
           'BATCH_ITEM_SOURCE_MISSING',
           'This batch item has no source URL.'
         )
+      }
+
+      const pinned = this.scanMediaSelections.get(item.id)
+      if (pinned !== undefined) {
+        const job = await this.mediaJobs.queueMedia({
+          analysisId: pinned.analysisId,
+          optionId: pinned.optionId,
+          ...(pinned.outputFormat === undefined
+            ? {}
+            : { outputFormat: pinned.outputFormat }),
+          ...(pinned.cookie === undefined ? {} : { cookie: pinned.cookie })
+        })
+        if (!this.batches.has(batch.record.id)) {
+          try {
+            await this.mediaJobs.cancelMedia(job.id)
+          } catch {
+            // The child may already be terminal.
+          }
+          return
+        }
+        item.childId = job.id
+        item.totalBytes = job.totalBytes
+        item.completedBytes = job.completedBytes
+        item.label = cleanSafeText(job.label, 240, 'Media')
+        if (item.status !== 'running') {
+          try {
+            await this.mediaJobs.cancelMedia(job.id)
+          } catch {
+            // Best effort; the item stays cancelled.
+          }
+          this.persistItemNow(item)
+          return
+        }
+        this.applyMediaChild(item, job)
+        this.persistItemNow(item)
+        this.persistBatchNow(batch)
+        return
       }
 
       const analysis = await this.mediaJobs.analyzeMedia({ url: sourceUrl })

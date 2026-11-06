@@ -85,7 +85,10 @@ export interface MediaDownloadResult {
  */
 export interface MediaEnginePort {
   getToolState(): Promise<MediaToolState>
-  analyze(url: string, options?: { cookie?: string }): Promise<MediaAnalysis>
+  analyze(
+    url: string,
+    options?: { cookie?: string; signal?: AbortSignal }
+  ): Promise<MediaAnalysis>
   download(
     request: MediaDownloadRequest,
     onProgress: (progress: MediaDownloadProgress) => void
@@ -327,7 +330,10 @@ export class MediaJobsManager {
     return this.getMediaJob(rawId)
   }
 
-  async analyzeMedia(rawInput: unknown): Promise<MediaAnalysis> {
+  async analyzeMedia(
+    rawInput: unknown,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<MediaAnalysis> {
     if (this.closed) {
       throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
     }
@@ -335,10 +341,10 @@ export class MediaJobsManager {
 
     let raw: unknown
     try {
-      raw = await this.engine.analyze(
-        input.url,
-        input.cookie === undefined ? {} : { cookie: input.cookie }
-      )
+      raw = await this.engine.analyze(input.url, {
+        ...(input.cookie === undefined ? {} : { cookie: input.cookie }),
+        ...(options.signal === undefined ? {} : { signal: options.signal })
+      })
     } catch (error) {
       if (
         this.onExtractorFailure !== null &&

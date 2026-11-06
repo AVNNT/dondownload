@@ -24,6 +24,7 @@ import type { BrowserExtensionStatus } from './browserExtension'
 import type { AppUpdateState } from './appUpdate'
 import type {
   ScanQueueResult,
+  ScanQueueVideoOption,
   ScanSession,
   ScanStartInput
 } from './scanner'
@@ -346,7 +347,8 @@ export interface DonDownloadApi {
   cancelScan: (sessionId: string) => Promise<ApiResult<ScanSession>>
   queueScanSelection: (
     sessionId: string,
-    itemIds: string[]
+    itemIds: string[],
+    videoOptions?: ScanQueueVideoOption[]
   ) => Promise<ApiResult<ScanQueueResult>>
   onScanUpdated: (listener: (session: ScanSession) => void) => () => void
 }

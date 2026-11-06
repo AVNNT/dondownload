@@ -260,6 +260,18 @@ export function looksLikeDrmError(output: string): boolean {
   return DRM_ERROR_TEXT.test(output)
 }
 
+/**
+ * yt-dlp's sign-in/age-gate refusal must be distinguishable from an
+ * unsupported or broken page so the scanner can show a sign-in state instead
+ * of a generic failure.
+ */
+const SIGNIN_ERROR_TEXT =
+  /(?:sign in to confirm|please (?:sign|log) in|login required|log ?in required|requires? (?:a )?(?:sign[- ]?in|login|authentication)|age[- ]?(?:restricted|verification)|confirm your age|private video|members[- ]only|available to (?:members|subscribers) only|HTTP Error 401)/i
+
+export function looksLikeSigninError(output: string): boolean {
+  return SIGNIN_ERROR_TEXT.test(output)
+}
+
 /** yt-dlp's own `--max-filesize` refusal is the app's size-cap outcome. */
 const MAX_FILESIZE_ERROR_TEXT = /max[-\s]?filesize|larger than the (?:maximum|allowed)/i
 
@@ -551,7 +563,11 @@ export interface MediaAnalyzerOptions {
   runCaptured: (
     command: string,
     args: readonly string[],
-    options: { timeoutMs: number; maxOutputBytes: number }
+    options: {
+      timeoutMs: number
+      maxOutputBytes: number
+      signal?: AbortSignal
+    }
   ) => Promise<CapturedProcessResult>
   assertPublicTarget: (url: string) => Promise<void>
   writeCookieFile: (
@@ -568,7 +584,7 @@ export interface MediaAnalyzerOptions {
 export interface MediaAnalyzer {
   analyze(
     url: string,
-    analyzeOptions?: { cookie?: string }
+    analyzeOptions?: { cookie?: string; signal?: AbortSignal }
   ): Promise<MediaAnalysis>
 }
 
@@ -593,7 +609,7 @@ export function createMediaAnalyzer(
 
   async function analyze(
     url: string,
-    analyzeOptions: { cookie?: string } = {}
+    analyzeOptions: { cookie?: string; signal?: AbortSignal } = {}
   ): Promise<MediaAnalysis> {
     if (isClosing()) {
       throw new AppError(
@@ -640,7 +656,10 @@ export function createMediaAnalyzer(
         ),
         {
           timeoutMs: analysisTimeoutMs,
-          maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES
+          maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES,
+          ...(analyzeOptions.signal === undefined
+            ? {}
+            : { signal: analyzeOptions.signal })
         }
       )
     } catch (error) {
@@ -682,6 +701,12 @@ export function createMediaAnalyzer(
         throw new AppError(
           'MEDIA_DRM_PROTECTED',
           "This video is DRM-protected and can't be downloaded."
+        )
+      }
+      if (looksLikeSigninError(`${result.stderr}\n${result.stdout}`)) {
+        throw new AppError(
+          'MEDIA_ANALYSIS_SIGNIN',
+          'This video needs a browser sign-in or age verification.'
         )
       }
       // A YouTube extractor change usually appears only in stderr. Mark that

@@ -123,7 +123,10 @@ export interface MediaDownloadResult {
 
 export interface MediaEngine {
   getToolState(): Promise<MediaToolState>
-  analyze(url: string, options?: { cookie?: string }): Promise<MediaAnalysis>
+  analyze(
+    url: string,
+    options?: { cookie?: string; signal?: AbortSignal }
+  ): Promise<MediaAnalysis>
   /**
    * Resolve an explicit playlist page into an ephemeral, renderer-safe
    * preview. Uses a flat metadata listing only; nothing is downloaded.
@@ -318,11 +321,16 @@ export function createMediaEngine(
       cwd?: string
       timeoutMs: number
       maxOutputBytes: number
+      signal?: AbortSignal
     }
   ): Promise<CapturedProcessResult> {
     if (closing) throw new ProcessAbortedError()
 
     const controller = new AbortController()
+    const externalSignal = captureOptions.signal
+    if (externalSignal?.aborted === true) throw new ProcessAbortedError()
+    const onExternalAbort = (): void => controller.abort()
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true })
     let release: () => void = () => undefined
     const done = new Promise<void>((resolve) => {
       release = resolve
@@ -341,6 +349,7 @@ export function createMediaEngine(
         abortGraceMs: cancellationGraceMs
       })
     } finally {
+      externalSignal?.removeEventListener('abort', onExternalAbort)
       activeCaptures.delete(capture)
       release()
     }

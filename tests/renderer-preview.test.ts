@@ -356,7 +356,15 @@ describe('browser preview fixture adapter', () => {
     if (!started.ok) return
     expect(started.value.status).toBe('scanning')
     expect(started.value.items.length).toBeGreaterThan(0)
-    expect(JSON.stringify(started.value)).not.toContain('https://')
+    // Thumbnails are validated public HTTPS images; every other URL stays out.
+    const withoutThumbnails = {
+      ...started.value,
+      items: started.value.items.map((item) => ({
+        ...item,
+        thumbnailUrl: item.thumbnailUrl === undefined ? undefined : '[thumb]'
+      }))
+    }
+    expect(JSON.stringify(withoutThumbnails)).not.toContain('https://')
 
     const script = started.value.items.find(
       (item) => item.category === 'script'

@@ -50,11 +50,13 @@ import type {
   SmartBatchSubmitEntry,
   SmartBatchSubmitResult
 } from '@shared/types'
-import type {
-  ScanItem,
-  ScanQueueResult,
-  ScanSession,
-  ScanStartInput
+import {
+  isQueueableScanItem,
+  type ScanItem,
+  type ScanQueueResult,
+  type ScanQueueVideoOption,
+  type ScanSession,
+  type ScanStartInput
 } from '@shared/scanner'
 import { normalizeHttpUrl } from '@shared/validation'
 
@@ -477,6 +479,42 @@ export function createPreviewApi(
   }
 
   function seedScanItems(): ScanItem[] {
+    const videoFormats = [
+      {
+        optionId: 'preview-scan-option-1080',
+        kind: 'video' as const,
+        label: '1080p · MP4 · avc1 + aac',
+        container: 'mp4',
+        width: 1920,
+        height: 1080,
+        sizeBytes: 112 * 1024 * 1024,
+        sizeIsEstimate: true,
+        outputFormats: ['auto' as const, 'mp4' as const, 'mkv' as const]
+      },
+      {
+        optionId: 'preview-scan-option-720',
+        kind: 'video' as const,
+        label: '720p · MP4 · avc1 + aac',
+        container: 'mp4',
+        width: 1280,
+        height: 720,
+        sizeBytes: 61 * 1024 * 1024,
+        sizeIsEstimate: true,
+        outputFormats: ['auto' as const, 'mp4' as const, 'mkv' as const]
+      },
+      {
+        optionId: 'preview-scan-option-audio',
+        kind: 'audio' as const,
+        label: 'Audio only · M4A · aac',
+        container: 'm4a',
+        width: null,
+        height: null,
+        sizeBytes: 9 * 1024 * 1024,
+        sizeIsEstimate: false,
+        outputFormats: ['auto' as const, 'mp4' as const, 'mkv' as const]
+      }
+    ]
+
     return [
       {
         id: 'preview-scan-video-page',
@@ -484,10 +522,43 @@ export function createPreviewApi(
         kind: 'page-link',
         name: 'EroScripts topic video',
         hostname: 'youtube.com',
+        sizeBytes: 112 * 1024 * 1024,
+        verified: true,
+        status: 'ready',
+        postNumber: 2,
+        author: 'demo-author',
+        durationSeconds: 754,
+        width: 1920,
+        height: 1080,
+        thumbnailUrl: PREVIEW_THUMBNAIL_A,
+        bestResolution: '1080p',
+        sizeIsEstimate: true,
+        formats: videoFormats,
+        bestOptionId: 'preview-scan-option-1080'
+      },
+      {
+        id: 'preview-scan-video-protected',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Members-only stream',
+        hostname: 'vimeo.com',
         sizeBytes: null,
         verified: false,
-        status: 'found',
-        postNumber: 2,
+        status: 'protected',
+        postNumber: 3,
+        author: 'demo-author',
+        unavailableReason: "This video is DRM-protected and can't be downloaded."
+      },
+      {
+        id: 'preview-scan-video-resolving',
+        category: 'video',
+        kind: 'page-link',
+        name: 'Embedded player clip',
+        hostname: 'player.example.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'probing',
+        postNumber: 4,
         author: 'demo-author'
       },
       {
@@ -589,7 +660,11 @@ export function createPreviewApi(
       probing: items.filter((item) => item.status === 'probing').length,
       ready: items.filter((item) => item.status === 'ready').length,
       signin: items.filter((item) => item.status === 'signin').length,
-      unavailable: items.filter((item) => item.status === 'unavailable').length
+      protected: items.filter((item) => item.status === 'protected').length,
+      unavailable: items.filter((item) => item.status === 'unavailable').length,
+      toolUnavailable: items.filter(
+        (item) => item.status === 'tool-unavailable'
+      ).length
     }
   }
 
@@ -612,7 +687,7 @@ export function createPreviewApi(
       progress: {
         fetchedPages: 1,
         totalItems: items.length,
-        queueableItems: items.filter((item) => item.kind === 'file').length
+        queueableItems: items.filter(isQueueableScanItem).length
       },
       items,
       removedItemIds: [],
@@ -1154,19 +1229,20 @@ export function createPreviewApi(
 
     queueScanSelection: async (
       _sessionId: string,
-      itemIds: string[]
+      itemIds: string[],
+      _videoOptions?: ScanQueueVideoOption[]
     ): Promise<ApiResult<ScanQueueResult>> => {
       if (scanSession === null) {
         return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
       }
       const selected = new Set(itemIds)
       const queueable = scanSession.items.filter(
-        (item) => selected.has(item.id) && item.kind === 'file'
+        (item) => selected.has(item.id) && isQueueableScanItem(item)
       )
       if (queueable.length === 0) {
         return fail(
           PREVIEW_INVALID_INPUT_CODE,
-          'Select at least one downloadable file.'
+          'Select at least one downloadable item.'
         )
       }
       return ok({
