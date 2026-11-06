@@ -1,12 +1,15 @@
 import { useMemo, useState, type JSX } from 'react'
-import {
-  MAX_SCAN_SELECTION,
-  isQueueableScanItem,
-  type ScanItem,
-  type ScanSession
-} from '@shared/scanner'
+import { isQueueableScanItem, type ScanItem, type ScanSession } from '@shared/scanner'
 import type { AppErrorInfo } from '@shared/types'
 import { Icon } from './Icon'
+import {
+  pruneImageSelection,
+  selectAllImages,
+  selectNoImages,
+  selectedImageIds,
+  shiftClickImage,
+  toggleImage
+} from './imageSelection'
 
 interface ScanImagePickerProps {
   session: ScanSession
@@ -18,10 +21,11 @@ interface ScanImagePickerProps {
  * Image mode of the scan sheet.
  *
  * The extension already walked the live page, so there is nothing to discover
- * here: this is only a picker. Nothing downloads until the user clicks
- * "Download N images", which queues one batch into a folder named after the
- * page. Thumbnails are the small/fallback URL the extension reported; the full
- * image is what gets downloaded.
+ * here: this is only a picker. Nothing is selected up front, so the user picks
+ * the tiles they want (click to toggle, Shift+click for a range) and nothing
+ * downloads until they click "Download N images", which queues one batch into a
+ * folder named after the page. Thumbnails are the small/fallback URL the
+ * extension reported; the full image is what gets downloaded.
  */
 export function ScanImagePicker({
   session,
@@ -32,33 +36,49 @@ export function ScanImagePicker({
     () => session.items.filter((item) => isQueueableScanItem(item)),
     [session.items]
   )
-  const [excluded, setExcluded] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [anchorId, setAnchorId] = useState<string | null>(null)
   const [queuing, setQueuing] = useState(false)
   const [error, setError] = useState<AppErrorInfo | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [failed, setFailed] = useState<Set<string>>(new Set())
 
+  // Items can disappear when the session is revised, so ids that are no longer
+  // in the list are dropped on read. New items are never added: the selection
+  // only ever holds ids the user clicked.
+  const activeSelected = useMemo(
+    () => pruneImageSelection(items, selected),
+    [items, selected]
+  )
+
   const selectedIds = useMemo(
-    () =>
-      items
-        .filter((item) => !excluded.has(item.id))
-        .slice(0, MAX_SCAN_SELECTION)
-        .map((item) => item.id),
-    [items, excluded]
+    () => selectedImageIds(items, activeSelected),
+    [items, activeSelected]
   )
   const selectedCount = selectedIds.length
 
-  const toggle = (id: string): void => {
-    setExcluded((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  const toggle = (id: string, shiftKey: boolean): void => {
+    if (shiftKey) {
+      setSelected((current) =>
+        shiftClickImage(items, pruneImageSelection(items, current), anchorId, id)
+      )
+      if (anchorId === null) setAnchorId(id)
+      return
+    }
+    setSelected((current) =>
+      toggleImage(items, pruneImageSelection(items, current), id)
+    )
+    setAnchorId(id)
   }
 
-  const selectAll = (): void => setExcluded(new Set())
-  const selectNone = (): void => setExcluded(new Set(items.map((item) => item.id)))
+  const selectAll = (): void => {
+    setSelected(selectAllImages(items))
+    setAnchorId(items[0]?.id ?? null)
+  }
+  const selectNone = (): void => {
+    setSelected(selectNoImages())
+    setAnchorId(null)
+  }
 
   const download = (): void => {
     if (queuing || disabled || selectedCount === 0) return
@@ -149,10 +169,10 @@ export function ScanImagePicker({
             <li key={item.id}>
               <ImageTile
                 item={item}
-                selected={!excluded.has(item.id)}
+                selected={activeSelected.has(item.id)}
                 failed={failed.has(item.id)}
                 disabled={disabled || queuing}
-                onToggle={() => toggle(item.id)}
+                onToggle={(shiftKey) => toggle(item.id, shiftKey)}
                 onFail={() => markFailed(item.id)}
               />
             </li>
@@ -173,7 +193,9 @@ export function ScanImagePicker({
 
       <div className="flex items-center gap-2 border-t border-white/[0.07] pt-3">
         <span className="text-[12.5px] text-zinc-400">
-          {selectedCount} selected
+          {selectedCount === 0
+            ? 'Click images to select them (Shift+click for a range)'
+            : `${selectedCount} selected`}
         </span>
         <div className="flex-1" />
         <button
@@ -203,7 +225,8 @@ interface ImageTileProps {
   selected: boolean
   failed: boolean
   disabled: boolean
-  onToggle: () => void
+  /** `shiftKey` comes from the click, so the picker can extend a range. */
+  onToggle: (shiftKey: boolean) => void
   onFail: () => void
 }
 
@@ -225,10 +248,17 @@ function ImageTile({
       : null
 
   return (
-    <label
-      className={`group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border bg-white/[0.03] transition ${
-        selected ? 'border-accent-500/70' : 'border-white/10 hover:border-white/20'
-      } ${disabled ? 'opacity-60' : ''}`}
+    <button
+      type="button"
+      onClick={(event) => onToggle(event.shiftKey)}
+      disabled={disabled}
+      aria-pressed={selected}
+      aria-label={`${selected ? 'Deselect' : 'Select'} ${item.name}`}
+      className={`group relative flex w-full cursor-pointer flex-col overflow-hidden rounded-xl border bg-white/[0.03] text-left transition ${
+        selected
+          ? 'border-accent-500 ring-2 ring-accent-400/60'
+          : 'border-white/10 hover:border-white/20'
+      } ${disabled ? 'cursor-default opacity-60' : ''}`}
     >
       <span className="relative block aspect-square overflow-hidden bg-black/40">
         {thumbnail === null || failed ? (
@@ -245,26 +275,35 @@ function ImageTile({
             referrerPolicy="no-referrer"
             draggable={false}
             onError={onFail}
-            className="h-full w-full object-cover"
+            className={`h-full w-full object-cover transition ${
+              selected ? '' : 'opacity-70 group-hover:opacity-100'
+            }`}
           />
         )}
-        <input
-          type="checkbox"
-          checked={selected}
-          disabled={disabled}
-          onChange={onToggle}
-          aria-label={`Select ${item.name}`}
-          className="absolute left-1.5 top-1.5 h-4 w-4 accent-accent-400"
-        />
+        <span
+          aria-hidden="true"
+          className={`absolute left-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full border transition ${
+            selected
+              ? 'border-accent-400 bg-accent-500 text-on-accent'
+              : 'border-white/40 bg-black/50 text-transparent'
+          }`}
+        >
+          <Icon name="check" size={12} strokeWidth={2.6} />
+        </span>
       </span>
       <span className="flex items-center gap-1 px-1.5 py-1">
-        <span className="min-w-0 flex-1 truncate text-[11.5px] text-zinc-400" title={item.name}>
+        <span
+          className={`min-w-0 flex-1 truncate text-[11.5px] ${
+            selected ? 'text-zinc-200' : 'text-zinc-400'
+          }`}
+          title={item.name}
+        >
           {item.name}
         </span>
         {size !== null ? (
           <span className="shrink-0 text-[10.5px] text-zinc-500">{size}</span>
         ) : null}
       </span>
-    </label>
+    </button>
   )
 }
