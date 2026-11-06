@@ -592,6 +592,8 @@ async function probeFormatHeights(
               '1000000',
               '-probesize',
               '1000000',
+              '-protocol_whitelist',
+              'http,https,tcp,tls,crypto',
               '-i',
               target.url
             ],

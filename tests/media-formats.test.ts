@@ -168,6 +168,43 @@ describe('real quality labels', () => {
         .label
     ).toContain('1080p MP4')
   })
+
+  it('never probes playlists, manifests or non-progressive protocols', () => {
+    const direct = format({
+      format_id: 'direct',
+      url: 'https://cdn.example.com/unknown.mp4',
+      vcodec: 'avc1',
+      acodec: 'mp4a'
+    })
+    const raw = { title: 'Direct', formats: [direct] }
+    const built = buildMediaAnalysis(raw, {
+      ffmpegAvailable: true,
+      newOptionId: optionIds()
+    })
+    expect(resolutionProbeTargets(built, raw)).toEqual([
+      { formatId: 'direct', url: 'https://cdn.example.com/unknown.mp4' }
+    ])
+
+    for (const manifest of [
+      { protocol: 'https', url: 'https://cdn.example.com/live.m3u8' },
+      { protocol: 'https', url: 'https://cdn.example.com/live.mpd' },
+      {
+        protocol: 'dash',
+        url: 'https://cdn.example.com/live.mp4'
+      },
+      {
+        protocol: 'm3u8_native',
+        url: 'https://cdn.example.com/live.mp4'
+      }
+    ]) {
+      expect(
+        resolutionProbeTargets(built, {
+          title: 'Manifest',
+          formats: [{ ...direct, ...manifest }]
+        })
+      ).toEqual([])
+    }
+  })
 })
 
 describe('media format DRM detection', () => {

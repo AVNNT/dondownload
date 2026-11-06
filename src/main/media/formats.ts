@@ -1056,13 +1056,22 @@ export function resolutionProbeTargets(
     seen.add(formatId)
     const record = byId.get(formatId)
     if (record === undefined) continue
-    if (record.protocol !== undefined && record.protocol !== 'https' && record.protocol !== 'http') {
+    const protocol =
+      typeof record.protocol === 'string' ? record.protocol.toLowerCase() : null
+    // Playlists and manifests can make ffprobe fetch every segment or a local
+    // device. Only direct progressive HTTP(S) files are header-probed.
+    if (protocol !== null && (protocol.includes('m3u8') || protocol.includes('dash'))) {
+      continue
+    }
+    if (protocol !== null && protocol !== 'https' && protocol !== 'http') {
       continue
     }
     if (typeof record.url !== 'string') continue
     try {
       const parsed = new URL(record.url)
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') continue
+      const path = parsed.pathname.toLowerCase()
+      if (path.endsWith('.m3u8') || path.endsWith('.mpd')) continue
       targets.push({ formatId, url: parsed.href })
     } catch {
       continue
