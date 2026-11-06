@@ -1,4 +1,5 @@
 import { useEffect, useRef, type JSX } from 'react'
+import { useWheelScrollLock } from '../lib/useWheelScrollLock'
 
 export interface ConfirmRequest {
   title: string
@@ -15,6 +16,9 @@ export function ConfirmDialog({
   onClose: () => void
 }): JSX.Element {
   const confirmRef = useRef<HTMLButtonElement | null>(null)
+  const backdropRef = useRef<HTMLDivElement | null>(null)
+
+  useWheelScrollLock(backdropRef)
 
   useEffect(() => {
     confirmRef.current?.focus()
@@ -30,7 +34,8 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 p-4"
+      ref={backdropRef}
+      className="fixed inset-0 z-[60] flex items-center justify-center overscroll-contain bg-black/65 p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
