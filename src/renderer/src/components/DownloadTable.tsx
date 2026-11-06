@@ -1,34 +1,43 @@
 import {
-  useCallback,
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode
 } from 'react'
-import type { SortDirection, SortKey, UnifiedRow } from '../lib/unified'
-import { isSelected, type SelectionState, type SelectionMode } from '../lib/selection'
+import type { UnifiedRow } from '../lib/unified'
+import {
+  isSelected,
+  type SelectionMode,
+  type SelectionState
+} from '../lib/selection'
+import { canOpenRow, canShowRow } from '../lib/actions'
 import { CATEGORY_ACCENT, CATEGORY_ICON, Icon } from './Icon'
-import { StatusBadge } from './StatusBadge'
 import type { ThumbnailFallback } from './Thumbnail'
 import { Thumbnail } from './Thumbnail'
 import { formatBytes, formatEta, formatSpeed } from '@shared/format'
 
+/*
+ * Row grid matches the mockup list:
+ *   wide  → 40px icon · name · progress/state · 84px size · 104px actions
+ *   narrow→ 40px icon · name · 190px progress/state · 36px actions
+ */
 const GRID_COLUMNS =
-  'grid grid-cols-[28px_36px_minmax(0,1fr)_112px_70px_108px] items-center gap-2 min-[901px]:grid-cols-[28px_36px_minmax(0,1fr)_120px_130px_72px_108px] min-[1180px]:grid-cols-[28px_36px_minmax(0,1fr)_140px_88px_146px_76px_68px_116px]'
+  'grid grid-cols-[40px_minmax(0,1fr)_190px_36px] items-center gap-4 ' +
+  'lg:grid-cols-[40px_minmax(240px,1.1fr)_minmax(220px,1fr)_84px_104px]'
 
 interface DownloadTableProps {
   rows: readonly UnifiedRow[]
   selection: SelectionState
   focusedKey: string | null
-  sortKey: SortKey
-  sortDirection: SortDirection
   emptyState: ReactNode
-  onSort: (key: SortKey) => void
   onRowClick: (row: UnifiedRow, mode: SelectionMode) => void
   onToggleRow: (row: UnifiedRow) => void
-  onSelectAll: () => void
   onFocusRow: (row: UnifiedRow) => void
   onOpenRow: (row: UnifiedRow) => void
+  onShowInFolder: (row: UnifiedRow) => void
+  onPauseRow: (row: UnifiedRow) => void
+  onResumeRow: (row: UnifiedRow) => void
+  onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void
 }
@@ -37,28 +46,19 @@ export function DownloadTable({
   rows,
   selection,
   focusedKey,
-  sortKey,
-  sortDirection,
   emptyState,
-  onSort,
   onRowClick,
   onToggleRow,
-  onSelectAll,
   onFocusRow,
   onOpenRow,
+  onShowInFolder,
+  onPauseRow,
+  onResumeRow,
+  onRetryRow,
   onContextMenu,
   onKeyDown
 }: DownloadTableProps): JSX.Element {
-  const allSelected =
-    rows.length > 0 && rows.every((row) => isSelected(selection, row.key))
-  const someSelected =
-    !allSelected && rows.some((row) => isSelected(selection, row.key))
-  const setHeaderCheckbox = useCallback(
-    (input: HTMLInputElement | null) => {
-      if (input) input.indeterminate = someSelected
-    },
-    [someSelected]
-  )
+  const selectMode = selection.selected.length > 1
 
   return (
     <div
@@ -67,124 +67,194 @@ export function DownloadTable({
       aria-multiselectable="true"
       aria-rowcount={rows.length}
       onKeyDown={onKeyDown}
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/10 surface-card"
+      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-2"
     >
-      <div
-        role="row"
-        className={`${GRID_COLUMNS} shrink-0 border-b border-white/10 surface-soft px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500`}
-      >
-        <div role="columnheader" aria-label="Select all" className="flex items-center">
-          <input
-            ref={setHeaderCheckbox}
-            type="checkbox"
-            checked={allSelected}
-            onChange={onSelectAll}
-            disabled={rows.length === 0}
-            aria-label="Select all visible downloads"
-            className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-accent-400 disabled:opacity-30"
-          />
+      {rows.length === 0 ? (
+        emptyState
+      ) : (
+        <div role="presentation" className="divide-y divide-white/[0.06]">
+          {rows.map((row) => (
+            <TableRow
+              key={row.key}
+              row={row}
+              selected={isSelected(selection, row.key)}
+              open={selection.selected.length === 1 && isSelected(selection, row.key)}
+              selectMode={selectMode}
+              focused={focusedKey === row.key}
+              onRowClick={onRowClick}
+              onToggleRow={onToggleRow}
+              onFocusRow={onFocusRow}
+              onOpenRow={onOpenRow}
+              onShowInFolder={onShowInFolder}
+              onPauseRow={onPauseRow}
+              onResumeRow={onResumeRow}
+              onRetryRow={onRetryRow}
+              onContextMenu={onContextMenu}
+            />
+          ))}
         </div>
-        <div role="columnheader" aria-label="Type" />
-        <SortHeader
-          role="columnheader"
-          label="Name"
-          sortKey="name"
-          activeKey={sortKey}
-          direction={sortDirection}
-          onSort={onSort}
-          className="min-w-0"
-        />
-        <div role="columnheader" className="hidden min-[901px]:block min-w-0">
-          Source
-        </div>
-        <SortHeader
-          role="columnheader"
-          label="Size"
-          sortKey="size"
-          activeKey={sortKey}
-          direction={sortDirection}
-          onSort={onSort}
-          align="right"
-          className="hidden min-[1180px]:block"
-        />
-        <SortHeader
-          role="columnheader"
-          label="Progress"
-          sortKey="progress"
-          activeKey={sortKey}
-          direction={sortDirection}
-          onSort={onSort}
-        />
-        <div role="columnheader" className="text-right">
-          Speed
-        </div>
-        <div role="columnheader" className="hidden text-right min-[1180px]:block">
-          ETA
-        </div>
-        <SortHeader
-          role="columnheader"
-          label="Status"
-          sortKey="status"
-          activeKey={sortKey}
-          direction={sortDirection}
-          onSort={onSort}
-          align="right"
-        />
-      </div>
-
-      <div
-        role="rowgroup"
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        {rows.length === 0 ? (
-          emptyState
-        ) : (
-          <div role="presentation">
-            {rows.map((row) => (
-              <TableRow
-                key={row.key}
-                row={row}
-                selected={isSelected(selection, row.key)}
-                focused={focusedKey === row.key}
-                onRowClick={onRowClick}
-                onToggleRow={onToggleRow}
-                onFocusRow={onFocusRow}
-                onOpenRow={onOpenRow}
-                onContextMenu={onContextMenu}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
+}
+
+type RowVisual =
+  | {
+      kind: 'progress'
+      percent: number
+      /** Text after the percent: speed, "Paused", "Stopped when…". */
+      label: string | null
+      /** Right-aligned "… left" hint for active transfers. */
+      eta: string | null
+      paused: boolean
+    }
+  | { kind: 'merging'; sublabel: string }
+  | { kind: 'queued' }
+  | { kind: 'done'; when: string }
+  | { kind: 'scheduled'; text: string }
+  | { kind: 'analyzing' }
+  | { kind: 'failed'; text: string }
+  | { kind: 'interrupted'; percent: number }
+
+function describeRow(row: UnifiedRow): RowVisual {
+  const download = row.download
+  if (download !== null) {
+    switch (download.status) {
+      case 'active':
+        return {
+          kind: 'progress',
+          percent: row.progress,
+          label: download.speedBps > 0 ? formatSpeed(download.speedBps) : null,
+          eta:
+            download.etaSeconds !== null && download.etaSeconds > 0
+              ? formatEta(download.etaSeconds)
+              : null,
+          paused: false
+        }
+      case 'paused':
+        return {
+          kind: 'progress',
+          percent: row.progress,
+          label: 'Paused',
+          eta: null,
+          paused: true
+        }
+      case 'queued':
+        return { kind: 'queued' }
+      case 'waiting':
+        return {
+          kind: 'scheduled',
+          text:
+            download.blockReason === 'scheduled'
+              ? `Starts at ${formatClock(download.scheduledAt)}`
+              : 'Allowed hours'
+        }
+      case 'complete':
+        return { kind: 'done', when: relativeWhen(download.completedAt) }
+      case 'error':
+        return { kind: 'failed', text: download.errorMessage ?? 'Failed' }
+      case 'interrupted':
+        return { kind: 'interrupted', percent: row.progress }
+    }
+  }
+
+  const media = row.media
+  if (media !== null) {
+    switch (media.status) {
+      case 'queued':
+        return { kind: 'queued' }
+      case 'analyzing':
+        return { kind: 'analyzing' }
+      case 'downloading': {
+        const starting = media.completedBytes === 0 && media.speedBps === 0
+        return {
+          kind: 'progress',
+          percent: row.progress,
+          label: starting ? null : formatSpeed(media.speedBps),
+          eta: null,
+          paused: false
+        }
+      }
+      case 'merging':
+        return {
+          kind: 'merging',
+          sublabel: media.kind === 'audio' ? 'audio' : 'video and audio'
+        }
+      case 'paused':
+        return {
+          kind: 'progress',
+          percent: row.progress,
+          label: 'Paused',
+          eta: null,
+          paused: true
+        }
+      case 'complete':
+        return { kind: 'done', when: relativeWhen(media.completedAt) }
+      case 'error':
+        return { kind: 'failed', text: media.errorMessage ?? 'Failed' }
+      case 'cancelled':
+        return { kind: 'failed', text: 'Cancelled' }
+      case 'interrupted':
+        return { kind: 'interrupted', percent: row.progress }
+    }
+  }
+
+  return { kind: 'queued' }
 }
 
 function TableRow({
   row,
   selected,
+  open,
+  selectMode,
   focused,
   onRowClick,
   onToggleRow,
   onFocusRow,
   onOpenRow,
+  onShowInFolder,
+  onPauseRow,
+  onResumeRow,
+  onRetryRow,
   onContextMenu
 }: {
   row: UnifiedRow
   selected: boolean
+  open: boolean
+  selectMode: boolean
   focused: boolean
   onRowClick: (row: UnifiedRow, mode: SelectionMode) => void
   onToggleRow: (row: UnifiedRow) => void
   onFocusRow: (row: UnifiedRow) => void
   onOpenRow: (row: UnifiedRow) => void
+  onShowInFolder: (row: UnifiedRow) => void
+  onPauseRow: (row: UnifiedRow) => void
+  onResumeRow: (row: UnifiedRow) => void
+  onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
 }): JSX.Element {
+  const visual = describeRow(row)
   const percent = Math.round(row.progress)
-  const sizeLabel = row.sizeBytes !== null ? formatBytes(row.sizeBytes) : 'Unknown'
-  const speedLabel =
-    row.source === 'media' && row.media?.status === 'merging'
-      ? 'Merging'
-      : formatSpeed(row.speedBps)
+  const sizeLabel =
+    row.sizeBytes !== null
+      ? `${row.source === 'media' ? '≈ ' : ''}${formatBytes(row.sizeBytes)}`
+      : '—'
+
+  const downloading =
+    row.source === 'download'
+      ? row.download?.status === 'active'
+      : row.media?.status === 'downloading'
+  const paused = row.statusTone === 'paused'
+  const retryable = visual.kind === 'failed'
+  const resumable = visual.kind === 'interrupted'
+  const openable = canOpenRow(row)
+  const showable = canShowRow(row)
+
+  const rowBackground = open
+    ? 'bg-accent-400/[0.08] shadow-[inset_0_0_0_1px_rgb(96_165_250_/_0.35)]'
+    : selected
+      ? 'bg-accent-400/[0.08]'
+      : 'hover:bg-white/[0.04]'
 
   return (
     <div
@@ -204,121 +274,297 @@ function TableRow({
       onDoubleClick={() => onOpenRow(row)}
       onFocus={() => onFocusRow(row)}
       onContextMenu={(event) => onContextMenu(row, event)}
-      className={`${GRID_COLUMNS} group min-h-[52px] cursor-default border-b border-white/[0.055] px-3 py-1.5 text-xs outline-none transition-colors ${
-        selected
-          ? 'bg-accent-400/[0.085] shadow-[inset_2px_0_0_0_rgb(59_130_246_/_0.9)]'
-          : 'hover:bg-white/[0.035]'
-      } focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
+      className={`${GRID_COLUMNS} group relative h-[58px] cursor-default rounded-lg px-2 outline-none transition-colors ${rowBackground} focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
     >
-      <div role="gridcell" className="flex items-center">
-        <input
-          type="checkbox"
-          checked={selected}
-          onClick={(event) => event.stopPropagation()}
-          onChange={() => onToggleRow(row)}
-          aria-label={`Select ${row.title}`}
-          className="h-3.5 w-3.5 rounded border-white/20 surface-input accent-accent-400"
-        />
-      </div>
-
-      <div role="gridcell" className="flex items-center">
+      <div role="gridcell" className="relative">
         <RowArt row={row} />
+        {selectMode ? (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={`Select ${row.title}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleRow(row)
+            }}
+            className="absolute inset-0 z-[1] grid place-items-center rounded-lg bg-[rgb(0_0_0_/_0.55)]"
+          >
+            <span
+              className={`grid h-4 w-4 place-items-center rounded border-[1.5px] ${
+                selected
+                  ? 'border-accent-500 bg-accent-500 text-on-accent'
+                  : 'border-zinc-400 text-transparent'
+              }`}
+            >
+              <Icon name="check" size={11} strokeWidth={2.6} />
+            </span>
+          </button>
+        ) : null}
       </div>
 
       <div role="gridcell" className="min-w-0">
         <p
-          className={`truncate text-[12.5px] font-medium leading-5 ${
-            selected ? 'text-zinc-50' : 'text-zinc-100'
-          }`}
+          className="truncate text-[13px] font-semibold leading-5 text-zinc-100"
           title={row.title}
         >
           {row.title}
         </p>
-        <p className="truncate text-[11px] leading-4 text-zinc-500" title={row.subtitle}>
-          {row.subtitle}
+        <p
+          className="truncate text-[12px] leading-4 text-zinc-500"
+          title={row.subtitle}
+        >
+          <span className="lg:hidden">
+            {[row.subtitle, sizeLabel].filter(Boolean).join(' · ')}
+          </span>
+          <span className="hidden lg:inline">{row.subtitle}</span>
         </p>
       </div>
 
-      <div
-        role="gridcell"
-        className="hidden min-[901px]:block min-w-0 text-[11px] text-zinc-400"
-        title={row.host ?? row.subtitle}
-      >
-        <span className="block truncate">{row.host ?? 'Media page'}</span>
+      <div role="gridcell" className="min-w-0">
+        <MiddleCell visual={visual} percent={percent} />
       </div>
 
       <div
         role="gridcell"
-        className="hidden text-right text-[11px] tabular-nums text-zinc-300 min-[1180px]:block"
+        className="hidden text-right text-[12.5px] tabular-nums text-zinc-400 lg:block"
         title={
           row.sizeBytes !== null
-            ? `${formatBytes(row.completedBytes)} of ${sizeLabel}`
-            : `${formatBytes(row.completedBytes)} downloaded`
+            ? `${formatBytes(row.completedBytes)} of ${formatBytes(row.sizeBytes)}`
+            : undefined
         }
       >
         {sizeLabel}
       </div>
 
-      <div role="gridcell" className="min-w-0">
-        <div className="flex items-center gap-2">
-          <div
-            role="progressbar"
-            aria-label={`Download progress for ${row.title}`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={row.indeterminate ? undefined : percent}
-            aria-valuetext={row.indeterminate ? row.statusLabel : `${percent}%`}
-            className={`relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10 ${
-              row.indeterminate ? 'media-progress-indeterminate' : ''
-            } ${
-              row.source === 'media' && row.media?.status === 'merging'
-                ? 'media-progress-merging'
-                : ''
-            }`}
+      <div role="gridcell" className="flex items-center justify-end gap-0.5">
+        {downloading ? (
+          <RowIconButton
+            icon="pause"
+            label={`Pause ${row.title}`}
+            onClick={() => onPauseRow(row)}
+            className="flex lg:group-hover:hidden"
+          />
+        ) : null}
+        {paused && !retryable ? (
+          <RowIconButton
+            icon="play"
+            label={`Resume ${row.title}`}
+            onClick={() => onResumeRow(row)}
+            className="flex lg:group-hover:hidden"
+          />
+        ) : null}
+        {resumable ? (
+          <button
+            type="button"
+            onClick={() => onResumeRow(row)}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5 lg:group-hover:hidden"
           >
-            {row.indeterminate ? null : (
-              <div
-                className={`h-full rounded-full transition-[width] duration-500 ${
-                  row.statusTone === 'failed'
-                    ? 'bg-red-400'
-                    : row.statusTone === 'warning'
-                      ? 'bg-amber-400'
-                      : row.statusTone === 'paused'
-                        ? 'bg-zinc-500'
-                        : row.statusTone === 'queued'
-                          ? 'bg-zinc-600'
-                          : 'bg-accent-400'
-                }`}
-                style={{ width: `${percent}%` }}
-              />
-            )}
-          </div>
-          <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-zinc-400">
-            {row.indeterminate ? '—' : `${percent}%`}
-          </span>
+            <Icon name="play" size={13} />
+            <span className="hidden lg:inline">Resume</span>
+          </button>
+        ) : null}
+        {retryable ? (
+          <button
+            type="button"
+            onClick={() => onRetryRow(row)}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5 lg:group-hover:hidden"
+          >
+            <Icon name="retry" size={14} />
+            <span className="hidden lg:inline">Retry</span>
+          </button>
+        ) : null}
+
+        <div className="hidden items-center gap-0.5 lg:group-hover:flex">
+          {openable ? (
+            <RowIconButton
+              icon="external"
+              label={`Open ${row.title}`}
+              onClick={() => onOpenRow(row)}
+              className="flex"
+            />
+          ) : null}
+          {showable ? (
+            <RowIconButton
+              icon="folder"
+              label={`Show ${row.title} in folder`}
+              onClick={() => onShowInFolder(row)}
+              className="flex"
+            />
+          ) : null}
+          <RowIconButton
+            icon="more"
+            label={`More actions for ${row.title}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              onContextMenu(row, event)
+            }}
+            className="flex"
+          />
         </div>
       </div>
-
-      <div
-        role="gridcell"
-        className="text-right text-[11px] tabular-nums text-zinc-300"
-      >
-        {speedLabel}
-      </div>
-
-      <div
-        role="gridcell"
-        className="hidden text-right text-[11px] tabular-nums text-zinc-400 min-[1180px]:block"
-      >
-        {row.etaSeconds !== null && row.etaSeconds > 0
-          ? formatEta(row.etaSeconds)
-          : '—'}
-      </div>
-
-      <div role="gridcell" className="flex justify-end">
-        <StatusBadge label={row.statusLabel} tone={row.statusTone} />
-      </div>
     </div>
+  )
+}
+
+function MiddleCell({
+  visual,
+  percent
+}: {
+  visual: RowVisual
+  percent: number
+}): JSX.Element {
+  if (visual.kind === 'progress') {
+    return (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex items-baseline justify-between gap-2 text-[12px] text-zinc-400">
+          <span className="truncate">
+            <span className="font-semibold tabular-nums text-zinc-100">
+              {percent}%
+            </span>
+            {visual.label ? (
+              <span className="text-zinc-400"> · {visual.label}</span>
+            ) : null}
+          </span>
+          {visual.eta ? (
+            <span className="shrink-0 tabular-nums text-zinc-400">
+              {visual.eta} left
+            </span>
+          ) : null}
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
+          <div
+            className={`h-full rounded-full transition-[width] duration-500 ${
+              visual.paused ? 'bg-zinc-500' : 'bg-accent-400'
+            }`}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'merging') {
+    return (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex items-baseline justify-between gap-2 text-[12px] text-zinc-400">
+          <span className="truncate">
+            <span className="font-semibold text-zinc-100">Merging</span> ·{' '}
+            {visual.sublabel}
+          </span>
+          <span className="shrink-0 text-zinc-500">almost done</span>
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
+          <div
+            className="h-full w-[35%] rounded-full bg-accent-400"
+            style={{ marginLeft: '30%' }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'interrupted') {
+    return (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex items-baseline justify-between gap-2 text-[12px] text-zinc-400">
+          <span className="truncate">
+            <span className="font-semibold tabular-nums text-zinc-100">
+              {percent}%
+            </span>{' '}
+            · Stopped when the app closed
+          </span>
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
+          <div
+            className="h-full rounded-full bg-zinc-500"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'queued') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-zinc-400">
+        <span aria-hidden="true" className="h-[7px] w-[7px] shrink-0 rounded-full bg-zinc-500" />
+        <span className="truncate">Queued</span>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'done') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-zinc-400">
+        <span aria-hidden="true" className="flex shrink-0 text-emerald-400">
+          <Icon name="check" size={15} strokeWidth={2.2} />
+        </span>
+        <span className="truncate">Done · {visual.when}</span>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'scheduled') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-zinc-400">
+        <span aria-hidden="true" className="flex shrink-0 text-amber-400">
+          <Icon name="clock" size={15} />
+        </span>
+        <span className="truncate">{visual.text}</span>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'analyzing') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-zinc-400">
+        <span
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-700 border-t-accent-400"
+        />
+        <span className="truncate">Reading the page · finding qualities</span>
+      </div>
+    )
+  }
+
+  // failed
+  return (
+    <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-red-400">
+      <span aria-hidden="true" className="flex shrink-0">
+        <Icon name="alert" size={15} />
+      </span>
+      <span className="truncate" title={visual.text}>
+        {visual.text}
+      </span>
+    </div>
+  )
+}
+
+function RowIconButton({
+  icon,
+  label,
+  onClick,
+  className
+}: {
+  icon: Parameters<typeof Icon>[0]['name']
+  label: string
+  onClick: (event: MouseEvent) => void
+  className: string
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick(event)
+      }}
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-zinc-400 transition hover:border-white/10 hover:bg-white/5 hover:text-zinc-100 ${className}`}
+    >
+      <Icon name={icon} size={15} />
+    </button>
   )
 }
 
@@ -333,55 +579,45 @@ function RowArt({ row }: { row: UnifiedRow }): JSX.Element {
         src={row.thumbnailUrl}
         title={row.title}
         fallback={fallback}
+        size="row"
       />
     )
   }
   return (
     <span
-      className={`flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] ${CATEGORY_ACCENT[row.category]}`}
+      className={`flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${CATEGORY_ACCENT[row.category]}`}
     >
-      <Icon name={CATEGORY_ICON[row.category]} size={15} />
+      <Icon name={CATEGORY_ICON[row.category]} size={18} />
     </span>
   )
 }
 
-function SortHeader({
-  label,
-  sortKey,
-  activeKey,
-  direction,
-  onSort,
-  align = 'left',
-  ...props
-}: {
-  label: string
-  sortKey: SortKey
-  activeKey: SortKey
-  direction: SortDirection
-  onSort: (key: SortKey) => void
-  align?: 'left' | 'right'
-} & { role?: string; className?: string }): JSX.Element {
-  const active = activeKey === sortKey
-  return (
-    <div
-      {...props}
-      aria-sort={
-        active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'
-      }
-      className={`${align === 'right' ? 'text-right' : ''} ${props.className ?? ''}`}
-    >
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className={`inline-flex items-center gap-1 rounded text-[11px] font-medium uppercase tracking-[0.12em] transition hover:text-zinc-200 ${
-          active ? 'text-zinc-200' : 'text-zinc-500'
-        }`}
-      >
-        {label}
-        <span aria-hidden="true" className="text-[11px] leading-none">
-          {active ? (direction === 'asc' ? '▲' : '▼') : '↕'}
-        </span>
-      </button>
-    </div>
-  )
+function formatClock(epochMs: number | null | undefined): string {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) {
+    return 'later'
+  }
+  try {
+    return new Date(epochMs).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return 'later'
+  }
+}
+
+function relativeWhen(epochMs: number | null): string {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) return ''
+  const minutes = Math.floor((Date.now() - epochMs) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} d ago`
+  try {
+    return new Date(epochMs).toLocaleDateString()
+  } catch {
+    return ''
+  }
 }

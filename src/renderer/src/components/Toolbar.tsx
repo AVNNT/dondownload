@@ -1,98 +1,151 @@
-import type { JSX } from 'react'
-import { formatSpeed } from '@shared/format'
-import type { SortDirection, SortKey } from '../lib/unified'
+import { useEffect, useRef, type JSX } from 'react'
+import type { SortDirection, SortKey, StatusFilterId } from '../lib/unified'
 import { SORT_KEYS, SORT_LABELS } from '../lib/unified'
 import { Icon } from './Icon'
+
+/**
+ * Filter chips surface the status filter as the mockup does: All, Active, Done
+ * and Failed. The underlying `StatusFilterId` values stay unchanged — the
+ * "queued" bucket simply has no chip, matching the mockup's four chips.
+ */
+const FILTER_CHIPS: ReadonlyArray<{ id: StatusFilterId; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'active', label: 'Active' },
+  { id: 'completed', label: 'Done' },
+  { id: 'failed', label: 'Failed' }
+]
 
 interface ToolbarProps {
   query: string
   onQueryChange: (value: string) => void
+  statusFilter: StatusFilterId
+  onStatusFilterChange: (value: StatusFilterId) => void
+  statusCounts: Record<StatusFilterId, number>
   sortKey: SortKey
   sortDirection: SortDirection
   onSortKeyChange: (key: SortKey) => void
   onToggleSortDirection: () => void
-  runningCount: number
-  speedBps: number
-  completedCount: number
   canPauseAll: boolean
   canResumeAll: boolean
-  onAdd: () => void
   onPauseAll: () => void
   onResumeAll: () => void
-  onClearCompleted: () => void
 }
 
 export function Toolbar({
   query,
   onQueryChange,
+  statusFilter,
+  onStatusFilterChange,
+  statusCounts,
   sortKey,
   sortDirection,
   onSortKeyChange,
   onToggleSortDirection,
-  runningCount,
-  speedBps,
-  completedCount,
   canPauseAll,
   canResumeAll,
-  onAdd,
   onPauseAll,
-  onResumeAll,
-  onClearCompleted
+  onResumeAll
 }: ToolbarProps): JSX.Element {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 pb-3">
-      <button
-        type="button"
-        onClick={onAdd}
-        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-accent-500 px-3 text-xs font-semibold text-on-accent transition hover:bg-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
-      >
-        <Icon name="plus" size={15} strokeWidth={2.2} />
-        Add
-      </button>
+  const searchRef = useRef<HTMLInputElement>(null)
 
-      <div className="relative min-w-[170px] flex-1 sm:min-w-[220px]">
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        searchRef.current?.focus()
+        searchRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-4 pb-1 pt-2">
+      <div className="relative min-w-[150px] max-w-[480px] flex-1">
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500"
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
         >
           <Icon name="search" size={15} />
         </span>
         <input
+          ref={searchRef}
           type="search"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search name, URL or host"
+          placeholder="Search downloads"
           aria-label="Search downloads"
           spellCheck={false}
           autoComplete="off"
-          className="h-9 w-full rounded-lg border border-white/10 surface-input pl-8 pr-3 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15"
+          className="h-[34px] w-full rounded-lg border border-white/10 surface-card pl-9 pr-12 text-[13px] text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-accent-400/60 focus:ring-2 focus:ring-accent-400/15"
         />
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 rounded border border-white/10 px-1.5 py-px text-[10.5px] leading-4 text-zinc-500 lg:inline"
+        >
+          Ctrl K
+        </span>
       </div>
 
-      <label className="sr-only" htmlFor="download-sort">
-        Sort downloads
-      </label>
-      <select
-        id="download-sort"
-        value={sortKey}
-        onChange={(event) => onSortKeyChange(event.target.value as SortKey)}
-        className="h-9 shrink-0 rounded-lg border border-white/10 surface-input px-2 text-[11px] text-zinc-300 outline-none transition focus:border-accent-400/60"
-      >
-        {SORT_KEYS.map((key) => (
-          <option key={key} value={key}>
-            {SORT_LABELS[key]}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        onClick={onToggleSortDirection}
-        aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}
-        title={`Currently ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}
-        className="inline-flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[11px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
-      >
-        {sortDirection === 'asc' ? '↑' : '↓'}
-      </button>
+      {FILTER_CHIPS.map((chip) => {
+        const active = statusFilter === chip.id
+        const count = statusCounts[chip.id]
+        const failed = chip.id === 'failed'
+        return (
+          <button
+            key={chip.id}
+            type="button"
+            onClick={() => onStatusFilterChange(chip.id)}
+            aria-pressed={active}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition ${
+              active
+                ? 'border-white/10 bg-zinc-800/60 text-zinc-100'
+                : 'border-transparent text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {chip.label}
+            <span
+              className={`text-[11.5px] font-medium tabular-nums ${
+                failed
+                  ? 'text-red-400'
+                  : active
+                    ? 'text-zinc-400'
+                    : 'text-zinc-500'
+              }`}
+            >
+              {count}
+            </span>
+          </button>
+        )
+      })}
+
+      <div className="ml-auto flex items-center gap-1">
+        <label className="flex items-center gap-1.5">
+          <span className="text-[12px] text-zinc-500">Sort</span>
+          <select
+            aria-label="Sort downloads"
+            value={sortKey}
+            onChange={(event) => onSortKeyChange(event.target.value as SortKey)}
+            className="h-7 cursor-pointer rounded-md border border-transparent bg-transparent px-1 text-[12px] font-medium text-zinc-200 outline-none transition hover:border-white/10 hover:bg-white/5 focus:border-accent-400/60"
+          >
+            {SORT_KEYS.map((key) => (
+              <option key={key} value={key}>
+                {SORT_LABELS[key]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={onToggleSortDirection}
+          aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}
+          title={`Currently ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+        >
+          {sortDirection === 'asc' ? '↑' : '↓'}
+        </button>
+      </div>
 
       <span aria-hidden="true" className="mx-0.5 hidden h-5 w-px bg-white/10 sm:block" />
 
@@ -108,27 +161,6 @@ export function Toolbar({
         disabled={!canResumeAll}
         onClick={onResumeAll}
       />
-      <ToolbarAction
-        icon="trash"
-        label="Clear completed"
-        disabled={completedCount === 0}
-        onClick={onClearCompleted}
-        title="Remove completed history entries. Files stay on disk."
-      />
-
-      <div className="ml-auto flex shrink-0 items-center gap-3 pl-1 text-[11px] tabular-nums text-zinc-400">
-        <span className="flex items-center gap-1.5">
-          <span
-            aria-hidden="true"
-            className={`h-1.5 w-1.5 rounded-full ${
-              runningCount > 0 ? 'animate-pulse bg-accent-400' : 'bg-zinc-600'
-            }`}
-          />
-          <span className="text-zinc-300">{runningCount}</span>
-          <span className="hidden sm:inline">active</span>
-        </span>
-        <span className="text-zinc-300">{formatSpeed(speedBps)}</span>
-      </div>
     </div>
   )
 }
@@ -137,14 +169,12 @@ function ToolbarAction({
   icon,
   label,
   disabled,
-  onClick,
-  title
+  onClick
 }: {
-  icon: 'pause' | 'play' | 'trash'
+  icon: 'pause' | 'play'
   label: string
   disabled: boolean
   onClick: () => void
-  title?: string
 }): JSX.Element {
   return (
     <button
@@ -152,11 +182,10 @@ function ToolbarAction({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      title={title ?? label}
-      className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 px-2 text-[11px] font-medium text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
+      title={label}
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/10 text-zinc-300 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
     >
       <Icon name={icon} size={14} />
-      <span className="hidden xl:inline">{label}</span>
     </button>
   )
 }

@@ -24,6 +24,7 @@ export type IconName =
   | 'folder'
   | 'link'
   | 'retry'
+  | 'refresh'
   | 'more'
   | 'x'
   | 'chevron-down'
@@ -185,6 +186,14 @@ const ICONS: Record<IconName, JSX.Element> = {
     <>
       <path d="M20 11a8 8 0 1 0-2.3 6.7" />
       <path d="M20 4v7h-7" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M20 11a8 8 0 0 0-14.6-4.5L4 8" />
+      <path d="M4 4v4h4" />
+      <path d="M4 13a8 8 0 0 0 14.6 4.5L20 16" />
+      <path d="M20 20v-4h-4" />
     </>
   ),
   more: (
