@@ -75,6 +75,20 @@
               autocomplete="off"
               placeholder="https://site.example/t/topic/123&#10;https://site.example/t/topic/456"
             ></textarea>
+            <div class="scan-links-tools">
+              <button
+                id="scan-add-tab"
+                type="button"
+                class="secondary"
+                title="Open a normal http(s) page to add it."
+                disabled
+              >
+                Add this tab
+              </button>
+              <button id="scan-clear" type="button" class="link-button">
+                Clear
+              </button>
+            </div>
             <p id="scan-links-status" class="scan-hint" role="status" aria-live="polite"></p>
             <button id="scan-links-button" type="button" disabled>Scan links</button>
           </div>

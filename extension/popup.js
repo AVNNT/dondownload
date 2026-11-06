@@ -3,6 +3,12 @@ import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
 import { rememberPendingScan, rememberPendingScans, scanCookiesReady } from './scan-pending.js'
 import { buildScanSends, groupScanUrlsByOrigin, parseScanUrlList } from './scan-urls.js'
+import {
+  appendScanTabUrl,
+  clearScanDraft,
+  readScanDraft,
+  saveScanDraft
+} from './scan-draft.js'
 import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
   popupConnectionLine,
@@ -26,9 +32,12 @@ import {
 
 const sendButton = document.getElementById('send')
 const scanButton = document.getElementById('scan-page')
+const scanMany = document.getElementById('scan-many')
 const scanLinksInput = document.getElementById('scan-links')
 const scanLinksStatus = document.getElementById('scan-links-status')
 const scanLinksButton = document.getElementById('scan-links-button')
+const scanAddTabButton = document.getElementById('scan-add-tab')
+const scanClearButton = document.getElementById('scan-clear')
 const downloadAgainButton = document.getElementById('download-again')
 const statusElement = document.getElementById('status')
 const urlElement = document.getElementById('page-url')
@@ -58,6 +67,8 @@ let polling = null
 let pollAttempts = 0
 let sniffedMedia = []
 let lastCaptureResponse = null
+let draftTimer = null
+let draftDirty = false
 const queuedKeys = new Set()
 
 function setStatus(kind, message) {
@@ -671,6 +682,10 @@ function loadActiveTab() {
       pageUrl = null
       pageOrigin = null
       activeTabId = null
+      if (scanAddTabButton !== null) {
+        scanAddTabButton.disabled = true
+        scanAddTabButton.title = 'Open a normal http(s) page to add it.'
+      }
       urlElement.textContent = rawUrl || 'No address is available for this tab.'
       if (siteSection !== null) siteSection.hidden = true
       setStatus(
@@ -685,6 +700,10 @@ function loadActiveTab() {
     pageUrl = normalized.url
     pageOrigin = originFromUrl(normalized.url)
     activeTabId = tab && Number.isInteger(tab.id) ? tab.id : null
+    if (scanAddTabButton !== null) {
+      scanAddTabButton.disabled = false
+      scanAddTabButton.title = 'Add this tab URL to the list'
+    }
     urlElement.textContent = pageUrl
     setStatus('', '')
     setSending(false)
@@ -754,6 +773,83 @@ function refreshScanLinks() {
   scanLinksButton.disabled = scanning || sending || count === 0
 }
 
+const DRAFT_SAVE_DELAY_MS = 200
+
+function cancelDraftSave() {
+  if (draftTimer !== null) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+}
+
+/**
+ * Chrome closes the popup on focus loss, so the textarea draft is written to
+ * memory-only session storage on a short debounce and again on blur/pagehide.
+ * A failed write leaves the draft dirty so the next flush can retry.
+ */
+async function flushScanDraft() {
+  cancelDraftSave()
+  if (!draftDirty || scanLinksInput === null) return
+  draftDirty = false
+  const saved = await saveScanDraft(chrome, scanLinksInput.value)
+  if (!saved) draftDirty = true
+}
+
+function scheduleDraftSave() {
+  draftDirty = true
+  cancelDraftSave()
+  draftTimer = setTimeout(() => {
+    draftTimer = null
+    void flushScanDraft()
+  }, DRAFT_SAVE_DELAY_MS)
+}
+
+async function restoreScanDraft() {
+  if (scanLinksInput === null) return
+  const draft = await readScanDraft(chrome)
+  if (draft.length === 0 || draftDirty || scanLinksInput.value.length > 0) return
+  scanLinksInput.value = draft
+  if (scanMany !== null) scanMany.open = true
+  refreshScanLinks()
+}
+
+function clearScanLinks() {
+  if (scanLinksInput !== null) scanLinksInput.value = ''
+  draftDirty = false
+  cancelDraftSave()
+  refreshScanLinks()
+  if (scanLinksStatus !== null) scanLinksStatus.textContent = 'Cleared the link list.'
+  void clearScanDraft(chrome)
+}
+
+function addActiveTabToScanLinks() {
+  if (scanLinksInput === null) return
+  if (pageUrl === null) {
+    if (scanLinksStatus !== null) {
+      scanLinksStatus.textContent = 'Open a normal http(s) page to add it.'
+    }
+    return
+  }
+  const result = appendScanTabUrl(scanLinksInput.value, pageUrl)
+  if (!result.added) {
+    if (scanLinksStatus !== null) {
+      scanLinksStatus.textContent =
+        result.reason === 'duplicate'
+          ? 'This tab is already in the list.'
+          : result.reason === 'limit'
+            ? 'The list already has 10 links.'
+            : 'This tab is not a supported http(s) page.'
+    }
+    return
+  }
+  scanLinksInput.value = result.text
+  if (scanMany !== null) scanMany.open = true
+  refreshScanLinks()
+  if (scanLinksStatus !== null) scanLinksStatus.textContent = 'Added this tab.'
+  draftDirty = true
+  void flushScanDraft()
+}
+
 /**
  * "Scan several links" walks the paste once. Each URL is sent in its own
  * scan-page message, sequentially, so the native host protocol stays
@@ -763,6 +859,7 @@ function refreshScanLinks() {
  */
 async function scanLinks() {
   if (scanning || sending) return
+  await flushScanDraft()
   const parsed = parseScanUrlList(scanLinksInput === null ? '' : scanLinksInput.value)
   if (parsed.urls.length === 0) {
     setStatus('error', 'Paste at least one http:// or https:// page link, one per line.')
@@ -856,6 +953,11 @@ async function scanLinks() {
       'success',
       `Scan opened for ${sent} link${sent === 1 ? '' : 's'} in DonDownload. Review the grouped topics and choose files there.`
     )
+    // Sent successfully: the draft is no longer needed. Any failure or
+    // pending sign-in grant keeps it so the user can continue where they were.
+    draftDirty = false
+    cancelDraftSave()
+    void clearScanDraft(chrome)
   } finally {
     scanning = false
     setSending(false)
@@ -917,9 +1019,25 @@ scanLinksButton?.addEventListener('click', () => {
   void scanLinks()
 })
 
-scanLinksInput?.addEventListener('input', refreshScanLinks)
+scanLinksInput?.addEventListener('input', () => {
+  refreshScanLinks()
+  scheduleDraftSave()
+})
+
+scanLinksInput?.addEventListener('blur', () => {
+  void flushScanDraft()
+})
+
+scanAddTabButton?.addEventListener('click', addActiveTabToScanLinks)
+
+scanClearButton?.addEventListener('click', clearScanLinks)
+
+window.addEventListener('pagehide', () => {
+  void flushScanDraft()
+})
 
 refreshScanLinks()
+void restoreScanDraft()
 
 downloadAgainButton.addEventListener('click', () => {
   void sendPage(true)

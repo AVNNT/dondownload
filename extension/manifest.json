@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DonDownload Capture",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Detect media on sites you enable and download it with DonDownload, with an optional per-site video overlay.",
   "minimum_chrome_version": "102",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtgnCdsR2JRqNIDP7yvAQmWD8zC6sAYCQX5DfIT5abXfuqTvjgz9Gs3l2lqci0BmQoSNfj8+1zSSjcN39Dqfid9ypzW+QxOmKjzmZ7vNJaBcruZs83IbM22ZvYgmywvZCY60bsoLTI11cRQFbKXckKZEDeKeqviI26alGFwqPbpephwL+SGxof0gtOakUNiVPFFdbgdN7vmxthAi+/HMjzRFjpFm9VhdTm9v7Sfr0sIcLWJIWVS7ZWfe6AkEQSqC78JDNaj9vJ+qP6IrvQpoE8nyCATaiGg2XlF3dn8AUua6DVEycFd/ph4X+LdBeYgP2qydCFBY4g3w45pUMQ8J3IwIDAQAB",
