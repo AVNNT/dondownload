@@ -141,91 +141,81 @@ If `csc.exe` or `System.Web.Extensions.dll` is missing, install .NET Framework
 `.cmd`, `.ps1` or JavaScript file. The executable is built locally and is
 git-ignored.
 
-### 2. Load the unpacked extension and note its ID
+### 2. Load the unpacked extension (zero-config)
+
+DonDownload now registers its native messaging bridge automatically on every
+launch. The extension also pins a stable public key, so its ID no longer depends
+on the folder it was loaded from:
+
+**Fixed extension ID:** `mikinloaillialkiannpcejdbmfbljhm`
+
+1. Start DonDownload once. It writes
+   `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json` and the
+   current-user Chrome/Helium and Edge registry keys. The app may be hidden in
+   the tray.
+2. Open the app's **Settings → Browser extension** panel. It shows the exact
+   extension folder and connection state for Chrome, Helium and Edge.
+3. In Helium, open `chrome://extensions` (Helium is Chromium-based and uses
+   Chromium's standard extension manager). In Chrome, open
+   `chrome://extensions`; in Edge, open `edge://extensions`.
+4. Turn on **Developer mode**.
+5. Choose **Load unpacked** and select the folder shown in the panel
+   (packaged: `<install>\resources\extension`; development: the repository's
+   `extension` folder). If needed, use **Open folder** or **Copy path** there.
+6. The extension's welcome page opens on first install. It checks the native
+   connection and links to the same fixes if the app is not running yet.
+
+No extension ID needs to be copied or typed. If a browser still shows
+**Needs repair**, choose **Repair browser connection** in that Settings panel.
+The panel also exposes the native host path, the exact `allowed_origins` and
+the last registration error.
+
+The generated manifest keeps only valid exact
+`chrome-extension://<32 a-p characters>/` origins from an existing manifest and
+adds the fixed ID. It never contains a wildcard. Registry writes are current-user
+only (no administrator rights) and are skipped when the existing value already
+matches.
+
+### 3. Advanced fallback: register manually
+
+The app-level registration above is the normal flow. `register-native-host.ps1`
+is retained for advanced or legacy setups, offline recovery and explicit
+inspection. It defaults to the fixed ID, so the common commands no longer need
+`-ExtensionId`.
 
 Helium (the verified local browser):
 
-1. Open `chrome://extensions` in Helium. Current Helium builds are Chromium-
-   based and use Chromium's standard extension manager.
-2. Turn on **Developer mode**.
-3. Choose **Load unpacked** and select this repository's `extension` folder.
-4. Copy the extension's 32-character ID. The local verification used
-   `efakbfgkcnfjpomeejapmhpaihompngo`; use the ID your own copy shows.
-
-Chrome (future/non-local setup):
-
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode**.
-3. Choose **Load unpacked** and select this repository's `extension` folder.
-4. Copy the extension's 32-character ID.
-
-Edge (future/non-local setup):
-
-1. Open `edge://extensions`.
-2. Turn on **Developer mode**.
-3. Choose **Load unpacked** and select the same `extension` folder.
-4. Copy the extension's ID.
-
-Helium, Chrome and Edge can derive different IDs for the same folder. If you
-want more than one browser to work, keep every ID. An unpacked extension's ID is
-derived from its folder path, so moving or copying the folder changes the ID;
-reload the extension and register again with the new ID.
-
-Helium uses the same current-user registry key as Chrome (the verified
-Chromium-compatible path), so those two browsers share one manifest. Register
-with all of their IDs in one command instead of registering each separately;
-otherwise the later command replaces the earlier manifest's `allowed_origins`.
-
-### 3. Register or unregister the native host (current user)
-
-Register the exact ID(s). IDs are comma-separated and are validated as
-lowercase `[a-p]{32}` — wildcards are rejected.
-
-Helium (the verified local setup):
-
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Helium -ExtensionId <helium-id>
+  -Browser Helium
 ```
 
-Chrome and Edge (retained for future installs):
+Chrome and Edge:
 
 ```powershell
 # Chrome only:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Chrome -ExtensionId <chrome-id>
+  -Browser Chrome
 
 # Edge only:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Edge -ExtensionId <edge-id>
+  -Browser Edge
 
 # Chrome and Edge:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Both -ExtensionId <chrome-id>,<edge-id>
+  -Browser Both
 ```
 
-Helium and Chrome share the Chromium-compatible key. Register them together in
-one command so their IDs stay in the same manifest:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Helium -ExtensionId <helium-id>,<chrome-id>
-```
-
-For Helium plus Edge, use `-Browser Both` with the Helium and Edge IDs. This
-writes both registry keys, and Helium uses the Chrome-compatible one:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -Browser Both -ExtensionId <helium-id>,<edge-id>
-```
-
-Add a Chrome ID to that command too if Chrome is also used.
+Pass `-ExtensionId` only for an advanced setup where the loaded extension is
+not the pinned manifest. IDs are comma-separated and validated as lowercase
+`[a-p]{32}`; wildcards are rejected. Helium and Chrome share the
+Chromium-compatible key, so include every extra ID in one command if you use
+both.
 
 The script:
 
-- writes `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json`
-  with explicit `allowed_origins` entries such as
+- writes the same `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json`
+  manifest with explicit `allowed_origins` entries such as
   `chrome-extension://<id>/` (never `*`);
 - requires the manifest `path` to be a real `.exe`;
 - writes current-user registry values:
@@ -237,16 +227,11 @@ The script:
 - does not require administrator rights;
 - is safe to run repeatedly.
 
-`-Browser Helium` is an explicit option. `-Browser Both` keeps its historical
-Chrome + Edge meaning and also covers Helium because Helium reads the Chrome
-key. Because Helium and Chrome share one manifest, re-registering only one of
-them replaces the shared `allowed_origins` with the IDs you pass.
-
 Inspect the manifest without writing anything:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -PrintManifest -ExtensionId <id>
+  -PrintManifest
 ```
 
 Show the resolved registry keys and manifest path without writing anything,
@@ -254,7 +239,7 @@ including Helium's shared-key mapping:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
-  -PrintRegistration -Browser Helium -ExtensionId <helium-id>
+  -PrintRegistration -Browser Helium
 ```
 
 Remove registrations and the generated manifest:
@@ -272,6 +257,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-ho
 
 If you used a custom `-ManifestPath`, pass the same path when unregistering.
 Reload the extension (or restart the browser) after registering.
+
+The NSIS uninstaller runs
+`"$INSTDIR\DonDownload.exe" --unregister-native-host` and waits for it. That
+mode removes both registry keys and the manifest only when the manifest `path`
+is inside the installed application folder. A development registration that
+points at the repository is deliberately left alone.
 
 ### 4. Use it
 
@@ -298,9 +289,11 @@ Reload the extension (or restart the browser) after registering.
   an acceptance. The popup shows **Download again**; the context menu directs
   you to the app action.
 - Native host not registered: a clear registration hint in the popup and `!` on
-  the badge.
+  the badge. DonDownload registers automatically at startup; choose **Repair
+  browser connection** in Settings or restart the app if this still appears.
 - Extension ID not in `allowed_origins`: the browser reports native host access
-  as forbidden; re-register with the exact ID.
+  as forbidden. The fixed ID is registered automatically; use the Settings
+  **Repair browser connection** action, or the advanced registration script.
 - DonDownload not running, or a stale bridge endpoint after a crash: a prompt
   "not running/unavailable" error. The bridge never launches the app.
 - aria2 unavailable: the app's existing actionable error is returned and the
@@ -828,6 +821,12 @@ with no way to restore it.
   Chrome and Edge with exact, validated `allowed_origins`; no wildcard and no
   admin rights. Helium is an explicit option that maps to the locally verified
   Chromium-compatible Chrome key; no unverified Helium-specific key is written.
+- Zero-config registration on every normal app start: a stable pinned extension
+  ID, an atomically written manifest, and idempotent current-user registry
+  values for Chrome/Helium and Edge. The Settings UI reports per-browser state,
+  host path, allowed origins and the last error, and can repair the connection.
+  The uninstaller removes only a registration that points inside the installed
+  application folder.
 - A loopback-only authenticated main-process bridge that can only call the
   existing `DownloadManager.add`. It works while the window is hidden in the
   tray, returns acceptance only after add succeeds, removes endpoint state on
@@ -900,6 +899,7 @@ src/main/                 Electron main process
   downloads/manager.ts    Download queue, polling, persistence and recovery
   downloads/recovery.ts   Pure startup reconciliation policy
   nativeBridge/server.ts  Authenticated loopback browser bridge
+  nativeHost/registration.ts Zero-config native messaging manifest/registry
   lifecycle.ts            Pure tray close/quit policy
   tray.ts                 Windows tray icon, menu and restore actions
   assets/tray.ico         Multi-resolution Windows tray icon
