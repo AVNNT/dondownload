@@ -59,6 +59,12 @@ import {
   SCAN_PAGE_ROUTE,
   parseScanPageRequest
 } from '@shared/scanBridge'
+import {
+  SCAN_IMAGES_CHANNEL,
+  SCAN_IMAGES_ROUTE,
+  parseScanImagesRequest,
+  type ScanImagesRequest
+} from '@shared/scanImages'
 import type { ScanSession } from '@shared/scanner'
 import { ValidationError } from '@shared/validation'
 import { AppError, toErrorInfo } from '../errors'
@@ -158,6 +164,11 @@ export interface NativeBridgeOptions {
       urls: string[],
       options: { origin: 'extension'; cookie?: string }
     ): ScanSession[]
+    /**
+     * Fill a session from the image list the extension collected on the live
+     * page. Nothing is fetched: the desktop only opens the picker.
+     */
+    startImages?(input: ScanImagesRequest): ScanSession
   }
   /** Focus the desktop and open the scanner view after an extension request. */
   onScanRequested?: (session: ScanSession) => void
@@ -358,6 +369,7 @@ export async function startNativeBridge(
       route !== DURABLE_HANDOFF_ROUTE &&
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
+      route !== SCAN_IMAGES_ROUTE &&
       !isMediaRoute(route)
     ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -384,6 +396,7 @@ export async function startNativeBridge(
       route !== DURABLE_HANDOFF_ROUTE &&
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
+      route !== SCAN_IMAGES_ROUTE &&
       options.mediaBridge === undefined
     ) {
       request.resume()
@@ -452,6 +465,11 @@ export async function startNativeBridge(
 
     if (route === SCAN_PAGE_ROUTE) {
       await handleScanPageRequest(parsed, response)
+      return
+    }
+
+    if (route === SCAN_IMAGES_ROUTE) {
+      await handleScanImagesRequest(parsed, response)
       return
     }
 
@@ -918,6 +936,90 @@ export async function startNativeBridge(
       ok: true,
       accepted: true,
       operation: SCAN_PAGE_CHANNEL
+    })
+  }
+
+  /**
+   * Explicit "Download images on this page" from the extension. The list was
+   * collected on the live DOM, so no page is fetched: every URL is validated,
+   * checked against the public-target policy and turned into an image session
+   * that the desktop shows as a picker. Nothing is queued here.
+   */
+  async function handleScanImagesRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    if (options.scanner === undefined || options.scanner.startImages === undefined) {
+      sendError(
+        response,
+        503,
+        'SCAN_UNAVAILABLE',
+        'Image scanning is not available in this DonDownload build.'
+      )
+      return
+    }
+    let input: ScanImagesRequest
+    try {
+      input = parseScanImagesRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    // SSRF guard before anything reaches aria2. Every distinct host is resolved
+    // once, so a 1000-image board costs one lookup per CDN instead of one per
+    // image; both the primary and the fallback URL contribute their host.
+    const hosts = new Map<string, string>()
+    for (const image of input.images) {
+      for (const candidate of [image.url, image.fallbackUrl]) {
+        if (candidate === undefined) continue
+        let hostname: string
+        try {
+          hostname = new URL(candidate).hostname
+        } catch {
+          sendError(response, 400, 'INVALID_URL', 'An image URL is invalid.')
+          return
+        }
+        if (!hosts.has(hostname)) hosts.set(hostname, candidate)
+      }
+    }
+    for (const candidate of hosts.values()) {
+      try {
+        await assertPublicTarget(candidate, options.publicTargetLookup)
+      } catch {
+        sendError(
+          response,
+          400,
+          'SCAN_TARGET_NOT_PUBLIC',
+          'Only public image URLs can be downloaded.'
+        )
+        return
+      }
+    }
+
+    let session: ScanSession
+    try {
+      session = options.scanner.startImages(input)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not start an image session (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
+      options.onScanRequested?.(session)
+    } catch {
+      // Focus is best effort; the session already holds the images.
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: SCAN_IMAGES_CHANNEL
     })
   }
 

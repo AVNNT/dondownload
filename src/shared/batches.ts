@@ -292,8 +292,12 @@ export const MAX_COLLECTION_TITLE_LENGTH = 240
 export const MAX_COLLECTION_ENTRY_TITLE_LENGTH = 240
 export const MAX_COLLECTION_ERROR_REASON_LENGTH = 240
 export const MAX_COLLECTION_ENTRIES = 5000
-/** A batch can be created from at most this many explicitly selected entries. */
-export const MAX_COLLECTION_SELECTION = 500
+/**
+ * A batch can be created from at most this many explicitly selected entries.
+ * One page of images may select up to `MAX_SCAN_IMAGES` (1000) at once, so the
+ * cap matches the scanner item cap.
+ */
+export const MAX_COLLECTION_SELECTION = 1000
 export const BATCH_MEDIA_QUALITIES = [
   'best',
   '1080p',

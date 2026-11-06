@@ -70,7 +70,11 @@ export const SCAN_ORIGINS = ['paste', 'extension'] as const
 export type ScanOrigin = (typeof SCAN_ORIGINS)[number]
 
 export const MAX_SCAN_ITEMS = 1000
-export const MAX_SCAN_SELECTION = 500
+/**
+ * One explicit selection may queue a whole page of images, so the cap matches
+ * the item cap instead of the older 500.
+ */
+export const MAX_SCAN_SELECTION = 1000
 export const MAX_SCAN_HTML_BYTES = 5 * 1024 * 1024
 export const MAX_SCAN_NAME_LENGTH = 240
 export const MAX_SCAN_AUTHOR_LENGTH = 80
@@ -242,10 +246,20 @@ export interface ScanProgress {
  * `removedItemIds` lists items dropped by the item cap or dedupe. A client
  * merges updates into its own state.
  */
+/**
+ * What a session holds. `page` sessions discover content by fetching the page;
+ * `images` sessions were filled by the browser extension with the images it
+ * found on the live DOM, so the desktop only shows a picker.
+ */
+export const SCAN_SESSION_MODES = ['page', 'images'] as const
+export type ScanSessionMode = (typeof SCAN_SESSION_MODES)[number]
+
 export interface ScanSession {
   sessionId: string
   status: ScanSessionStatus
   origin: ScanOrigin
+  /** Absent means `page`, so older snapshots and fixtures stay valid. */
+  mode?: ScanSessionMode
   hostname: string
   /**
    * Safe topic/page title when one could be read (for example the Discourse
@@ -1479,7 +1493,7 @@ export function parseScanSession(value: unknown): ScanSession {
       'revision',
       'updatedAt'
     ],
-    ['scriptSets', 'title'],
+    ['scriptSets', 'title', 'mode'],
     'scan session'
   )
 
@@ -1490,6 +1504,14 @@ export function parseScanSession(value: unknown): ScanSession {
   const origin = record.origin
   if (!isScanOrigin(origin)) {
     throw new ValidationError('Unknown scan origin.')
+  }
+  let mode: ScanSessionMode | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'mode')) {
+    const rawMode = record.mode
+    if (!SCAN_SESSION_MODES.includes(rawMode as ScanSessionMode)) {
+      throw new ValidationError('Unknown scan session mode.')
+    }
+    mode = rawMode as ScanSessionMode
   }
 
   const rawItems = record.items
@@ -1545,6 +1567,7 @@ export function parseScanSession(value: unknown): ScanSession {
     sessionId: parseScanSessionId(record.sessionId),
     status,
     origin,
+    ...(mode === undefined ? {} : { mode }),
     hostname: safeDisplayText(
       record.hostname,
       MAX_SCAN_HOST_LENGTH,

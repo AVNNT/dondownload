@@ -4,6 +4,10 @@ export const PROBE_MESSAGE_TYPE: string
 export const CAPTURED_SOURCE_MESSAGE_TYPE: string
 export const DURABLE_HANDOFF_MESSAGE_TYPE: string
 export const SCAN_PAGE_MESSAGE_TYPE: string
+export const SCAN_IMAGES_MESSAGE_TYPE: string
+export const MAX_SCAN_IMAGES: number
+export const MAX_IMAGE_ALT_LENGTH: number
+export const MAX_PAGE_TITLE_LENGTH: number
 export const MAX_URL_LENGTH: number
 export const MAX_CAPTURED_FILENAME_LENGTH: number
 export const HANDOFF_TIMEOUT_MS: number
@@ -135,6 +139,9 @@ export function sendQueueDownload(
 export function sendScanPage(
   rawUrl: unknown,
   rawCookie?: unknown
+): Promise<{ ok: true } | BridgeFailure>
+export function sendScanImages(
+  input: unknown
 ): Promise<{ ok: true } | BridgeFailure>
 export function probeNativeConnection(): Promise<
   { ok: true } | { ok: false; error: { code: string; message: string } }

@@ -146,6 +146,8 @@ export interface PreviewClock {
 /** Controls only the in-memory preview fixtures; never part of the preload API. */
 export interface PreviewFixtureControls {
   advanceDownloadFixture: () => string
+  /** Emits one extension image session so the picker sheet opens. */
+  openImageScanFixture: () => string
 }
 
 type Listener<T> = (value: T) => void
@@ -953,6 +955,67 @@ export function createPreviewApi(
     }
   }
 
+  /**
+   * One extension image session, mirroring what the desktop builds from a
+   * Pinterest board walk: category `image`, ready items and a small thumbnail
+   * URL for the grid.
+   */
+  function seedImageScanSession(): ScanSession {
+    const seeds: Array<[string, number, number]> = [
+      ['aabbccddeeff0011', 1200, 1800],
+      ['aabbccddeeff0022', 736, 1104],
+      ['aabbccddeeff0033', 564, 846],
+      ['aabbccddeeff0044', 1200, 1600],
+      ['aabbccddeeff0055', 736, 981],
+      ['aabbccddeeff0066', 1080, 1350],
+      ['aabbccddeeff0077', 736, 920],
+      ['aabbccddeeff0088', 1200, 1200],
+      ['aabbccddeeff0099', 564, 564],
+      ['aabbccddeeff00aa', 1080, 1620],
+      ['aabbccddeeff00bb', 736, 1104],
+      ['aabbccddeeff00cc', 1200, 1800]
+    ]
+    const items: ScanItem[] = seeds.map(([hash, width, height], index) => {
+      const dir = `${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4, 6)}`
+      return {
+        id: `preview-scan-image-${index}`,
+        category: 'image',
+        kind: 'file',
+        name: `pin-${index + 1}.jpg`,
+        hostname: 'i.pinimg.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'ready',
+        postNumber: null,
+        author: null,
+        width,
+        height,
+        thumbnailUrl: `https://i.pinimg.com/736x/${dir}/${hash}.jpg`
+      }
+    })
+    return {
+      sessionId: nextId('scan-session'),
+      status: 'done',
+      origin: 'extension',
+      mode: 'images',
+      hostname: 'www.pinterest.com',
+      title: 'Autumn outfit ideas',
+      message: null,
+      signinRequired: false,
+      counters: countersFor(items),
+      progress: {
+        fetchedPages: 0,
+        totalItems: items.length,
+        queueableItems: items.filter(isQueueableScanItem).length
+      },
+      items,
+      scriptSets: [],
+      removedItemIds: [],
+      revision: 1,
+      updatedAt: now()
+    }
+  }
+
   function scheduleScanCompletion(sessionId: string): void {
     setTimeout(() => {
       const session = findScanSession(sessionId)
@@ -993,6 +1056,11 @@ export function createPreviewApi(
   }
 
   return {
+    openImageScanFixture: () => {
+      const session = seedImageScanSession()
+      emitScan(session)
+      return `Opened an image session with ${session.items.length} images.`
+    },
     advanceDownloadFixture: () => {
       const item = downloads.find(
         (download) =>

@@ -1,4 +1,4 @@
-import { sendQueueDownload, sendQueueSniffedMedia } from './bridge.js'
+import { sendQueueDownload, sendQueueSniffedMedia, sendScanImages } from './bridge.js'
 import {
   OVERLAY_MESSAGE_TYPES,
   OVERLAY_SCRIPT_PREFIX,
@@ -803,6 +803,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           overlayFailure(
             'CAPTURE_REQUEST_FAILED',
             'The captured source request could not be completed.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === 'dondownload:images-ready') {
+    // The in-page collector finished (or the user pressed Send). Forwarding
+    // happens here so a closed popup never loses a run: the page keeps its own
+    // floating counter and this worker owns the native-host call.
+    void sendScanImages({
+      pageUrl: message.pageUrl,
+      pageTitle: message.pageTitle,
+      images: message.images
+    })
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'IMAGE_SCAN_FAILED',
+            'The image list could not be sent to DonDownload.'
           )
         )
       )

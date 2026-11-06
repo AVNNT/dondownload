@@ -19,6 +19,7 @@ import {
   type ScanScriptPairingInput,
   type ScanScriptSet,
   type ScanSession,
+  type ScanSessionMode,
   type ScanSessionStatus,
   type ScanVideoFormat
 } from '@shared/scanner'
@@ -40,7 +41,8 @@ import {
   type DiscoursePageLink,
   type TaggedCandidate
 } from './extract/discourse'
-import { hostnameOf, normalizeScanUrl } from './extract/url'
+import type { ScanImagesRequest } from '@shared/scanImages'
+import { hostnameOf, normalizeScanUrl, pathnameOf } from './extract/url'
 import {
   fetchScanPage,
   type ScanFetchInput,
@@ -133,6 +135,8 @@ export interface ResolvedScanTarget {
   category: ScanCategory
   kind: ScanItemKind
   cookie?: string
+  /** Second URL tried only when `url` fails with a 403/404 (images). */
+  fallbackUrl?: string
   postNumber: number | null
   author: string | null
   /** Present only for a resolved video page link. */
@@ -193,6 +197,12 @@ type ScanCandidate = ExtractedCandidate & {
 interface StoredScanItem extends ScanItem {
   /** Internal source URL. Never part of the public DTO. */
   url: string
+  /**
+   * Second URL tried only when `url` fails with a 403/404. Pinterest originals
+   * sometimes exist with a different extension, so the 736x variant is kept as
+   * a fallback. Never part of the public DTO.
+   */
+  fallbackUrl: string | null
   /** Internal video identity used to merge repeated embeds. */
   videoIdentity: string | null
   /** Analysis association used by the explicit queue path. */
@@ -204,6 +214,7 @@ interface StoredScanItem extends ScanItem {
 interface StoredScanSession {
   id: string
   origin: ScanOrigin
+  mode: ScanSessionMode
   /** Initial page URL. Never part of the public DTO. */
   url: string
   hostname: string
@@ -285,6 +296,22 @@ function safeMessage(value: string): string {
     .slice(0, MAX_SCAN_MESSAGE_LENGTH)
     .join('')
     .trim()
+}
+
+/**
+ * Display name for one collected image: the URL basename, decoded when it is
+ * valid percent-encoding. The download filename is derived from the same URL by
+ * the batch manager, so this is only the card label.
+ */
+function imageFilename(url: string): string {
+  const pathname = pathnameOf(url)
+  const base = pathname.slice(pathname.lastIndexOf('/') + 1)
+  if (base.length === 0) return 'Image'
+  try {
+    return decodeURIComponent(base)
+  } catch {
+    return base
+  }
 }
 
 function safeTitleMessage(value: string): string | null {
@@ -421,6 +448,96 @@ export class ScanSessionManager {
     return sessions
   }
 
+  /**
+   * Start an image session from the list the browser extension collected on the
+   * live page. Nothing is fetched here: Pinterest boards are JS-rendered, so the
+   * extension walked the DOM itself. Every URL was already validated by
+   * `parseScanImagesRequest`; this only re-normalizes it and keeps the optional
+   * fallback for the download retry.
+   */
+  startImages(input: ScanImagesRequest): ScanSession {
+    this.assertOpen()
+    const pageUrl = normalizeHttpUrl(input.pageUrl)
+
+    this.pruneExpired()
+    const session = this.createSession(pageUrl, {
+      origin: 'extension',
+      ...(input.cookie === undefined ? {} : { cookie: input.cookie })
+    })
+    session.mode = 'images'
+    session.title = cleanText(input.pageTitle, MAX_SCAN_NAME_LENGTH)
+    session.status = 'done'
+    session.started = true
+    session.settled = true
+    session.message = null
+
+    for (const image of input.images) {
+      if (session.items.size >= MAX_SCAN_ITEMS) {
+        session.limited = true
+        break
+      }
+      let url: string
+      try {
+        url = normalizeScanUrl(image.url)
+      } catch {
+        continue
+      }
+      let fallbackUrl: string | null = null
+      if (image.fallbackUrl !== undefined) {
+        try {
+          const candidate = normalizeScanUrl(image.fallbackUrl)
+          if (candidate !== url) fallbackUrl = candidate
+        } catch {
+          fallbackUrl = null
+        }
+      }
+      const id = this.newOpaqueId('item')
+      const item: StoredScanItem = {
+        id,
+        category: 'image',
+        kind: 'file',
+        name: cleanText(imageFilename(url), MAX_SCAN_NAME_LENGTH),
+        hostname: hostnameOf(url),
+        sizeBytes: null,
+        // The image was observed in the live DOM, so it is never re-fetched or
+        // probed; the queue path skips its probe for the same reason.
+        verified: false,
+        status: 'ready',
+        postNumber: null,
+        author: null,
+        url,
+        fallbackUrl,
+        videoIdentity: null,
+        videoAnalysis: null,
+        browserMatchPending: false,
+        ...(image.width === undefined ? {} : { width: image.width }),
+        ...(image.height === undefined ? {} : { height: image.height }),
+        thumbnailUrl: fallbackUrl ?? url
+      }
+      session.items.set(id, item)
+      session.order.push(id)
+    }
+
+    if (session.items.size === 0) {
+      this.deleteSession(session.id)
+      throw new ValidationError('No images were reported for that page.')
+    }
+    if (session.limited) {
+      session.status = 'limited'
+      session.message = safeMessage(
+        `Only the first ${MAX_SCAN_ITEMS} images were kept.`
+      )
+    }
+
+    this.touch(session)
+    const initial = this.fullSnapshot(session)
+    // The returned snapshot is the baseline; only later changes are published.
+    for (const item of initial.items) {
+      session.emitted.set(item.id, JSON.stringify(item))
+    }
+    return initial
+  }
+
   private createSession(
     url: string,
     options: StartScanOptions
@@ -428,6 +545,7 @@ export class ScanSessionManager {
     const session: StoredScanSession = {
       id: this.newOpaqueId('scan'),
       origin: options.origin ?? 'paste',
+      mode: 'page',
       url,
       hostname: hostnameOf(url),
       title: null,
@@ -585,6 +703,7 @@ export class ScanSessionManager {
         category: item.category,
         kind: item.kind,
         ...(cookie === null ? {} : { cookie }),
+        ...(item.fallbackUrl === null ? {} : { fallbackUrl: item.fallbackUrl }),
         postNumber: item.postNumber,
         author: item.author,
         ...(readyVideo && item.videoAnalysis !== null
@@ -1522,6 +1641,7 @@ export class ScanSessionManager {
           ? cleanText(candidate.author, MAX_SCAN_AUTHOR_LENGTH)
           : null,
       url: normalized,
+      fallbackUrl: null,
       videoIdentity: identity,
       videoAnalysis: null,
       browserMatchPending: false
@@ -2001,6 +2121,7 @@ export class ScanSessionManager {
       sessionId: session.id,
       status: session.status,
       origin: session.origin,
+      ...(session.mode === 'page' ? {} : { mode: session.mode }),
       hostname: session.hostname,
       ...(session.title === null ? {} : { title: session.title }),
       message: session.message,
@@ -2067,6 +2188,7 @@ export class ScanSessionManager {
       sessionId: session.id,
       status: session.status,
       origin: session.origin,
+      ...(session.mode === 'page' ? {} : { mode: session.mode }),
       hostname: session.hostname,
       ...(session.title === null ? {} : { title: session.title }),
       message: session.message,

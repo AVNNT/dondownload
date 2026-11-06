@@ -49,6 +49,9 @@ internal static class NativeHost
     private const string QueueSniffedMediaOperation = "queue-sniffed-media";
     private const string HandoffDownloadOperation = "handoff-download";
     private const string ScanPageOperation = "scan-page";
+    private const string ScanImagesOperation = "scan-images";
+    // One page may report up to 1000 images, each with an optional fallback URL.
+    private const int MaxScanImages = 1000;
     private const string StateFileName = "native-bridge.json";
     // aria2 may need up to ~12 seconds to start on the first add. The host
     // still fails promptly when the loopback port is closed.
@@ -252,6 +255,10 @@ internal static class NativeHost
         if (type == ScanPageOperation)
         {
             return HandleScanPageMessage(message);
+        }
+        if (type == ScanImagesOperation)
+        {
+            return HandleScanImagesMessage(message);
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
@@ -729,6 +736,111 @@ internal static class NativeHost
             body.Add("cookie", cookie);
         }
         return ForwardScanPage(body);
+    }
+
+    /// <summary>
+    /// "Download images on this page". The extension already walked the live DOM,
+    /// so this only validates the shape and forwards the list to the desktop
+    /// picker. It never fetches a page and never queues a download.
+    /// </summary>
+    private static Dictionary<string, object> HandleScanImagesMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "pageUrl", "pageTitle", "images" },
+            new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only scan-images messages containing type, pageUrl, pageTitle and images are accepted.");
+        }
+
+        string pageUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["pageUrl"] as string, out pageUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        string pageTitle = message["pageTitle"] as string;
+        if (pageTitle == null || pageTitle.Length > 200)
+        {
+            return Error("INVALID_MESSAGE", "The page title is invalid.");
+        }
+
+        object[] rawImages = message["images"] as object[];
+        if (rawImages == null || rawImages.Length == 0 || rawImages.Length > MaxScanImages)
+        {
+            return Error("INVALID_MESSAGE", "The image list is invalid.");
+        }
+
+        List<object> images = new List<object>();
+        for (int index = 0; index < rawImages.Length; index++)
+        {
+            Dictionary<string, object> raw = rawImages[index] as Dictionary<string, object>;
+            if (raw == null ||
+                !HasExactKeys(
+                    raw,
+                    new string[] { "url" },
+                    new string[] { "fallbackUrl", "width", "height", "alt" }))
+            {
+                return Error("INVALID_MESSAGE", "An image entry is invalid.");
+            }
+
+            string imageUrl;
+            if (!TryNormalizeUrl(raw["url"] as string, out imageUrl, out urlError))
+            {
+                return Error("INVALID_URL", urlError);
+            }
+
+            Dictionary<string, object> entry = new Dictionary<string, object>();
+            entry.Add("url", imageUrl);
+
+            if (raw.ContainsKey("fallbackUrl"))
+            {
+                string fallbackUrl;
+                if (!TryNormalizeUrl(raw["fallbackUrl"] as string, out fallbackUrl, out urlError))
+                {
+                    return Error("INVALID_URL", urlError);
+                }
+                entry.Add("fallbackUrl", fallbackUrl);
+            }
+            if (raw.ContainsKey("width"))
+            {
+                long width;
+                if (!TryReadPositiveLong(raw["width"], out width) || width > 100000)
+                {
+                    return Error("INVALID_MESSAGE", "An image size is invalid.");
+                }
+                entry.Add("width", width);
+            }
+            if (raw.ContainsKey("height"))
+            {
+                long height;
+                if (!TryReadPositiveLong(raw["height"], out height) || height > 100000)
+                {
+                    return Error("INVALID_MESSAGE", "An image size is invalid.");
+                }
+                entry.Add("height", height);
+            }
+            if (raw.ContainsKey("alt"))
+            {
+                string alt = raw["alt"] as string;
+                if (alt == null || alt.Length > 200 || !IsSafeHeaderValue(alt, 200))
+                {
+                    return Error("INVALID_MESSAGE", "An image description is invalid.");
+                }
+                entry.Add("alt", alt);
+            }
+            images.Add(entry);
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("pageUrl", pageUrl);
+        body.Add("pageTitle", pageTitle);
+        body.Add("images", images.ToArray());
+        return ForwardScanImages(body);
     }
 
     private static bool IsSafeHeaderValue(string value, int maximum)
@@ -1407,6 +1519,90 @@ internal static class NativeHost
             request = CreateBridgeRequest(
                 state,
                 "/scan-page",
+                BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            string responseText;
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+
+            return ParseAppResponse(responseText);
+        }
+    }
+
+    /// <summary>
+    /// POST one validated image list to the desktop /scan-images route. The
+    /// desktop re-validates every URL and opens the picker; nothing is queued
+    /// from here.
+    /// </summary>
+    private static Dictionary<string, object> ForwardScanImages(
+        Dictionary<string, object> body)
+    {
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(
+                state,
+                "/scan-images",
                 BridgeTimeoutMilliseconds);
             byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
             request.ContentLength = payload.Length;
