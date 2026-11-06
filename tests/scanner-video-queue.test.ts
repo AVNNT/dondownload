@@ -227,6 +227,8 @@ describe('video queue selection', () => {
     expect(result.queuedItemIds).toEqual([video.id])
     expect(result.batch?.items).toHaveLength(1)
     expect(result.batch?.items[0]?.kind).toBe('media')
+    // The chosen quality stays visible on the queued download row.
+    expect(result.batch?.items[0]?.label).toContain('1080p')
     expect(queueMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         analysisId: 'analysis_old',

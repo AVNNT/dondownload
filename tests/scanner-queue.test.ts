@@ -194,8 +194,76 @@ describe('explicit scan queue selection', () => {
     })
   })
 
-  it('never queues a page item and reports skipped selected files', async () => {
+  it('attempts every topic and reports a failure without discarding the rest', async () => {
+    const urls = [
+      'https://forum.example/thread/topic-a',
+      'https://forum.example/thread/topic-b',
+      'https://forum.example/thread/topic-c'
+    ]
+    const fetcher: ScanPageFetcher = async (input) => {
+      const name = new URL(input.url).pathname.split('/').pop() ?? 'file'
+      const body = `<a class="attachment" href="/uploads/${name}.zip">${name}.zip</a>`
+      return {
+        finalUrl: input.url,
+        status: 200,
+        contentType: 'text/html',
+        contentDisposition: null,
+        body,
+        bytes: Buffer.byteLength(body)
+      }
+    }
     const sessions = new ScanSessionManager({
+      fetchPage: fetcher,
+      probeItem: readyProbe,
+      onUpdate: () => undefined
+    })
+    const { batches } = createBatchManager()
+    const queue = new ScanQueueService({
+      sessions,
+      batches,
+      probeItem: readyProbe
+    })
+
+    const started = sessions.startMany(urls)
+    await Promise.all(
+      started.map((session) => sessions.waitForScan(session.sessionId))
+    )
+    const first = sessions
+      .getSession(started[0]!.sessionId)
+      .items.find((item) => item.category === 'archive')!
+    const third = sessions
+      .getSession(started[2]!.sessionId)
+      .items.find((item) => item.category === 'archive')!
+
+    const result = await queue.queueSelections([
+      { sessionId: started[0]!.sessionId, itemIds: [first.id] },
+      { sessionId: started[1]!.sessionId, itemIds: ['item_missing'] },
+      { sessionId: started[2]!.sessionId, itemIds: [third.id] }
+    ])
+    await batches.waitForIdle()
+
+    expect(result.results).toHaveLength(3)
+    expect(result.results[0]).toMatchObject({
+      sessionId: started[0]!.sessionId,
+      ok: true,
+      value: { queuedItemIds: [first.id] }
+    })
+    expect(result.results[1]).toMatchObject({
+      sessionId: started[1]!.sessionId,
+      ok: false,
+      error: { code: 'SCAN_ITEM_NOT_FOUND' }
+    })
+    expect(result.results[2]).toMatchObject({
+      sessionId: started[2]!.sessionId,
+      ok: true,
+      value: { queuedItemIds: [third.id] }
+    })
+    // The failure carries only a safe message, never a source URL or path.
+    expect(JSON.stringify(result.results[1])).not.toContain('https://')
+    expect(JSON.stringify(result.results[1])).not.toContain('forum.example')
+  })
+
+  it('never queues a page item and reports skipped selected files', async () => {    const sessions = new ScanSessionManager({
       fetchPage: page,
       probeItem: readyProbe,
       onUpdate: () => undefined

@@ -64,7 +64,7 @@ const BLOCKED_IFRAME_HOSTS = new Set([
 ])
 
 const VIDEO_PATH =
-  /(?:^|\/)(?:watch|video|videos|v|embed|player|clip|clips|media|movie|movies|episode|episodes|stream|streams|reel|reels|shorts)(?:\/|$)/i
+  /(?:^|\/)(?:watch|videos|video\d*|v|embed|player|clips|clip\d*|media|movies|movie\d*|episodes|episode\d*|streams|stream\d*|reels|reel\d*|shorts)(?:\/|$)/i
 const VIDEO_TEXT =
   /\b(?:video|watch|clip|trailer|teaser|episode|stream|movie|scene|preview|footage)\b/i
 const PAGE_EXTENSIONS = new Set([
@@ -91,6 +91,39 @@ const PAGINATION_QUERY = new Set([
   'order'
 ])
 const PAGINATION_TEXT = /^(?:next|previous|prev|older|newer|more|back|forward|[«»‹›←→])$/i
+/**
+ * Discourse/forum chrome. These are navigation, listings or account pages, not
+ * page content. The topic's own posts are read from its JSON post stream, so a
+ * `/t/<other-topic>` link is never a reason to fetch another topic.
+ */
+const FORUM_NAVIGATION_SEGMENTS = new Set([
+  't',
+  'u',
+  'c',
+  'tag',
+  'tags',
+  'latest',
+  'new',
+  'top',
+  'unread',
+  'categories',
+  'badges',
+  'groups',
+  'my',
+  'admin',
+  'moderation',
+  'about',
+  'faq',
+  'guidelines',
+  'tos',
+  'privacy',
+  'safe-mode',
+  'users',
+  'session',
+  'password',
+  'activate'
+])
+
 const SKIPPED_SEGMENTS = new Set([
   'tag',
   'tags',
@@ -235,12 +268,34 @@ function isPaginationLink(parsed: URL, text: string | null): boolean {
   return false
 }
 
-function isSkippedPath(parsed: URL): boolean {
+function isPixeldrainFilePage(parsed: URL): boolean {
+  const host = parsed.hostname.toLowerCase()
+  return (
+    (host === 'pixeldrain.com' || host === 'www.pixeldrain.com') &&
+    /^\/u\/[A-Za-z0-9_-]{4,64}\/?$/.test(parsed.pathname)
+  )
+}
+
+function isSkippedPath(parsed: URL, forumHost: string | null): boolean {
   const segments = parsed.pathname
     .split('/')
     .filter((segment) => segment.length > 0)
     .map((segment) => segment.toLowerCase())
   if (segments.some((segment) => SKIPPED_SEGMENTS.has(segment))) return true
+  // Forum navigation and other topic/user/category pages are never content.
+  // This is checked on the first segment so an ordinary `/t/…` path cannot
+  // pull in a Discourse suggested/related topic. The rule only applies to the
+  // scanned forum's own host: other sites legitimately use `/t/`, `/u/`, `/new/`
+  // and `/top/` for content (for example pixeldrain.com/u/<id>).
+  const first = segments[0]
+  if (
+    forumHost !== null &&
+    parsed.hostname.toLowerCase() === forumHost &&
+    first !== undefined &&
+    FORUM_NAVIGATION_SEGMENTS.has(first)
+  ) {
+    return true
+  }
   // Channel/user/profile hubs are listings, not a single video.
   if (segments.some((segment) => segment === 'channel' || segment === 'channels')) {
     return true
@@ -259,6 +314,12 @@ export function scoreFollowLink(input: {
   isEmbed?: boolean
   rel?: string | null
   text?: string | null
+  /**
+   * Host of the forum page being scanned. Forum-navigation paths are rejected
+   * only on this host; links to other sites are scored normally. Defaults to
+   * the page the link was found on.
+   */
+  forumHost?: string
 }): FollowDecision | null {
   const rel = (input.rel ?? '').toLowerCase()
   const nofollow = rel.split(/\s+/).includes('nofollow')
@@ -275,10 +336,16 @@ export function scoreFollowLink(input: {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
   if (parsed.username || parsed.password) return null
 
+  const baseHost = base.hostname.toLowerCase().replace(/\.$/, '')
+  const forumHost =
+    typeof input.forumHost === 'string' && input.forumHost.length > 0
+      ? input.forumHost.toLowerCase().replace(/\.$/, '')
+      : baseHost
+
   const extension = pathExtension(parsed.pathname)
   if (extension !== null && !PAGE_EXTENSIONS.has(extension)) return null
   if (isPaginationLink(parsed, input.text ?? null)) return null
-  if (isSkippedPath(parsed)) return null
+  if (isSkippedPath(parsed, forumHost)) return null
 
   const host = parsed.hostname.toLowerCase()
   const sameSite =
@@ -286,6 +353,7 @@ export function scoreFollowLink(input: {
   const videoHost = isKnownVideoHost(host)
   const likelyVideoPage = isLikelyVideoPageUrl(parsed.href)
   const videoPath = likelyVideoPage || VIDEO_PATH.test(parsed.pathname)
+  const directFilePage = isPixeldrainFilePage(parsed)
   const text = cleanText(input.text)
   const videoText = text !== null && VIDEO_TEXT.test(text)
 
@@ -306,7 +374,9 @@ export function scoreFollowLink(input: {
   if (!sameSite) {
     // A cross-site single-video path is a discovery candidate; pagination,
     // login, listings and article links were already rejected above.
-    if (likelyVideoPage) return { score: 55 - penalty, reason: 'video-path' }
+    if (videoPath || directFilePage) {
+      return { score: 55 - penalty, reason: 'video-path' }
+    }
     return null
   }
   if (videoPath) return { score: 70 - penalty, reason: 'video-path' }

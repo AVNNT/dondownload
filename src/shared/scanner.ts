@@ -81,9 +81,18 @@ export const MAX_SCAN_CONCURRENT_ITEMS = 4
 /** Phase 2: per-session yt-dlp metadata analyses. */
 export const MAX_SCAN_VIDEO_ANALYSES = 15
 export const MAX_SCAN_VIDEO_ANALYSIS_CONCURRENCY = 2
-/** Phase 2: pages the scanner may fetch itself (includes the pasted page). */
-export const MAX_SCAN_FOLLOW_PAGES = 25
-export const MAX_SCAN_FOLLOW_DEPTH = 2
+/**
+ * Phase 2: pages the scanner may fetch itself (includes the pasted page).
+ *
+ * A forum topic is read completely through its own post JSON, so following is
+ * limited to pages linked directly from those posts, one level deep. The cap
+ * stays small so a topic scan cannot drift into suggested/related topics or
+ * other user/category listings.
+ */
+export const MAX_SCAN_FOLLOW_PAGES = 10
+export const MAX_SCAN_FOLLOW_DEPTH = 1
+/** Most URLs accepted by one multi-topic paste. */
+export const MAX_SCAN_URLS = 10
 export const MAX_SCAN_FOLLOW_PER_HOST = 2
 export const SCAN_SESSION_BUDGET_MS = 75_000
 export const MAX_SCAN_VIDEO_FORMATS = 40
@@ -236,6 +245,11 @@ export interface ScanSession {
   status: ScanSessionStatus
   origin: ScanOrigin
   hostname: string
+  /**
+   * Safe topic/page title when one could be read (for example the Discourse
+   * topic title). Never contains a URL or path.
+   */
+  title?: string | null
   /** Safe, user-facing status line. Never contains a URL or path. */
   message: string | null
   signinRequired: boolean
@@ -306,6 +320,20 @@ export interface ScanQueueResult {
   queuedItemIds: string[]
   skipped: ScanQueueSkip[]
 }
+
+/** Safe, renderer-facing reason a single topic selection was not queued. */
+export interface ScanQueueSelectionError {
+  code: string
+  message: string
+}
+
+/**
+ * Outcome of one topic inside a multi-selection queue request. A failure in one
+ * topic never discards results from the topics that were queued.
+ */
+export type ScanQueueSelectionOutcome =
+  | { sessionId: string; ok: true; value: ScanQueueResult }
+  | { sessionId: string; ok: false; error: ScanQueueSelectionError }
 
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
@@ -486,6 +514,110 @@ export function parseScanStartInput(value: unknown): ScanStartInput {
   exactKeys(record, ['url'], [], 'scan start')
   return { url: normalizeHttpUrl(record.url) }
 }
+
+export interface ScanStartManyInput {
+  urls: string[]
+}
+
+/**
+ * Parse the multi-URL textarea. Empty lines are ignored; URLs are normalized
+ * and deduplicated, and only the first `maximum` survive. Invalid lines are
+ * reported (display-only) instead of being silently dropped.
+ */
+export interface ParsedScanUrlList {
+  urls: string[]
+  duplicates: number
+  invalid: string[]
+  /** Deduplicated URLs beyond the cap, not scanned. */
+  overLimit: number
+}
+
+export function parseScanUrlList(
+  value: string,
+  maximum = MAX_SCAN_URLS
+): ParsedScanUrlList {
+  const limit = Math.max(1, Math.min(maximum, MAX_SCAN_URLS))
+  const urls: string[] = []
+  const seen = new Set<string>()
+  const invalid: string[] = []
+  let duplicates = 0
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (line.length === 0) continue
+    try {
+      const url = normalizeHttpUrl(line)
+      if (seen.has(url)) {
+        duplicates += 1
+        continue
+      }
+      seen.add(url)
+      urls.push(url)
+    } catch {
+      invalid.push(line.slice(0, MAX_SCAN_MESSAGE_LENGTH))
+    }
+  }
+  const kept = urls.slice(0, limit)
+  return {
+    urls: kept,
+    duplicates,
+    invalid,
+    overLimit: urls.length - kept.length
+  }
+}
+
+export function parseScanStartManyInput(value: unknown): ScanStartManyInput {
+  const record = asPlainObject(value, 'scan start many')
+  exactKeys(record, ['urls'], [], 'scan start many')
+  const raw = record.urls
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCAN_URLS) {
+    throw new ValidationError(`Enter between 1 and ${MAX_SCAN_URLS} page URLs.`)
+  }
+  const urls: string[] = []
+  for (const entry of raw) {
+    const url = normalizeHttpUrl(entry)
+    if (!urls.includes(url)) urls.push(url)
+  }
+  if (urls.length === 0) {
+    throw new ValidationError('Enter at least one page URL.')
+  }
+  return { urls }
+}
+
+export interface ScanQueueSelectionsInput {
+  selections: ScanQueueSelectionInput[]
+}
+
+/**
+ * One click across several scan topics. Each nested selection is validated
+ * exactly like a single-session selection; pairings can only reference items
+ * from their own session because the service resolves them per session.
+ */
+export function parseScanQueueSelectionsInput(
+  value: unknown
+): ScanQueueSelectionsInput {
+  const record = asPlainObject(value, 'scan selections')
+  exactKeys(record, ['selections'], [], 'scan selections')
+  const raw = record.selections
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCAN_URLS) {
+    throw new ValidationError(
+      `Select items from between 1 and ${MAX_SCAN_URLS} scans.`
+    )
+  }
+  const selections = raw.map(parseScanQueueSelectionInput)
+  const sessionIds = new Set<string>()
+  for (const selection of selections) {
+    if (sessionIds.has(selection.sessionId)) {
+      throw new ValidationError('Duplicate scan session selection.')
+    }
+    sessionIds.add(selection.sessionId)
+  }
+  return { selections }
+}
+
+export interface ScanQueueSelectionsResult {
+  results: ScanQueueSelectionOutcome[]
+}
+
 
 export function parseScanCancelInput(value: unknown): ScanCancelInput {
   const record = asPlainObject(value, 'scan cancel')
@@ -1314,7 +1446,7 @@ export function parseScanSession(value: unknown): ScanSession {
       'revision',
       'updatedAt'
     ],
-    ['scriptSets'],
+    ['scriptSets', 'title'],
     'scan session'
   )
 
@@ -1385,6 +1517,18 @@ export function parseScanSession(value: unknown): ScanSession {
       MAX_SCAN_HOST_LENGTH,
       'scan hostname'
     ),
+    ...(Object.prototype.hasOwnProperty.call(record, 'title')
+      ? {
+          title:
+            record.title === null
+              ? null
+              : safeDisplayText(
+                  record.title,
+                  MAX_SCAN_MESSAGE_LENGTH,
+                  'scan title'
+                )
+        }
+      : {}),
     message: safeMessage(record.message),
     signinRequired: booleanValue(record, 'signinRequired'),
     counters: parseScanCounters(record.counters),
@@ -1429,6 +1573,65 @@ export function parseScanQueueResult(value: unknown): ScanQueueResult {
     queuedItemIds: rawQueued.map(parseScanItemId),
     skipped
   }
+}
+
+export function parseScanQueueSelectionOutcome(
+  value: unknown
+): ScanQueueSelectionOutcome {
+  const record = asPlainObject(value, 'scan queue outcome')
+  const sessionId = parseScanSessionId(record.sessionId)
+  if (record.ok === true) {
+    exactKeys(
+      record,
+      ['sessionId', 'ok', 'value'],
+      [],
+      'scan queue outcome'
+    )
+    return {
+      sessionId,
+      ok: true,
+      value: parseScanQueueResult(record.value)
+    }
+  }
+  if (record.ok === false) {
+    exactKeys(
+      record,
+      ['sessionId', 'ok', 'error'],
+      [],
+      'scan queue outcome'
+    )
+    const error = asPlainObject(record.error, 'scan queue error')
+    exactKeys(error, ['code', 'message'], [], 'scan queue error')
+    const message = safeMessage(error.message)
+    if (message === null) {
+      throw new ValidationError('The scan queue error message is invalid.')
+    }
+    return {
+      sessionId,
+      ok: false,
+      error: {
+        code: safeDisplayText(
+          error.code,
+          MAX_SCAN_MESSAGE_LENGTH,
+          'scan queue error code'
+        ),
+        message
+      }
+    }
+  }
+  throw new ValidationError('The scan queue outcome is invalid.')
+}
+
+export function parseScanQueueSelectionsResult(
+  value: unknown
+): ScanQueueSelectionsResult {
+  const record = asPlainObject(value, 'scan queue results')
+  exactKeys(record, ['results'], [], 'scan queue results')
+  const raw = record.results
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCAN_URLS) {
+    throw new ValidationError('The scan queue results are invalid.')
+  }
+  return { results: raw.map(parseScanQueueSelectionOutcome) }
 }
 
 const DIRECT_FILE_EXTENSIONS = new Set([

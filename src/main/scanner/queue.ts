@@ -1,12 +1,17 @@
 import type { Batch } from '@shared/batches'
 import type { MediaAnalysis, MediaOutputFormat } from '@shared/media'
+import { MAX_SCAN_MESSAGE_LENGTH } from '@shared/scanner'
 import type {
   ScanQueueResult,
+  ScanQueueSelectionError,
+  ScanQueueSelectionOutcome,
+  ScanQueueSelectionsResult,
   ScanQueueSkip,
   ScanQueueVideoOption,
   ScanScriptPairingInput,
   ScanVideoFormat
 } from '@shared/scanner'
+import { ValidationError } from '@shared/validation'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
@@ -51,6 +56,8 @@ export interface ScanVideoBatchTarget {
   optionId: string
   outputFormat?: MediaOutputFormat
   cookie?: string
+  /** Renderer-safe quality label, written into the queued row (no URL). */
+  qualityLabel?: string
   /** Internal scan item ID used only to wire funscript pairings. */
   scanItemId?: string
 }
@@ -147,6 +154,29 @@ function errorCode(error: unknown): string {
   return ''
 }
 
+const UNSAFE_ERROR_TEXT =
+  /(?:[a-z][a-z0-9+.-]*:\/\/)|(?:[A-Za-z]:\\|\\\\[^\\])/i
+
+/**
+ * Produce a renderer-safe per-topic failure. Internal error text is kept only
+ * for our own AppError/ValidationError messages; any other failure gets a
+ * generic message so a URL or path can never escape through this field.
+ */
+function safeQueueFailure(error: unknown): ScanQueueSelectionError {
+  const fallback = 'The selected items could not be queued.'
+  let code = errorCode(error) || 'SCAN_QUEUE_FAILED'
+  let message = fallback
+  if (error instanceof AppError || error instanceof ValidationError) {
+    code = error.code
+    message = error.message
+  }
+  if (UNSAFE_ERROR_TEXT.test(message)) message = fallback
+  return {
+    code,
+    message: Array.from(message).slice(0, MAX_SCAN_MESSAGE_LENGTH).join('')
+  }
+}
+
 function formatsSupport(
   format: ScanVideoFormat,
   outputFormat: MediaOutputFormat
@@ -182,6 +212,40 @@ export class ScanQueueService {
     this.concurrency = Math.max(1, Math.min(options.concurrency ?? 4, 4))
     this.now = options.now ?? Date.now
     this.probeItem = options.probeItem
+  }
+
+  /**
+   * Queue one explicit selection per topic in a single renderer click. Each
+   * session is resolved independently, so a script pairing can only reference
+   * items that belong to its own topic.
+   */
+  async queueSelections(
+    selections: readonly {
+      sessionId: string
+      itemIds: readonly string[]
+      videoOptions?: readonly ScanQueueVideoOption[]
+      pairings?: readonly ScanScriptPairingInput[]
+    }[]
+  ): Promise<ScanQueueSelectionsResult> {
+    const results: ScanQueueSelectionOutcome[] = []
+    for (const selection of selections) {
+      try {
+        const value = await this.queueSelection(
+          selection.sessionId,
+          selection.itemIds,
+          selection.videoOptions ?? [],
+          selection.pairings ?? []
+        )
+        results.push({ sessionId: selection.sessionId, ok: true, value })
+      } catch (error) {
+        results.push({
+          sessionId: selection.sessionId,
+          ok: false,
+          error: safeQueueFailure(error)
+        })
+      }
+    }
+    return { results }
   }
 
   async queueSelection(
@@ -320,7 +384,7 @@ export class ScanQueueService {
       )
     }
 
-    const title = `Scan: ${cleanTitle(session.hostname)}`
+    const title = `Scan: ${cleanTitle(session.title ?? session.hostname)}`
     let batch: Batch
     if (videos.length > 0) {
       if (typeof this.batches.createScanMediaBatch !== 'function') {
@@ -399,6 +463,7 @@ export class ScanQueueService {
         title: cleanTitle(target.name),
         analysisId: video.analysisId,
         optionId: requestedFormat.optionId,
+        qualityLabel: requestedFormat.label,
         scanItemId: target.itemId,
         ...(outputFormat === 'auto' ? {} : { outputFormat }),
         ...(target.cookie === undefined ? {} : { cookie: target.cookie })
@@ -455,6 +520,7 @@ export class ScanQueueService {
       title: cleanTitle(target.name),
       analysisId: analysis.analysisId,
       optionId: match.optionId,
+      qualityLabel: requestedFormat.label,
       scanItemId: target.itemId,
       ...(outputFormat === 'auto' ? {} : { outputFormat }),
       ...(target.cookie === undefined ? {} : { cookie: target.cookie })

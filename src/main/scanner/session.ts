@@ -201,6 +201,8 @@ interface StoredScanSession {
   /** Initial page URL. Never part of the public DTO. */
   url: string
   hostname: string
+  /** Safe topic/page title from the adapter, if any. */
+  title: string | null
   cookieHost: string | null
   cookie: string | null
   status: ScanSessionStatus
@@ -218,6 +220,11 @@ interface StoredScanSession {
   deadline: number
   controller: AbortController
   run: Promise<void> | null
+  /** True once the run actually started; queued sessions wait for a slot. */
+  started: boolean
+  /** True once the run settled or the session was cancelled/expired. */
+  settled: boolean
+  waiters: Array<() => void>
   emitTimer: ReturnType<typeof setTimeout> | null
   lastEmitAt: number
   emitted: Map<string, string>
@@ -353,11 +360,65 @@ export class ScanSessionManager {
       )
     }
 
+    const session = this.createSession(url, options)
+    this.begin(session)
+    const initial = this.fullSnapshot(session)
+    // The start response is the baseline; only later changes are published.
+    for (const item of initial.items) {
+      session.emitted.set(item.id, JSON.stringify(item))
+    }
+    return initial
+  }
+
+  /**
+   * Start several independent topic scans. The first `MAX_ACTIVE_SCANS` run
+   * immediately; the rest are real sessions queued behind them and start as
+   * slots free. Every URL keeps its own cookie scope and its own pairing rules.
+   */
+  startMany(rawUrls: readonly unknown[], options: StartScanOptions = {}): ScanSession[] {
+    this.assertOpen()
+    if (!Array.isArray(rawUrls) || rawUrls.length === 0) {
+      throw new ValidationError('Enter at least one page URL to scan.')
+    }
+    const urls: string[] = []
+    for (const rawUrl of rawUrls) {
+      let url: string
+      try {
+        url = normalizeHttpUrl(rawUrl)
+      } catch (error) {
+        if (error instanceof ValidationError) throw error
+        throw new ValidationError('Enter a page URL to scan.')
+      }
+      if (!urls.includes(url)) urls.push(url)
+    }
+    if (urls.length === 0) {
+      throw new ValidationError('Enter at least one page URL to scan.')
+    }
+
+    this.pruneExpired()
+    const sessions = urls.map((url) => {
+      const session = this.createSession(url, options)
+      if (this.activeCount() < this.maxConcurrent) {
+        this.begin(session)
+      } else {
+        session.message = 'Waiting for an active scan to finish.'
+        this.publish(session, true)
+      }
+      return this.fullSnapshot(session)
+    })
+    return sessions
+  }
+
+  private createSession(
+    url: string,
+    options: StartScanOptions
+  ): StoredScanSession {
     const session: StoredScanSession = {
       id: this.newOpaqueId('scan'),
       origin: options.origin ?? 'paste',
       url,
       hostname: hostnameOf(url),
+      title: null,
       cookieHost: (() => {
         try {
           return new URL(url).host
@@ -384,20 +445,50 @@ export class ScanSessionManager {
       deadline: this.now() + this.sessionBudgetMs,
       controller: new AbortController(),
       run: null,
+      started: false,
+      settled: false,
+      waiters: [],
       emitTimer: null,
       lastEmitAt: 0,
       emitted: new Map(),
       removed: new Set()
     }
-
     this.store(session)
+    return session
+  }
+
+  /** Start one created session immediately and pump the queue when it ends. */
+  private begin(session: StoredScanSession): void {
+    if (session.started || this.closed) return
+    session.started = true
+    session.message = null
+    // The queue wait must not consume the per-session time budget.
+    session.deadline = this.now() + this.sessionBudgetMs
     const initial = this.fullSnapshot(session)
-    // The start response is the baseline; only later changes are published.
     for (const item of initial.items) {
       session.emitted.set(item.id, JSON.stringify(item))
     }
-    session.run = this.run(session).catch(() => undefined)
-    return initial
+    session.run = this.run(session)
+      .catch(() => undefined)
+      .finally(() => {
+        this.settle(session)
+        this.pumpQueue()
+      })
+  }
+
+  private pumpQueue(): void {
+    if (this.closed) return
+    for (const session of this.sessions.values()) {
+      if (this.activeCount() >= this.maxConcurrent) return
+      if (session.status !== 'scanning' || session.started) continue
+      this.begin(session)
+    }
+  }
+
+  private settle(session: StoredScanSession): void {
+    session.settled = true
+    const waiters = session.waiters.splice(0)
+    for (const resolve of waiters) resolve()
   }
 
   cancel(rawSessionId: unknown): ScanSession {
@@ -416,6 +507,7 @@ export class ScanSessionManager {
     session.status = 'cancelled'
     session.message = 'The scan was cancelled.'
     session.updatedAt = this.now()
+    this.settle(session)
     this.publish(session, true)
     return this.fullSnapshot(session)
   }
@@ -947,7 +1039,12 @@ export class ScanSessionManager {
   /** Resolves when the current scan run has settled. */
   async waitForScan(rawSessionId: unknown): Promise<void> {
     const session = this.requireSession(this.requireSessionId(rawSessionId))
-    if (session.run !== null) await session.run
+    if (session.settled) return
+    if (session.started && session.run !== null) {
+      await session.run
+      return
+    }
+    await new Promise<void>((resolve) => session.waiters.push(resolve))
   }
 
   hasActiveScans(): boolean {
@@ -967,6 +1064,7 @@ export class ScanSessionManager {
         clearTimeout(session.emitTimer)
         session.emitTimer = null
       }
+      this.settle(session)
     }
     this.sessions.clear()
     this.browserPairings.clear()
@@ -1108,9 +1206,12 @@ export class ScanSessionManager {
         // generic extraction results.
         return null
       }
-      if (result.title !== null && session.message === null) {
+      if (result.title !== null) {
         const title = safeTitleMessage(result.title)
-        if (title !== null) session.message = title
+        if (title !== null) {
+          if (session.title === null) session.title = title
+          if (session.message === null) session.message = title
+        }
       }
       if (result.limited) session.limited = true
       return result.candidates
@@ -1301,6 +1402,7 @@ export class ScanSessionManager {
         const decision = scoreFollowLink({
           url: normalized,
           baseUrl: pageUrl,
+          forumHost: session.hostname,
           isEmbed: candidate.isEmbed,
           rel: candidate.rel,
           text: candidate.text
@@ -1657,6 +1759,7 @@ export class ScanSessionManager {
       status: session.status,
       origin: session.origin,
       hostname: session.hostname,
+      ...(session.title === null ? {} : { title: session.title }),
       message: session.message,
       signinRequired: session.signinRequired,
       counters: countersFor(items),
@@ -1722,6 +1825,7 @@ export class ScanSessionManager {
       status: session.status,
       origin: session.origin,
       hostname: session.hostname,
+      ...(session.title === null ? {} : { title: session.title }),
       message: session.message,
       signinRequired: session.signinRequired,
       counters: countersFor(allPublic),
@@ -1759,7 +1863,7 @@ export class ScanSessionManager {
   private activeCount(): number {
     let count = 0
     for (const session of this.sessions.values()) {
-      if (session.status === 'scanning') count += 1
+      if (session.status === 'scanning' && session.started) count += 1
     }
     return count
   }
@@ -1783,6 +1887,7 @@ export class ScanSessionManager {
       clearTimeout(session.emitTimer)
       session.emitTimer = null
     }
+    this.settle(session)
     this.sessions.delete(id)
   }
 

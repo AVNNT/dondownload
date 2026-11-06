@@ -57,6 +57,9 @@ import {
   type ScanManualMatchInput,
   type ScanManualMatchResult,
   type ScanQueueResult,
+  type ScanQueueSelectionInput,
+  type ScanQueueSelectionOutcome,
+  type ScanQueueSelectionsResult,
   type ScanQueueVideoOption,
   type ScanScriptPairingInput,
   type ScanSession,
@@ -158,7 +161,7 @@ export function createPreviewApi(
   let desktopSettings: DesktopSettings = seedDesktopSettings()
   let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
   let appUpdateSettings: AppUpdateSettings = defaultAppUpdateSettings()
-  let scanSession: ScanSession | null = null
+  const scanSessions: ScanSession[] = []
 
   const analyses = new Map<string, MediaAnalysis>()
   const previews = new Map<string, CollectionPreview>()
@@ -840,9 +843,17 @@ export function createPreviewApi(
   }
 
   function emitScan(session: ScanSession): ScanSession {
-    scanSession = session
+    const index = scanSessions.findIndex(
+      (candidate) => candidate.sessionId === session.sessionId
+    )
+    if (index >= 0) scanSessions[index] = session
+    else scanSessions.push(session)
     for (const listener of scanListeners) listener(session)
     return session
+  }
+
+  function findScanSession(sessionId: string): ScanSession | undefined {
+    return scanSessions.find((session) => session.sessionId === sessionId)
   }
 
   function countersFor(items: readonly ScanItem[]): ScanSession['counters'] {
@@ -859,6 +870,20 @@ export function createPreviewApi(
     }
   }
 
+  function previewTopicTitle(url: string): string {
+    try {
+      const parsed = new URL(url)
+      const match = /\/t\/([^/]+)\//.exec(parsed.pathname)
+      const slug = match?.[1]
+      if (slug !== undefined && slug.length > 0) {
+        return decodeURIComponent(slug).replace(/[-_]+/g, ' ').slice(0, 120)
+      }
+      return parsed.hostname
+    } catch {
+      return 'Scanned topic'
+    }
+  }
+
   function createScanSession(url: string): ScanSession {
     let hostname = 'example.com'
     try {
@@ -866,12 +891,17 @@ export function createPreviewApi(
     } catch {
       // Validation already succeeded, so this is unreachable in practice.
     }
-    const items = seedScanItems()
+    const suffix = nextId('topic')
+    const items = seedScanItems().map((item) => ({
+      ...item,
+      id: `${item.id}-${suffix}`
+    }))
     return {
       sessionId: nextId('scan-session'),
       status: 'scanning',
       origin: 'paste',
       hostname,
+      title: previewTopicTitle(url),
       message: null,
       signinRequired: false,
       counters: countersFor(items),
@@ -886,6 +916,45 @@ export function createPreviewApi(
       revision: 1,
       updatedAt: now()
     }
+  }
+
+  function scheduleScanCompletion(sessionId: string): void {
+    setTimeout(() => {
+      const session = findScanSession(sessionId)
+      if (session === undefined || session.status !== 'scanning') return
+      emitScan({
+        ...session,
+        status: 'done',
+        revision: session.revision + 1,
+        updatedAt: now(),
+        items: []
+      })
+    }, 250)
+  }
+
+  function queueForSession(
+    sessionId: string,
+    itemIds: string[]
+  ): ApiResult<ScanQueueResult> {
+    const session = findScanSession(sessionId)
+    if (session === undefined) {
+      return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+    }
+    const selected = new Set(itemIds)
+    const queueable = session.items.filter(
+      (item) => selected.has(item.id) && isQueueableScanItem(item)
+    )
+    if (queueable.length === 0) {
+      return fail(
+        PREVIEW_INVALID_INPUT_CODE,
+        'Select at least one downloadable item.'
+      )
+    }
+    return ok({
+      batch: batches[0] ?? null,
+      queuedItemIds: queueable.map((item) => item.id),
+      skipped: []
+    })
   }
 
   return {
@@ -1387,31 +1456,43 @@ export function createPreviewApi(
       }
       const created = createScanSession(url)
       emitScan(created)
-      setTimeout(() => {
-        if (scanSession === null || scanSession.sessionId !== created.sessionId) {
-          return
-        }
-        if (scanSession.status !== 'scanning') return
-        emitScan({
-          ...scanSession,
-          status: 'done',
-          revision: scanSession.revision + 1,
-          updatedAt: now(),
-          items: []
-        })
-      }, 250)
+      scheduleScanCompletion(created.sessionId)
       return ok(created)
     },
 
+    startScans: async (urls: string[]) => {
+      const sessions: ScanSession[] = []
+      for (const rawUrl of urls.slice(0, 10)) {
+        let url: string
+        try {
+          url = normalizeHttpUrl(rawUrl)
+        } catch (error) {
+          return fail(
+            PREVIEW_INVALID_INPUT_CODE,
+            error instanceof Error ? error.message : 'Enter a page URL to scan.'
+          )
+        }
+        const created = createScanSession(url)
+        emitScan(created)
+        scheduleScanCompletion(created.sessionId)
+        sessions.push(created)
+      }
+      if (sessions.length === 0) {
+        return fail(PREVIEW_INVALID_INPUT_CODE, 'Enter at least one page URL.')
+      }
+      return ok(sessions)
+    },
+
     cancelScan: async (sessionId: string) => {
-      if (scanSession === null || scanSession.sessionId !== sessionId) {
+      const session = findScanSession(sessionId)
+      if (session === undefined) {
         return fail(PREVIEW_NOT_FOUND_CODE, 'That scan no longer exists.')
       }
       const cancelled: ScanSession = {
-        ...scanSession,
+        ...session,
         status: 'cancelled',
         message: 'The scan was cancelled.',
-        revision: scanSession.revision + 1,
+        revision: session.revision + 1,
         updatedAt: now(),
         items: []
       }
@@ -1420,29 +1501,34 @@ export function createPreviewApi(
     },
 
     queueScanSelection: async (
-      _sessionId: string,
+      sessionId: string,
       itemIds: string[],
       _videoOptions?: ScanQueueVideoOption[],
       _pairings?: ScanScriptPairingInput[]
-    ): Promise<ApiResult<ScanQueueResult>> => {
-      if (scanSession === null) {
-        return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
-      }
-      const selected = new Set(itemIds)
-      const queueable = scanSession.items.filter(
-        (item) => selected.has(item.id) && isQueueableScanItem(item)
-      )
-      if (queueable.length === 0) {
-        return fail(
-          PREVIEW_INVALID_INPUT_CODE,
-          'Select at least one downloadable item.'
+    ): Promise<ApiResult<ScanQueueResult>> =>
+      queueForSession(sessionId, itemIds),
+
+    queueScanSelections: async (
+      selections: ScanQueueSelectionInput[]
+    ): Promise<ApiResult<ScanQueueSelectionsResult>> => {
+      const results: ScanQueueSelectionOutcome[] = []
+      for (const selection of selections) {
+        const result = queueForSession(selection.sessionId, selection.itemIds)
+        results.push(
+          result.ok
+            ? {
+                sessionId: selection.sessionId,
+                ok: true,
+                value: result.value
+              }
+            : {
+                sessionId: selection.sessionId,
+                ok: false,
+                error: result.error
+              }
         )
       }
-      return ok({
-        batch: batches[0] ?? null,
-        queuedItemIds: queueable.map((item) => item.id),
-        skipped: []
-      })
+      return ok({ results })
     },
 
     openScanInBrowser: async (
@@ -1450,10 +1536,11 @@ export function createPreviewApi(
       itemId: string,
       pairing?: ScanBrowserScriptSelection
     ): Promise<ApiResult<null>> => {
-      if (scanSession === null || scanSession.sessionId !== sessionId) {
+      const session = findScanSession(sessionId)
+      if (session === undefined) {
         return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
       }
-      const item = scanSession.items.find((candidate) => candidate.id === itemId)
+      const item = session.items.find((candidate) => candidate.id === itemId)
       if (!item || item.status !== 'browser-only') {
         return fail(
           PREVIEW_INVALID_INPUT_CODE,
@@ -1463,17 +1550,14 @@ export function createPreviewApi(
       if (pairing !== undefined) {
         const updated: ScanItem = { ...item, browserMatchPending: true }
         const updatedSession: ScanSession = {
-          ...scanSession,
-          items: scanSession.items.map((candidate) =>
+          ...session,
+          items: session.items.map((candidate) =>
             candidate.id === itemId ? updated : candidate
           ),
-          revision: scanSession.revision + 1,
+          revision: session.revision + 1,
           updatedAt: now()
         }
-        scanSession = updatedSession
-        for (const listener of scanListeners) {
-          listener({ ...updatedSession, items: [updated] })
-        }
+        emitScan(updatedSession)
       }
       return ok(null)
     },
@@ -1481,10 +1565,11 @@ export function createPreviewApi(
     pickScanMatchVideo: async (
       input: ScanManualMatchInput
     ): Promise<ApiResult<ScanManualMatchResult | null>> => {
-      if (scanSession === null || scanSession.sessionId !== input.sessionId) {
+      const session = findScanSession(input.sessionId)
+      if (session === undefined) {
         return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
       }
-      const scripts = scanSession.items.filter((item) =>
+      const scripts = session.items.filter((item) =>
         input.scriptItemIds.includes(item.id)
       )
       if (scripts.length === 0) {
@@ -1529,7 +1614,7 @@ export function createPreviewApi(
       for (const listener of batchListeners) listener(batchSnapshot())
       return ok({
         batchId,
-        filename: `${scanSession.items.find((item) => item.id === input.videoItemId)?.name ?? 'Hanime1 Watch Video'}.mp4`
+        filename: `${session.items.find((item) => item.id === input.videoItemId)?.name ?? 'Hanime1 Watch Video'}.mp4`
       })
     },
 

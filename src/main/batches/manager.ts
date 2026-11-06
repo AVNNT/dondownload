@@ -319,6 +319,8 @@ export interface BatchScanVideoTarget {
   optionId: string
   outputFormat?: MediaOutputFormat
   cookie?: string
+  /** Display-only quality label for the queued row. Never a URL or path. */
+  qualityLabel?: string
   /** Scanner item ID; used only to wire funscript pairings, never public. */
   scanItemId?: string
 }
@@ -1287,6 +1289,7 @@ export class BatchManager {
           key !== 'optionId' &&
           key !== 'outputFormat' &&
           key !== 'cookie' &&
+          key !== 'qualityLabel' &&
           key !== 'scanItemId'
         ) {
           throw new ValidationError(
@@ -1307,12 +1310,17 @@ export class BatchManager {
         }
         outputFormat = target.outputFormat
       }
+      let qualityLabel: string | undefined
+      if (target.qualityLabel !== undefined) {
+        qualityLabel = cleanSafeText(target.qualityLabel, 120, 'Scanned video')
+      }
       return {
         url: normalizeBatchSourceUrl(target.url),
         title: cleanSafeText(target.title, MAX_BATCH_TITLE_LENGTH, 'Scanned video'),
         analysisId: opaque(target.analysisId),
         optionId: opaque(target.optionId),
         ...(outputFormat === undefined ? {} : { outputFormat }),
+        ...(qualityLabel === undefined ? {} : { qualityLabel }),
         ...(target.cookie === undefined
           ? {}
           : { cookie: readCookie(target.cookie) }),
@@ -1369,9 +1377,12 @@ export class BatchManager {
         kind: 'media',
         status: 'queued',
         title: target.title,
-        label: target.outputFormat === undefined
-          ? 'Scanned video'
-          : `Scanned video · ${target.outputFormat.toUpperCase()}`,
+        label:
+          target.qualityLabel !== undefined
+            ? `Scanned video · ${target.qualityLabel}`
+            : target.outputFormat === undefined
+              ? 'Scanned video'
+              : `Scanned video · ${target.outputFormat.toUpperCase()}`,
         childId: null,
         completedBytes: 0,
         totalBytes: null,

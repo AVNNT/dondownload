@@ -55,6 +55,7 @@ interface SpawnCall {
 interface HarnessOptions {
   toolMode?: 'explicit' | 'path' | 'vendor' | 'missing'
   withFfmpeg?: boolean
+  withFfprobe?: boolean
   ytdlpProbeOk?: boolean
   ffmpegProbeOk?: boolean
   /** False emulates an older yt-dlp that does not list impersonate targets. */
@@ -222,6 +223,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     toolMode === 'vendor'
       ? path.join(root, 'vendor', 'ffmpeg', 'ffmpeg.exe')
       : path.join(toolsDir, 'ffmpeg.exe')
+  const ffprobeFile = path.join(toolsDir, 'ffprobe.exe')
 
   if (toolMode !== 'missing') {
     await fs.mkdir(path.dirname(ytdlpFile), { recursive: true })
@@ -229,6 +231,10 @@ async function makeHarness(options: HarnessOptions = {}) {
     if (withFfmpeg) {
       await fs.mkdir(path.dirname(ffmpegFile), { recursive: true })
       await fs.writeFile(ffmpegFile, 'fake ffmpeg')
+    }
+    if (options.withFfprobe === true) {
+      await fs.mkdir(path.dirname(ffprobeFile), { recursive: true })
+      await fs.writeFile(ffprobeFile, 'fake ffprobe')
     }
   }
 
@@ -240,6 +246,9 @@ async function makeHarness(options: HarnessOptions = {}) {
         : ytdlpFile
     if (withFfmpeg && toolMode === 'explicit') {
       env.DONDOWNLOAD_FFMPEG_PATH = ffmpegFile
+    }
+    if (options.withFfprobe === true && toolMode === 'explicit') {
+      env.DONDOWNLOAD_FFPROBE_PATH = ffprobeFile
     }
   } else if (toolMode === 'path') {
     env.PATH = toolsDir
@@ -311,6 +320,14 @@ async function makeHarness(options: HarnessOptions = {}) {
           return
         }
         child.stdout.write('ffmpeg version 7.1 Copyright (c) 2000-2026\n')
+        child.close(0)
+      })
+      return child
+    }
+
+    if (args.includes('-show_entries')) {
+      queueMicrotask(() => {
+        child.stdout.write('1080\n')
         child.close(0)
       })
       return child
@@ -1683,6 +1700,36 @@ describe('media engine analysis identity and download request validation', () =>
 })
 
 describe('media engine subprocess arguments and progress', () => {
+  it('limits the bounded ffprobe resolution read to network protocols', async () => {
+    const harness = await makeHarness({
+      withFfprobe: true,
+      analyzeJson: sampleInfo({
+        formats: [
+          {
+            format_id: 'probe',
+            ext: 'mp4',
+            protocol: 'https',
+            url: 'https://cdn.example.com/unknown.mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a'
+          }
+        ]
+      })
+    })
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    expect(analysis.options).toHaveLength(1)
+
+    const probe = harness.calls.find((call) =>
+      call.args.includes('-show_entries')
+    )
+    expect(probe).toBeDefined()
+    const whitelist = probe!.args.indexOf('-protocol_whitelist')
+    expect(whitelist).toBeGreaterThanOrEqual(0)
+    expect(probe!.args[whitelist + 1]).toBe('http,https,tcp,tls,crypto')
+    expect(whitelist).toBeLessThan(probe!.args.indexOf('-i'))
+  })
+
   it('uses fixed shell-free arguments and avoids config, cookies, credentials and aria2', async () => {
     const harness = await makeHarness({
       download: (call) => call.child.close(1)

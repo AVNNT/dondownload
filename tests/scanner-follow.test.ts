@@ -151,6 +151,30 @@ describe('follow scoring', () => {
     ).toMatchObject({ reason: 'video-text' })
   })
 
+  it('applies forum navigation only to the scanned forum host', () => {
+    const forum = 'https://discuss.eroscripts.com/t/example-topic/346779'
+    const forumHost = 'discuss.eroscripts.com'
+
+    // Other sites use these first path segments for real content.
+    for (const url of [
+      'https://pixeldrain.com/u/abc123',
+      'https://example.com/t/clip',
+      'https://example.com/new/video1'
+    ]) {
+      expect(scoreFollowLink({ url, baseUrl: forum, forumHost })).not.toBeNull()
+    }
+
+    // The scanned forum's own navigation is still never followed.
+    for (const url of [
+      'https://discuss.eroscripts.com/t/other-topic/1',
+      'https://discuss.eroscripts.com/u/user',
+      'https://discuss.eroscripts.com/c/cat',
+      'https://discuss.eroscripts.com/new'
+    ]) {
+      expect(scoreFollowLink({ url, baseUrl: forum, forumHost })).toBeNull()
+    }
+  })
+
   it('never follows pagination, login or external non-video links', () => {
     expect(
       scoreFollowLink({ url: 'https://site.example/page/2', baseUrl: BASE })
@@ -241,7 +265,7 @@ describe('robots parser', () => {
 })
 
 describe('recursive scanner discovery', () => {
-  it('follows video pages up to depth two, avoids cycles and honours robots', async () => {
+  it('follows video pages one level deep, avoids cycles and honours robots', async () => {
     const pages: Record<string, string> = {
       [BASE]: `
         <a href="/video/one">watch one</a>
@@ -256,6 +280,7 @@ describe('recursive scanner discovery', () => {
       'https://site.example/video/one': `
         <a href="/video/two">back to two</a>
         <a href="/video/three">three</a>
+        <a class="attachment" href="/uploads/from-linked-page.zip">from-linked-page.zip</a>
       `,
       'https://site.example/video/two': `
         <a href="/video/one">cycle</a>
@@ -280,8 +305,9 @@ describe('recursive scanner discovery', () => {
     expect(done.status).toBe('done')
     expect(fetched).toContain('https://site.example/video/one')
     expect(fetched).toContain('https://site.example/video/two')
-    expect(fetched).toContain('https://site.example/video/three')
-    expect(fetched).toContain('https://site.example/video/four')
+    // One level only: links found on a followed page are listed, not followed.
+    expect(fetched).not.toContain('https://site.example/video/three')
+    expect(fetched).not.toContain('https://site.example/video/four')
     expect(fetched).not.toContain('https://site.example/video/deep')
     expect(fetched).not.toContain('https://site.example/video/blocked')
     expect(fetched).toContain('https://site.example/video/nofollow')
@@ -289,12 +315,14 @@ describe('recursive scanner discovery', () => {
     expect(fetched).not.toContain('https://site.example/page/2')
     expect(fetched).not.toContain('https://site.example/login')
     expect(fetched).not.toContain('https://other.example/article')
+    // Files found on a directly linked page still count.
+    expect(JSON.stringify(done.items)).toContain('from-linked-page.zip')
     // Followed same-site video paths become resolvable video page links.
     expect(
       done.items.filter(
         (item) => item.category === 'video' && item.kind === 'page-link'
       ).length
-    ).toBeGreaterThanOrEqual(4)
+    ).toBeGreaterThanOrEqual(3)
     // Each page was requested at most once (cycle prevention).
     const pageFetches = fetched.filter((url) => !url.endsWith('/robots.txt'))
     expect(new Set(pageFetches).size).toBe(pageFetches.length)

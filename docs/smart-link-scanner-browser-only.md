@@ -5,6 +5,44 @@ Status: implementation note. No live-site tests were run. Nothing is pushed.
 This phase makes a failed video resolution visible and useful without ever
 bypassing a site's access controls.
 
+## Scan scope, quality labels and one-click downloads
+
+- **One topic + directly linked pages.** A Discourse topic is read completely
+  through its post stream JSON. After that the scanner follows only pages linked
+  directly from those posts, one level deep (`MAX_SCAN_FOLLOW_DEPTH = 1`) and at
+  most 10 pages per session (`MAX_SCAN_FOLLOW_PAGES = 10`). Forum chrome is
+  never followed: other `/t/` topics, suggested/related topics, `/u/` profiles,
+  `/c/` categories, `/tag/`, `/latest`, `/search`, login and account pages. The
+  previous 25-page/two-level policy was the source of the extra hundreds of
+  items: every followed topic brought its own sidebar, suggested topics and
+  category/user links into the scan.
+- **Real quality labels.** `formats.ts` reads a resolution hint from
+  `format_note`, `resolution`, the format name/id and the stream URL path
+  (`1080p`, `-1080.mp4`, `hls-720`, `640x360`). If no hint exists and a bundled
+  ffprobe is available, a bounded header-only ffprobe read (2.5 s timeout, at
+  most three formats, direct HTTP(S) files only) can learn the frame height.
+  Otherwise the label is `Source quality (MP4)` with an optional bitrate hint;
+  a raw `Quality 1` label is never shown. The chosen label is displayed on the
+  card and written into the queued download row.
+- **Pre-selected results.** When a topic finishes, every ready video with a
+  confident script set is ticked together with the set's queueable files (the
+  existing pairing bucket picks the best set), and standalone script sets are
+  ticked with original names. Browser-only cards stay unticked. The user can
+  untick anything, change the set/quality, and one prominent button queues the
+  whole selection. `MAX_SCAN_SELECTION` (500) is enforced and reported.
+- **Multiple topics.** The Scan tab accepts up to `MAX_SCAN_URLS` (10) URLs, one
+  per line, deduplicated and normalized. Each URL is its own scan session. Main
+  runs at most `MAX_ACTIVE_SCANS` (2) and queues the rest; the browser-extension
+  scan path remains single-page. Results are grouped per topic (collapsible
+  topic title). Pairings are resolved per session, so a script from topic A can
+  never pair with a video from topic B. A single bulk IPC call
+  (`scan:queue-selections`) queues one batch per topic; every batch title uses
+  the sanitized topic title.
+- **Folders.** The existing manager uses one scanner media folder for all
+  videos and the normal download root for scripts. It has no per-topic
+  subfolder option, so this change keeps the current folder behaviour rather
+  than adding an unvalidated path input.
+
 ## 1. Browser-only video cards
 
 - **Conservative page heuristic.** `isLikelyVideoPageUrl` (classify.ts) accepts a

@@ -25,13 +25,15 @@ import type {
   YtdlpUpdateState
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
-import type { ScanQueueResult, ScanManualMatchResult, ScanSession } from '@shared/scanner'
+import type { ScanQueueResult, ScanManualMatchResult, ScanSession, ScanQueueSelectionsResult } from '@shared/scanner'
 import {
   parseScanCancelInput,
   parseScanManualMatchInput,
   parseScanOpenInBrowserInput,
   parseScanQueueSelectionInput,
-  parseScanStartInput
+  parseScanQueueSelectionsInput,
+  parseScanStartInput,
+  parseScanStartManyInput
 } from '@shared/scanner'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
@@ -456,6 +458,11 @@ export function registerIpc(context: IpcContext): void {
     return scanner().start(parsed.url, { origin: 'paste' })
   })
 
+  invoke<ScanSession[]>(IPC.scanStartMany, (_event, input) => {
+    const parsed = parseScanStartManyInput(input)
+    return scanner().startMany(parsed.urls, { origin: 'paste' })
+  })
+
   invoke<ScanSession>(IPC.scanCancel, (_event, input) => {
     const parsed = parseScanCancelInput(input)
     return scanner().cancel(parsed.sessionId)
@@ -478,6 +485,14 @@ export function registerIpc(context: IpcContext): void {
       parsed.pairings
     )
   })
+
+  invoke<ScanQueueSelectionsResult>(
+    IPC.scanQueueSelections,
+    (_event, input) => {
+      const parsed = parseScanQueueSelectionsInput(input)
+      return scanQueue().queueSelections(parsed.selections)
+    }
+  )
 
   // Browser-only cards: the renderer sends opaque IDs only. Main resolves the
   // stored URL, validates it as public HTTP(S) and opens the user's browser.
