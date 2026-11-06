@@ -12,10 +12,27 @@ analysis for blob/MSE players, plus optional permission-gated browser file
 hand-off. The local setup was previously verified with Helium 0.20.3.1
 (Chromium 156.0.8078.79); Chrome and Edge remain supported for future installs.
 
-The UI is deliberately small: an OLED-black, centered (~800 px) layout with a
-compact top bar, a Quick Add form, and download cards with live status,
-progress, speed, ETA, pause/resume, bounded retry, and open-in-folder. History
-is stored locally and survives relaunches.
+The UI is deliberately compact: an OLED-black layout with a searchable,
+category-filtered download list, live status, progress, speed, ETA,
+pause/resume, bounded retry, details, batch selection, media analysis and a
+settings screen. History is stored locally and survives relaunches.
+
+## Screenshots
+
+**UI preview with sample data.** These images come from the development browser
+preview (`/preview.html`), not from a live download session.
+
+![Main window with sample downloads](docs/screenshots/main-1280x800.png)
+
+![Download details pane](docs/screenshots/details-1280x800.png)
+
+![Add dialog](docs/screenshots/add-dialog-1280x800.png)
+
+![Selection and batch actions](docs/screenshots/selection-1280x800.png)
+
+![Context menu](docs/screenshots/context-menu-1280x800.png)
+
+![Narrow window layout](docs/screenshots/narrow-800x600.png)
 
 ## Requirements
 
@@ -367,10 +384,9 @@ for permissions, focused tests and current limits.
 The overlay is **off by default** and applies only to sites you explicitly
 enable. If a site is not opted in, no overlay script or UI exists there.
 
-Earlier live Helium checks are historical evidence only. The latest playback
-capture and hand-off changes have focused local tests, but real Chromium request
-observation, Downloads API behavior, Native Messaging integration and Helium
-video capture have not been verified for this checkpoint.
+The latest real-browser native end-to-end run passed **20 checks in both
+Chromium and Helium** on 2026-11-06, covering native messaging and the browser
+capture paths. Earlier Helium-only checks remain historical evidence.
 
 ### Permission and privacy design
 
@@ -407,12 +423,15 @@ video capture have not been verified for this checkpoint.
 - **The permission prompt closes the action popup.** Chromium/Helium 0.20.3.1
   (Chromium 156) closes the popup as soon as the Allow/Deny prompt is shown, so
   the popup's request callback cannot be relied on to run the follow-up work.
-  Before requesting, the popup records the exact origin and tab in
-  `chrome.storage.session`; a top-level `chrome.permissions.onAdded` listener in
-  the service worker finishes the registration and injection when the grant
-  arrives. Opening the popup again also re-checks and re-applies an existing
-  grant for the current tab, so a popup that was closed by the prompt cannot
-  leave the site looking enabled with nothing on the page.
+  The popup therefore opens the welcome page in a normal tab with a `grant`
+  parameter naming the exact origin (for example
+  `welcome.html?grant=https://example.com`). The welcome page accepts only a
+  canonical http(s) origin, requests that same origin from a user click, and
+  tells the user to reload the page. The service worker's
+  `chrome.permissions.onAdded` listener still finishes registration, and opening
+  the popup again re-checks and re-applies an existing grant for the current
+  tab, so a popup that was closed by the prompt cannot leave the site looking
+  enabled with nothing on the page.
 - **Turn off on this site** (in the popup or the overlay panel) unregisters that
   exact-origin content script, calls `chrome.permissions.remove` for the same
   origin pattern, and verifies that both the stored registration and the grant
@@ -895,15 +914,17 @@ These are intentionally **not** claimed by these milestones:
 - Automatic aria2 session restore (DonDownload marks lost transfers as
   interrupted instead of pretending they are still running).
 - Notifications, auto-start/launch-at-login, or background services.
-- Clipboard monitoring and drag-and-drop capture.
+- Clipboard monitoring (drag-and-drop capture is implemented).
 - DRM/auth/CAPTCHA bypass, injected playback inside cross-origin iframes (a
   visible embed can still be analyzed through yt-dlp), and unverified stream
   reconstruction. The extension supports exact progressive sources, detected
   manifests and completed analyses; optional response evidence does not inspect
   credentials or bodies.
-- BitTorrent, magnet links, Metalink, scheduling, bandwidth limits.
+- BitTorrent, magnet links and Metalink.
 - Installer code signing (release builds are currently unsigned).
-- Multi-directory selection UI, categories, search, and settings screens.
+- A custom download-directory picker and multi-directory selection; downloads
+  use the fixed `%USERPROFILE%\Downloads\DonDownload` folder. Categories, search,
+  batch selection and the settings screen are implemented.
 
 ## Project layout
 

@@ -1,5 +1,6 @@
 import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
+import { grantPageUrl } from './grant-parameter.js'
 import { rememberOptionsTarget } from './capture-settings.js'
 import {
   popupConnectionLine,
@@ -692,6 +693,24 @@ enableSiteButton.addEventListener('click', () => {
   if (pageOrigin === null || activeTabId === null) return
   enableSiteButton.disabled = true
   setSiteStatus('', '')
+  // A permission prompt closes the toolbar popup before its callback runs, so
+  // finish the exact-origin request in a normal tab instead. The welcome page
+  // validates the parameter again and requests only that origin after a click.
+  const grantUrl = grantPageUrl(welcomeUrl(chrome), pageOrigin)
+  if (grantUrl !== null) {
+    try {
+      chrome.tabs.create({ url: grantUrl })
+      setSiteStatus(
+        '',
+        `The browser permission prompt opens in a tab. Allow access for ${pageOrigin}, then reload the page you want to use.`
+      )
+      enableSiteButton.disabled = false
+      return
+    } catch {
+      // Fall back to the in-popup request below.
+    }
+  }
+
   requestExactOriginAccess(
     chrome,
     { origin: pageOrigin, tabId: activeTabId },

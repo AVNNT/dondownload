@@ -164,7 +164,7 @@ export async function handleCreatedDownload(chromeApi, item) {
     notifyHandoff(chromeApi, settings, '!', 'Hand-off saved; browser download kept')
     return 'left-running-cancel-failed'
   }
-  notifyHandoff(chromeApi, settings, 'DD', 'Handed off to DonDownload')
+  notifyHandoff(chromeApi, settings, 'DD', 'Sent to DonDownload')
   return 'cancelled'
 }
 

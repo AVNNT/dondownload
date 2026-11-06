@@ -7,6 +7,18 @@
  */
 export const UPDATE_REPO: { owner: string; repo: string } | null = null
 
+/**
+ * Ed25519 public key used to authenticate `SHA256SUMS.txt` before any hash in
+ * it is trusted. Paste either an SPKI PEM block or its base64 SPKI DER here.
+ *
+ * Generate a key pair outside this repository with
+ * `node scripts/generate-update-signing-key.mjs <path>`. While this is null
+ * every configured update source refuses to offer an update.
+ */
+export const UPDATE_SIGNING_PUBLIC_KEY: string | null = null
+export const UPDATE_SIGNING_KEY_NOT_CONFIGURED =
+  'Update signing key not configured'
+
 /** GitHub owner (user or organisation) account name. */
 export const UPDATE_OWNER_PATTERN = /^[A-Za-z0-9-]{1,39}$/
 /** GitHub repository name. */

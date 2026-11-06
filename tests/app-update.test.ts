@@ -1,4 +1,8 @@
-import { createHash } from 'node:crypto'
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as signBytes
+} from 'node:crypto'
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,6 +19,7 @@ import {
   normalizeAppVersion
 } from '../src/shared/appVersion'
 import {
+  MAX_APP_UPDATE_SIGNATURE_BYTES,
   createAppUpdateChecker,
   type AppUpdateCheckerOptions
 } from '../src/main/appUpdate/checker'
@@ -81,6 +86,8 @@ interface ReleaseOptions {
   installerName?: string
   installerUrl?: string
   sumsUrl?: string
+  includeSignature?: boolean
+  signatureUrl?: string
 }
 
 function releaseJson(
@@ -109,6 +116,14 @@ function releaseJson(
         `https://github.com/acme/dondownload/releases/download/${tag}/SHA256SUMS.txt`
     })
   }
+  if (options.includeSignature !== false) {
+    assets.push({
+      name: 'SHA256SUMS.txt.sig',
+      browser_download_url:
+        options.signatureUrl ??
+        `https://github.com/acme/dondownload/releases/download/${tag}/SHA256SUMS.txt.sig`
+    })
+  }
   return JSON.stringify({
     tag_name: tag,
     draft: options.draft ?? false,
@@ -121,6 +136,7 @@ function releaseJson(
 interface FetchScript {
   api?: () => UpdaterHttpResponse
   sums?: () => UpdaterHttpResponse
+  signature?: () => UpdaterHttpResponse
   installer?: () => UpdaterHttpResponse
 }
 
@@ -129,13 +145,22 @@ function createFetch(script: FetchScript): {
   calls: { url: string; init: unknown }[]
 } {
   const calls: { url: string; init: unknown }[] = []
+  let lastSums: UpdaterHttpResponse | null = null
   const fetchImpl: UpdaterFetch = async (url, init) => {
     calls.push({ url, init })
     if (url.includes('/releases/latest')) {
       return script.api ? script.api() : response('{}')
     }
+    if (url.endsWith('SHA256SUMS.txt.sig')) {
+      if (script.signature) return script.signature()
+      if (lastSums === null) return response('')
+      const bytes = new Uint8Array(await lastSums.arrayBuffer())
+      return response(signSums(bytes))
+    }
     if (url.endsWith('SHA256SUMS.txt')) {
-      return script.sums ? script.sums() : response('')
+      const result = script.sums ? script.sums() : response('')
+      lastSums = result
+      return result
     }
     return script.installer ? script.installer() : response('')
   }
@@ -143,6 +168,19 @@ function createFetch(script: FetchScript): {
 }
 
 const REPO = { owner: 'acme', repo: 'dondownload' }
+
+const SIGNING_KEYS = generateKeyPairSync('ed25519')
+const SIGNING_PUBLIC_KEY = SIGNING_KEYS.publicKey
+  .export({ type: 'spki', format: 'pem' })
+  .toString()
+const WRONG_PUBLIC_KEY = generateKeyPairSync('ed25519').publicKey
+  .export({ type: 'spki', format: 'pem' })
+  .toString()
+
+function signSums(text: string | Uint8Array): string {
+  const bytes = typeof text === 'string' ? Buffer.from(text, 'utf8') : text
+  return signBytes(null, bytes, SIGNING_KEYS.privateKey).toString('base64')
+}
 
 function makeChecker(
   userDataPath: string,
@@ -152,6 +190,7 @@ function makeChecker(
     userDataPath,
     appVersion: '0.1.0',
     repo: REPO,
+    signingPublicKey: SIGNING_PUBLIC_KEY,
     ...overrides
   })
 }
@@ -385,6 +424,165 @@ describe('app update checker', () => {
       expect(init.headers.Authorization).toBeUndefined()
       expect(init.headers['User-Agent']).toBe('DonDownload/0.1.0')
     }
+  })
+
+  it('verifies the Ed25519 signature before trusting the checksum file', async () => {
+    const dir = await makeTemp()
+    const bytes = new TextEncoder().encode('signed installer')
+    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const { fetchImpl, calls } = createFetch({
+      api: () =>
+        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+          url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
+        }),
+      sums: () => response(sumsFor(bytes, name)),
+      installer: () => response(bytes)
+    })
+    const checker = makeChecker(dir, { fetchImpl })
+    const state = await checker.check({ force: true })
+    expect(state.status).toBe('ready')
+    expect(calls.some((call) => call.url.endsWith('SHA256SUMS.txt.sig'))).toBe(true)
+    const signatureIndex = calls.findIndex((call) =>
+      call.url.endsWith('SHA256SUMS.txt.sig')
+    )
+    const installerIndex = calls.findIndex((call) => call.url.includes('setup.exe'))
+    expect(signatureIndex).toBeGreaterThan(-1)
+    expect(signatureIndex).toBeLessThan(installerIndex)
+  })
+
+  it('refuses a checksum file whose signature was made over different bytes', async () => {
+    const dir = await makeTemp()
+    const bytes = new TextEncoder().encode('installer')
+    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const original = sumsFor(bytes, name)
+    const tampered = `${'0'.repeat(64)}  ${name}\n`
+    const { fetchImpl, calls } = createFetch({
+      api: () =>
+        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+          url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
+        }),
+      sums: () => response(tampered),
+      signature: () => response(signSums(original)),
+      installer: () => response(bytes)
+    })
+    const state = await makeChecker(dir, { fetchImpl }).check({ force: true })
+    expect(state.status).toBe('failed')
+    expect(state.message).toMatch(/signature/i)
+    expect(calls.some((call) => call.url.includes('setup.exe'))).toBe(false)
+  })
+
+  it('refuses a missing, malformed, oversized or wrongly signed signature', async () => {
+    const dir = await makeTemp()
+    const bytes = new TextEncoder().encode('installer')
+    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const api = () =>
+      response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
+      })
+
+    const missing = createFetch({
+      api: () =>
+        response(
+          releaseJson('0.2.0', {
+            installerBytes: bytes,
+            includeSignature: false
+          }),
+          { url: 'https://api.github.com/repos/acme/dondownload/releases/latest' }
+        ),
+      sums: () => response(sumsFor(bytes, name)),
+      installer: () => response(bytes)
+    })
+    const missingState = await makeChecker(dir, {
+      fetchImpl: missing.fetchImpl
+    }).check({ force: true })
+    expect(missingState.status).toBe('failed')
+    expect(missingState.message).toMatch(/missing/i)
+
+    const malformed = createFetch({
+      api,
+      sums: () => response(sumsFor(bytes, name)),
+      signature: () => response('not-base64'),
+      installer: () => response(bytes)
+    })
+    expect(
+      (await makeChecker(dir, { fetchImpl: malformed.fetchImpl }).check({
+        force: true
+      })).message
+    ).toMatch(/signature/i)
+
+    const tampered = createFetch({
+      api,
+      sums: () => response(sumsFor(bytes, name)),
+      signature: () => response(Buffer.alloc(64).toString('base64')),
+      installer: () => response(bytes)
+    })
+    expect(
+      (await makeChecker(dir, { fetchImpl: tampered.fetchImpl }).check({
+        force: true
+      })).message
+    ).toMatch(/signature/i)
+
+    const wrongKey = createFetch({
+      api,
+      sums: () => response(sumsFor(bytes, name)),
+      installer: () => response(bytes)
+    })
+    const wrongKeyState = await makeChecker(dir, {
+      fetchImpl: wrongKey.fetchImpl,
+      signingPublicKey: WRONG_PUBLIC_KEY
+    }).check({ force: true })
+    expect(wrongKeyState.status).toBe('failed')
+    expect(wrongKeyState.message).toMatch(/signature/i)
+
+    const oversized = createFetch({
+      api,
+      sums: () => response(sumsFor(bytes, name)),
+      signature: () =>
+        response(new Uint8Array(MAX_APP_UPDATE_SIGNATURE_BYTES + 1)),
+      installer: () => response(bytes)
+    })
+    const oversizedState = await makeChecker(dir, {
+      fetchImpl: oversized.fetchImpl
+    }).check({ force: true })
+    expect(oversizedState.status).toBe('failed')
+    expect(oversizedState.message).toMatch(/safety limit/i)
+  })
+
+  it('refuses to offer updates when a repository is configured without a signing key', async () => {
+    const dir = await makeTemp()
+    const fetchImpl = vi.fn() as unknown as UpdaterFetch
+    const checker = makeChecker(dir, { signingPublicKey: null, fetchImpl })
+
+    const state = await checker.check({ force: true })
+    expect(state.status).toBe('not-configured')
+    expect(state.message).toBe('Update signing key not configured')
+    expect(state.configured).toBe(false)
+
+    const automatic = await checker.autoCheck()
+    expect(automatic.message).toBe('Update signing key not configured')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('accepts a base64 SPKI DER public key', async () => {
+    const dir = await makeTemp()
+    const bytes = new TextEncoder().encode('installer')
+    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const derKey = SIGNING_KEYS.publicKey
+      .export({ type: 'spki', format: 'der' })
+      .toString('base64')
+    const { fetchImpl } = createFetch({
+      api: () =>
+        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+          url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
+        }),
+      sums: () => response(sumsFor(bytes, name)),
+      installer: () => response(bytes)
+    })
+    const state = await makeChecker(dir, {
+      fetchImpl,
+      signingPublicKey: derKey
+    }).check({ force: true })
+    expect(state.status).toBe('ready')
   })
 
   it('refuses to install while a job is active, then verifies and launches', async () => {

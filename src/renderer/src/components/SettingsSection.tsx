@@ -64,7 +64,7 @@ function updateStatusLabel(state: YtdlpUpdateState | null): string {
 function appUpdateStatusLabel(state: AppUpdateState | null): string {
   if (!state) return 'Not checked yet'
   if (!state.configured || state.status === 'not-configured') {
-    return 'Update source not configured'
+    return state.message ?? 'Update source not configured'
   }
   switch (state.status) {
     case 'idle':
