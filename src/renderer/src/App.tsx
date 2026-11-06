@@ -380,17 +380,19 @@ export default function App(): JSX.Element {
     return allRows.filter((row) => !pendingRemoval.hidden.has(row.key))
   }, [allRows, pendingRemoval.hidden])
   // A committed removal may already be gone from the snapshot; the hidden
-  // keys then need no further bookkeeping.
-  const listedKeys = useMemo(
-    () => new Set(listedRows.map((row) => row.key)),
-    [listedRows]
+  // keys then need no further bookkeeping. Reconcile against the backend
+  // snapshot, not the filtered list: hidden rows are absent from `listedRows`
+  // by definition, so using it would drop every pending key immediately.
+  const snapshotKeys = useMemo(
+    () => new Set(allRows.map((row) => row.key)),
+    [allRows]
   )
   /* eslint-disable react-hooks/set-state-in-effect -- the hidden set is reconciled against the latest snapshot after it changes */
   useEffect(() => {
     setPendingRemoval((current) =>
-      reconcilePendingRemoval(current, listedKeys)
+      reconcilePendingRemoval(current, snapshotKeys)
     )
-  }, [listedKeys])
+  }, [snapshotKeys])
   /* eslint-enable react-hooks/set-state-in-effect */
   const statusCounts = useMemo(
     () => buildStatusCounts(listedRows, 'all', query),

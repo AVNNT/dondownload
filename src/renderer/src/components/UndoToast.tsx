@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
+import { createCountdown, type Countdown } from '../lib/countdown'
 
 export interface UndoToastProps {
   /** Human label of what was removed, e.g. a title or "3 downloads". */
@@ -25,35 +26,52 @@ export function UndoToast({
   onExpire
 }: UndoToastProps): JSX.Element {
   const [paused, setPaused] = useState(false)
-  const [startedAt, setStartedAt] = useState(() => Date.now())
   const [remaining, setRemaining] = useState(durationMs)
   const undoRef = useRef<HTMLButtonElement | null>(null)
+  // Deadline-based countdown: the remaining time is always derived from the
+  // clock, so ticking never compounds and pausing keeps the elapsed time.
+  const countdownRef = useRef<Countdown | null>(null)
+  const expiredRef = useRef(false)
+  const onExpireRef = useRef(onExpire)
 
-  // Count down in small steps so pausing keeps the elapsed time.
+  const getCountdown = (): Countdown => {
+    countdownRef.current ??= createCountdown({
+      durationMs,
+      now: Date.now()
+    })
+    return countdownRef.current
+  }
+
+  useEffect(() => {
+    onExpireRef.current = onExpire
+  }, [onExpire])
+
   useEffect(() => {
     if (paused) return
-    const timer = window.setInterval(() => {
-      const left = remaining - (Date.now() - startedAt)
+    const countdown = getCountdown()
+    const tick = (): void => {
+      const left = countdown.remaining(Date.now())
+      setRemaining(left)
       if (left <= 0) {
         window.clearInterval(timer)
-        onExpire()
-        return
+        // Guarded so a late tick can never commit the removal twice.
+        if (!expiredRef.current) {
+          expiredRef.current = true
+          onExpireRef.current()
+        }
       }
-      setRemaining(left)
-    }, 100)
+    }
+    const timer = window.setInterval(tick, 100)
     return () => window.clearInterval(timer)
-  }, [paused, startedAt, remaining, onExpire])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the countdown is created once and lives in a ref
+  }, [paused])
 
   const setPausedState = (next: boolean): void => {
-    setPaused((current) => {
-      if (current === next) return current
-      if (next) {
-        setRemaining((left) => Math.max(0, left - (Date.now() - startedAt)))
-      } else {
-        setStartedAt(Date.now())
-      }
-      return next
-    })
+    const countdown = getCountdown()
+    if (next === countdown.paused()) return
+    if (next) countdown.pause(Date.now())
+    else countdown.resume(Date.now())
+    setPaused(next)
   }
 
   useEffect(() => {
@@ -66,7 +84,8 @@ export function UndoToast({
     return () => window.removeEventListener('keydown', onKey)
   }, [onDismiss])
 
-  const progress = Math.max(0, Math.min(1, remaining / durationMs))
+  const progress =
+    durationMs > 0 ? Math.max(0, Math.min(1, remaining / durationMs)) : 0
 
   return (
     <div
