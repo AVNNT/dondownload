@@ -6,6 +6,7 @@ import {
   MAX_SCAN_ITEMS,
   MAX_SCAN_MESSAGE_LENGTH,
   MAX_SCAN_NAME_LENGTH,
+  MAX_SCAN_OTHER_LINKS,
   MAX_SCAN_PROBES,
   MAX_SCAN_VIDEO_ANALYSES,
   SCAN_SESSION_BUDGET_MS,
@@ -22,7 +23,10 @@ import {
   type ScanVideoFormat
 } from '@shared/scanner'
 import { ValidationError, normalizeHttpUrl } from '@shared/validation'
-import type { PublicTargetLookup } from '../net/publicTarget'
+import {
+  assertPublicTarget,
+  type PublicTargetLookup
+} from '../net/publicTarget'
 import { AppError } from '../errors'
 import { classifyScanCandidate } from './classify'
 import {
@@ -33,6 +37,7 @@ import {
   hasDiscourseGenerator,
   isDiscourseTopicUrl,
   scanDiscourseTopic,
+  type DiscoursePageLink,
   type TaggedCandidate
 } from './extract/discourse'
 import { hostnameOf, normalizeScanUrl } from './extract/url'
@@ -44,6 +49,7 @@ import {
 } from './fetchPage'
 import {
   extractFollowCandidates,
+  isForumNavigationUrl,
   scoreFollowLink
 } from './follow'
 import {
@@ -218,6 +224,12 @@ interface StoredScanSession {
   limited: boolean
   limitedMessage: string | null
   deadline: number
+  /** yt-dlp analyses already started in this session (scan or manual mark). */
+  videoAnalyses: number
+  /** Items with an in-flight "This is a video" analysis. */
+  videoResolving: Set<string>
+  /** Plain page links added to the collapsed "Other links" group. */
+  otherLinks: number
   controller: AbortController
   run: Promise<void> | null
   /** True once the run actually started; queued sessions wait for a slot. */
@@ -443,6 +455,9 @@ export class ScanSessionManager {
       limited: false,
       limitedMessage: null,
       deadline: this.now() + this.sessionBudgetMs,
+      videoAnalyses: 0,
+      videoResolving: new Set<string>(),
+      otherLinks: 0,
       controller: new AbortController(),
       run: null,
       started: false,
@@ -792,6 +807,144 @@ export class ScanSessionManager {
   }
 
   /**
+   * Explicitly re-check a listed page link as a video page. The renderer sends
+   * only opaque IDs; the stored URL is validated against the public-target
+   * policy and resolved through the same bounded media analyzer as a scan.
+   * This never queues a download.
+   */
+  async markAsVideo(
+    rawSessionId: unknown,
+    rawItemId: unknown
+  ): Promise<ScanSession> {
+    this.assertOpen()
+    const id = this.requireSessionId(rawSessionId)
+    const session = this.requireSession(id)
+    if (session.expiresAt <= this.now()) {
+      this.deleteSession(id)
+      throw new AppError(
+        'SCAN_EXPIRED',
+        'This scan has expired. Scan the page again.'
+      )
+    }
+    if (
+      typeof rawItemId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(rawItemId)
+    ) {
+      throw new ValidationError('Invalid scan item identifier.')
+    }
+    const item = session.items.get(rawItemId)
+    if (!item) {
+      throw new AppError(
+        'SCAN_ITEM_NOT_FOUND',
+        'That link does not belong to this scan.'
+      )
+    }
+    // Idempotent: an already converted card is never analysed again.
+    if (item.kind === 'page-link' && item.category === 'video') {
+      return this.fullSnapshot(session)
+    }
+    if (item.kind !== 'page-link') {
+      throw new AppError(
+        'SCAN_ITEM_NOT_A_LINK',
+        'Only a link on the page can be marked as a video.'
+      )
+    }
+    if (item.status !== 'found' && item.status !== 'probing') {
+      throw new AppError(
+        'SCAN_ITEM_NOT_MARKABLE',
+        'That link cannot be checked as a video any more.'
+      )
+    }
+    if (session.videoResolving.has(item.id)) {
+      return this.fullSnapshot(session)
+    }
+
+    session.videoResolving.add(item.id)
+    try {
+      try {
+        await assertPublicTarget(item.url, this.lookup)
+      } catch {
+        throw new AppError(
+          'SCAN_TARGET_NOT_PUBLIC',
+          'Only public web pages can be checked as videos.'
+        )
+      }
+      if (this.analyzeMedia === undefined) {
+        throw new AppError(
+          'SCAN_VIDEO_UNAVAILABLE',
+          'Checking video pages is not available.'
+        )
+      }
+      if (session.videoAnalyses >= this.videoCap) {
+        throw new AppError(
+          'SCAN_VIDEO_LIMIT',
+          `This scan already checked the maximum of ${this.videoCap} videos.`
+        )
+      }
+
+      const current = session.items.get(item.id)
+      if (!current) {
+        throw new AppError(
+          'SCAN_ITEM_NOT_FOUND',
+          'That link does not belong to this scan.'
+        )
+      }
+      current.category = 'video'
+      current.kind = 'page-link'
+      current.status = 'probing'
+      current.verified = false
+      current.sizeBytes = null
+      current.sizeIsEstimate = false
+      current.thumbnailUrl = null
+      current.durationSeconds = null
+      current.width = null
+      current.height = null
+      current.bestResolution = null
+      current.formats = []
+      current.bestOptionId = null
+      current.unavailableReason = null
+      current.videoAnalysis = null
+      current.videoIdentity ??= videoIdentityForUrl(current.url)
+      session.videoAnalyses += 1
+      this.touch(session)
+      this.publish(session, true)
+
+      await resolveVideoCandidates(
+        [{ url: current.url, fallbackName: current.name }],
+        {
+          analyze: async (url, analyzeOptions) => {
+            if (this.now() >= session.deadline) {
+              session.limited = true
+              session.limitedMessage ??=
+                'The scan reached its time limit before every video could be resolved.'
+              throw new AppError(
+                'MEDIA_ANALYSIS_TIMEOUT',
+                'The site took too long to analyze.'
+              )
+            }
+            return this.analyzeMedia!(url, analyzeOptions)
+          },
+          cookieHost: session.cookieHost,
+          cookie: session.cookie,
+          signal: session.controller.signal,
+          cap: 1,
+          onResult: (_index, resolution) => {
+            const live = session.items.get(current.id)
+            if (!live) return
+            this.applyVideoResolution(session, live, resolution)
+          }
+        }
+      )
+
+      this.touch(session)
+      this.publish(session, true)
+      return this.fullSnapshot(session)
+    } finally {
+      session.videoResolving.delete(item.id)
+    }
+  }
+
+  /**
    * Remember a chosen script pairing for a browser-only page. The extension
    * hand-off consumes it once when the same normalized page URL is detected.
    */
@@ -1088,9 +1241,9 @@ export class ScanSessionManager {
       session.expiresAt = this.now() + this.ttlMs
       this.touch(session)
 
-      const discourseCandidates = await this.tryDiscourse(session, page)
+      const discourse = await this.tryDiscourse(session, page)
       const candidates: ScanCandidate[] =
-        discourseCandidates ??
+        discourse?.candidates ??
         extractCandidates(page.body, page.finalUrl).map((candidate) => ({
           ...candidate,
           postNumber: null,
@@ -1100,6 +1253,12 @@ export class ScanSessionManager {
       for (const candidate of candidates) {
         if (this.addCandidate(session, candidate) === 'limited') break
       }
+      this.addOtherLinks(
+        session,
+        discourse === null
+          ? this.contentPageLinks(session, page.body, page.finalUrl)
+          : discourse.pageLinks
+      )
 
       session.updatedAt = this.now()
       this.publish(session, true)
@@ -1171,7 +1330,10 @@ export class ScanSessionManager {
   private async tryDiscourse(
     session: StoredScanSession,
     page: ScanFetchResult
-  ): Promise<TaggedCandidate[] | null> {
+  ): Promise<{
+    candidates: TaggedCandidate[]
+    pageLinks: DiscoursePageLink[]
+  } | null> {
     const pathProbe = isDiscourseTopicUrl(page.finalUrl)
     if (!hasDiscourseGenerator(page.body) && !pathProbe) return null
 
@@ -1214,12 +1376,81 @@ export class ScanSessionManager {
         }
       }
       if (result.limited) session.limited = true
-      return result.candidates
+      return {
+        candidates: result.candidates,
+        pageLinks: result.pageLinks
+      }
     } catch (error) {
       // A path-shaped URL on a non-Discourse site is a false positive. Only a
       // confirmed generator tag turns a failed API read into a needed login.
       if (hasDiscourseGenerator(page.body)) throw error
       return null
+    }
+  }
+
+  /**
+   * Plain page links in the scanned page's own content. Only the first
+   * `MAX_SCAN_OTHER_LINKS` are kept and forum navigation on the scanned host is
+   * skipped; a link elsewhere is ordinary content.
+   */
+  private contentPageLinks(
+    session: StoredScanSession,
+    html: string,
+    pageUrl: string
+  ): DiscoursePageLink[] {
+    const links: DiscoursePageLink[] = []
+    const current = (() => {
+      try {
+        return normalizeScanUrl(pageUrl)
+      } catch {
+        return pageUrl
+      }
+    })()
+    for (const link of extractFollowCandidates(html, pageUrl)) {
+      if (links.length >= MAX_SCAN_OTHER_LINKS) break
+      if (link.isEmbed) continue
+      let normalized: string
+      try {
+        normalized = normalizeScanUrl(link.url)
+      } catch {
+        continue
+      }
+      if (normalized === current) continue
+      if (isForumNavigationUrl(normalized, session.hostname)) continue
+      try {
+        if (new URL(normalized).pathname === '/') continue
+      } catch {
+        continue
+      }
+      links.push({
+        url: normalized,
+        nameHint: link.nameHint,
+        postNumber: null,
+        author: null
+      })
+    }
+    return links
+  }
+
+  /** Add page links without ever treating them as downloadable files. */
+  private addOtherLinks(
+    session: StoredScanSession,
+    links: readonly DiscoursePageLink[]
+  ): void {
+    for (const link of links) {
+      if (session.otherLinks >= MAX_SCAN_OTHER_LINKS) break
+      const status = this.addCandidate(session, {
+        url: link.url,
+        nameHint: link.nameHint,
+        downloadAttribute: false,
+        isAttachment: false,
+        fromScript: false,
+        isEmbed: false,
+        source: 'anchor',
+        postNumber: link.postNumber,
+        author: link.author
+      })
+      if (status === 'limited') break
     }
   }
 
@@ -1297,6 +1528,9 @@ export class ScanSessionManager {
     }
     session.items.set(id, item)
     session.order.push(id)
+    if (item.category === 'page' && item.kind === 'page-link') {
+      session.otherLinks += 1
+    }
     return 'added'
   }
 
@@ -1624,11 +1858,20 @@ export class ScanSessionManager {
       return
     }
 
-    const selected = targets.slice(0, this.videoCap)
+    const remaining = Math.max(0, this.videoCap - session.videoAnalyses)
+    if (remaining === 0) {
+      if (targets.length > 0) {
+        session.limited = true
+        session.limitedMessage ??= `This scan resolved the first ${this.videoCap} videos. Narrow the page selection to resolve more.`
+      }
+      return
+    }
+    const selected = targets.slice(0, remaining)
     if (selected.length < targets.length) {
       session.limited = true
       session.limitedMessage ??= `The scan resolved the first ${this.videoCap} videos. Narrow the page selection to resolve more.`
     }
+    session.videoAnalyses += selected.length
     for (const item of selected) item.status = 'probing'
     this.touch(session)
     this.publish(session, true)

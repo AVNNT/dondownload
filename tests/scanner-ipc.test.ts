@@ -66,7 +66,8 @@ function createWindow() {
 function register() {
   const scanner = {
     start: vi.fn((_url: unknown, _options: unknown) => SESSION),
-    cancel: vi.fn((_sessionId: unknown) => SESSION)
+    cancel: vi.fn((_sessionId: unknown) => SESSION),
+    markAsVideo: vi.fn(async (_sessionId: unknown, _itemId: unknown) => SESSION)
   }
   const scanQueue = {
     queueSelection: vi.fn(async (_sessionId: unknown, _itemIds: unknown) => ({
@@ -109,6 +110,7 @@ describe('scan IPC', () => {
     expect(handlers.has(IPC.scanStart)).toBe(true)
     expect(handlers.has(IPC.scanCancel)).toBe(true)
     expect(handlers.has(IPC.scanQueueSelection)).toBe(true)
+    expect(handlers.has(IPC.scanMarkAsVideo)).toBe(true)
     // scan:updated is main-to-renderer only and has no invoke handler.
     expect(handlers.has(IPC.scanUpdated)).toBe(false)
   })
@@ -170,8 +172,16 @@ describe('scan IPC', () => {
         itemIds: ['item_1', 'item_1']
       })
     ).resolves.toMatchObject({ ok: false })
+    await expect(
+      handler(IPC.scanMarkAsVideo)(event, {
+        sessionId: SESSION.sessionId,
+        itemId: 'item_1',
+        extra: true
+      })
+    ).resolves.toMatchObject({ ok: false })
 
     expect(scanner.cancel).not.toHaveBeenCalled()
+    expect(scanner.markAsVideo).not.toHaveBeenCalled()
     expect(scanQueue.queueSelection).not.toHaveBeenCalled()
   })
 
@@ -203,6 +213,19 @@ describe('scan IPC', () => {
       SESSION.sessionId,
       ['item_1'],
       [{ itemId: 'item_1', optionId: 'opt_1', outputFormat: 'mp4' }]
+    )
+  })
+
+  it('routes "This is a video" with opaque IDs only', async () => {
+    const { scanner, fakeWindow } = register()
+    const result = await handler(IPC.scanMarkAsVideo)(
+      trustedEvent(fakeWindow),
+      { sessionId: SESSION.sessionId, itemId: 'item_1' }
+    )
+    expect(result.ok).toBe(true)
+    expect(scanner.markAsVideo).toHaveBeenCalledWith(
+      SESSION.sessionId,
+      'item_1'
     )
   })
 

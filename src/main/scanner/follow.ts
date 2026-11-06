@@ -287,21 +287,38 @@ function isSkippedPath(parsed: URL, forumHost: string | null): boolean {
   // pull in a Discourse suggested/related topic. The rule only applies to the
   // scanned forum's own host: other sites legitimately use `/t/`, `/u/`, `/new/`
   // and `/top/` for content (for example pixeldrain.com/u/<id>).
-  const first = segments[0]
-  if (
-    forumHost !== null &&
-    parsed.hostname.toLowerCase() === forumHost &&
-    first !== undefined &&
-    FORUM_NAVIGATION_SEGMENTS.has(first)
-  ) {
-    return true
-  }
+  if (isForumNavigationUrl(parsed.href, forumHost)) return true
   // Channel/user/profile hubs are listings, not a single video.
   if (segments.some((segment) => segment === 'channel' || segment === 'channels')) {
     return true
   }
   if (segments.length === 1 && segments[0]?.startsWith('@')) return true
   return false
+}
+
+/**
+ * True for the scanned forum's own navigation paths (`/t/…`, `/u/…`, `/new`,
+ * …). Other hosts keep those paths because they are ordinary content there.
+ */
+export function isForumNavigationUrl(
+  rawUrl: string,
+  forumHost: string | null
+): boolean {
+  if (typeof forumHost !== 'string' || forumHost.length === 0) return false
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return true
+  }
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  const target = forumHost.toLowerCase().replace(/\.$/, '')
+  if (host !== target) return false
+  const first = parsed.pathname
+    .split('/')
+    .filter((segment) => segment.length > 0)[0]
+    ?.toLowerCase()
+  return first !== undefined && FORUM_NAVIGATION_SEGMENTS.has(first)
 }
 
 /**

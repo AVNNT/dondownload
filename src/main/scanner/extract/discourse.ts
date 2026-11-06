@@ -1,5 +1,7 @@
 import { extractCandidates, type ExtractedCandidate } from './index'
 import { normalizeScanUrl } from './url'
+import { MAX_SCAN_OTHER_LINKS } from '@shared/scanner'
+import { extractFollowCandidates, isForumNavigationUrl } from '../follow'
 
 /**
  * Discourse adapter.
@@ -27,10 +29,19 @@ export interface TaggedCandidate extends ExtractedCandidate {
   author: string | null
 }
 
+/** A plain page link inside a post, offered as "This is a video". */
+export interface DiscoursePageLink {
+  url: string
+  nameHint: string | null
+  postNumber: number | null
+  author: string | null
+}
+
 export interface DiscourseScanResult {
   detected: boolean
   title: string | null
   candidates: TaggedCandidate[]
+  pageLinks: DiscoursePageLink[]
   pagesFetched: number
   limited: boolean
 }
@@ -229,6 +240,7 @@ export async function scanDiscourseTopic(
       detected: false,
       title: null,
       candidates: [],
+      pageLinks: [],
       pagesFetched: 0,
       limited: false
     }
@@ -238,6 +250,7 @@ export async function scanDiscourseTopic(
       detected: detectedByHtml,
       title: null,
       candidates: [],
+      pageLinks: [],
       pagesFetched: 0,
       limited: false
     }
@@ -259,6 +272,7 @@ export async function scanDiscourseTopic(
       detected: true,
       title: null,
       candidates: [],
+      pageLinks: [],
       pagesFetched: 1,
       limited: false
     }
@@ -320,6 +334,14 @@ export async function scanDiscourseTopic(
     (left, right) => left.post_number - right.post_number
   )
   const candidates: TaggedCandidate[] = []
+  const pageLinks: DiscoursePageLink[] = []
+  const forumHost = (() => {
+    try {
+      return new URL(options.pageUrl).hostname
+    } catch {
+      return ''
+    }
+  })()
   let candidateLimited = false
   for (const post of ordered) {
     if (options.signal?.aborted === true) break
@@ -333,15 +355,18 @@ export async function scanDiscourseTopic(
       topicId,
       post.post_number
     )
-    let base = pageUrl
-    try {
-      base = normalizeScanUrl(pageUrl)
-    } catch {
-      base = options.pageUrl
-    }
-    for (const candidate of extractCandidates(post.cooked, base, {
+    const base = (() => {
+      try {
+        return normalizeScanUrl(pageUrl)
+      } catch {
+        return options.pageUrl
+      }
+    })()
+    const extracted = extractCandidates(post.cooked, base, {
       maxCandidates: 500
-    })) {
+    })
+    const discovered = new Set(extracted.map((candidate) => candidate.url))
+    for (const candidate of extracted) {
       if (candidates.length >= MAX_DISCOURSE_CANDIDATES) {
         candidateLimited = true
         break
@@ -352,6 +377,28 @@ export async function scanDiscourseTopic(
         author: post.username
       })
     }
+    // Plain page links are not file candidates, but the user may still know
+    // one is a video page. Keep a small, post-content-only list for that.
+    if (!candidateLimited && pageLinks.length < MAX_SCAN_OTHER_LINKS) {
+      for (const link of extractFollowCandidates(post.cooked, base, {
+        maxCandidates: 200
+      })) {
+        if (pageLinks.length >= MAX_SCAN_OTHER_LINKS) break
+        if (link.isEmbed || discovered.has(link.url)) continue
+        if (isForumNavigationUrl(link.url, forumHost)) continue
+        try {
+          if (new URL(link.url).pathname === '/') continue
+        } catch {
+          continue
+        }
+        pageLinks.push({
+          url: link.url,
+          nameHint: link.nameHint,
+          postNumber: post.post_number,
+          author: post.username
+        })
+      }
+    }
     if (candidateLimited) break
   }
 
@@ -359,6 +406,7 @@ export async function scanDiscourseTopic(
     detected: true,
     title: topic.title,
     candidates,
+    pageLinks,
     pagesFetched,
     limited:
       candidateLimited ||

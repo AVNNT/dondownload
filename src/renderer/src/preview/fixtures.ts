@@ -652,6 +652,30 @@ export function createPreviewApi(
         status: 'signin',
         postNumber: 7,
         author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-other-link',
+        category: 'page',
+        kind: 'page-link',
+        name: 'Unrecognised video page',
+        hostname: 'media.example.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'found',
+        postNumber: 8,
+        author: 'demo-author'
+      },
+      {
+        id: 'preview-scan-other-link-2',
+        category: 'page',
+        kind: 'page-link',
+        name: 'Creator page',
+        hostname: 'creator.example.com',
+        sizeBytes: null,
+        verified: false,
+        status: 'found',
+        postNumber: 8,
+        author: 'demo-author'
       }
     ]
 
@@ -1562,6 +1586,78 @@ export function createPreviewApi(
       return ok(null)
     },
 
+    markScanItemAsVideo: async (
+      sessionId: string,
+      itemId: string
+    ): Promise<ApiResult<ScanSession>> => {
+      const session = findScanSession(sessionId)
+      if (session === undefined) {
+        return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+      }
+      const item = session.items.find((candidate) => candidate.id === itemId)
+      if (!item) {
+        return fail(PREVIEW_INVALID_INPUT_CODE, 'That link is not in this scan.')
+      }
+      if (item.kind === 'page-link' && item.category === 'video') {
+        return ok(session)
+      }
+      if (item.kind !== 'page-link') {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          'Only a link on the page can be marked as a video.'
+        )
+      }
+      const probing: ScanItem = {
+        ...item,
+        category: 'video',
+        status: 'probing',
+        verified: false
+      }
+      emitScan({
+        ...session,
+        items: session.items.map((candidate) =>
+          candidate.id === itemId ? probing : candidate
+        ),
+        revision: session.revision + 1,
+        updatedAt: now()
+      })
+      const template = session.items.find(
+        (candidate) =>
+          candidate.category === 'video' &&
+          candidate.kind === 'page-link' &&
+          candidate.status === 'ready'
+      )
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const ready: ScanItem = {
+        ...probing,
+        status: 'ready',
+        verified: true,
+        durationSeconds: template?.durationSeconds ?? 180,
+        width: template?.width ?? 1920,
+        height: template?.height ?? 1080,
+        bestResolution: template?.bestResolution ?? '1080p',
+        sizeIsEstimate: true,
+        sizeBytes: template?.sizeBytes ?? 100 * 1024 * 1024,
+        ...(template?.formats === undefined
+          ? {}
+          : { formats: template.formats }),
+        ...(template?.bestOptionId === undefined
+          ? {}
+          : { bestOptionId: template.bestOptionId })
+      }
+      const live = findScanSession(sessionId)
+      if (live === undefined) return fail(PREVIEW_NOT_FOUND_CODE, 'Scan the page again.')
+      const done: ScanSession = {
+        ...live,
+        items: live.items.map((candidate) =>
+          candidate.id === itemId ? ready : candidate
+        ),
+        revision: live.revision + 1,
+        updatedAt: now()
+      }
+      emitScan(done)
+      return ok(done)
+    },
     pickScanMatchVideo: async (
       input: ScanManualMatchInput
     ): Promise<ApiResult<ScanManualMatchResult | null>> => {
