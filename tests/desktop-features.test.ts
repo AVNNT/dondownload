@@ -30,7 +30,7 @@ describe('desktop settings contract', () => {
     const settings = defaultDesktopSettings()
     expect(settings).toEqual({
       resumeInterruptedOnStartup: true,
-      showNotifications: true,
+      showNotifications: false,
       watchClipboard: false,
       launchAtLogin: false,
       interfaceSizePercent: 100

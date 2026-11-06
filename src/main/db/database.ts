@@ -445,7 +445,7 @@ const MIGRATIONS: readonly Migration[] = [
         id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
         resume_interrupted_on_startup INTEGER NOT NULL DEFAULT 1
           CHECK (resume_interrupted_on_startup IN (0, 1)),
-        show_notifications INTEGER NOT NULL DEFAULT 1
+        show_notifications INTEGER NOT NULL DEFAULT 0
           CHECK (show_notifications IN (0, 1)),
         watch_clipboard INTEGER NOT NULL DEFAULT 0
           CHECK (watch_clipboard IN (0, 1)),
@@ -459,7 +459,7 @@ const MIGRATIONS: readonly Migration[] = [
       INSERT OR IGNORE INTO desktop_settings (
         id, resume_interrupted_on_startup, show_notifications,
         watch_clipboard, launch_at_login, interface_size_percent, updated_at
-      ) VALUES (1, 1, 1, 0, 0, 100, 0);
+      ) VALUES (1, 1, 0, 0, 0, 100, 0);
     `
   }
 ]
@@ -621,7 +621,7 @@ function rowToDesktopSettings(row: Record<string, unknown>): DesktopSettings {
   return parseDesktopSettings({
     resumeInterruptedOnStartup:
       number(row, 'resume_interrupted_on_startup', 1) === 1,
-    showNotifications: number(row, 'show_notifications', 1) === 1,
+    showNotifications: number(row, 'show_notifications', 0) === 1,
     watchClipboard: number(row, 'watch_clipboard', 0) === 1,
     launchAtLogin: number(row, 'launch_at_login', 0) === 1,
     interfaceSizePercent: number(row, 'interface_size_percent', 100)

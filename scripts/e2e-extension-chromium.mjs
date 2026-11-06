@@ -35,6 +35,22 @@ import { fileURLToPath } from 'node:url'
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(SCRIPT_DIR, '..')
 const EXTENSION_DIR = path.join(ROOT, 'extension')
+
+/**
+ * Copy the extension for a harness browser WITHOUT its pinned manifest "key".
+ * The key gives the shipped extension a fixed ID that the user's real
+ * native-messaging registration allows; a harness copy carrying it could reach
+ * the user's real running app. Without the key the ID is derived from the temp
+ * path, so only the harness's own temporary registration can ever match it.
+ */
+function copyIsolatedExtension(destination) {
+  fs.cpSync(EXTENSION_DIR, destination, { recursive: true })
+  const manifestPath = path.join(destination, 'manifest.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  delete manifest.key
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  return manifest
+}
 const FFMPEG = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffmpeg.exe')
 const FFPROBE = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffprobe.exe')
 const ARIA2 = path.join(ROOT, 'build', 'vendor', 'aria2', 'aria2c.exe')
@@ -2251,8 +2267,7 @@ async function runRealSites({ tempRoot }) {
   )
 
   const harnessDir = path.join(tempRoot, 'extension-real-sites')
-  fs.cpSync(EXTENSION_DIR, harnessDir, { recursive: true })
-  const harnessManifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'))
+  const harnessManifest = copyIsolatedExtension(harnessDir)
   harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest'])]
   harnessManifest.host_permissions = [
     `${server.origin}/*`,
@@ -3259,14 +3274,18 @@ async function main() {
     )
 
     // ------------------------------------------------------------------
-    // Phase A: the real, unmodified extension from ./extension
+    // Phase A: the real, unmodified extension code from ./extension. Only the
+    // pinned manifest key is dropped, so this browser cannot reach the user's
+    // real app through the fixed extension ID.
     // ------------------------------------------------------------------
+    const realCopyDir = path.join(tempRoot, 'extension-real')
+    copyIsolatedExtension(realCopyDir)
     browserA = await launchChromium({
       userDataDir: path.join(tempRoot, 'profile-real'),
-      extensionPath: EXTENSION_DIR,
+      extensionPath: realCopyDir,
       label: 'real'
     })
-    const workerA = await ensureExtensionLoaded(browserA, EXTENSION_DIR, 'real')
+    const workerA = await ensureExtensionLoaded(browserA, realCopyDir, 'real')
     const optionsA = await openExtensionPage(browserA, workerA.id, 'options.html')
     await sleep(700)
 
@@ -3373,8 +3392,7 @@ async function main() {
     // Phase B: same sources, harness manifest grants the exact fixture origin
     // ------------------------------------------------------------------
     const harnessDir = path.join(tempRoot, 'extension-harness')
-    fs.cpSync(EXTENSION_DIR, harnessDir, { recursive: true })
-    const harnessManifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'))
+    const harnessManifest = copyIsolatedExtension(harnessDir)
     harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest'])]
     harnessManifest.host_permissions =
       nativeOriginPattern === null

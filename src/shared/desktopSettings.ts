@@ -14,7 +14,7 @@ export type InterfaceSize = (typeof INTERFACE_SIZES)[number]
 
 export const DEFAULT_INTERFACE_SIZE: InterfaceSize = 100
 export const DEFAULT_RESUME_INTERRUPTED_ON_STARTUP = true
-export const DEFAULT_SHOW_NOTIFICATIONS = true
+export const DEFAULT_SHOW_NOTIFICATIONS = false
 export const DEFAULT_WATCH_CLIPBOARD = false
 export const DEFAULT_LAUNCH_AT_LOGIN = false
 

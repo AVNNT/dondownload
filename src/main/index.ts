@@ -397,8 +397,12 @@ if (unregisterRequested) {
     applyLoginItem(desktopSettingsManager.getSettings())
 
     notifications = new CompletionNotificationService({
+      // Off by default (opt-in), and never shown in smoke or E2E harness runs.
       isEnabled: () =>
-        desktopSettingsManager?.getSettings().showNotifications ?? false,
+        smoke === null &&
+        process.env.DONDOWNLOAD_INTERACTIVE_SMOKE !== '1' &&
+        process.env.DONDOWNLOAD_SMOKE_TEST !== '1' &&
+        (desktopSettingsManager?.getSettings().showNotifications ?? false),
       onActivate: (kind, id) => {
         showMainWindow()
         mainWindow?.webContents.send(IPC.revealRow, `${kind}:${id}`)
