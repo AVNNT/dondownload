@@ -91,6 +91,84 @@ export function requestExactOriginAccess(chromeApi, site, onResult) {
   }
 }
 
+/**
+ * Optional permissions the recommended welcome action asks for. `downloads`
+ * is included only when the loaded manifest actually declares it as optional,
+ * so the request stays valid if the manifest is tightened later.
+ */
+export function recommendedCapturePermissions(chromeApi) {
+  const permissions = ['webRequest']
+  let optional = null
+  try {
+    const manifest = chromeApi.runtime.getManifest()
+    if (manifest && Array.isArray(manifest.optional_permissions)) {
+      optional = new Set(manifest.optional_permissions)
+    }
+  } catch {
+    optional = null
+  }
+  if (optional === null || optional.has('downloads')) {
+    permissions.unshift('downloads')
+  }
+  return {
+    permissions,
+    origins: ['http://*/*', 'https://*/*']
+  }
+}
+
+/**
+ * Welcome-page recommended setup: one user gesture requests the broad site
+ * grant used by all-site media detection plus optional `downloads`, then turns
+ * on detection and automatic browser hand-off only after the grant succeeds.
+ */
+export function enableRecommendedCapture(chromeApi, onResult) {
+  let details
+  try {
+    details = recommendedCapturePermissions(chromeApi)
+  } catch {
+    onResult({ ok: false, error: 'Capture permissions could not be requested.' })
+    return
+  }
+  try {
+    chromeApi.permissions.request(details, (granted) => {
+      const runtimeError = chromeApi.runtime.lastError
+      if (runtimeError || granted !== true) {
+        onResult({
+          ok: false,
+          error: 'Broad site access was not granted. Capture stays off.'
+        })
+        return
+      }
+      void (async () => {
+        try {
+          const settings = await readCaptureSettings(chromeApi)
+          settings.detectAllSites = true
+          settings.mediaSniffing = true
+          settings.automaticFileHandoff = true
+          const saved = await writeCaptureSettings(chromeApi, settings)
+          onResult(
+            saved
+              ? { ok: true }
+              : {
+                  ok: false,
+                  error:
+                    'The permissions were granted, but the capture setting could not be saved in this browser profile.'
+                }
+          )
+        } catch {
+          onResult({
+            ok: false,
+            error:
+              'The permissions were granted, but the capture setting could not be saved in this browser profile.'
+          })
+        }
+      })()
+    })
+  } catch {
+    onResult({ ok: false, error: 'Capture permissions could not be requested.' })
+  }
+}
+
 /** Turn on the existing all-sites detection option with its optional grants. */
 export function enableAllSitesDetection(chromeApi, onResult) {
   try {

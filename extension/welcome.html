@@ -28,14 +28,23 @@
         <button id="retry" type="button" class="secondary">Retry</button>
       </section>
 
+      <section id="grant" aria-labelledby="grant-title" hidden>
+        <h2 id="grant-title">Enable capture for one site</h2>
+        <p id="grant-detail" class="lead"></p>
+        <button id="grant-button" type="button">Enable on this site</button>
+        <p id="grant-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
       <section aria-labelledby="choices-title">
         <h2 id="choices-title">Where should capture work?</h2>
         <p class="lead">
           Downloads are always explicit. The optional overlay and media
-          detection need site access. You can start with every normal site or
-          choose sites one at a time from the toolbar popup.
+          detection need site access. Start with the recommended setup for every
+          normal site, or choose sites one at a time from the toolbar popup.
         </p>
-        <button id="enable-all-sites" type="button">Enable on all sites</button>
+        <button id="enable-all-sites" type="button">
+          Recommended: capture downloads and detect media everywhere
+        </button>
         <button id="choose-later" type="button" class="secondary">
           Choose sites later
         </button>

@@ -13,9 +13,16 @@ import {
 } from '../extension/onboarding'
 import {
   enableAllSitesDetection,
+  enableRecommendedCapture,
+  recommendedCapturePermissions,
   requestExactOriginAccess,
   siteAccessGranted
 } from '../extension/site-enable'
+import {
+  grantPageUrl,
+  parseGrantParameter,
+  readGrantParameter
+} from '../extension/grant-parameter'
 
 afterEach(() => {
   delete (globalThis as any).chrome
@@ -64,6 +71,11 @@ function installFakeChrome(options: { grant?: boolean } = {}): {
   const chrome: any = {
     runtime: {
       lastError: undefined,
+      getManifest() {
+        return {
+          optional_permissions: ['downloads', 'webRequest', 'cookies']
+        }
+      },
       sendMessage(message: any, callback: (value: unknown) => void) {
         messages.push(message)
         callback({ ok: true, granted: true, registered: true, injected: true })
@@ -233,5 +245,133 @@ describe('popup exact-site enable', () => {
     const saved = fake.local.dondownloadCaptureSettings as any
     expect(saved.detectAllSites).toBe(true)
     expect(saved.mediaSniffing).toBe(true)
+  })
+})
+
+describe('welcome recommended capture setup', () => {
+  it('requests the all-sites host grant plus optional downloads, then saves both options', async () => {
+    const fake = installFakeChrome()
+    expect(recommendedCapturePermissions(fake.chrome)).toEqual({
+      permissions: ['downloads', 'webRequest'],
+      origins: ['http://*/*', 'https://*/*']
+    })
+
+    const result = await new Promise<any>((resolve) => {
+      enableRecommendedCapture(fake.chrome, resolve)
+    })
+
+    expect(fake.permissionRequests).toEqual([
+      {
+        permissions: ['downloads', 'webRequest'],
+        origins: ['http://*/*', 'https://*/*']
+      }
+    ])
+    expect(result).toEqual({ ok: true })
+    const saved = fake.local.dondownloadCaptureSettings as any
+    expect(saved.detectAllSites).toBe(true)
+    expect(saved.mediaSniffing).toBe(true)
+    expect(saved.automaticFileHandoff).toBe(true)
+  })
+
+  it('leaves downloads out when the manifest does not declare it optional', () => {
+    const fake = installFakeChrome()
+    fake.chrome.runtime.getManifest = () => ({
+      optional_permissions: ['webRequest', 'cookies']
+    })
+    expect(recommendedCapturePermissions(fake.chrome)).toEqual({
+      permissions: ['webRequest'],
+      origins: ['http://*/*', 'https://*/*']
+    })
+  })
+
+  it('writes nothing before the grant succeeds and nothing on denial', async () => {
+    const fake = installFakeChrome()
+    let decide: ((granted: boolean) => void) | null = null
+    fake.chrome.permissions.request = (
+      details: unknown,
+      callback: (granted: boolean) => void
+    ) => {
+      fake.permissionRequests.push(details)
+      decide = callback
+    }
+
+    const result = new Promise<any>((resolve) => {
+      enableRecommendedCapture(fake.chrome, resolve)
+    })
+    expect(fake.local.dondownloadCaptureSettings).toBeUndefined()
+    decide!(false)
+    expect(await result).toMatchObject({ ok: false })
+    expect(fake.local.dondownloadCaptureSettings).toBeUndefined()
+
+    const denied = installFakeChrome({ grant: false })
+    expect(
+      await new Promise<any>((resolve) => {
+        enableRecommendedCapture(denied.chrome, resolve)
+      })
+    ).toMatchObject({ ok: false })
+    expect(denied.local.dondownloadCaptureSettings).toBeUndefined()
+  })
+})
+
+describe('grant parameter validation', () => {
+  it('accepts only a canonical exact http(s) origin', () => {
+    expect(parseGrantParameter('https://example.com')).toBe('https://example.com')
+    expect(parseGrantParameter('http://127.0.0.1:34526')).toBe(
+      'http://127.0.0.1:34526'
+    )
+    expect(parseGrantParameter('https://sub.example.co.uk')).toBe(
+      'https://sub.example.co.uk'
+    )
+  })
+
+  it('rejects paths, queries, fragments, credentials, wildcards and non-http schemes', () => {
+    for (const value of [
+      'https://example.com/path',
+      'https://example.com/',
+      'https://example.com?x=1',
+      'https://example.com#fragment',
+      'https://user:pass@example.com',
+      'https://user@example.com',
+      'https://*.example.com',
+      'https://example.com:443',
+      'ftp://example.com',
+      'file:///C:/secret.txt',
+      'chrome://extensions',
+      'javascript:alert(1)',
+      '*',
+      'https://exa mple.com',
+      'not a url',
+      ''
+    ]) {
+      expect(parseGrantParameter(value)).toBeNull()
+    }
+    expect(parseGrantParameter(null)).toBeNull()
+    expect(parseGrantParameter(42)).toBeNull()
+    expect(parseGrantParameter({ origin: 'https://example.com' })).toBeNull()
+  })
+
+  it('distinguishes a missing parameter from an invalid one', () => {
+    expect(readGrantParameter('')).toEqual({ present: false, origin: null })
+    expect(readGrantParameter('?other=1')).toEqual({
+      present: false,
+      origin: null
+    })
+    expect(readGrantParameter('?grant=https%3A%2F%2Fexample.com')).toEqual({
+      present: true,
+      origin: 'https://example.com'
+    })
+    expect(readGrantParameter('?grant=https%3A%2F%2Fexample.com%2Fpath')).toEqual({
+      present: true,
+      origin: null
+    })
+  })
+
+  it('builds a welcome URL only for an exact origin', () => {
+    expect(
+      grantPageUrl('chrome-extension://abc/welcome.html', 'https://example.com')
+    ).toBe('chrome-extension://abc/welcome.html?grant=https%3A%2F%2Fexample.com')
+    expect(
+      grantPageUrl('chrome-extension://abc/welcome.html', 'https://example.com/x')
+    ).toBeNull()
   })
 })

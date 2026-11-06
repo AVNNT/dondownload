@@ -17,3 +17,11 @@ export function enableAllSitesDetection(
   chromeApi: unknown,
   onResult: (result: EnableResult) => void
 ): void
+export function recommendedCapturePermissions(chromeApi: unknown): {
+  permissions: string[]
+  origins: string[]
+}
+export function enableRecommendedCapture(
+  chromeApi: unknown,
+  onResult: (result: EnableResult) => void
+): void
