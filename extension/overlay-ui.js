@@ -546,6 +546,12 @@
     state.settingsListener = function (changes, area) {
       if (area !== 'local' || !changes || !changes.dondownloadCaptureSettings) return
       var settings = changes.dondownloadCaptureSettings.newValue
+      // Excluding this site (or re-including it) is handled by the entry
+      // script, which owns teardown.
+      if (ns.isExcludedSite && ns.isExcludedSite(settings)) {
+        if (ns.applyExclusions) ns.applyExclusions(settings)
+        return
+      }
       state.floatingEnabled = !settings || settings.floatingTriggerEnabled !== false
       if (state.floatingEnabled) syncFloatingTrigger()
       else if (!state.panelOpen) hideNow()

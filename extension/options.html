@@ -123,19 +123,20 @@
       </section>
 
       <section class="group" aria-labelledby="handoff-heading">
-        <h2 id="handoff-heading">Download browser files with DonDownload</h2>
+        <h2 id="handoff-heading">Use DonDownload on all sites</h2>
         <p class="lead">
           Off until you allow it once. When it is on, a normal browser download
           (files, installers, PDFs, and direct video/audio files such as MP4,
-          MKV or MP3) is handed to DonDownload. The browser's cookies for
+          MKV or MP3) is handed to DonDownload, and the video overlay shows on
+          every normal http/https site. The browser's cookies for
           exactly that download URL are sent with it so login-protected files
           work; they are kept in memory for that job only and never saved. HTML
           pages, HLS/DASH playlists and segments, extension downloads and
           excluded sites are never touched. The browser download is cancelled
           only after DonDownload returns a durable receipt; any failure leaves
-          it running. Allowing asks for the optional <strong>downloads</strong>
-          and <strong>cookies</strong> permissions plus site access in one
-          prompt.
+          it running. Allowing asks for the optional <strong>downloads</strong>,
+          <strong>cookies</strong> and <strong>webRequest</strong> permissions
+          plus site access in one prompt.
         </p>
         <p id="permission-state" class="state" role="status" aria-live="polite"></p>
         <button id="request-downloads" class="btn primary" type="button">
@@ -146,9 +147,9 @@
           <span>
             <strong>Download browser files with DonDownload</strong>
             <span class="hint">
-              Enabled only after the optional permissions are granted. Turning
-              it off keeps the permissions and leaves every download in the
-              browser.
+              Enabled only after the optional permissions are granted, together
+              with the all-sites overlay. Turning it off keeps the permissions
+              and leaves every download in the browser.
             </span>
           </span>
         </label>

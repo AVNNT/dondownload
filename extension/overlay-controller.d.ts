@@ -90,6 +90,24 @@ export function forgetOverlayTab(
   tabId: unknown
 ): Promise<boolean>
 export function overlayRemovalConfirmed(result: unknown): boolean
+export function allSitesHostsGranted(chromeApi: unknown): Promise<boolean>
+export function allSitesOverlayWantedFromSettings(chromeApi: unknown): Promise<boolean>
+export function injectAllSitesIntoOpenTabs(chromeApi: unknown): Promise<{
+  ok: boolean
+  injected: number[]
+  skipped: number[]
+  failed: number[]
+}>
+export function reconcileOverlayMode(
+  chromeApi: unknown,
+  options?: { injectOpenTabs?: boolean }
+): Promise<{
+  ok: boolean
+  mode: 'all-sites' | 'per-origin' | 'unknown'
+  registered: boolean
+  restored?: number
+  injected: number[]
+}>
 export function describeOverlayStatus(input: {
   available?: boolean
   granted?: boolean

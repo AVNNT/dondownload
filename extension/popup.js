@@ -182,6 +182,22 @@ async function refreshSiteAccess() {
     if (siteSection !== null) siteSection.hidden = true
     return
   }
+  // All-sites mode already covers every site, so the per-site enable button
+  // would be redundant (and its registration would inject the overlay twice).
+  let settings
+  try {
+    settings = await readCaptureSettings(chrome)
+  } catch {
+    settings = null
+  }
+  if (settings !== null && settings.detectAllSites === true) {
+    siteSection.hidden = false
+    siteAccessState.textContent = 'All sites'
+    siteHint.textContent =
+      'The overlay is on for every site. Turn off "Use DonDownload on all sites" to pick sites one by one.'
+    enableSiteButton.hidden = true
+    return
+  }
   siteSection.hidden = false
   const granted = await siteAccessGranted(chrome, pageOrigin)
   enableSiteButton.textContent = siteEnableLabel(pageOrigin)
@@ -277,7 +293,7 @@ takeoverToggle.addEventListener('change', () => {
       void refreshTakeover()
       setTakeoverStatus(
         'success',
-        'On. New browser downloads go to DonDownload with your browser sign-in.'
+        'On. New browser downloads go to DonDownload and the video overlay shows on every site.'
       )
     })
     return
@@ -293,7 +309,7 @@ takeoverToggle.addEventListener('change', () => {
         return
       }
       void refreshTakeover()
-      setTakeoverStatus('success', 'Off. Browser downloads stay in the browser.')
+      setTakeoverStatus('success', 'Off. Browser downloads stay in the browser and the overlay is limited to sites you enable one by one.')
     })
     .catch(() => {
       takeoverToggle.disabled = false

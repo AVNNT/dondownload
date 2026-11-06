@@ -10,14 +10,19 @@
 // callback runs, so the grant is also applied through permissions.onAdded.
 
 import {
+  OVERLAY_ALL_SITES_ID,
+  OVERLAY_ALL_SITES_MATCHES,
   OVERLAY_MESSAGE_TYPES,
   OVERLAY_SCRIPT_FILES,
+  allSitesOverlayWanted,
   matchPatternToOrigin,
   originFromUrl,
   originToMatchPattern,
+  overlayAllSitesRegistration,
   overlayOriginFromRegistration,
   overlayRegistrationForOrigin
 } from './site-policy.js'
+import { readCaptureSettings } from './capture-settings.js'
 
 export const OVERLAY_PENDING_STORAGE_KEY = 'dondownloadOverlayPendingEnable'
 export const OVERLAY_PENDING_TTL_MS = 5 * 60 * 1000
@@ -159,7 +164,12 @@ function sameRegistration(stored, expected) {
   if (!stored || typeof stored !== 'object') return false
   if (stored.id !== expected.id) return false
   const matches = Array.isArray(stored.matches) ? stored.matches : []
-  if (matches.length !== 1 || matches[0] !== expected.matches[0]) return false
+  if (
+    matches.length !== expected.matches.length ||
+    matches.some((pattern, index) => pattern !== expected.matches[index])
+  ) {
+    return false
+  }
   const js = Array.isArray(stored.js) ? stored.js : []
   return (
     js.length === expected.js.length &&
@@ -212,6 +222,18 @@ async function enableUncached(chromeApi, origin, tabId) {
     return failure('INVALID_ORIGIN', 'The page origin is not supported.')
   }
 
+  // In all-sites mode the one broad registration already covers every origin,
+  // so a second per-origin registration would inject the overlay twice.
+  if (await allSitesOverlayActive(chromeApi)) {
+    return injectOverlayIntoMatchingTab(
+      chromeApi,
+      origin,
+      tabId,
+      'ALL_SITES',
+      'The overlay is on for all sites. Reload the page if the button is missing.'
+    )
+  }
+
   let granted = false
   try {
     granted = (await chromeApi.permissions.contains({ origins: [pattern] })) === true
@@ -259,15 +281,34 @@ async function enableUncached(chromeApi, origin, tabId) {
     )
   }
 
+  return injectOverlayIntoMatchingTab(
+    chromeApi,
+    origin,
+    tabId,
+    'ORIGIN_MISMATCH',
+    'The overlay is registered for this site, but this tab is no longer on it. Reload the page to add the button.'
+  )
+}
+
+/**
+ * Inject and verify the overlay in one tab that is already on `origin`.
+ * `mismatchReason` is reported when the tab moved to another page.
+ */
+async function injectOverlayIntoMatchingTab(
+  chromeApi,
+  origin,
+  tabId,
+  mismatchReason,
+  mismatchMessage
+) {
   if (!(await tabMatchesOrigin(chromeApi, tabId, origin))) {
     return {
       ok: true,
       granted: true,
       registered: true,
       injected: false,
-      reason: 'ORIGIN_MISMATCH',
-      message:
-        'The overlay is registered for this site, but this tab is no longer on it. Reload the page to add the button.'
+      reason: mismatchReason,
+      message: mismatchMessage
     }
   }
 
@@ -315,6 +356,243 @@ async function enableUncached(chromeApi, origin, tabId) {
   }
 
   return { ok: true, granted: true, registered: true, injected: true }
+}
+
+/**
+ * True when the broad host grant is present. All-sites mode needs it for both
+ * the registration and the injection into already-open tabs.
+ */
+export async function allSitesHostsGranted(chromeApi) {
+  try {
+    return (
+      (await chromeApi.permissions.contains({
+        origins: [...OVERLAY_ALL_SITES_MATCHES]
+      })) === true
+    )
+  } catch {
+    return false
+  }
+}
+
+/** True when the stored settings ask for the all-sites overlay. */
+export async function allSitesOverlayWantedFromSettings(chromeApi) {
+  let settings
+  try {
+    settings = await readCaptureSettings(chromeApi)
+  } catch {
+    return false
+  }
+  if (!allSitesOverlayWanted(settings, true)) return false
+  return allSitesHostsGranted(chromeApi)
+}
+
+/** True when the all-sites registration is stored. */
+async function allSitesRegistrationStored(chromeApi) {
+  try {
+    const stored = await chromeApi.scripting.getRegisteredContentScripts({
+      ids: [OVERLAY_ALL_SITES_ID]
+    })
+    return Array.isArray(stored) && stored.length > 0
+  } catch {
+    return false
+  }
+}
+
+async function allSitesOverlayActive(chromeApi) {
+  return (
+    (await allSitesOverlayWantedFromSettings(chromeApi)) &&
+    (await allSitesRegistrationStored(chromeApi))
+  )
+}
+
+/** Remove the all-sites registration and verify it is really gone. */
+async function removeAllSitesRegistration(chromeApi) {
+  try {
+    await chromeApi.scripting.unregisterContentScripts({
+      ids: [OVERLAY_ALL_SITES_ID]
+    })
+  } catch {
+    // It may already be absent; the check below decides the truth.
+  }
+  return !(await allSitesRegistrationStored(chromeApi))
+}
+
+function isExcludedOrigin(settings, origin) {
+  return Boolean(
+    settings &&
+      Array.isArray(settings.excludedOrigins) &&
+      origin !== null &&
+      settings.excludedOrigins.includes(origin)
+  )
+}
+
+/**
+ * Inject the overlay into every already-open http(s) tab that does not have it
+ * yet. A tab that already runs the overlay (from a per-origin registration or
+ * an earlier injection) is skipped, so nothing is ever injected twice.
+ */
+export async function injectAllSitesIntoOpenTabs(chromeApi) {
+  let settings
+  try {
+    settings = await readCaptureSettings(chromeApi)
+  } catch {
+    settings = { excludedOrigins: [] }
+  }
+  let tabs
+  try {
+    tabs = await chromeApi.tabs.query({ url: [...OVERLAY_ALL_SITES_MATCHES] })
+  } catch {
+    return { ok: false, injected: [], skipped: [], failed: [] }
+  }
+  const injected = []
+  const skipped = []
+  const failed = []
+  for (const tab of Array.isArray(tabs) ? tabs : []) {
+    const tabId = tab && tab.id
+    if (!Number.isInteger(tabId) || tabId < 0) continue
+    const origin = originFromUrl(tab.url)
+    if (origin === null) {
+      skipped.push(tabId)
+      continue
+    }
+    if (isExcludedOrigin(settings, origin)) {
+      skipped.push(tabId)
+      continue
+    }
+    try {
+      const presence = await chromeApi.scripting.executeScript({
+        target: { tabId, allFrames: false },
+        func: overlayPresenceProbe,
+        world: 'ISOLATED'
+      })
+      const present =
+        Array.isArray(presence) &&
+        presence.some((result) => result && result.result === true)
+      if (present) {
+        skipped.push(tabId)
+        continue
+      }
+      await chromeApi.scripting.executeScript({
+        target: { tabId, allFrames: false },
+        files: [...OVERLAY_SCRIPT_FILES],
+        injectImmediately: true
+      })
+      await rememberOverlayTab(chromeApi, origin, tabId)
+      injected.push(tabId)
+    } catch {
+      // Restricted pages (browser UI, extension pages) and discarded tabs.
+      failed.push(tabId)
+    }
+  }
+  return { ok: true, injected, skipped, failed }
+}
+
+/**
+ * Make the persistent registrations match the current settings and grant.
+ *
+ * - all-sites mode on: register the one broad registration and drop every
+ *   per-origin registration (the broad one already covers them);
+ * - all-sites mode off: remove the broad registration and restore the
+ *   per-origin registrations for origins that still have their grant.
+ *
+ * `injectOpenTabs` additionally injects the overlay into tabs that are already
+ * open, so turning the switch on shows it without a reload.
+ */
+export async function reconcileOverlayMode(chromeApi, options = {}) {
+  let settings
+  try {
+    settings = await readCaptureSettings(chromeApi)
+  } catch {
+    return { ok: false, mode: 'unknown', registered: false, injected: [] }
+  }
+  const broadGranted = await allSitesHostsGranted(chromeApi)
+  const wanted = allSitesOverlayWanted(settings, broadGranted)
+
+  if (!wanted) {
+    const removed = await removeAllSitesRegistration(chromeApi)
+    let restored = 0
+    if (settings.floatingTriggerEnabled !== false) {
+      try {
+        const enabled = await readEnabledOrigins(chromeApi)
+        const present = new Set(enabled)
+        for (const origin of enabled) {
+          if (present.has(origin)) continue
+          const registration = overlayRegistrationForOrigin(origin)
+          if (registration === null) continue
+          try {
+            await chromeApi.scripting.registerContentScripts([registration])
+            restored += 1
+          } catch {
+            // The next reconcile or the popup retries.
+          }
+        }
+      } catch {
+        // Best effort; the popup can still enable a site explicitly.
+      }
+    }
+    return {
+      ok: removed,
+      mode: 'per-origin',
+      registered: false,
+      restored,
+      injected: []
+    }
+  }
+
+  const registration = overlayAllSitesRegistration()
+  try {
+    const stored = await chromeApi.scripting.getRegisteredContentScripts({
+      ids: [registration.id]
+    })
+    if (!Array.isArray(stored) || stored.length === 0) {
+      await chromeApi.scripting.registerContentScripts([registration])
+    } else if (!sameRegistration(stored[0], registration)) {
+      await chromeApi.scripting.updateContentScripts([registration])
+    }
+  } catch {
+    return { ok: false, mode: 'all-sites', registered: false, injected: [] }
+  }
+  const registered = await allSitesRegistrationStored(chromeApi)
+
+  // One broad registration is enough; per-origin ones would inject twice.
+  try {
+    const registrations = await chromeApi.scripting.getRegisteredContentScripts()
+    const perOrigin = (Array.isArray(registrations) ? registrations : [])
+      .filter((entry) => overlayOriginFromRegistration(entry) !== null)
+      .map((entry) => entry.id)
+    if (perOrigin.length > 0) {
+      await chromeApi.scripting.unregisterContentScripts({ ids: perOrigin })
+    }
+  } catch {
+    // The content script guards against a double host anyway.
+  }
+
+  const injected =
+    options.injectOpenTabs === true
+      ? (await injectAllSitesIntoOpenTabs(chromeApi)).injected
+      : []
+  return { ok: registered, mode: 'all-sites', registered, injected }
+}
+
+/**
+ * Origins the user enabled one by one. They are the session-tracked tabs plus
+ * any origin with a stored per-origin registration; both are already limited
+ * to origins the user chose.
+ */
+async function readEnabledOrigins(chromeApi) {
+  const origins = new Set()
+  try {
+    const registrations = await chromeApi.scripting.getRegisteredContentScripts()
+    for (const registration of Array.isArray(registrations) ? registrations : []) {
+      const origin = overlayOriginFromRegistration(registration)
+      if (origin !== null) origins.add(origin)
+    }
+  } catch {
+    // Fall through with whatever the session map has.
+  }
+  const tracked = await readTrackedTabs(chromeApi)
+  for (const origin of Object.keys(tracked)) origins.add(origin)
+  return [...origins]
 }
 
 /** Register the exact origin and inject/verify the overlay in the current tab. */
@@ -601,7 +879,20 @@ export async function handleOverlayReady(chromeApi, message, sender) {
   try {
     granted = (await chromeApi.permissions.contains({ origins: [pattern] })) === true
   } catch {
-    return false
+    granted = false
+  }
+
+  // In all-sites mode the broad grant covers this origin, and an excluded site
+  // must never run the overlay.
+  if (!granted && (await allSitesOverlayActive(chromeApi))) {
+    let excluded = false
+    try {
+      const settings = await readCaptureSettings(chromeApi)
+      excluded = isExcludedOrigin(settings, origin)
+    } catch {
+      excluded = false
+    }
+    if (!excluded) return rememberOverlayTab(chromeApi, origin, tabId)
   }
 
   if (!granted) {
@@ -627,6 +918,15 @@ export async function handlePermissionsRemoved(chromeApi, permissions) {
     ? permissions.origins
     : []
   if (removed.length === 0) return []
+
+  // Revoking the broad host grant turns all-sites mode off: remove the one
+  // broad registration and stop there (no per-origin grant was revoked).
+  if (removed.some((pattern) => OVERLAY_ALL_SITES_MATCHES.includes(pattern))) {
+    await removeAllSitesRegistration(chromeApi)
+    // Per-origin grants are untouched, so their registrations and overlays
+    // stay; only the broad registration goes away.
+    return []
+  }
 
   const origins = new Set()
   for (const pattern of removed) {

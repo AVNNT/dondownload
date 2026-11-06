@@ -30,8 +30,12 @@ function createFake(options: FakeOptions = {}) {
       getManifest() {
         return { optional_permissions: ['downloads', 'webRequest', 'cookies'] }
       },
-      sendMessage(message: unknown, callback: (value: unknown) => void) {
+      sendMessage(message: any, callback: (value: unknown) => void) {
         messages.push(message)
+        if (message && message.type === 'dondownload:overlay-all-sites') {
+          callback({ ok: true, registered: true, injected: [7] })
+          return
+        }
         callback({ ok: true, listener: true })
       }
     },
@@ -84,18 +88,18 @@ function run(chrome: any): Promise<{ ok: boolean; error?: string; listener?: boo
 }
 
 describe('popup browser download takeover switch', () => {
-  it('requests downloads, cookies and the host permission in one call', async () => {
+  it('requests downloads, cookies, webRequest and the host permission in one call', async () => {
     const fake = createFake()
     expect(browserDownloadPermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'cookies'],
+      permissions: ['downloads', 'cookies', 'webRequest'],
       origins: [...BROWSER_DOWNLOAD_HOST_ORIGINS]
     })
 
     const result = await run(fake.chrome)
-    expect(result).toMatchObject({ ok: true })
+    expect(result).toMatchObject({ ok: true, overlay: true, injected: 1 })
     expect(fake.permissionRequests).toEqual([
       {
-        permissions: ['downloads', 'cookies'],
+        permissions: ['downloads', 'cookies', 'webRequest'],
         origins: ['http://*/*', 'https://*/*']
       }
     ])
@@ -103,9 +107,17 @@ describe('popup browser download takeover switch', () => {
     expect(fake.permissionRequests).toHaveLength(1)
 
     const settings = await readCaptureSettings(fake.chrome)
+    // One switch turns on takeover AND the all-sites overlay.
     expect(settings.automaticFileHandoff).toBe(true)
-    // The service worker is told to install the downloads listener right away.
-    expect(fake.messages).toEqual([{ type: 'dondownload:downloads-support' }])
+    expect(settings.detectAllSites).toBe(true)
+    expect(settings.mediaSniffing).toBe(true)
+    expect(settings.floatingTriggerEnabled).toBe(true)
+    // The service worker is told to install the downloads listener and to
+    // register + inject the all-sites overlay right away.
+    expect(fake.messages).toEqual([
+      { type: 'dondownload:downloads-support' },
+      { type: 'dondownload:overlay-all-sites' }
+    ])
     expect(result.listener).toBe(true)
   })
 
@@ -128,16 +140,24 @@ describe('popup browser download takeover switch', () => {
 
   it('turns off without removing the granted permissions', async () => {
     const fake = createFake({
-      granted: ['downloads', 'cookies', 'http://*/*', 'https://*/*']
+      granted: ['downloads', 'cookies', 'webRequest', 'http://*/*', 'https://*/*']
     })
     await run(fake.chrome)
     expect(await browserDownloadPermissionsGranted(fake.chrome)).toBe(true)
 
+    fake.messages.length = 0
     expect(await disableBrowserDownloadTakeover(fake.chrome)).toBe(true)
     const settings = await readCaptureSettings(fake.chrome)
     expect(settings.automaticFileHandoff).toBe(false)
+    expect(settings.detectAllSites).toBe(false)
+    // Per-site overlay enables and the granted permissions stay.
+    expect(settings.floatingTriggerEnabled).toBe(true)
     expect(fake.granted.has('downloads')).toBe(true)
     expect(fake.granted.has('cookies')).toBe(true)
+    expect(fake.granted.has('webRequest')).toBe(true)
+    expect(fake.granted.has('http://*/*')).toBe(true)
+    // The worker reconciles: the broad overlay registration is removed.
+    expect(fake.messages).toEqual([{ type: 'dondownload:overlay-all-sites' }])
   })
 
   it('reports the current state for the popup', () => {
@@ -149,5 +169,6 @@ describe('popup browser download takeover switch', () => {
     expect(on.enabled).toBe(true)
     expect(on.state).toBe('On')
     expect(on.hint).toContain('10 MB')
+    expect(on.hint).toContain('every site')
   })
 })

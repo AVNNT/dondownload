@@ -14,6 +14,7 @@ import {
   handlePermissionsAdded,
   handlePermissionsRemoved,
   isOverlayTabTracked,
+  reconcileOverlayMode,
   syncOverlayForTab
 } from './overlay-controller.js'
 import {
@@ -538,6 +539,14 @@ async function handleContentDisable(message, sender) {
 
 async function reconcileOverlayRegistrations() {
   try {
+    // The all-sites registration is decided by the settings and the broad host
+    // grant, so a leftover from a previous session is removed when it is no
+    // longer wanted, and created when it is.
+    await reconcileOverlayMode(chrome, { injectOpenTabs: true })
+  } catch {
+    // Reconciliation is best effort and never blocks the manual capture path.
+  }
+  try {
     const registrations = await chrome.scripting.getRegisteredContentScripts()
     for (const registration of registrations) {
       if (
@@ -635,12 +644,16 @@ chrome.permissions.onAdded.addListener((permissions) => {
   void refreshNetworkObservation().catch(() => undefined)
   void refreshMediaSniffing().catch(() => undefined)
   void handlePermissionsAdded(chrome, permissions).catch(() => undefined)
+  // A broad grant arriving after the popup closed still turns the all-sites
+  // overlay on for open tabs.
+  void reconcileOverlayMode(chrome, { injectOpenTabs: true }).catch(() => undefined)
 })
 
 chrome.permissions.onRemoved.addListener((permissions) => {
   void refreshNetworkObservation().catch(() => undefined)
   void refreshMediaSniffing().catch(() => undefined)
   void handlePermissionsRemoved(chrome, permissions).catch(() => undefined)
+  void reconcileOverlayMode(chrome).catch(() => undefined)
 })
 
 // Prune session-only tab records. `tabs.onRemoved` needs no `tabs` permission.
@@ -681,6 +694,18 @@ if (chrome.storage && chrome.storage.onChanged) {
     }
     void refreshNetworkObservation().catch(() => undefined)
     void refreshMediaSniffing().catch(() => undefined)
+    if (
+      !previous ||
+      !next ||
+      previous.floatingTriggerEnabled !== next.floatingTriggerEnabled ||
+      previous.detectAllSites !== next.detectAllSites ||
+      JSON.stringify(previous.excludedOrigins || []) !==
+        JSON.stringify(next.excludedOrigins || [])
+    ) {
+      void reconcileOverlayMode(chrome, { injectOpenTabs: true }).catch(
+        () => undefined
+      )
+    }
   })
 }
 
@@ -698,6 +723,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() =>
         sendResponse(
           overlayFailure('OVERLAY_FAILED', 'The overlay request could not be completed.')
+        )
+      )
+    return true
+  }
+
+  if (message.type === 'dondownload:overlay-all-sites') {
+    // The popup/options page just turned all-sites mode on or off. Register or
+    // remove the one broad registration and inject into open tabs now.
+    void reconcileOverlayMode(chrome, { injectOpenTabs: true })
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'OVERLAY_FAILED',
+            'The all-sites overlay could not be updated.'
+          )
         )
       )
     return true

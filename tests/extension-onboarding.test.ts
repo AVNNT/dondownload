@@ -294,7 +294,7 @@ describe('welcome recommended capture setup', () => {
     expect(copy.hint).not.toMatch(/non-media|opt-in only/i)
     const off = browserDownloadStateCopy({ enabled: false })
     expect(off.state).toBe('Off')
-    expect(off.hint).toContain('downloads, cookies and site access')
+    expect(off.hint).toContain('downloads, cookies, media detection and site access')
 
     // The popup and options page both describe the same one-switch takeover.
     const welcome = readFileSync(
@@ -306,6 +306,7 @@ describe('welcome recommended capture setup', () => {
       path.join(process.cwd(), 'extension', 'options.html'),
       'utf8'
     )
+    expect(options).toContain('Use DonDownload on all sites')
     expect(options).toContain('Download browser files with DonDownload')
     expect(options).toContain('Only files larger than')
     expect(options).toContain('handoff-min-bytes')

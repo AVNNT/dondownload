@@ -115,7 +115,7 @@ function renderGrantSection() {
   if (grant.origin === null) {
     grantButton.hidden = true
     grantDetail.textContent =
-      'This link did not name a valid http(s) origin. Open the toolbar popup and choose Enable on this site instead.'
+      'This link did not name a valid http(s) origin. Open the toolbar popup and turn on "Use DonDownload on all sites" instead.'
     setGrantStatus('error', 'Nothing was enabled.')
     return
   }
