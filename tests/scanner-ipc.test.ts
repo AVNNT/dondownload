@@ -205,6 +205,34 @@ describe('scan IPC', () => {
       [{ itemId: 'item_1', optionId: 'opt_1', outputFormat: 'mp4' }]
     )
   })
+
+  it('forwards script pairings to the queue service', async () => {
+    const { scanQueue, fakeWindow } = register()
+    const pairings = [
+      {
+        videoItemId: 'item_video',
+        setId: 'set:clip@1',
+        scriptItemIds: ['item_script'],
+        primaryVariant: null,
+        rename: true
+      }
+    ]
+    const result = await handler(IPC.scanQueueSelection)(
+      trustedEvent(fakeWindow),
+      {
+        sessionId: SESSION.sessionId,
+        itemIds: ['item_video', 'item_script'],
+        pairings
+      }
+    )
+    expect(result.ok).toBe(true)
+    expect(scanQueue.queueSelection).toHaveBeenLastCalledWith(
+      SESSION.sessionId,
+      ['item_video', 'item_script'],
+      [],
+      pairings
+    )
+  })
 })
 
 describe('scan-page native bridge contract', () => {

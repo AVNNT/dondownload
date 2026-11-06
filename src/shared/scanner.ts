@@ -500,7 +500,7 @@ export function parseScanQueueSelectionInput(
   exactKeys(
     record,
     ['sessionId', 'itemIds'],
-    ['videoOptions'],
+    ['videoOptions', 'pairings'],
     'scan selection'
   )
 
