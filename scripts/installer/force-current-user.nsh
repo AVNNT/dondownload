@@ -20,9 +20,11 @@
 ; the executable while cleanup is still running. A dev registration pointing at
 ; a repository is intentionally left alone.
 !macro customUnInstall
-  IfFileExists "$INSTDIR\DonDownload.exe" dondownloadUnregisterNativeHost 0
-  Goto dondownloadUnregisterNativeHostDone
-  dondownloadUnregisterNativeHost:
-  ExecWait '"$INSTDIR\DonDownload.exe" --unregister-native-host'
-  dondownloadUnregisterNativeHostDone:
+  ; An upgrade runs the old uninstaller first. Keep the browser connection in
+  ; that case; the new version re-registers itself on its next start anyway.
+  ${ifNot} ${isUpdated}
+    ${if} ${FileExists} "$INSTDIR\DonDownload.exe"
+      ExecWait '"$INSTDIR\DonDownload.exe" --unregister-native-host'
+    ${endIf}
+  ${endIf}
 !macroend
