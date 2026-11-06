@@ -764,6 +764,19 @@ export function planRenames(
   videoFilename: string,
   opts: RenameOptions
 ): RenamePlanEntry[] {
+  return planRenamesForFiles(set.files, videoFilename, opts)
+}
+
+/**
+ * Plan targets for an explicit subset of a set. The renderer uses this to
+ * preview the names for the axes and primary variant the user picked; the main
+ * process uses it for the post-download rename of exactly the downloaded files.
+ */
+export function planRenamesForFiles(
+  files: readonly ScriptSetFile[],
+  videoFilename: string,
+  opts: RenameOptions
+): RenamePlanEntry[] {
   if (typeof videoFilename !== 'string' || videoFilename.trim().length === 0) {
     throw new FunscriptPairingError(
       'A video file name is required to plan funscript renames.'
@@ -790,14 +803,14 @@ export function planRenames(
   // the `original` alternate instead of failing the whole plan.
   const promotedAxes = new Set<string>()
   if (primaryVariant !== null) {
-    for (const file of set.files) {
+    for (const file of files) {
       if (file.variant !== null && file.variant.toLowerCase() === primaryVariant) {
         promotedAxes.add((file.axis ?? '').toLowerCase())
       }
     }
   }
 
-  for (const file of set.files) {
+  for (const file of files) {
     const variantIsPrimary =
       file.variant !== null &&
       primaryVariant !== null &&

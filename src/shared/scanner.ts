@@ -102,6 +102,65 @@ export interface ScanVideoFormat {
   outputFormats: MediaOutputFormat[]
 }
 
+/**
+ * Renderer-safe score bucket for a script-set/video match. Raw similarity
+ * floats stay in the main process.
+ */
+export const SCAN_MATCH_BUCKETS = ['strong', 'likely', 'weak', 'none'] as const
+export type ScanMatchBucket = (typeof SCAN_MATCH_BUCKETS)[number]
+
+export const MAX_SCAN_SCRIPT_AXES = 24
+export const MAX_SCAN_SCRIPT_VARIANTS = 24
+export const MAX_SCAN_SCRIPT_SET_ID_LENGTH = 300
+
+export interface ScanScriptFile {
+  /** Opaque scan item ID of the original funscript download. */
+  id: string
+  /** Original uploaded file name. */
+  filename: string
+  /** Canonical axis token, or null for the main stroke. */
+  axis: string | null
+  variant: string | null
+  isMain: boolean
+  /**
+   * Planned on-disk name for the current (default) match, or null when the
+   * set is not matched to a resolved video. Never a path.
+   */
+  targetName: string | null
+}
+
+export interface ScanScriptConflict {
+  axis: string | null
+  variant: string | null
+  /** Scan item IDs that map to the same axis + variant. */
+  fileIds: string[]
+}
+
+/**
+ * One grouped `.funscript` set in a scan. Files, original names and planned
+ * names only: a source URL, directory or full path never appears here.
+ */
+export interface ScanScriptSet {
+  /** Stable set ID derived from the normalized base and post number. */
+  id: string
+  /** Display base with axis and variant tokens removed. */
+  base: string
+  postNumber: number | null
+  /** Non-main axes present, in first-seen order. */
+  axes: string[]
+  /** Variant tokens present, in first-seen order. */
+  variants: string[]
+  /** True when the set has axes but no main-stroke script at all. */
+  missingMain: boolean
+  conflicts: ScanScriptConflict[]
+  /** Resolved video item this set matches, or null. */
+  matchedVideoItemId: string | null
+  /** True when two or more videos are equally plausible; the user must pick. */
+  ambiguous: boolean
+  matchBucket: ScanMatchBucket
+  files: ScanScriptFile[]
+}
+
 export interface ScanItem {
   /** Opaque session-local item ID; never a URL or selector. */
   id: string
@@ -170,6 +229,12 @@ export interface ScanSession {
   counters: ScanCounters
   progress: ScanProgress
   items: ScanItem[]
+  /**
+   * Grouped funscript sets with their current match. Recomputed from the
+   * current items on every snapshot, so a progressively resolved video updates
+   * its match. Optional for older sessions and fixtures.
+   */
+  scriptSets?: ScanScriptSet[]
   removedItemIds: string[]
   revision: number
   updatedAt: number
@@ -199,6 +264,22 @@ export interface ScanQueueSelectionInput {
   sessionId: string
   itemIds: string[]
   videoOptions?: ScanQueueVideoOption[]
+  /** Explicit funscript pairings; every referenced item must also be selected. */
+  pairings?: ScanScriptPairingInput[]
+}
+
+/**
+ * One explicit funscript pairing. The user picked the video, the set and the
+ * exact script files (axes) to download. `primaryVariant` is null when every
+ * version keeps its variant suffix; otherwise that variant takes the canonical
+ * name and the displaced plain file becomes `.original`.
+ */
+export interface ScanScriptPairingInput {
+  videoItemId: string
+  setId: string
+  scriptItemIds: string[]
+  primaryVariant: string | null
+  rename: boolean
 }
 
 export interface ScanQueueSkip {
@@ -484,10 +565,102 @@ export function parseScanQueueSelectionInput(
     })
   }
 
+  let pairings: ScanScriptPairingInput[] | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'pairings')) {
+    const rawPairings = record.pairings
+    if (
+      !Array.isArray(rawPairings) ||
+      rawPairings.length > MAX_SCAN_SELECTION
+    ) {
+      throw new ValidationError('The scan script pairings are invalid.')
+    }
+    const selected = new Set(itemIds)
+    const seenVideos = new Set<string>()
+    const seenSets = new Set<string>()
+    const claimedScripts = new Set<string>()
+    pairings = rawPairings.map((entry) => {
+      const pairing = asPlainObject(entry, 'scan script pairing')
+      exactKeys(
+        pairing,
+        [
+          'videoItemId',
+          'setId',
+          'scriptItemIds',
+          'primaryVariant',
+          'rename'
+        ],
+        [],
+        'scan script pairing'
+      )
+      const videoItemId = parseScanItemId(pairing.videoItemId)
+      if (!selected.has(videoItemId)) {
+        throw new ValidationError(
+          'A scan script pairing video does not belong to the selection.'
+        )
+      }
+      if (seenVideos.has(videoItemId)) {
+        throw new ValidationError('Duplicate scan script pairing video.')
+      }
+      seenVideos.add(videoItemId)
+
+      const setId = scriptSetId(pairing.setId)
+      if (seenSets.has(setId)) {
+        throw new ValidationError('Duplicate scan script pairing set.')
+      }
+      seenSets.add(setId)
+
+      const rawScripts = pairing.scriptItemIds
+      if (
+        !Array.isArray(rawScripts) ||
+        rawScripts.length === 0 ||
+        rawScripts.length > MAX_SCAN_SELECTION
+      ) {
+        throw new ValidationError('A scan script pairing has no scripts.')
+      }
+      const scriptItemIds = rawScripts.map(parseScanItemId)
+      if (new Set(scriptItemIds).size !== scriptItemIds.length) {
+        throw new ValidationError('Duplicate scan script item identifier.')
+      }
+      for (const scriptId of scriptItemIds) {
+        if (!selected.has(scriptId)) {
+          throw new ValidationError(
+            'A scan script pairing file does not belong to the selection.'
+          )
+        }
+        if (claimedScripts.has(scriptId)) {
+          throw new ValidationError(
+            'A scan script cannot belong to two pairings.'
+          )
+        }
+        claimedScripts.add(scriptId)
+      }
+
+      let primaryVariant: string | null
+      if (pairing.primaryVariant === null) {
+        primaryVariant = null
+      } else {
+        primaryVariant = safeDisplayText(
+          pairing.primaryVariant,
+          32,
+          'scan script primary variant'
+        ).toLowerCase()
+      }
+
+      return {
+        videoItemId,
+        setId,
+        scriptItemIds,
+        primaryVariant,
+        rename: booleanValue(pairing, 'rename')
+      }
+    })
+  }
+
   return {
     sessionId,
     itemIds,
-    ...(videoOptions === undefined ? {} : { videoOptions })
+    ...(videoOptions === undefined ? {} : { videoOptions }),
+    ...(pairings === undefined ? {} : { pairings })
   }
 }
 
@@ -636,6 +809,197 @@ export function parseScanVideoFormat(value: unknown): ScanVideoFormat {
     sizeBytes: nullableIntegerValue(record, 'sizeBytes', 0),
     sizeIsEstimate: booleanValue(record, 'sizeIsEstimate'),
     outputFormats
+  }
+}
+
+export function isScanMatchBucket(value: unknown): value is ScanMatchBucket {
+  return (
+    typeof value === 'string' &&
+    (SCAN_MATCH_BUCKETS as readonly string[]).includes(value)
+  )
+}
+
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+const SCRIPT_SET_ID = /^set:[^\s\u0000-\u001f\u007f/\\]{1,300}$/u
+
+function scriptSetId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length > MAX_SCAN_SCRIPT_SET_ID_LENGTH ||
+    !SCRIPT_SET_ID.test(value)
+  ) {
+    throw new ValidationError('Invalid scan script set identifier.')
+  }
+  return value
+}
+
+function scriptTargetName(value: unknown): string | null {
+  if (value === null) return null
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > MAX_SCAN_NAME_LENGTH ||
+    CONTROL_CHARACTERS.test(value) ||
+    /[/\\]/.test(value)
+  ) {
+    throw new ValidationError('Invalid scan script target name.')
+  }
+  return value
+}
+
+function scriptAxis(value: unknown): string | null {
+  if (value === null) return null
+  return safeDisplayText(value, 32, 'scan script axis')
+}
+
+function scriptVariant(value: unknown): string | null {
+  if (value === null) return null
+  return safeDisplayText(value, 32, 'scan script variant')
+}
+
+function scriptTokenList(
+  value: unknown,
+  label: string,
+  maximum: number
+): string[] {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new ValidationError(`The scan script ${label} are invalid.`)
+  }
+  const seen = new Set<string>()
+  return value.map((entry) => {
+    const token = safeDisplayText(entry, 32, `scan script ${label}`)
+    const key = token.toLowerCase()
+    if (seen.has(key)) {
+      throw new ValidationError(`The scan script ${label} are invalid.`)
+    }
+    seen.add(key)
+    return token
+  })
+}
+
+export function parseScanScriptFile(value: unknown): ScanScriptFile {
+  const record = asPlainObject(value, 'scan script file')
+  exactKeys(
+    record,
+    ['id', 'filename', 'axis', 'variant', 'isMain', 'targetName'],
+    [],
+    'scan script file'
+  )
+  const filename = safeDisplayText(
+    record.filename,
+    MAX_SCAN_NAME_LENGTH,
+    'scan script file name'
+  )
+  if (!/\.funscript$/iu.test(filename)) {
+    throw new ValidationError('Invalid scan script file name.')
+  }
+  const axis = scriptAxis(record.axis)
+  const isMain = booleanValue(record, 'isMain')
+  if (isMain !== (axis === null)) {
+    throw new ValidationError('Invalid scan script main-axis flag.')
+  }
+  return {
+    id: parseScanItemId(record.id),
+    filename,
+    axis,
+    variant: scriptVariant(record.variant),
+    isMain,
+    targetName: scriptTargetName(record.targetName)
+  }
+}
+
+export function parseScanScriptSet(value: unknown): ScanScriptSet {
+  const record = asPlainObject(value, 'scan script set')
+  exactKeys(
+    record,
+    [
+      'id',
+      'base',
+      'postNumber',
+      'axes',
+      'variants',
+      'missingMain',
+      'conflicts',
+      'matchedVideoItemId',
+      'ambiguous',
+      'matchBucket',
+      'files'
+    ],
+    [],
+    'scan script set'
+  )
+
+  const rawFiles = record.files
+  if (
+    !Array.isArray(rawFiles) ||
+    rawFiles.length === 0 ||
+    rawFiles.length > MAX_SCAN_ITEMS
+  ) {
+    throw new ValidationError('The scan script set has an invalid file list.')
+  }
+  const files = rawFiles.map(parseScanScriptFile)
+  const fileIds = new Set<string>()
+  for (const file of files) {
+    if (fileIds.has(file.id)) {
+      throw new ValidationError('Duplicate scan script file identifier.')
+    }
+    fileIds.add(file.id)
+  }
+
+  const rawConflicts = record.conflicts
+  if (!Array.isArray(rawConflicts) || rawConflicts.length > files.length) {
+    throw new ValidationError('The scan script set has invalid conflicts.')
+  }
+  const conflicts: ScanScriptConflict[] = rawConflicts.map((entry) => {
+    const conflict = asPlainObject(entry, 'scan script conflict')
+    exactKeys(
+      conflict,
+      ['axis', 'variant', 'fileIds'],
+      [],
+      'scan script conflict'
+    )
+    const rawIds = conflict.fileIds
+    if (!Array.isArray(rawIds) || rawIds.length < 2) {
+      throw new ValidationError('The scan script conflict is invalid.')
+    }
+    const ids = rawIds.map(parseScanItemId)
+    if (new Set(ids).size !== ids.length || ids.some((id) => !fileIds.has(id))) {
+      throw new ValidationError('The scan script conflict is invalid.')
+    }
+    return {
+      axis: scriptAxis(conflict.axis),
+      variant: scriptVariant(conflict.variant),
+      fileIds: ids
+    }
+  })
+
+  if (!isScanMatchBucket(record.matchBucket)) {
+    throw new ValidationError('Unknown scan script match bucket.')
+  }
+
+  return {
+    id: scriptSetId(record.id),
+    base: safeDisplayText(
+      record.base,
+      MAX_SCAN_NAME_LENGTH,
+      'scan script base'
+    ),
+    postNumber: nullableIntegerValue(record, 'postNumber', 1, 1_000_000),
+    axes: scriptTokenList(record.axes, 'axes', MAX_SCAN_SCRIPT_AXES),
+    variants: scriptTokenList(
+      record.variants,
+      'variants',
+      MAX_SCAN_SCRIPT_VARIANTS
+    ),
+    missingMain: booleanValue(record, 'missingMain'),
+    conflicts,
+    matchedVideoItemId:
+      record.matchedVideoItemId === null
+        ? null
+        : parseScanItemId(record.matchedVideoItemId),
+    ambiguous: booleanValue(record, 'ambiguous'),
+    matchBucket: record.matchBucket,
+    files
   }
 }
 
@@ -804,7 +1168,7 @@ export function parseScanSession(value: unknown): ScanSession {
       'revision',
       'updatedAt'
     ],
-    [],
+    ['scriptSets'],
     'scan session'
   )
 
@@ -835,6 +1199,37 @@ export function parseScanSession(value: unknown): ScanSession {
     ids.add(item.id)
   }
 
+  let scriptSets: ScanScriptSet[] | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'scriptSets')) {
+    const rawSets = record.scriptSets
+    if (!Array.isArray(rawSets) || rawSets.length > MAX_SCAN_ITEMS) {
+      throw new ValidationError('The scan payload contains an invalid script list.')
+    }
+    scriptSets = rawSets.map(parseScanScriptSet)
+    const setIds = new Set<string>()
+    for (const set of scriptSets) {
+      if (setIds.has(set.id)) {
+        throw new ValidationError('Duplicate scan script set identifier.')
+      }
+      setIds.add(set.id)
+      for (const file of set.files) {
+        if (!ids.has(file.id)) {
+          throw new ValidationError(
+            'A scan script file does not belong to this scan.'
+          )
+        }
+      }
+      if (
+        set.matchedVideoItemId !== null &&
+        !ids.has(set.matchedVideoItemId)
+      ) {
+        throw new ValidationError(
+          'A scan script match does not belong to this scan.'
+        )
+      }
+    }
+  }
+
   return {
     sessionId: parseScanSessionId(record.sessionId),
     status,
@@ -849,6 +1244,7 @@ export function parseScanSession(value: unknown): ScanSession {
     counters: parseScanCounters(record.counters),
     progress: parseScanProgress(record.progress),
     items,
+    ...(scriptSets === undefined ? {} : { scriptSets }),
     removedItemIds: rawRemoved.map(parseScanItemId),
     revision: integerValue(record, 'revision', 0),
     updatedAt: integerValue(record, 'updatedAt', 1)
