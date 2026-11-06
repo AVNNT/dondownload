@@ -149,7 +149,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.El
         >
           Quick add
         </h2>
-        <span className="text-[10px] text-zinc-400">Direct HTTP(S) links</span>
+        <span className="text-[11px] text-zinc-400">Direct HTTP(S) links</span>
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row">
@@ -236,7 +236,7 @@ export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.El
             />
             <span
               id="download-speed-help"
-              className="mt-1 block min-h-4 text-[10px] leading-4 text-zinc-400"
+              className="mt-1 block min-h-4 text-[11px] leading-4 text-zinc-400"
             >
               {speedPreview
                 ? `Backend value: ${speedPreview}`
@@ -260,12 +260,12 @@ export function QuickAdd({ disabled, onAdd, initialUrl }: QuickAddProps): JSX.El
               disabled={disabled}
               className="mt-1 block w-full min-w-0 rounded-lg border border-white/10 surface-input px-2.5 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/50 disabled:opacity-50"
             />
-            <span className="mt-1 block min-h-4 text-[10px] leading-4 text-zinc-400">
+            <span className="mt-1 block min-h-4 text-[11px] leading-4 text-zinc-400">
               Blank uses the global setting.
             </span>
           </label>
         </div>
-        <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+        <p className="mt-2 text-[11px] leading-4 text-zinc-500">
           The start time uses this computer&apos;s local clock. Allowed hours
           are enforced separately in Settings.
         </p>

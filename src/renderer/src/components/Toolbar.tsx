@@ -89,7 +89,7 @@ export function Toolbar({
         onClick={onToggleSortDirection}
         aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}
         title={`Currently ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}
-        className="inline-flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[10px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+        className="inline-flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[11px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
       >
         {sortDirection === 'asc' ? '↑' : '↓'}
       </button>

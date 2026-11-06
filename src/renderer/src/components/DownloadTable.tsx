@@ -71,7 +71,7 @@ export function DownloadTable({
     >
       <div
         role="row"
-        className={`${GRID_COLUMNS} shrink-0 border-b border-white/10 surface-soft px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500`}
+        className={`${GRID_COLUMNS} shrink-0 border-b border-white/10 surface-soft px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500`}
       >
         <div role="columnheader" aria-label="Select all" className="flex items-center">
           <input
@@ -234,7 +234,7 @@ function TableRow({
         >
           {row.title}
         </p>
-        <p className="truncate text-[10.5px] leading-4 text-zinc-500" title={row.subtitle}>
+        <p className="truncate text-[11px] leading-4 text-zinc-500" title={row.subtitle}>
           {row.subtitle}
         </p>
       </div>
@@ -293,7 +293,7 @@ function TableRow({
               />
             )}
           </div>
-          <span className="w-8 shrink-0 text-right text-[10px] tabular-nums text-zinc-400">
+          <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-zinc-400">
             {row.indeterminate ? '—' : `${percent}%`}
           </span>
         </div>
@@ -373,12 +373,12 @@ function SortHeader({
       <button
         type="button"
         onClick={() => onSort(sortKey)}
-        className={`inline-flex items-center gap-1 rounded text-[10px] font-medium uppercase tracking-[0.12em] transition hover:text-zinc-200 ${
+        className={`inline-flex items-center gap-1 rounded text-[11px] font-medium uppercase tracking-[0.12em] transition hover:text-zinc-200 ${
           active ? 'text-zinc-200' : 'text-zinc-500'
         }`}
       >
         {label}
-        <span aria-hidden="true" className="text-[8px] leading-none">
+        <span aria-hidden="true" className="text-[11px] leading-none">
           {active ? (direction === 'asc' ? '▲' : '▼') : '↕'}
         </span>
       </button>

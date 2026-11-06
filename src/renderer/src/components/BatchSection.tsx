@@ -466,7 +466,7 @@ export function BatchSection(): JSX.Element {
             >
               Batch URLs
             </label>
-            <span className="text-[10px] tabular-nums text-zinc-500">
+            <span className="text-[11px] tabular-nums text-zinc-500">
               {parsedUrlCount > 0
                 ? `${parsedUrlCount} ${
                     parsedUrlCount === 1 ? 'URL' : 'URLs'
@@ -664,7 +664,7 @@ function SubmitOutcomes({
 }): JSX.Element {
   return (
     <div className="mt-3 rounded-xl border border-white/10 surface-card p-3">
-      <h3 className="px-1 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+      <h3 className="px-1 text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
         Submit results
       </h3>
       <ul className="mt-2 max-h-64 space-y-1.5 overflow-y-auto pr-1">
@@ -844,7 +844,7 @@ function PreviewCard({
           onClick={onDismiss}
           disabled={busy}
           aria-label={`Dismiss preview for ${preview.title}`}
-          className="h-8 shrink-0 rounded-lg border border-white/10 px-2.5 text-[10px] font-medium text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-8 shrink-0 rounded-lg border border-white/10 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Dismiss
         </button>
@@ -913,18 +913,18 @@ function PreviewCard({
                   }`}
                 >
                   <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-200">
-                    <span className="text-[10px] tabular-nums text-zinc-500">
+                    <span className="text-[11px] tabular-nums text-zinc-500">
                       {index + 1}.
                     </span>
                     <span className="break-words">{entry.title}</span>
                     {!available ? (
-                      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300">
+                      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
                         Unavailable
                       </span>
                     ) : null}
                   </span>
                   {preview.kind === 'playlist' && checked && availability ? (
-                    <span className="mt-1 block text-[10px] leading-4 text-zinc-500">
+                    <span className="mt-1 block text-[11px] leading-4 text-zinc-500">
                       {availability.entries.find(result => result.entryId === entry.id)?.qualities.length
                         ? `Verified: ${availability.entries.find(result => result.entryId === entry.id)!.qualities.map(option => `${qualityLabel(option.quality)} · ${formatMediaSize(option.estimatedBytes, option.sizeIsEstimate === true)}`).join(', ')}`
                         : 'No verified media formats available'}
@@ -933,7 +933,7 @@ function PreviewCard({
                   {!available ? (
                     <span
                       id={reasonId}
-                      className="mt-0.5 block text-[10px] leading-4 text-amber-200/70"
+                      className="mt-0.5 block text-[11px] leading-4 text-amber-200/70"
                     >
                       {entry.errorReason ?? entry.errorCode ?? 'Not available'}
                     </span>
@@ -946,12 +946,12 @@ function PreviewCard({
       </ul>
 
       {preview.availableCount > MAX_COLLECTION_SELECTION ? (
-        <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+        <p className="mt-2 text-[11px] leading-4 text-zinc-500">
           Selection is limited to {MAX_COLLECTION_SELECTION} items per batch.
         </p>
       ) : null}
       {atLimit ? (
-        <p className="mt-1 text-[10px] leading-4 text-amber-200/70">
+        <p className="mt-1 text-[11px] leading-4 text-amber-200/70">
           Selection limit reached. Uncheck or clear items to choose others.
         </p>
       ) : null}
@@ -960,7 +960,7 @@ function PreviewCard({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[11px] font-medium text-zinc-200">Playlist quality</p>
-            <p className="text-[10px] text-zinc-500">Analyze selected entries first; unavailable qualities are skipped, never substituted.</p>
+            <p className="text-[11px] text-zinc-500">Analyze selected entries first; unavailable qualities are skipped, never substituted.</p>
           </div>
           <button type="button" onClick={() => void analyzeSelected()} disabled={busy || selectedCount === 0 || checkingFormats} className="h-8 rounded-lg border border-white/10 px-3 text-[11px] font-medium text-zinc-200 disabled:opacity-40">
             {checkingFormats ? 'Checking formats…' : 'Check selected formats'}
@@ -968,7 +968,7 @@ function PreviewCard({
         </div>
         {availability ? (
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-[10px] font-medium text-zinc-400">Quality
+            <label className="text-[11px] font-medium text-zinc-400">Quality
               <select value={quality} onChange={event => setQuality(event.target.value as BatchMediaQuality)} className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100">
                 {BATCH_MEDIA_QUALITIES.filter(option => qualityCounts.has(option)).map(option => {
                   const summary = qualitySizes.get(option)
@@ -981,17 +981,17 @@ function PreviewCard({
                 })}
               </select>
             </label>
-            <label className="text-[10px] font-medium text-zinc-400">Optional max per-job size (MiB)
+            <label className="text-[11px] font-medium text-zinc-400">Optional max per-job size (MiB)
               <input type="number" min="0.01" max="102400" step="0.01" value={maxMiB} onChange={event => setMaxMiB(event.target.value)} placeholder="No limit" className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600" />
             </label>
-            <p className="text-[10px] leading-4 text-zinc-500 sm:col-span-2">
+            <p className="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
               {matchingCount < selectedCount ? `${selectedCount - matchingCount} selected ${selectedCount - matchingCount === 1 ? 'entry has' : 'entries have'} no ${qualityLabel(quality)} option and will be marked Skipped.` : `${matchingCount} selected ${matchingCount === 1 ? 'entry has' : 'entries have'} this verified quality.`}
               {' '}Unknown-size and merged jobs are stopped at the cap during transfer; final output is checked before completion. Progress granularity may allow a small network overrun.
             </p>
           </div>
         ) : null}
-        {!validMaxBytes ? <p role="alert" className="mt-2 text-[10px] text-red-300">Enter a per-job limit up to 102400 MiB.</p> : null}
-        {qualityError ? <p role="alert" className="mt-2 text-[10px] text-red-300">{qualityError}</p> : null}
+        {!validMaxBytes ? <p role="alert" className="mt-2 text-[11px] text-red-300">Enter a per-job limit up to 102400 MiB.</p> : null}
+        {qualityError ? <p role="alert" className="mt-2 text-[11px] text-red-300">{qualityError}</p> : null}
       </div> : null}
 
       {error ? (
@@ -1001,7 +1001,7 @@ function PreviewCard({
         >
           <p>{error.message}</p>
           {error.hint ? (
-            <p className="mt-0.5 break-words text-[10px] text-red-300/70">
+            <p className="mt-0.5 break-words text-[11px] text-red-300/70">
               {error.hint}
             </p>
           ) : null}
@@ -1009,7 +1009,7 @@ function PreviewCard({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
-        <p className="max-w-sm text-[10px] leading-4 text-zinc-500">
+        <p className="max-w-sm text-[11px] leading-4 text-zinc-500">
           Only available entries can be queued. Unavailable entries stay
           unselected and do not block the rest of the collection.
         </p>
@@ -1072,7 +1072,7 @@ function BatchCard({
         >
           <span
             aria-hidden="true"
-            className={`mt-0.5 inline-block text-[10px] text-zinc-500 transition-transform ${
+            className={`mt-0.5 inline-block text-[11px] text-zinc-500 transition-transform ${
               expanded ? 'rotate-90' : ''
             }`}
           >
@@ -1094,7 +1094,7 @@ function BatchCard({
           </span>
         </button>
         <span
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
             BATCH_STATUS_STYLE[batch.status]
           }`}
         >
@@ -1173,7 +1173,7 @@ function BatchCard({
           danger
         />
       </div>
-      <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+      <p className="mt-2 text-[11px] leading-4 text-zinc-500">
         Removing this group card clears only the batch history. Child downloads,
         media jobs and files on disk are kept.
       </p>
@@ -1232,25 +1232,25 @@ function BatchItemRow({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-zinc-200">
-            <span className="text-[10px] tabular-nums text-zinc-500">
+            <span className="text-[11px] tabular-nums text-zinc-500">
               {index + 1}.
             </span>
             <span className="break-words" title={item.title}>
               {item.title}
             </span>
             <span
-              className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+              className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
                 ITEM_STATUS_STYLE[item.status]
               }`}
             >
               {ITEM_STATUS_LABEL[item.status]}
             </span>
           </p>
-          <p className="mt-0.5 truncate text-[10px] text-zinc-400" title={item.label}>
+          <p className="mt-0.5 truncate text-[11px] text-zinc-400" title={item.label}>
             {item.label}
           </p>
           {item.completedBytes > 0 || item.totalBytes !== null ? (
-            <p className="mt-1 text-[10px] tabular-nums text-zinc-500">
+            <p className="mt-1 text-[11px] tabular-nums text-zinc-500">
               {formatBytes(item.completedBytes)} /{' '}
               {item.totalBytes !== null
                 ? formatBytes(item.totalBytes)

@@ -116,7 +116,7 @@ export function BrowserExtensionSection(): JSX.Element {
                   <span className="truncate">{browserLabel(browser)}</span>
                 </span>
                 <span
-                  className={`shrink-0 text-[10px] font-medium uppercase tracking-[0.08em] ${
+                  className={`shrink-0 text-[11px] font-medium uppercase tracking-[0.08em] ${
                     browser.registered ? 'text-emerald-300' : 'text-amber-300'
                   }`}
                 >
@@ -126,7 +126,7 @@ export function BrowserExtensionSection(): JSX.Element {
             ))}
           </ul>
 
-          <dl className="grid gap-1 text-[10px] leading-4 text-zinc-400">
+          <dl className="grid gap-1 text-[11px] leading-4 text-zinc-400">
             <div className="flex gap-1">
               <dt className="shrink-0 text-zinc-500">Native host:</dt>
               <dd className="min-w-0 break-all font-mono text-zinc-300">
@@ -148,7 +148,7 @@ export function BrowserExtensionSection(): JSX.Element {
           ) : null}
 
           <div className="rounded-lg border border-white/10 surface-soft px-2.5 py-2">
-            <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-zinc-500">
+            <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-500">
               Extension folder
             </p>
             <code className="mt-1 block break-all font-mono text-[11px] text-zinc-300">

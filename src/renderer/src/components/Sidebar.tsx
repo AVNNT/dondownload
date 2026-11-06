@@ -66,7 +66,7 @@ export function Sidebar({
     >
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-3" aria-label="Library">
         <p
-          className={`px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600 ${labelClass}`}
+          className={`px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-600 ${labelClass}`}
         >
           Categories
         </p>
@@ -89,7 +89,7 @@ export function Sidebar({
         </ul>
 
         <p
-          className={`px-2 pb-1.5 pt-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600 ${labelClass}`}
+          className={`px-2 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-600 ${labelClass}`}
         >
           Status
         </p>
@@ -227,7 +227,7 @@ function SidebarButton({
       <span className={`min-w-0 flex-1 truncate ${labelClass}`}>{label}</span>
       {typeof count === 'number' ? (
         <span
-          className={`shrink-0 rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${
+          className={`shrink-0 rounded-full px-1.5 text-[11px] font-semibold tabular-nums ${
             active
               ? 'bg-emerald-400/15 text-emerald-200'
               : 'bg-white/[0.05] text-zinc-500'

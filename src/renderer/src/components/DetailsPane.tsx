@@ -44,7 +44,7 @@ export function DetailsPane({
           <p className="truncate text-xs font-medium text-zinc-100" title={row.title}>
             {row.title}
           </p>
-          <p className="truncate text-[10px] text-zinc-500">
+          <p className="truncate text-[11px] text-zinc-500">
             {row.source === 'media' ? 'Media job' : 'Direct download'} ·{' '}
             {CATEGORY_LABELS[row.category]}
           </p>
@@ -54,7 +54,7 @@ export function DetailsPane({
           <button
             type="button"
             onClick={() => onOpen(row)}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-emerald-400/25 px-2 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-400/10"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-emerald-400/25 px-2 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-400/10"
           >
             <Icon name="external" size={12} />
             Open
@@ -162,7 +162,7 @@ function Detail({
 }): JSX.Element {
   return (
     <div className={`min-w-0 ${wide ? 'sm:col-span-2 xl:col-span-3' : ''}`}>
-      <dt className="text-[10px] uppercase tracking-[0.12em] text-zinc-600">
+      <dt className="text-[11px] uppercase tracking-[0.12em] text-zinc-600">
         {label}
       </dt>
       <dd className="min-w-0">{children}</dd>

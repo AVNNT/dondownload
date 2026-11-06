@@ -110,7 +110,7 @@ export function ContextMenu({
           >
             <span>{action.label}</span>
             {action.hint ? (
-              <span className="text-[10px] text-zinc-600">{action.hint}</span>
+              <span className="text-[11px] text-zinc-600">{action.hint}</span>
             ) : null}
           </button>
         </div>

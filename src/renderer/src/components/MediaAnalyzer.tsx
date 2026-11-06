@@ -157,12 +157,12 @@ export function MediaAnalyzer({
               {displayLabel}
             </span>
             {best || bestAudio ? (
-              <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+              <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
                 {best ? 'Best' : 'Best audio'}
               </span>
             ) : null}
             <span
-              className={`shrink-0 tabular-nums text-[10px] ${
+              className={`shrink-0 tabular-nums text-[11px] ${
                 sizeLabel === MEDIA_SIZE_UNKNOWN ? 'text-zinc-500' : 'text-zinc-400'
               }`}
             >
@@ -188,7 +188,7 @@ export function MediaAnalyzer({
         >
           Media page URL
         </label>
-        <span className="shrink-0 text-[10px] text-zinc-500">
+        <span className="shrink-0 text-[11px] text-zinc-500">
           {analyzing ? 'Analyzing…' : 'Video and audio'}
         </span>
       </div>
@@ -238,7 +238,7 @@ export function MediaAnalyzer({
         <div className="mt-3 rounded-lg border border-white/10 surface-soft p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-500">
                 Analyzed media
               </p>
               <h3
@@ -282,7 +282,7 @@ export function MediaAnalyzer({
 
           {qualityChoices.length > 0 ? (
             <fieldset className="mt-4">
-              <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
+              <legend className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-500">
                 Quality
               </legend>
               <div className="mt-2 space-y-1.5">
@@ -306,7 +306,7 @@ export function MediaAnalyzer({
 
           {selectedOption ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="block text-[10px] font-medium text-zinc-400">
+              <label className="block text-[11px] font-medium text-zinc-400">
                 Output format
                 <select
                   value={selectedOutputFormat}
@@ -328,7 +328,7 @@ export function MediaAnalyzer({
                 </select>
               </label>
               <div className="flex flex-col justify-end">
-                <p className="text-[10px] leading-4 text-zinc-500">
+                <p className="text-[11px] leading-4 text-zinc-500">
                   Only compatible containers are enabled. Auto keeps the
                   source-compatible container; other choices remux or merge
                   without transcoding.
@@ -342,14 +342,14 @@ export function MediaAnalyzer({
               Advanced details
             </summary>
             <fieldset className="mt-3">
-              <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
+              <legend className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-500">
                 All verified formats ({analysis.options.length})
               </legend>
               <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto pr-1">
                 {analysis.options.map((option) => optionRow(option))}
               </div>
             </fieldset>
-            <label className="mt-3 block max-w-xs text-[10px] font-medium text-zinc-400">
+            <label className="mt-3 block max-w-xs text-[11px] font-medium text-zinc-400">
               Optional maximum output size per job (MiB)
               <input
                 type="number"
@@ -369,7 +369,7 @@ export function MediaAnalyzer({
               </span>
             </label>
             {!validMaxBytes ? (
-              <p role="alert" className="mt-1 text-[10px] text-red-300">
+              <p role="alert" className="mt-1 text-[11px] text-red-300">
                 Enter a positive limit up to 102400 MiB.
               </p>
             ) : null}

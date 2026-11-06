@@ -111,7 +111,7 @@ export function DownloadCard({
               {item.filename}
             </h3>
             <span
-              className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_STYLE[item.status]}`}
+              className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${STATUS_STYLE[item.status]}`}
             >
               {statusLabel(item)}
             </span>
@@ -180,7 +180,7 @@ export function DownloadCard({
           aria-controls={expanded ? detailsId : undefined}
           aria-label={`${expanded ? 'Hide' : 'Show'} details for ${item.filename}`}
           title={expanded ? 'Hide details' : 'Show details'}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[10px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[11px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
         >
           <span
             aria-hidden="true"
