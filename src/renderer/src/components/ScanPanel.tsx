@@ -11,9 +11,16 @@ import {
   type ScanCategory,
   type ScanItem,
   type ScanQueueVideoOption,
+  type ScanScriptFile,
+  type ScanScriptPairingInput,
+  type ScanScriptSet,
   type ScanSession,
   type ScanVideoFormat
 } from '@shared/scanner'
+import {
+  planRenamesForFiles,
+  type ScriptSetFile
+} from '@shared/funscriptPairing'
 import type { AppErrorInfo } from '@shared/types'
 import { formatBytes } from '@shared/format'
 import { Icon, type IconName } from './Icon'
@@ -159,6 +166,70 @@ function sizeLabel(items: readonly ScanItem[], selected: Set<string>): string {
   return unknown ? `${prefix}${formatBytes(bytes)}+` : `${prefix}${formatBytes(bytes)}`
 }
 
+const MAIN_AXIS_KEY = 'main'
+
+function axisKeyOf(file: Pick<ScanScriptFile, 'axis'>): string {
+  return file.axis ?? MAIN_AXIS_KEY
+}
+
+function axisLabel(key: string): string {
+  return key === MAIN_AXIS_KEY ? 'Main stroke' : key
+}
+
+function axisKeysOf(set: ScanScriptSet): string[] {
+  const keys: string[] = []
+  if (set.files.some((file) => file.isMain)) keys.push(MAIN_AXIS_KEY)
+  for (const axis of set.axes) {
+    if (!keys.includes(axis)) keys.push(axis)
+  }
+  // A set without a main file still exposes a disabled "Main stroke" chip only
+  // through its missing-main warning, never as a fake file.
+  return keys
+}
+
+function filesForAxis(
+  set: ScanScriptSet,
+  axisKey: string
+): ScanScriptFile[] {
+  return set.files.filter((file) => axisKeyOf(file) === axisKey)
+}
+
+function toScriptSetFile(file: ScanScriptFile): ScriptSetFile {
+  return {
+    fileId: file.id,
+    filename: file.filename,
+    base: '',
+    axis: file.axis,
+    axisToken: null,
+    variant: file.variant,
+    isMain: file.isMain
+  }
+}
+
+function planPreview(
+  videoName: string,
+  files: readonly ScanScriptFile[],
+  primaryVariant: string | null
+): Map<string, string> | null {
+  if (files.length === 0) return new Map()
+  try {
+    const plan = planRenamesForFiles(files.map(toScriptSetFile), videoName, {
+      primaryVariant
+    })
+    return new Map(plan.map((entry) => [entry.fileId, entry.targetName]))
+  } catch {
+    return null
+  }
+}
+
+function matchBucketLabel(set: ScanScriptSet): string {
+  if (set.ambiguous) return 'Matches several videos'
+  if (set.matchBucket === 'strong') return 'Strong match'
+  if (set.matchBucket === 'likely') return 'Likely match'
+  if (set.matchBucket === 'weak') return 'Possible match'
+  return 'Unmatched'
+}
+
 export function ScanPanel({
   initialUrl,
   initialSession = null,
@@ -172,6 +243,13 @@ export function ScanPanel({
   const [queuing, setQueuing] = useState(false)
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [videoChoices, setVideoChoices] = useState<Record<string, string>>({})
+  const [setChoiceByVideo, setSetChoiceByVideo] = useState<Record<string, string>>(
+    {}
+  )
+  const [axisChoice, setAxisChoice] = useState<Record<string, string[]>>({})
+  const [primaryChoice, setPrimaryChoice] = useState<Record<string, string>>({})
+  const [renameChoice, setRenameChoice] = useState<Record<string, boolean>>({})
+  const [expandedSets, setExpandedSets] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState<FilterMode>('all')
   const controllerRef = useRef<ScanAutoStart | null>(null)
   const sessionIdRef = useRef<string | null>(initialSession?.sessionId ?? null)
@@ -251,7 +329,99 @@ export function ScanPanel({
     controllerRef.current?.update(url)
   }, [initialSession, url])
 
-  const items = session?.items ?? []
+  const items = useMemo(() => session?.items ?? [], [session?.items])
+  const scriptSets = useMemo(
+    () => session?.scriptSets ?? [],
+    [session?.scriptSets]
+  )
+  const setById = useMemo(
+    () => new Map(scriptSets.map((set) => [set.id, set])),
+    [scriptSets]
+  )
+  const scriptItemIds = useMemo(
+    () => new Set(scriptSets.flatMap((set) => set.files.map((file) => file.id))),
+    [scriptSets]
+  )
+
+  const axisSelection = useCallback(
+    (set: ScanScriptSet): string[] =>
+      axisChoice[set.id] ?? axisKeysOf(set),
+    [axisChoice]
+  )
+
+  const selectedFilesForSet = useCallback(
+    (set: ScanScriptSet): ScanScriptFile[] => {
+      const chosen = new Set(axisSelection(set))
+      return set.files.filter((file) => chosen.has(axisKeyOf(file)))
+    },
+    [axisSelection]
+  )
+
+  const primaryForSet = useCallback(
+    (set: ScanScriptSet): string => {
+      const explicit = primaryChoice[set.id]
+      return explicit === undefined ? '' : explicit
+    },
+    [primaryChoice]
+  )
+
+  const renameForSet = useCallback(
+    (set: ScanScriptSet): boolean => renameChoice[set.id] ?? true,
+    [renameChoice]
+  )
+
+  const chosenSetIdFor = useCallback(
+    (videoItemId: string): string => {
+      const explicit = setChoiceByVideo[videoItemId]
+      if (explicit !== undefined) return explicit
+      const claimed = new Set(
+        Object.entries(setChoiceByVideo)
+          .filter(([id, setId]) => id !== videoItemId && setId.length > 0)
+          .map(([, setId]) => setId)
+      )
+      return (
+        scriptSets.find(
+          (set) =>
+            set.matchedVideoItemId === videoItemId &&
+            !set.ambiguous &&
+            !claimed.has(set.id)
+        )?.id ?? ''
+      )
+    },
+    [scriptSets, setChoiceByVideo]
+  )
+
+  const toggleAxis = (set: ScanScriptSet, axisKey: string): void => {
+    const current = new Set(axisSelection(set))
+    if (current.has(axisKey)) current.delete(axisKey)
+    else current.add(axisKey)
+    setAxisChoice((values) => ({ ...values, [set.id]: [...current] }))
+  }
+
+  const selectAllAxes = (set: ScanScriptSet): void => {
+    setAxisChoice((values) => ({ ...values, [set.id]: axisKeysOf(set) }))
+  }
+
+  const selectableFileIds = (files: readonly ScanScriptFile[]): string[] =>
+    files.flatMap((file) => {
+      const item = items.find((candidate) => candidate.id === file.id)
+      return item && isQueueable(item) ? [file.id] : []
+    })
+
+  const toggleSetFiles = (set: ScanScriptSet, axisKey?: string): void => {
+    const files =
+      axisKey === undefined ? set.files : filesForAxis(set, axisKey)
+    const ids = selectableFileIds(files)
+    const allSelected = ids.length > 0 && ids.every((id) => selection.has(id))
+    setSelection((current) => {
+      const next = new Set(current)
+      for (const id of ids) {
+        if (allSelected) next.delete(id)
+        else next.add(id)
+      }
+      return next
+    })
+  }
   const visibleGroups = useMemo(() => {
     return GROUPS.map((group) => {
       const groupItems = items.filter((item) => item.category === group.category)
@@ -325,7 +495,10 @@ export function ScanPanel({
     })
   }
 
-  const queueItems = (ids: readonly string[]): void => {
+  const queueItems = (
+    ids: readonly string[],
+    pairings: readonly ScanScriptPairingInput[] = []
+  ): void => {
     if (session === null || ids.length === 0 || queuing) return
     const selectedIds = new Set(ids)
     const videoOptions: ScanQueueVideoOption[] = []
@@ -345,7 +518,8 @@ export function ScanPanel({
       .queueScanSelection(
         session.sessionId,
         [...ids],
-        videoOptions.length > 0 ? videoOptions : undefined
+        videoOptions.length > 0 ? videoOptions : undefined,
+        pairings.length > 0 ? [...pairings] : undefined
       )
       .then((result) => {
         setQueuing(false)
@@ -374,8 +548,59 @@ export function ScanPanel({
       })
   }
 
+  const pairingsForIds = (ids: readonly string[]): ScanScriptPairingInput[] => {
+    const idSet = new Set(ids)
+    const pairings: ScanScriptPairingInput[] = []
+    for (const item of items) {
+      if (!idSet.has(item.id) || !isVideoCardItem(item) || item.status !== 'ready') {
+        continue
+      }
+      const setId = chosenSetIdFor(item.id)
+      const set = setById.get(setId)
+      if (!set) continue
+      const scriptIds = selectableFileIds(selectedFilesForSet(set)).filter(
+        (id) => idSet.has(id)
+      )
+      if (scriptIds.length === 0) continue
+      const primary = primaryForSet(set)
+      pairings.push({
+        videoItemId: item.id,
+        setId: set.id,
+        scriptItemIds: scriptIds,
+        primaryVariant: primary.length > 0 ? primary : null,
+        rename: renameForSet(set)
+      })
+    }
+    return pairings
+  }
+
   const queueSelected = (): void => {
-    queueItems(selectedItems.map((item) => item.id))
+    const ids = selectedItems.map((item) => item.id)
+    queueItems(ids, pairingsForIds(ids))
+  }
+
+  const downloadVideoWithScripts = (videoItem: ScanItem): void => {
+    const setId = chosenSetIdFor(videoItem.id)
+    const set = setById.get(setId)
+    if (!set) return
+    const scriptIds = selectableFileIds(selectedFilesForSet(set))
+    if (scriptIds.length === 0) return
+    const primary = primaryForSet(set)
+    queueItems([videoItem.id, ...scriptIds], [
+      {
+        videoItemId: videoItem.id,
+        setId: set.id,
+        scriptItemIds: scriptIds,
+        primaryVariant: primary.length > 0 ? primary : null,
+        rename: renameForSet(set)
+      }
+    ])
+  }
+
+  const downloadScriptsWithOriginalNames = (set: ScanScriptSet): void => {
+    const ids = selectableFileIds(set.files)
+    if (ids.length === 0) return
+    queueItems(ids)
   }
 
   const scanning = session?.status === 'scanning'
@@ -586,7 +811,137 @@ export function ScanPanel({
                         </button>
                       </div>
                       <ul className="divide-y divide-white/[0.05]">
-                        {groupItems.map((item) => {
+                        {group.category === 'script'
+                          ? scriptSets.map((set) => {
+                              const expanded = expandedSets[set.id] === true
+                              const selectableIds = set.files.flatMap((file) => {
+                                const item = items.find(
+                                  (candidate) => candidate.id === file.id
+                                )
+                                return item && isQueueable(item) ? [item.id] : []
+                              })
+                              const allSelected =
+                                selectableIds.length > 0 &&
+                                selectableIds.every((id) => selection.has(id))
+                              return (
+                                <li key={`set-${set.id}`} className="px-3 py-2">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedSets((current) => ({
+                                          ...current,
+                                          [set.id]: !expanded
+                                        }))
+                                      }
+                                      aria-expanded={expanded}
+                                      className="text-[11px] text-zinc-400 transition hover:text-zinc-200"
+                                    >
+                                      {expanded ? '▾' : '▸'}
+                                    </button>
+                                    <span
+                                      className="truncate text-[12px] font-medium text-zinc-200"
+                                      title={set.base}
+                                    >
+                                      {set.base}
+                                    </span>
+                                    <span className="text-[10.5px] text-zinc-500">
+                                      {set.files.length} file
+                                      {set.files.length === 1 ? '' : 's'}
+                                    </span>
+                                    {set.axes.map((axis) => (
+                                      <button
+                                        key={axis}
+                                        type="button"
+                                        onClick={() => toggleSetFiles(set, axis)}
+                                        className="rounded-full border border-white/10 px-1.5 py-0.5 text-[10px] text-fuchsia-200/80 transition hover:bg-fuchsia-400/10"
+                                      >
+                                        {axis}
+                                      </button>
+                                    ))}
+                                    {set.missingMain ? (
+                                      <span className="rounded-full border border-amber-400/25 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                        No main stroke
+                                      </span>
+                                    ) : null}
+                                    {set.ambiguous ? (
+                                      <span className="rounded-full border border-amber-400/25 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                        Ambiguous match
+                                      </span>
+                                    ) : null}
+                                    <span className="ml-auto text-[10px] text-zinc-500">
+                                      {matchBucketLabel(set)}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSetFiles(set)}
+                                      className="text-[10.5px] text-emerald-300 transition hover:text-emerald-200"
+                                    >
+                                      {allSelected ? 'Clear' : 'Select all axes'}
+                                    </button>
+                                  </div>
+                                  {expanded ? (
+                                    <ul className="mt-1.5 flex flex-col gap-1 pl-5">
+                                      {set.files.map((file) => {
+                                        const item = items.find(
+                                          (candidate) => candidate.id === file.id
+                                        )
+                                        return (
+                                          <li
+                                            key={file.id}
+                                            className="flex items-center gap-2"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              aria-label={`Select ${file.filename}`}
+                                              checked={selection.has(file.id)}
+                                              disabled={
+                                                disabled ||
+                                                item === undefined ||
+                                                !isQueueable(item)
+                                              }
+                                              onChange={() => toggle(file.id)}
+                                              className="h-3 w-3 accent-fuchsia-400 disabled:opacity-40"
+                                            />
+                                            <span className="truncate font-mono text-[10.5px] text-zinc-400">
+                                              {file.filename}
+                                            </span>
+                                            <span className="text-[10px] text-zinc-600">
+                                              {file.isMain
+                                                ? 'main'
+                                                : file.axis ?? ''}
+                                              {file.variant !== null
+                                                ? ` · ${file.variant}`
+                                                : ''}
+                                            </span>
+                                          </li>
+                                        )
+                                      })}
+                                      <li>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            downloadScriptsWithOriginalNames(set)
+                                          }
+                                          disabled={disabled || queuing}
+                                          className="mt-0.5 text-[10.5px] text-emerald-300 transition hover:text-emerald-200 disabled:opacity-50"
+                                        >
+                                          Download scripts with original names
+                                        </button>
+                                      </li>
+                                    </ul>
+                                  ) : null}
+                                </li>
+                              )
+                            })
+                          : null}
+                        {groupItems
+                          .filter(
+                            (item) =>
+                              group.category !== 'script' ||
+                              !scriptItemIds.has(item.id)
+                          )
+                          .map((item) => {
                           const queueableItem = isQueueable(item)
                           const selected = selection.has(item.id)
                           const type =
@@ -601,6 +956,24 @@ export function ScanPanel({
                               item.status === 'probing'
                                 ? 'Resolving formats…'
                                 : item.unavailableReason
+                            const pairedSetId = chosenSetIdFor(item.id)
+                            const pairedSet =
+                              setById.get(pairedSetId) ?? null
+                            const pairingFiles = pairedSet
+                              ? selectedFilesForSet(pairedSet)
+                              : []
+                            const primaryVariant = pairedSet
+                              ? primaryForSet(pairedSet)
+                              : ''
+                            const preview = pairedSet
+                              ? planPreview(
+                                  item.name,
+                                  pairingFiles,
+                                  primaryVariant.length > 0
+                                    ? primaryVariant
+                                    : null
+                                )
+                              : null
                             return (
                               <li
                                 key={item.id}
@@ -725,6 +1098,233 @@ export function ScanPanel({
                                       <p className="mt-1 text-[10.5px] leading-4 text-zinc-500">
                                         {reason}
                                       </p>
+                                    ) : null}
+                                    {item.status === 'ready' &&
+                                    scriptSets.length > 0 ? (
+                                      <div className="mt-2 rounded-lg border border-fuchsia-400/20 bg-fuchsia-400/[0.04] px-2 py-1.5">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fuchsia-200/80">
+                                            Matching scripts
+                                          </span>
+                                          <label
+                                            className="sr-only"
+                                            htmlFor={`script-set-${item.id}`}
+                                          >
+                                            Script set for {item.name}
+                                          </label>
+                                          <select
+                                            id={`script-set-${item.id}`}
+                                            value={pairedSetId}
+                                            onChange={(event) =>
+                                              setSetChoiceByVideo((current) => ({
+                                                ...current,
+                                                [item.id]: event.target.value
+                                              }))
+                                            }
+                                            disabled={disabled || queuing}
+                                            className="h-7 max-w-[18rem] flex-1 rounded-md border border-white/10 surface-input px-1.5 text-[11px] text-zinc-200 outline-none focus:border-fuchsia-400/60 disabled:opacity-50"
+                                          >
+                                            <option value="">
+                                              No matching scripts
+                                            </option>
+                                            {scriptSets.map((set) => (
+                                              <option key={set.id} value={set.id}>
+                                                {set.base}
+                                                {set.postNumber !== null
+                                                  ? ` · #${set.postNumber}`
+                                                  : ''}
+                                                {set.axes.length > 0
+                                                  ? ` · ${set.axes.join(', ')}`
+                                                  : ''}
+                                                {set.missingMain
+                                                  ? ' · no main'
+                                                  : ''}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        {pairedSet ? (
+                                          <>
+                                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                              {axisKeysOf(pairedSet).map((axisKey) => {
+                                                const active =
+                                                  axisSelection(pairedSet).includes(
+                                                    axisKey
+                                                  )
+                                                return (
+                                                  <label
+                                                    key={axisKey}
+                                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] ${
+                                                      active
+                                                        ? 'border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-100'
+                                                        : 'border-white/10 text-zinc-400'
+                                                    }`}
+                                                  >
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={active}
+                                                      onChange={() =>
+                                                        toggleAxis(pairedSet, axisKey)
+                                                      }
+                                                      disabled={disabled || queuing}
+                                                      className="h-3 w-3 accent-fuchsia-400"
+                                                    />
+                                                    {axisLabel(axisKey)}
+                                                  </label>
+                                                )
+                                              })}
+                                              <button
+                                                type="button"
+                                                onClick={() => selectAllAxes(pairedSet)}
+                                                disabled={disabled || queuing}
+                                                className="text-[10.5px] text-fuchsia-200 transition hover:text-fuchsia-100 disabled:opacity-50"
+                                              >
+                                                Select all axes
+                                              </button>
+                                              <span className="ml-auto text-[10px] text-zinc-500">
+                                                {matchBucketLabel(pairedSet)}
+                                              </span>
+                                            </div>
+                                            {pairedSet.variants.length > 0 ? (
+                                              <fieldset className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                                <legend className="text-[10px] uppercase tracking-wide text-zinc-500">
+                                                  Primary version
+                                                </legend>
+                                                <label className="inline-flex items-center gap-1 text-[10.5px] text-zinc-300">
+                                                  <input
+                                                    type="radio"
+                                                    name={`primary-${item.id}`}
+                                                    checked={primaryVariant.length === 0}
+                                                    onChange={() =>
+                                                      setPrimaryChoice((current) => ({
+                                                        ...current,
+                                                        [pairedSet.id]: ''
+                                                      }))
+                                                    }
+                                                    disabled={disabled || queuing}
+                                                    className="h-3 w-3 accent-fuchsia-400"
+                                                  />
+                                                  Keep versions separate
+                                                </label>
+                                                {pairedSet.variants.map((variant) => (
+                                                  <label
+                                                    key={variant}
+                                                    className="inline-flex items-center gap-1 text-[10.5px] text-zinc-300"
+                                                  >
+                                                    <input
+                                                      type="radio"
+                                                      name={`primary-${item.id}`}
+                                                      checked={
+                                                        primaryVariant === variant
+                                                      }
+                                                      onChange={() =>
+                                                        setPrimaryChoice((current) => ({
+                                                          ...current,
+                                                          [pairedSet.id]: variant
+                                                        }))
+                                                      }
+                                                      disabled={disabled || queuing}
+                                                      className="h-3 w-3 accent-fuchsia-400"
+                                                    />
+                                                    {variant}
+                                                  </label>
+                                                ))}
+                                              </fieldset>
+                                            ) : null}
+                                            <label className="mt-1.5 inline-flex items-center gap-1.5 text-[10.5px] text-zinc-300">
+                                              <input
+                                                type="checkbox"
+                                                checked={renameForSet(pairedSet)}
+                                                onChange={(event) =>
+                                                  setRenameChoice((current) => ({
+                                                    ...current,
+                                                    [pairedSet.id]: event.target.checked
+                                                  }))
+                                                }
+                                                disabled={disabled || queuing}
+                                                className="h-3 w-3 accent-fuchsia-400"
+                                              />
+                                              Rename scripts to match this video
+                                            </label>
+                                            {pairedSet.missingMain ? (
+                                              <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
+                                                No main stroke script in this set.
+                                                The other axes will still be
+                                                downloaded and renamed.
+                                              </p>
+                                            ) : null}
+                                            {pairedSet.conflicts.length > 0 ? (
+                                              <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
+                                                This set has two files for the same
+                                                axis. Choose a different set or
+                                                download the originals below.
+                                              </p>
+                                            ) : null}
+                                            {preview === null ? (
+                                              <p className="mt-1 text-[10.5px] leading-4 text-amber-200">
+                                                The chosen versions produce
+                                                conflicting names. Pick a different
+                                                primary version.
+                                              </p>
+                                            ) : (
+                                              <div className="mt-1.5">
+                                                <p className="text-[10.5px] text-zinc-400">
+                                                  {renameForSet(pairedSet)
+                                                    ? `→ saved as ${item.name}.*`
+                                                    : 'Original names will be kept.'}
+                                                </p>
+                                                <ul className="mt-0.5 flex flex-col gap-0.5">
+                                                  {pairingFiles.map((file) => {
+                                                    const target =
+                                                      preview.get(file.id) ?? null
+                                                    return (
+                                                      <li
+                                                        key={file.id}
+                                                        className="truncate font-mono text-[10px] text-zinc-500"
+                                                        title={`${file.filename} → ${
+                                                          target ?? file.filename
+                                                        }`}
+                                                      >
+                                                        {file.filename} →{' '}
+                                                        {renameForSet(pairedSet)
+                                                          ? target ?? 'name conflict'
+                                                          : file.filename}
+                                                      </li>
+                                                    )
+                                                  })}
+                                                </ul>
+                                              </div>
+                                            )}
+                                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  downloadVideoWithScripts(item)
+                                                }
+                                                disabled={
+                                                  disabled ||
+                                                  queuing ||
+                                                  !queueableItem ||
+                                                  pairingFiles.length === 0
+                                                }
+                                                className="h-7 rounded-md border border-fuchsia-400/30 bg-fuchsia-400/10 px-2.5 text-[11px] font-medium text-fuchsia-100 transition hover:bg-fuchsia-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                              >
+                                                Download video + scripts
+                                              </button>
+                                              <span className="text-[10px] text-zinc-500">
+                                                {pairingFiles.length} script
+                                                {pairingFiles.length === 1 ? '' : 's'} next to the video
+                                              </span>
+                                            </div>
+                                          </>
+                                        ) : (
+                                          <p className="mt-1 text-[10.5px] leading-4 text-zinc-500">
+                                            {scriptSets.some((set) => set.ambiguous)
+                                              ? 'Some script sets match more than one video. Choose the set that belongs to this video above.'
+                                              : 'Choose a script set above to download it with this video.'}
+                                          </p>
+                                        )}
+                                      </div>
                                     ) : null}
                                   </div>
                                 </div>
