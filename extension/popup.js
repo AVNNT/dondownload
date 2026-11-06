@@ -57,6 +57,8 @@ const siteStatus = document.getElementById('site-status')
 const handoffLogin = document.getElementById('handoff-login')
 const handoffLoginText = document.getElementById('handoff-login-text')
 const handoffLoginButton = document.getElementById('handoff-login-button')
+const connectionDot = document.getElementById('connection-dot')
+const connectionLabel = document.getElementById('connection-label')
 
 let pageUrl = null
 let pageOrigin = null
@@ -116,6 +118,12 @@ function setDetectedState(text, tone) {
   detectedState.className = tone ? `section-state ${tone}` : 'section-state'
 }
 
+function setConnection(ok) {
+  if (connectionDot === null || connectionLabel === null) return
+  connectionDot.style.background = ok ? 'var(--ok)' : 'var(--err)'
+  connectionLabel.textContent = ok ? 'Connected' : 'App not running'
+}
+
 function setSiteStatus(kind, message) {
   siteStatus.className = kind ? `status ${kind}` : 'status'
   siteStatus.textContent = message
@@ -123,6 +131,7 @@ function setSiteStatus(kind, message) {
 
 function showNativeFailure(error) {
   if (nativeStatus === null) return
+  setConnection(false)
   nativeStatusText.textContent = popupConnectionLine({ ok: false, error })
   nativeFix.href = welcomeUrl(chrome)
   nativeStatus.hidden = false
@@ -141,9 +150,11 @@ async function checkNativeConnection() {
   if (nativeStatus === null) return
   const result = await probeNativeConnection()
   if (result.ok) {
+    setConnection(true)
     nativeStatus.hidden = true
     return
   }
+  setConnection(false)
   nativeStatusText.textContent = popupConnectionLine(result)
   nativeFix.href = welcomeUrl(chrome)
   nativeStatus.hidden = false

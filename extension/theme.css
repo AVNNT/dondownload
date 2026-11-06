@@ -1,0 +1,255 @@
+/*
+ * DonDownload extension redesign tokens.
+ *
+ * OLED black + electric blue (#3B82F6) accent, mirroring the desktop app and
+ * the mockup mock.css. The extension cannot import the app's Tailwind, so the
+ * tokens are copied here. Light mode follows prefers-color-scheme.
+ */
+:root {
+  color-scheme: dark;
+  --bg: #000;
+  --s1: #0a0a0a;
+  --s2: #141414;
+  --s3: #1f1f1f;
+  --line: #1c1c1c;
+  --line2: #2b2b2b;
+  --t1: #f5f5f5;
+  --t2: #a8a8a8;
+  --t3: #858585;
+  --accent: #3b82f6;
+  --accent-hi: #60a5fa;
+  --accent-bg: rgba(59, 130, 246, 0.12);
+  --accent-line: rgba(59, 130, 246, 0.4);
+  --on-accent: #fff;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #f87171;
+  --err-bg: rgba(248, 113, 113, 0.08);
+  --err-line: rgba(248, 113, 113, 0.28);
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.9);
+  --r: 8px;
+  --r-lg: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #fafafa;
+    --s1: #ffffff;
+    --s2: #f1f1f2;
+    --s3: #e6e6e8;
+    --line: #ececee;
+    --line2: #dcdcdf;
+    --t1: #111113;
+    --t2: #52525b;
+    --t3: #6b6b74;
+    --accent: #2563eb;
+    --accent-hi: #1d4ed8;
+    --accent-bg: rgba(37, 99, 235, 0.08);
+    --accent-line: rgba(37, 99, 235, 0.35);
+    --ok: #16a34a;
+    --warn: #d97706;
+    --err: #dc2626;
+    --err-bg: rgba(220, 38, 38, 0.06);
+    --err-line: rgba(220, 38, 38, 0.25);
+    --shadow: 0 20px 50px rgba(15, 15, 20, 0.14);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--t1);
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Inline stroke icons (mockup icons.js vocabulary). */
+svg.i {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+/* Buttons. Pages style the bare `button` element through these utilities so
+ * that JS-created buttons (which do not carry the .btn class) still match. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r);
+  border: 1px solid var(--line2);
+  background: var(--s1);
+  color: var(--t1);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--t3);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hi);
+  border-color: var(--accent-hi);
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--t2);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  color: var(--t1);
+}
+
+.btn.icon {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+}
+
+.btn.danger {
+  color: var(--err);
+}
+
+/* Small labels. */
+.cap {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--t3);
+  font-weight: 600;
+}
+
+.dim {
+  color: var(--t3);
+}
+
+.muted {
+  color: var(--t2);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status dot. */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+  background: var(--t3);
+}
+
+/* Toggle switch (used on decorative switches; real toggles are checkboxes). */
+.sw {
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent);
+  position: relative;
+  flex: none;
+}
+
+.sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.sw.off {
+  background: var(--s3);
+}
+
+.sw.off::after {
+  right: auto;
+  left: 2px;
+  background: var(--t3);
+}
+
+/* Text field / input container. */
+.field {
+  height: 34px;
+  border: 1px solid var(--line2);
+  border-radius: var(--r);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  gap: 8px;
+  color: var(--t1);
+}
+
+/* Checkbox (square, for options that keep a native checkbox). */
+.cb {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid var(--t3);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.cb.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Progress bar. */
+.bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--s3);
+  overflow: hidden;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}

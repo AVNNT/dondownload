@@ -4,110 +4,186 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DonDownload Capture</title>
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <span class="brand">DonDownload</span>
-        <span class="pill">capture</span>
+    <main class="wrap">
+      <header class="hd">
+        <span class="logo" aria-hidden="true">
+          <svg class="i" viewBox="0 0 24 24">
+            <path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" />
+          </svg>
+        </span>
+        <b class="brand">DonDownload</b>
+        <span class="conn">
+          <span id="connection-dot" class="dot" aria-hidden="true"></span>
+          <span id="connection-label">Connected</span>
+        </span>
+        <button
+          id="open-options"
+          class="btn ghost icon"
+          type="button"
+          title="Settings &amp; site access"
+          aria-label="Settings"
+        >
+          <svg class="i" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"
+            />
+          </svg>
+        </button>
       </header>
 
-      <p id="native-status" class="native-status" role="status" aria-live="polite" hidden>
+      <p id="native-status" class="alert" role="status" aria-live="polite" hidden>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" /><path d="M12 7.5v5M12 16h.01" />
+        </svg>
         <span id="native-status-text"></span>
-        <a id="native-fix" href="welcome.html">How to fix</a>
+        <a id="native-fix" href="welcome.html">Start it</a>
       </p>
 
-      <section id="handoff-login" class="site-section" aria-labelledby="handoff-login-heading" hidden>
-        <div class="section-head">
-          <h2 id="handoff-login-heading">Login needed</h2>
-          <span class="section-state">Stay in browser</span>
+      <section
+        id="handoff-login"
+        class="card login"
+        aria-labelledby="handoff-login-heading"
+        hidden
+      >
+        <div class="r">
+          <span class="warn-ic" aria-hidden="true">
+            <svg class="i" viewBox="0 0 24 24">
+              <path
+                d="M12 3a9 9 0 1 0 9 9 3 3 0 0 1-3-3 3 3 0 0 1-3-3 3 3 0 0 1-3-3z"
+              /><path d="M8.5 12h.01M12 16h.01M15.5 13.5h.01" />
+            </svg>
+          </span>
+          <div class="t">
+            <b id="handoff-login-heading">This video needs your sign-in</b>
+            <p id="handoff-login-text" class="muted"></p>
+          </div>
         </div>
-        <p id="handoff-login-text" class="muted"></p>
-        <button id="handoff-login-button" type="button">Let DonDownload use my login</button>
+        <div class="bt">
+          <button id="handoff-login-button" class="btn primary" type="button">
+            Use my login
+          </button>
+          <span class="stay">Stay in browser</span>
+        </div>
       </section>
 
-      <section id="site-section" class="site-section" aria-labelledby="site-heading" hidden>
-        <div class="section-head">
-          <h2 id="site-heading">This site</h2>
-          <span id="site-access-state" class="section-state">Not enabled</span>
-        </div>
-        <p id="site-hint" class="muted">
-          Enable the optional overlay to detect media on this exact site.
-        </p>
-        <button id="enable-site" type="button">Enable on this site</button>
-        <p id="site-status" class="status" role="status" aria-live="polite"></p>
-      </section>
-
-      <section aria-labelledby="detected-heading">
-        <div class="section-head">
-          <h2 id="detected-heading">Detected on this tab</h2>
+      <section class="card on-page" aria-labelledby="detected-heading">
+        <div class="lbl">
+          <h2 id="detected-heading" class="cap">On this page</h2>
           <span id="detected-state" class="section-state">Checking…</span>
         </div>
         <div id="capture-list" class="capture-list" aria-live="polite"></div>
-        <p id="capture-empty" class="muted">
-          Media detected on this tab appears here as you play or open it. On
-          sites you enable, DonDownload observes media responses; it does not
-          read cookies unless you opt in for that exact site.
+        <p id="capture-empty" class="empty" hidden>
+          <span class="ic" aria-hidden="true">
+            <svg class="i" viewBox="0 0 24 24">
+              <rect x="3" y="5" width="18" height="14" rx="2" /><path d="m10 9 5 3-5 3z" />
+            </svg>
+          </span>
+          Nothing found yet.
         </p>
-        <button id="find-qualities" type="button" class="secondary" hidden>
+        <button id="find-qualities" class="btn primary wide" type="button" hidden>
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.2-4.2" />
+          </svg>
           Find qualities for this page
         </button>
       </section>
 
-      <section class="manual-section" aria-labelledby="manual-heading">
-        <h2 id="manual-heading">Manual page capture</h2>
-        <div class="url-row">
-          <code id="page-url">Reading the active tab…</code>
-        </div>
-        <button id="send" type="button" disabled>Download this page</button>
-        <button id="scan-page" type="button" class="secondary" disabled>
-          Scan this page with DonDownload
+      <button id="send" class="btn wide" type="button" disabled>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" />
+        </svg>
+        Download this page
+      </button>
+
+      <div class="acts">
+        <button id="scan-page" class="btn" type="button" disabled>
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /><path d="M7 12h10" />
+          </svg>
+          Scan this page
         </button>
         <details id="scan-many" class="scan-many">
-          <summary>Scan several links</summary>
+          <summary class="btn">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m12 3 9 5-9 5-9-5z" /><path d="m3 13 9 5 9-5" />
+            </svg>
+            Scan several links
+          </summary>
           <div class="scan-many-body">
-            <label for="scan-links">One page or topic link per line, up to 10.</label>
-            <textarea
-              id="scan-links"
-              rows="5"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="https://site.example/t/topic/123&#10;https://site.example/t/topic/456"
-            ></textarea>
+            <div class="ta" aria-hidden="false">
+              <label class="ta-label" for="scan-links">One page or topic link per line, up to 10.</label>
+              <textarea
+                id="scan-links"
+                rows="5"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://site.example/t/topic/123&#10;https://site.example/t/topic/456"
+              ></textarea>
+            </div>
             <div class="scan-links-tools">
               <button
                 id="scan-add-tab"
+                class="btn"
                 type="button"
-                class="secondary"
                 title="Open a normal http(s) page to add it."
                 disabled
               >
+                <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
                 Add this tab
               </button>
-              <button id="scan-clear" type="button" class="link-button">
-                Clear
-              </button>
+              <button id="scan-clear" class="btn ghost" type="button">Clear</button>
+              <span class="dim keep">
+                <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m5 12 5 5 9-10" />
+                </svg>
+                Kept if you close this
+              </span>
             </div>
             <p id="scan-links-status" class="scan-hint" role="status" aria-live="polite"></p>
-            <button id="scan-links-button" type="button" disabled>Scan links</button>
+            <button id="scan-links-button" class="btn primary wide" type="button" disabled>
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /><path d="M7 12h10" />
+              </svg>
+              Scan links
+            </button>
+            <span class="dim hint">One link per line, up to 10. Uses this browser&rsquo;s sign-in.</span>
           </div>
         </details>
-        <button id="download-again" type="button" class="secondary" hidden>
-          Download again
-        </button>
+      </div>
+
+      <button id="download-again" class="btn wide" type="button" hidden>
+        Download again
+      </button>
+
+      <section class="card site-card" aria-labelledby="site-heading">
+        <div class="toggle">
+          <div class="t">
+            <h2 id="site-heading">Download button on videos</h2>
+            <span id="site-access-state" class="section-state">Not enabled</span>
+          </div>
+        </div>
+        <p id="site-hint" class="muted">
+          Enable the optional overlay to detect media on this exact site.
+        </p>
+        <button id="enable-site" class="btn" type="button">Enable on this site</button>
+        <p id="site-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="manual-section" aria-labelledby="manual-heading">
+        <div class="url-row">
+          <code id="page-url">Reading the active tab…</code>
+        </div>
         <p id="status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <footer>
-        <button id="open-options" type="button" class="link-button">
-          Settings &amp; site access
-        </button>
-        <p class="muted">
-          Automatic browser hand-off is off until you grant its download
-          permission in Settings. The desktop app never takes focus.
-        </p>
-      </footer>
+      <h2 id="manual-heading" class="sr-only">Manual page capture</h2>
     </main>
 
     <script type="module" src="popup.js"></script>
