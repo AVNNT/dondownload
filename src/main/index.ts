@@ -524,6 +524,22 @@ if (unregisterRequested) {
     // Smart Link Scanner. Discovery and probing only; the queue service is the
     // single explicit selection path and revalidates every item first.
     scanner = new ScanSessionManager({
+      ...(mediaJobs === null
+        ? {}
+        : {
+            analyzeMedia: (url, analyzeOptions) =>
+              mediaJobs!.analyzeMedia(
+                {
+                  url,
+                  ...(analyzeOptions?.cookie === undefined
+                    ? {}
+                    : { cookie: analyzeOptions.cookie })
+                },
+                analyzeOptions?.signal === undefined
+                  ? {}
+                  : { signal: analyzeOptions.signal }
+              )
+          }),
       onUpdate: (session) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.scanUpdated, session)
@@ -531,7 +547,11 @@ if (unregisterRequested) {
       }
     })
     if (batches !== null) {
-      scanQueue = new ScanQueueService({ sessions: scanner, batches })
+      scanQueue = new ScanQueueService({
+        sessions: scanner,
+        batches,
+        ...(mediaJobs === null ? {} : { mediaJobs })
+      })
     }
 
     // Native messaging registration is zero-config for the packaged and dev

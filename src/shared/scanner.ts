@@ -1,5 +1,10 @@
 import type { Batch } from './batches'
 import { parseBatch } from './batches'
+import {
+  MAX_MEDIA_LABEL_LENGTH,
+  isMediaOutputFormat,
+  type MediaOutputFormat
+} from './media'
 import { ValidationError, normalizeHttpUrl } from './validation'
 
 /**
@@ -39,7 +44,9 @@ export const SCAN_ITEM_STATUSES = [
   'probing',
   'ready',
   'signin',
-  'unavailable'
+  'protected',
+  'unavailable',
+  'tool-unavailable'
 ] as const
 export type ScanItemStatus = (typeof SCAN_ITEM_STATUSES)[number]
 
@@ -64,6 +71,36 @@ export const MAX_SCAN_HOST_LENGTH = 255
 export const MAX_SCAN_MESSAGE_LENGTH = 400
 export const MAX_SCAN_PROBES = 200
 export const MAX_SCAN_CONCURRENT_ITEMS = 4
+/** Phase 2: per-session yt-dlp metadata analyses. */
+export const MAX_SCAN_VIDEO_ANALYSES = 15
+export const MAX_SCAN_VIDEO_ANALYSIS_CONCURRENCY = 2
+/** Phase 2: pages the scanner may fetch itself (includes the pasted page). */
+export const MAX_SCAN_FOLLOW_PAGES = 25
+export const MAX_SCAN_FOLLOW_DEPTH = 2
+export const MAX_SCAN_FOLLOW_PER_HOST = 2
+export const SCAN_SESSION_BUDGET_MS = 75_000
+export const MAX_SCAN_VIDEO_FORMATS = 40
+export const MAX_SCAN_RESOLUTION_LENGTH = 32
+
+const OPAQUE_MEDIA_FORMAT_ID = /^[A-Za-z0-9_-]{1,128}$/
+const MEDIA_CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
+
+/**
+ * Renderer-safe subset of one resolved media option. It deliberately carries
+ * no format URL, selector, header or raw provider metadata; the opaque option
+ * ID is the only token accepted by the queue path.
+ */
+export interface ScanVideoFormat {
+  optionId: string
+  kind: 'video' | 'audio'
+  label: string
+  container: string
+  width: number | null
+  height: number | null
+  sizeBytes: number | null
+  sizeIsEstimate: boolean
+  outputFormats: MediaOutputFormat[]
+}
 
 export interface ScanItem {
   /** Opaque session-local item ID; never a URL or selector. */
@@ -81,10 +118,22 @@ export interface ScanItem {
   postNumber: number | null
   /** Sanitized Discourse author display name. */
   author: string | null
-  /** Phase 2 readiness: optional media metadata from a future resolver. */
+  /** Phase 2 readiness: optional resolved media metadata. */
   durationSeconds?: number | null
   width?: number | null
   height?: number | null
+  /** Already validated public HTTPS thumbnail, or null. */
+  thumbnailUrl?: string | null
+  /** Human-readable best resolution, for example `1080p`. */
+  bestResolution?: string | null
+  /** True when `sizeBytes` is an approximation or a merged-stream sum. */
+  sizeIsEstimate?: boolean
+  /** Renderer-safe format options for a resolved video page link. */
+  formats?: ScanVideoFormat[]
+  /** Option selected by default (normally the best video format). */
+  bestOptionId?: string | null
+  /** Short, safe explanation for sign-in/protected/unavailable states. */
+  unavailableReason?: string | null
 }
 
 export interface ScanCounters {
@@ -92,7 +141,9 @@ export interface ScanCounters {
   probing: number
   ready: number
   signin: number
+  protected: number
   unavailable: number
+  toolUnavailable: number
 }
 
 export interface ScanProgress {
@@ -132,9 +183,22 @@ export interface ScanCancelInput {
   sessionId: string
 }
 
+/**
+ * Optional per-video queue hints. The item ID must also appear in `itemIds`;
+ * `optionId` is an opaque ID from a fresh scan item and is revalidated against
+ * the analysis at queue time. Omitted options fall back to the item's best
+ * format and the `auto` output container.
+ */
+export interface ScanQueueVideoOption {
+  itemId: string
+  optionId?: string
+  outputFormat?: MediaOutputFormat
+}
+
 export interface ScanQueueSelectionInput {
   sessionId: string
   itemIds: string[]
+  videoOptions?: ScanQueueVideoOption[]
 }
 
 export interface ScanQueueSkip {
@@ -278,6 +342,27 @@ export function isScanItemStatus(value: unknown): value is ScanItemStatus {
   )
 }
 
+/**
+ * A queueable item is either a verified direct file or a resolved video page
+ * link. A page, sign-in requirement, DRM-protected video or unavailable item
+ * is never queueable.
+ */
+export function isQueueableScanItem(
+  item: Pick<ScanItem, 'category' | 'kind' | 'status'>
+): boolean {
+  if (item.category === 'page') return false
+  if (item.kind === 'file') {
+    // An unverified direct file stays selectable; queueing re-probes and
+    // fails closed. A sign-in requirement never is.
+    return item.status !== 'signin'
+  }
+  return (
+    item.kind === 'page-link' &&
+    item.category === 'video' &&
+    item.status === 'ready'
+  )
+}
+
 export function isScanSessionStatus(
   value: unknown
 ): value is ScanSessionStatus {
@@ -318,7 +403,12 @@ export function parseScanQueueSelectionInput(
   value: unknown
 ): ScanQueueSelectionInput {
   const record = asPlainObject(value, 'scan selection')
-  exactKeys(record, ['sessionId', 'itemIds'], [], 'scan selection')
+  exactKeys(
+    record,
+    ['sessionId', 'itemIds'],
+    ['videoOptions'],
+    'scan selection'
+  )
 
   const sessionId = parseScanSessionId(record.sessionId)
   const raw = record.itemIds
@@ -335,14 +425,85 @@ export function parseScanQueueSelectionInput(
   if (new Set(itemIds).size !== itemIds.length) {
     throw new ValidationError('Duplicate scan item identifier.')
   }
-  return { sessionId, itemIds }
+
+  let videoOptions: ScanQueueVideoOption[] | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'videoOptions')) {
+    const rawOptions = record.videoOptions
+    if (
+      !Array.isArray(rawOptions) ||
+      rawOptions.length > MAX_SCAN_SELECTION
+    ) {
+      throw new ValidationError('The scan video options are invalid.')
+    }
+    const selected = new Set(itemIds)
+    const seen = new Set<string>()
+    videoOptions = rawOptions.map((entry) => {
+      const option = asPlainObject(entry, 'scan video option')
+      exactKeys(
+        option,
+        ['itemId'],
+        ['optionId', 'outputFormat'],
+        'scan video option'
+      )
+      const itemId = parseScanItemId(option.itemId)
+      if (!selected.has(itemId)) {
+        throw new ValidationError(
+          'A scan video option does not belong to the selection.'
+        )
+      }
+      if (seen.has(itemId)) {
+        throw new ValidationError('Duplicate scan video option identifier.')
+      }
+      seen.add(itemId)
+
+      let optionId: string | undefined
+      if (Object.prototype.hasOwnProperty.call(option, 'optionId')) {
+        const value = option.optionId
+        if (
+          typeof value !== 'string' ||
+          !OPAQUE_MEDIA_FORMAT_ID.test(value)
+        ) {
+          throw new ValidationError('Invalid scan video option identifier.')
+        }
+        optionId = value
+      }
+
+      let outputFormat: MediaOutputFormat | undefined
+      if (Object.prototype.hasOwnProperty.call(option, 'outputFormat')) {
+        if (!isMediaOutputFormat(option.outputFormat)) {
+          throw new ValidationError('Choose a supported output format.')
+        }
+        outputFormat = option.outputFormat
+      }
+
+      return {
+        itemId,
+        ...(optionId === undefined ? {} : { optionId }),
+        ...(outputFormat === undefined ? {} : { outputFormat })
+      }
+    })
+  }
+
+  return {
+    sessionId,
+    itemIds,
+    ...(videoOptions === undefined ? {} : { videoOptions })
+  }
 }
 
 export function parseScanCounters(value: unknown): ScanCounters {
   const record = asPlainObject(value, 'scan counters')
   exactKeys(
     record,
-    ['found', 'probing', 'ready', 'signin', 'unavailable'],
+    [
+      'found',
+      'probing',
+      'ready',
+      'signin',
+      'protected',
+      'unavailable',
+      'toolUnavailable'
+    ],
     [],
     'scan counters'
   )
@@ -351,7 +512,9 @@ export function parseScanCounters(value: unknown): ScanCounters {
     probing: integerValue(record, 'probing', 0, MAX_SCAN_ITEMS),
     ready: integerValue(record, 'ready', 0, MAX_SCAN_ITEMS),
     signin: integerValue(record, 'signin', 0, MAX_SCAN_ITEMS),
-    unavailable: integerValue(record, 'unavailable', 0, MAX_SCAN_ITEMS)
+    protected: integerValue(record, 'protected', 0, MAX_SCAN_ITEMS),
+    unavailable: integerValue(record, 'unavailable', 0, MAX_SCAN_ITEMS),
+    toolUnavailable: integerValue(record, 'toolUnavailable', 0, MAX_SCAN_ITEMS)
   }
 }
 
@@ -382,6 +545,100 @@ export function parseScanProgress(value: unknown): ScanProgress {
   }
 }
 
+function nullableThumbnailUrl(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 2048 ||
+    CONTROL_CHARACTERS.test(value)
+  ) {
+    throw new ValidationError('The scan thumbnail URL is invalid.')
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new ValidationError('The scan thumbnail URL is invalid.')
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.hostname.length === 0
+  ) {
+    throw new ValidationError('The scan thumbnail URL is invalid.')
+  }
+  return parsed.href
+}
+
+export function parseScanVideoFormat(value: unknown): ScanVideoFormat {
+  const record = asPlainObject(value, 'scan video format')
+  exactKeys(
+    record,
+    [
+      'optionId',
+      'kind',
+      'label',
+      'container',
+      'width',
+      'height',
+      'sizeBytes',
+      'sizeIsEstimate',
+      'outputFormats'
+    ],
+    [],
+    'scan video format'
+  )
+
+  const optionId = record.optionId
+  if (
+    typeof optionId !== 'string' ||
+    !OPAQUE_MEDIA_FORMAT_ID.test(optionId)
+  ) {
+    throw new ValidationError('Invalid scan video option identifier.')
+  }
+  const kind = record.kind
+  if (kind !== 'video' && kind !== 'audio') {
+    throw new ValidationError('Unknown scan video format kind.')
+  }
+  const container = record.container
+  if (typeof container !== 'string' || !MEDIA_CONTAINER.test(container)) {
+    throw new ValidationError('Invalid scan video container.')
+  }
+  const rawOutputFormats = record.outputFormats
+  if (
+    !Array.isArray(rawOutputFormats) ||
+    rawOutputFormats.length === 0 ||
+    rawOutputFormats.length > 4
+  ) {
+    throw new ValidationError('Invalid scan video output formats.')
+  }
+  const outputFormats: MediaOutputFormat[] = []
+  for (const entry of rawOutputFormats) {
+    if (!isMediaOutputFormat(entry) || outputFormats.includes(entry)) {
+      throw new ValidationError('Invalid scan video output formats.')
+    }
+    outputFormats.push(entry)
+  }
+
+  return {
+    optionId,
+    kind,
+    label: safeDisplayText(
+      record.label,
+      MAX_MEDIA_LABEL_LENGTH,
+      'scan video label'
+    ),
+    container,
+    width: nullableIntegerValue(record, 'width', 1, 65_535),
+    height: nullableIntegerValue(record, 'height', 1, 65_535),
+    sizeBytes: nullableIntegerValue(record, 'sizeBytes', 0),
+    sizeIsEstimate: booleanValue(record, 'sizeIsEstimate'),
+    outputFormats
+  }
+}
+
 export function parseScanItem(value: unknown): ScanItem {
   const record = asPlainObject(value, 'scan item')
   exactKeys(
@@ -398,7 +655,17 @@ export function parseScanItem(value: unknown): ScanItem {
       'postNumber',
       'author'
     ],
-    ['durationSeconds', 'width', 'height'],
+    [
+      'durationSeconds',
+      'width',
+      'height',
+      'thumbnailUrl',
+      'bestResolution',
+      'sizeIsEstimate',
+      'formats',
+      'bestOptionId',
+      'unavailableReason'
+    ],
     'scan item'
   )
 
@@ -427,6 +694,45 @@ export function parseScanItem(value: unknown): ScanItem {
     throw new ValidationError('The scan hostname is invalid.')
   }
 
+  let formats: ScanVideoFormat[] | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'formats')) {
+    const rawFormats = record.formats
+    if (
+      !Array.isArray(rawFormats) ||
+      rawFormats.length > MAX_SCAN_VIDEO_FORMATS
+    ) {
+      throw new ValidationError('The scan video format list is invalid.')
+    }
+    formats = rawFormats.map(parseScanVideoFormat)
+    const optionIds = new Set<string>()
+    for (const format of formats) {
+      if (optionIds.has(format.optionId)) {
+        throw new ValidationError('Duplicate scan video option identifier.')
+      }
+      optionIds.add(format.optionId)
+    }
+  }
+
+  let bestOptionId: string | null | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'bestOptionId')) {
+    if (record.bestOptionId === null) {
+      bestOptionId = null
+    } else {
+      if (
+        typeof record.bestOptionId !== 'string' ||
+        !OPAQUE_MEDIA_FORMAT_ID.test(record.bestOptionId)
+      ) {
+        throw new ValidationError('Invalid scan video default option.')
+      }
+      bestOptionId = record.bestOptionId
+      if (!formats?.some((format) => format.optionId === bestOptionId)) {
+        throw new ValidationError(
+          'The scan video default option does not belong to its formats.'
+        )
+      }
+    }
+  }
+
   return {
     id: parseScanItemId(record.id),
     category,
@@ -446,13 +752,36 @@ export function parseScanItem(value: unknown): ScanItem {
             'scan author'
           ),
     ...(Object.prototype.hasOwnProperty.call(record, 'durationSeconds')
-      ? { durationSeconds: nullableIntegerValue(record, 'durationSeconds', 1) }
+      ? { durationSeconds: nullableIntegerValue(record, 'durationSeconds', 0) }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(record, 'width')
       ? { width: nullableIntegerValue(record, 'width', 1, 100_000) }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(record, 'height')
       ? { height: nullableIntegerValue(record, 'height', 1, 100_000) }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'thumbnailUrl')
+      ? { thumbnailUrl: nullableThumbnailUrl(record.thumbnailUrl) }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'bestResolution')
+      ? {
+          bestResolution:
+            record.bestResolution === null
+              ? null
+              : safeDisplayText(
+                  record.bestResolution,
+                  MAX_SCAN_RESOLUTION_LENGTH,
+                  'scan video resolution'
+                )
+        }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'sizeIsEstimate')
+      ? { sizeIsEstimate: booleanValue(record, 'sizeIsEstimate') }
+      : {}),
+    ...(formats === undefined ? {} : { formats }),
+    ...(bestOptionId === undefined ? {} : { bestOptionId }),
+    ...(Object.prototype.hasOwnProperty.call(record, 'unavailableReason')
+      ? { unavailableReason: safeMessage(record.unavailableReason) }
       : {})
   }
 }

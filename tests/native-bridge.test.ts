@@ -207,7 +207,15 @@ const SCAN_SESSION: ScanSession = {
   hostname: 'discuss.example',
   message: null,
   signinRequired: false,
-  counters: { found: 0, probing: 0, ready: 0, signin: 0, unavailable: 0 },
+  counters: {
+    found: 0,
+    probing: 0,
+    ready: 0,
+    signin: 0,
+    protected: 0,
+    unavailable: 0,
+    toolUnavailable: 0
+  },
   progress: { fetchedPages: 0, totalItems: 0, queueableItems: 0 },
   items: [],
   removedItemIds: [],
