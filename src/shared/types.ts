@@ -101,11 +101,21 @@ export interface DownloadItem {
   speedBps: number
   etaSeconds: number | null
   errorMessage: string | null
+  /**
+   * Raw aria2 failure text ("aria2 code N: message") for troubleshooting. Kept
+   * apart from `errorMessage`, which is plain language for the user.
+   */
+  errorDetail?: string | null
   attempts: number
   maxAttempts: number
   createdAt: number
   updatedAt: number
   completedAt: number | null
+  /**
+   * Set while an automatic retry is scheduled: epoch ms when it will start.
+   * Null when no automatic retry is pending.
+   */
+  retryAt?: number | null
   /**
    * Optional per-download controls. They are always present in manager
    * snapshots but optional in the type so older fixtures and narrow ports stay

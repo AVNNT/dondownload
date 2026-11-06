@@ -61,6 +61,15 @@ class FakeAria2 {
     if (tracked) tracked.status = status
   }
 
+  /** Report an aria2 failure for one GID, as aria2 does for a broken transfer. */
+  fail(gid: string, errorCode: number, errorMessage: string): void {
+    const tracked = this.tracked.get(gid)
+    if (!tracked) return
+    tracked.status = 'error'
+    tracked.errorCode = String(errorCode)
+    tracked.errorMessage = errorMessage
+  }
+
   private addTracked(gid: string): TrackedStatus {
     const tracked: TrackedStatus = {
       gid,
@@ -789,5 +798,111 @@ describe('batch children', () => {
 
     expect(aria2.addUriCalls).toHaveLength(1)
     expect(itemByUrl(manager, url).blockReason).toBeNull()
+  })
+})
+
+describe('automatic retry after a transient failure', () => {
+  it('waits 3 s and retries a broken connection once, resuming the partial file', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/flaky.bin'
+
+    await manager.add({ url })
+    const first = itemByUrl(manager, url)
+    aria2.fail(first.gid, 6, 'Connection reset by peer')
+
+    await manager.refreshPolicy()
+    const waiting = itemByUrl(manager, url)
+    expect(waiting).toMatchObject({
+      status: 'error',
+      errorMessage: 'The connection was interrupted.',
+      errorDetail: 'aria2 code 6: Connection reset by peer',
+      attempts: 1
+    })
+    expect(waiting.retryAt).toBe(clock.value + 3_000)
+    expect(aria2.addUriCalls).toHaveLength(1)
+
+    // The scheduled retry re-adds the job after the backoff.
+    await vi.waitFor(
+      () => expect(itemByUrl(manager, url).attempts).toBe(2),
+      { timeout: 5_000 }
+    )
+    const retried = itemByUrl(manager, url)
+    expect(retried).toMatchObject({
+      status: 'queued',
+      errorMessage: null,
+      errorDetail: null,
+      retryAt: null
+    })
+    expect(aria2.addUriCalls).toHaveLength(2)
+
+    // A second transient failure waits the longer backoff.
+    aria2.fail(retried.gid, 2, 'Timeout.')
+    await manager.refreshPolicy()
+    expect(itemByUrl(manager, url)).toMatchObject({
+      status: 'error',
+      errorMessage: 'The server stopped responding.',
+      attempts: 2,
+      retryAt: clock.value + 10_000
+    })
+  })
+
+  it('never retries a non-transient failure automatically', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/missing.bin'
+
+    await manager.add({ url })
+    const item = itemByUrl(manager, url)
+    aria2.fail(item.gid, 3, 'Resource not found')
+
+    await manager.refreshPolicy()
+    expect(itemByUrl(manager, url)).toMatchObject({
+      status: 'error',
+      errorMessage: "The file isn't on the server (anymore).",
+      errorDetail: 'aria2 code 3: Resource not found',
+      retryAt: null,
+      attempts: 1
+    })
+    expect(aria2.addUriCalls).toHaveLength(1)
+  })
+
+  it('cancels a pending automatic retry when the download is removed', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/removed.bin'
+
+    await manager.add({ url })
+    const item = itemByUrl(manager, url)
+    aria2.fail(item.gid, 5, 'Too slow')
+
+    await manager.refreshPolicy()
+    expect(itemByUrl(manager, url).retryAt).not.toBeNull()
+
+    await manager.remove(item.id)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(manager.getSnapshot().downloads).toHaveLength(0)
+    expect(aria2.addUriCalls).toHaveLength(1)
   })
 })

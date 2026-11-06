@@ -101,6 +101,10 @@ export interface UnifiedRow {
   attempts: number | null
   maxAttempts: number | null
   errorMessage: string | null
+  /** Raw technical failure text, shown only in the details pane. */
+  errorDetail: string | null
+  /** Epoch ms of a pending automatic retry, if any. */
+  retryAt: number | null
   filePath: string | null
   /** Optional and renderer-only for now; the live backend does not persist a
    * job thumbnail, so most live rows use the category icon fallback. */
@@ -403,6 +407,8 @@ export function downloadToRow(item: DownloadItem): UnifiedRow {
     attempts: item.attempts,
     maxAttempts: item.maxAttempts,
     errorMessage: item.errorMessage,
+    errorDetail: item.errorDetail ?? null,
+    retryAt: item.retryAt ?? null,
     filePath: item.filePath,
     thumbnailUrl: null,
     download: item,
@@ -447,6 +453,8 @@ export function mediaJobToRow(job: MediaJob): UnifiedRow {
     attempts: null,
     maxAttempts: null,
     errorMessage: job.errorMessage,
+    errorDetail: null,
+    retryAt: null,
     filePath: null,
     thumbnailUrl: job.thumbnailUrl ?? null,
     download: null,

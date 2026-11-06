@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   aria2ErrorHint,
+  aria2FailureDetail,
   buildRpcRequest,
   describeAria2Failure,
   mapAria2Status,
@@ -108,17 +109,48 @@ describe('status mapping', () => {
 })
 
 describe('failure descriptions', () => {
-  it('maps known aria2 error codes to actionable hints', () => {
-    expect(aria2ErrorHint(3)).toMatch(/could not find/i)
-    expect(aria2ErrorHint(9)).toMatch(/disk space/i)
-    expect(aria2ErrorHint(19)).toMatch(/host name/i)
-    expect(aria2ErrorHint(999)).toMatch(/could not complete/i)
+  it('maps known aria2 error codes to plain-language hints', () => {
+    expect(aria2ErrorHint(2)).toBe('The server stopped responding.')
+    expect(aria2ErrorHint(5)).toBe('The download got too slow and was stopped.')
+    expect(aria2ErrorHint(6)).toBe('The connection was interrupted.')
+    expect(aria2ErrorHint(22)).toBe('The server sent a broken response.')
+    expect(aria2ErrorHint(3)).toBe("The file isn't on the server (anymore).")
+    expect(aria2ErrorHint(4)).toBe("The file isn't on the server (anymore).")
+    expect(aria2ErrorHint(9)).toBe('Not enough free disk space.')
+    expect(aria2ErrorHint(24)).toBe('This file needs a sign-in.')
+    expect(aria2ErrorHint(19)).toMatch(/couldn't find that website/i)
+    expect(aria2ErrorHint(999)).toBe("The download couldn't finish.")
+    expect(aria2ErrorHint(1)).toBe("The download couldn't finish.")
   })
 
-  it('includes aria2 detail alongside the hint', () => {
-    expect(describeAria2Failure(13, 'File already exists')).toContain(
-      'already exists'
+  it('does not leak the raw aria2 message into the user-facing text', () => {
+    expect(describeAria2Failure(13, 'File already exists')).toBe(
+      'A file with this name already exists. Choose a different name.'
     )
-    expect(describeAria2Failure(13, '')).toContain('aria2 code 13')
+    expect(describeAria2Failure(999, 'Timeout.')).toBe(
+      "The download couldn't finish."
+    )
+    expect(describeAria2Failure(22, 'No URI available.')).toBe(
+      'The server sent a broken response.'
+    )
+  })
+
+  it('maps generic codes to a matching hint from the raw message', () => {
+    expect(describeAria2Failure(1, 'Timeout.')).toBe(
+      'The server stopped responding.'
+    )
+    expect(describeAria2Failure(0, 'No URI available.')).toBe(
+      'The server sent a broken response.'
+    )
+    expect(describeAria2Failure(1, 'Some unknown failure')).toBe(
+      "The download couldn't finish."
+    )
+  })
+
+  it('keeps the raw aria2 detail separately', () => {
+    expect(aria2FailureDetail(13, 'File already exists')).toBe(
+      'aria2 code 13: File already exists'
+    )
+    expect(aria2FailureDetail(13, '  ')).toBe('aria2 code 13')
   })
 })
