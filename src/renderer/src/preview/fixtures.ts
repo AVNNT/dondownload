@@ -89,7 +89,7 @@ const browserExtensionFixture: BrowserExtensionStatus = {
 
 const PREVIEW_ARIA2 = {
   status: 'ready' as const,
-  version: '1.37.0-preview',
+  version: '1.37.0',
   binaryPath: null,
   message: null,
   hint: null
@@ -97,7 +97,7 @@ const PREVIEW_ARIA2 = {
 
 const PREVIEW_MEDIA_TOOL = {
   status: 'ready' as const,
-  version: 'fixture',
+  version: '2026.10.26',
   message: null,
   hint: null
 }
@@ -1187,7 +1187,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-1080',
       kind: 'video',
-      title: 'Deep Work: Focus Session (preview)',
+      title: 'Deep Work: Focus Session',
       label: '1080p · MP4 · video + audio',
       status: 'downloading',
       completedBytes: 74 * mib,
@@ -1204,7 +1204,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-720',
       kind: 'video',
-      title: 'Design systems in practice (preview)',
+      title: 'Design systems in practice',
       label: '720p · MP4 · video + audio',
       status: 'merging',
       completedBytes: 268 * mib,
@@ -1221,7 +1221,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-audio',
       kind: 'audio',
-      title: 'Ambient coding mix (preview)',
+      title: 'Ambient coding mix',
       label: 'Audio only · M4A',
       status: 'complete',
       completedBytes: 46 * mib,
@@ -1237,7 +1237,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-480',
       kind: 'video',
-      title: 'Conference keynote archive (preview)',
+      title: 'Conference keynote archive',
       label: '480p · MP4 · video + audio',
       status: 'error',
       completedBytes: 12 * mib,
@@ -1253,7 +1253,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-1080',
       kind: 'video',
-      title: 'Product launch keynote (preview)',
+      title: 'Product launch keynote',
       label: '1080p · MP4 · video + audio',
       status: 'queued',
       completedBytes: 0,
@@ -1270,7 +1270,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-2160',
       kind: 'video',
-      title: 'Aerial coastline in 4K (preview)',
+      title: 'Aerial coastline in 4K',
       label: '2160p · MKV · video + audio',
       status: 'downloading',
       completedBytes: 0,
@@ -1286,7 +1286,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-audio',
       kind: 'audio',
-      title: 'Weekly design notes, episode 12 (preview)',
+      title: 'Weekly design notes, episode 12',
       label: 'Audio only · M4A',
       status: 'queued',
       completedBytes: 0,
@@ -1432,7 +1432,7 @@ function createCollectionPreview(id: string): CollectionPreview {
   const preview: CollectionPreview = {
     id,
     kind: 'playlist',
-    title: 'Focus sessions · fixture playlist',
+    title: 'Focus Sessions — Complete Collection',
     entryCount: entries.length,
     availableCount: entries.filter((entry) => entry.availability === 'available')
       .length,
@@ -1587,7 +1587,7 @@ function seedBatches(anchor: number): Batch[] {
       kind: 'download',
       status: 'complete',
       title: 'brand-kit.zip',
-      label: 'pixeldrain fixture',
+      label: 'Pixeldrain file',
       completedBytes: 204 * 1024 * 1024,
       totalBytes: 204 * 1024 * 1024,
       createdAt: anchor - 26 * 60 * minute,
@@ -1601,7 +1601,7 @@ function seedBatches(anchor: number): Batch[] {
       kind: 'download',
       status: 'complete',
       title: 'screenshots.zip',
-      label: 'pixeldrain fixture',
+      label: 'Pixeldrain file',
       completedBytes: 88 * 1024 * 1024,
       totalBytes: 88 * 1024 * 1024,
       createdAt: anchor - 26 * 60 * minute,
@@ -1626,7 +1626,7 @@ function seedBatches(anchor: number): Batch[] {
     finalizeBatch({
       id: 'preview-batch-playlist',
       kind: 'media-playlist',
-      title: 'Focus sessions · fixture playlist',
+      title: 'Focus Sessions — Complete Collection',
       status: 'partial',
       progress: summarizeBatchItems(playlistItems),
       errorMessage: null,
@@ -1638,7 +1638,7 @@ function seedBatches(anchor: number): Batch[] {
     finalizeBatch({
       id: 'preview-batch-pixeldrain',
       kind: 'pixeldrain-list',
-      title: 'Shared assets · Pixeldrain fixture',
+      title: 'Shared assets · Pixeldrain list',
       status: 'complete',
       progress: summarizeBatchItems(pixeldrainItems),
       errorMessage: null,
@@ -1742,8 +1742,8 @@ function collectionItemLabel(
 ): string {
   const selected = quality ?? 'best'
   return preview.kind === 'playlist'
-    ? `${qualityLabel(selected)} · fixture playlist`
-    : 'Pixeldrain fixture item'
+    ? `${qualityLabel(selected)} · playlist`
+    : 'Pixeldrain file'
 }
 
 function qualityLabel(quality: BatchMediaQuality): string {
