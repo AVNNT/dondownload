@@ -22,6 +22,12 @@ import { normalizeMediaSourceUrl } from '@shared/media'
 import type { DownloadSettings } from '@shared/settings'
 import { parseDownloadSettings } from '@shared/settings'
 import {
+  CHROME_NATIVE_HOST_REGISTRY_KEY,
+  EDGE_NATIVE_HOST_REGISTRY_KEY,
+  type BrowserExtensionStatus
+} from '@shared/browserExtension'
+import { DONDOWNLOAD_EXTENSION_ID } from '@shared/extensionId'
+import {
   defaultMediaToolSettings,
   type MediaToolSettings
 } from '@shared/mediaTools'
@@ -35,6 +41,37 @@ import type {
   SmartBatchSubmitResult
 } from '@shared/types'
 import { normalizeHttpUrl } from '@shared/validation'
+
+const browserExtensionFixture: BrowserExtensionStatus = {
+  registered: true,
+  browsers: [
+    {
+      browser: 'Chrome',
+      registered: true,
+      registryKey: CHROME_NATIVE_HOST_REGISTRY_KEY,
+      shared: true
+    },
+    {
+      browser: 'Helium',
+      registered: true,
+      registryKey: CHROME_NATIVE_HOST_REGISTRY_KEY,
+      shared: true
+    },
+    {
+      browser: 'Edge',
+      registered: true,
+      registryKey: EDGE_NATIVE_HOST_REGISTRY_KEY,
+      shared: false
+    }
+  ],
+  hostPath: 'C:\\Program Files\\DonDownload\\resources\\native\\dondownload-native-host.exe',
+  manifestPath:
+    'C:\\Users\\preview\\AppData\\Roaming\\DonDownload\\native-messaging\\com.dondownload.bridge.json',
+  allowedOrigins: [`chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`],
+  extensionFolder: 'C:\\Program Files\\DonDownload\\resources\\extension',
+  extensionId: DONDOWNLOAD_EXTENSION_ID,
+  lastError: null
+}
 
 /**
  * Development-only fixtures for the browser preview at `/preview.html`.
@@ -772,7 +809,12 @@ export function createPreviewApi(
         latestVersion: '2026.10.26',
         message: 'Up to date.',
         lastCheckedAt: now()
-      })
+      }),
+
+    getBrowserExtensionStatus: async () => ok(browserExtensionFixture),
+    repairBrowserExtension: async () => ok(browserExtensionFixture),
+    openBrowserExtensionFolder: async () => ok(null),
+    copyBrowserExtensionFolderPath: async () => ok(null)
   }
 }
 
