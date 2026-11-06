@@ -16,15 +16,19 @@ import {
   type MediaOutputFormat,
   type MediaSnapshot
 } from '@shared/media'
+import { type ScanSession } from '@shared/scanner'
 import { MediaAnalyzer } from './MediaAnalyzer'
 import { QuickAdd } from './QuickAdd'
+import { ScanPanel } from './ScanPanel'
 import { Icon } from './Icon'
 
-export type AddDialogTab = 'direct' | 'media'
+export type AddDialogTab = 'direct' | 'media' | 'scan'
 
 export interface AddDialogProps {
   tab: AddDialogTab
   initialUrl: string
+  /** Extension-created session that should be shown immediately. */
+  scanSession?: ScanSession | null
   busy?: boolean
   onTabChange: (tab: AddDialogTab) => void
   onClose: () => void
@@ -43,6 +47,7 @@ export interface AddDialogProps {
 export function AddDialog({
   tab,
   initialUrl,
+  scanSession = null,
   busy = false,
   onTabChange,
   onClose,
@@ -58,6 +63,7 @@ export function AddDialog({
   const [notice, setNotice] = useState<string | null>(null)
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [scanSeed, setScanSeed] = useState(initialUrl)
 
   useEffect(() => {
     const target = dialogRef.current?.querySelector<HTMLElement>(
@@ -199,11 +205,23 @@ export function AddDialog({
             icon="video"
             label="Media page"
           />
+          <TabButton
+            active={tab === 'scan'}
+            onClick={() => onTabChange('scan')}
+            icon="search"
+            label="Scan page"
+          />
         </div>
 
         <div
           role="tabpanel"
-          aria-label={tab === 'direct' ? 'Direct link' : 'Media page'}
+          aria-label={
+            tab === 'direct'
+              ? 'Direct link'
+              : tab === 'media'
+                ? 'Media page'
+                : 'Scan page'
+          }
           className="min-h-0 flex-1 overflow-y-auto p-3"
         >
           {tab === 'direct' ? (
@@ -211,13 +229,17 @@ export function AddDialog({
               key={`direct:${initialUrl}`}
               disabled={busy}
               initialUrl={initialUrl}
+              onScanSuggested={(url) => {
+                setScanSeed(url)
+                onTabChange('scan')
+              }}
               onAdd={async (input) => {
                 const result = await onAdd(input)
                 if (result.ok) onClose()
                 return result
               }}
             />
-          ) : (
+          ) : tab === 'media' ? (
             <MediaAnalyzer
               key={`media:${initialUrl}`}
               analysis={analysis}
@@ -247,6 +269,13 @@ export function AddDialog({
                 setNotice(null)
               }}
             />
+          ) : (
+            <ScanPanel
+              key={`scan:${scanSeed}:${scanSession?.sessionId ?? 'new'}`}
+              disabled={busy}
+              initialUrl={scanSeed}
+              initialSession={scanSession}
+            />
           )}
         </div>
       </div>
@@ -262,7 +291,7 @@ function TabButton({
 }: {
   active: boolean
   onClick: () => void
-  icon: 'link' | 'video'
+  icon: 'link' | 'video' | 'search'
   label: string
 }): JSX.Element {
   return (

@@ -16,13 +16,13 @@ export function Thumbnail({
   title,
   fallback
 }: {
-  src: string
+  src?: string
   title: string
   fallback: ThumbnailFallback
 }): JSX.Element {
   const [failed, setFailed] = useState(false)
 
-  if (failed) {
+  if (failed || src === undefined || src.length === 0) {
     return (
       <span
         className={`flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] ${fallback.accent}`}
