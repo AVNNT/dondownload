@@ -57,7 +57,10 @@ function contentSecurityPolicy(): Plugin {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // Runtime dependencies used by main are bundled into out/main because the
+    // packaged app ships no node_modules (see electron-builder.yml). Anything
+    // left external here must exist at runtime, so list every main dependency.
+    plugins: [externalizeDepsPlugin({ exclude: ['htmlparser2'] })],
     resolve: {
       alias: {
         '@shared': resolve(__dirname, 'src/shared')

@@ -18,8 +18,10 @@ files:
   - out/**/*
   - package.json
   - LICENSE
-  # The main/preload bundles use only Electron and Node built-ins, and the
-  # renderer bundles React. Do not ship dev-only node_modules copies.
+  # The preload bundle uses only Electron and Node built-ins, and the renderer
+  # bundles React. Runtime dependencies used by main (htmlparser2) are bundled
+  # into out/main via electron.vite.config.ts `externalizeDepsPlugin({ exclude })`,
+  # so node_modules still must not be shipped.
   - "!node_modules/**/*"
   - "!**/*.map"
 
