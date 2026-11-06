@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { handleCreatedDownload, installDownloadsListener } from '../extension/handoff.js'
-import { claimHandoffDownload, finishHandoffDownload, readHandoffState, writeCaptureSettings } from '../extension/capture-settings.js'
+import { claimHandoffDownload, finishHandoffDownload, readHandoffState, readNeedsLoginState, writeCaptureSettings } from '../extension/capture-settings.js'
 import { automaticHandoffCandidate } from '../extension/handoff-policy.js'
 import { sendDurableHandoff } from '../extension/bridge.js'
 const DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
@@ -13,6 +13,8 @@ interface FakeOptions {
   searchState?: string
   cancelFails?: boolean
   byExtensionId?: string
+  cookies?: Array<{ name: string; value: string }>
+  searchItem?: Record<string, unknown>
 }
 
 function createFake(options: FakeOptions = {}) {
@@ -21,6 +23,7 @@ function createFake(options: FakeOptions = {}) {
   const nativeMessages: unknown[] = []
   const cancelled: number[] = []
   const searched: number[] = []
+  const cookieUrls: string[] = []
   let activeResponse: unknown = options.nativeResponse ?? {
     ok: true,
     accepted: true,
@@ -86,6 +89,20 @@ function createFake(options: FakeOptions = {}) {
         return true
       }
     },
+    cookies: {
+      getAll(
+        query: { url: string },
+        callback?: (cookies: unknown[]) => void
+      ) {
+        cookieUrls.push(query.url)
+        const value = options.cookies ?? []
+        if (typeof callback === 'function') {
+          callback(value)
+          return undefined
+        }
+        return Promise.resolve(value)
+      }
+    },
     downloads: {
       search(query: { id: number }, callback: (items: unknown[]) => void) {
         searched.push(query.id)
@@ -98,7 +115,8 @@ function createFake(options: FakeOptions = {}) {
             totalBytes: 4,
             mime: 'application/zip',
             filename: 'C:\\Downloads\\report.zip',
-            ...(options.byExtensionId ? { byExtensionId: options.byExtensionId } : {})
+            ...(options.byExtensionId ? { byExtensionId: options.byExtensionId } : {}),
+            ...(options.searchItem ?? {})
           }
         ])
       },
@@ -122,6 +140,7 @@ function createFake(options: FakeOptions = {}) {
     nativeMessages,
     cancelled,
     searched,
+    cookieUrls,
     setResponse(next: unknown) {
       activeResponse = next
     },
@@ -330,5 +349,135 @@ describe('automatic browser hand-off is strict and conservative', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(delayedSize.nativeMessages).toHaveLength(1)
     expect(delayedSize.cancelled).toEqual([88])
+  })
+})
+
+describe('opt-in browser login hand-off', () => {
+  it('sends no cookie or browser headers when no origin is opted in', async () => {
+    const fake = createFake({ cookies: [{ name: 'auth', value: '1' }] })
+    await seedSettings(fake)
+    useFake(fake)
+    expect(
+      await handleCreatedDownload(
+        fake.chrome,
+        fileItem({ referrer: 'https://example.com/page' })
+      )
+    ).toBe('cancelled')
+    const message = (fake.nativeMessages[0] as { message: Record<string, unknown> })
+      .message
+    expect(message).not.toHaveProperty('cookie')
+    expect(message).not.toHaveProperty('referer')
+    expect(message).not.toHaveProperty('userAgent')
+    expect(fake.cookieUrls).toEqual([])
+  })
+
+  it('reads cookies for the exact download URL when its origin is opted in', async () => {
+    const fake = createFake({ cookies: [{ name: 'auth', value: '1' }] })
+    await writeCaptureSettings(fake.chrome, {
+      automaticFileHandoff: true,
+      handoffNotifications: false,
+      cookieOptInOrigins: ['https://example.com']
+    })
+    useFake(fake)
+    expect(
+      await handleCreatedDownload(
+        fake.chrome,
+        fileItem({
+          referrer: 'https://example.com/page',
+          finalUrl: 'https://example.com/files/report.zip'
+        })
+      )
+    ).toBe('cancelled')
+    expect(fake.cookieUrls).toEqual(['https://example.com/files/report.zip'])
+    const message = (fake.nativeMessages[0] as { message: Record<string, unknown> })
+      .message
+    expect(message.cookie).toBe('auth=1')
+    expect(message.referer).toBe('https://example.com/page')
+    expect(typeof message.userAgent).toBe('string')
+    expect(fake.cancelled).toEqual([42])
+  })
+
+  it('uses a page-origin opt-in but still reads only the download host cookies', async () => {
+    const fake = createFake({
+      cookies: [{ name: 'cdn', value: 'yes' }],
+      searchItem: {
+        url: 'https://cdn.example.net/files/report.zip',
+        totalBytes: 4,
+        mime: 'application/zip',
+        filename: 'C:\\Downloads\\report.zip'
+      }
+    })
+    await writeCaptureSettings(fake.chrome, {
+      automaticFileHandoff: true,
+      handoffNotifications: false,
+      cookieOptInOrigins: ['https://page.example']
+    })
+    useFake(fake)
+    const item = fileItem({
+      url: 'https://cdn.example.net/files/report.zip',
+      finalUrl: 'https://cdn.example.net/files/report.zip',
+      referrer: 'https://page.example/post'
+    })
+    expect(await handleCreatedDownload(fake.chrome, item)).toBe('cancelled')
+    expect(fake.cookieUrls).toEqual([
+      'https://cdn.example.net/files/report.zip'
+    ])
+    expect(
+      (
+        fake.nativeMessages[0] as { message: Record<string, unknown> }
+      ).message.cookie
+    ).toBe('cdn=yes')
+  })
+
+  it('records the needs-login state and keeps the browser download when not opted in', async () => {
+    const fake = createFake({
+      nativeResponse: {
+        ok: false,
+        error: {
+          code: 'HANDOFF_NEEDS_LOGIN',
+          message: 'This download needs your browser login.'
+        }
+      }
+    })
+    await seedSettings(fake)
+    useFake(fake)
+    expect(
+      await handleCreatedDownload(
+        fake.chrome,
+        fileItem({ referrer: 'https://example.com/page' })
+      )
+    ).toBe('needs-login')
+    expect(fake.cancelled).toEqual([])
+    expect(await readNeedsLoginState(fake.chrome)).toMatchObject({
+      origin: 'https://example.com',
+      host: 'example.com'
+    })
+    expect(fake.cookieUrls).toEqual([])
+  })
+
+  it('does not offer the login opt-in when the origin was already opted in', async () => {
+    const fake = createFake({
+      nativeResponse: {
+        ok: false,
+        error: {
+          code: 'HANDOFF_NEEDS_LOGIN',
+          message: 'This download needs your browser login.'
+        }
+      }
+    })
+    await writeCaptureSettings(fake.chrome, {
+      automaticFileHandoff: true,
+      handoffNotifications: false,
+      cookieOptInOrigins: ['https://example.com']
+    })
+    useFake(fake)
+    expect(
+      await handleCreatedDownload(
+        fake.chrome,
+        fileItem({ referrer: 'https://example.com/page' })
+      )
+    ).toBe('left-running')
+    expect(await readNeedsLoginState(fake.chrome)).toBeNull()
+    expect(fake.cancelled).toEqual([])
   })
 })

@@ -72,6 +72,8 @@ export type NormalizedCapturedSource =
       filename?: string
       contentType?: 'video/mp4' | 'video/webm'
       expectedBytes?: number
+      referer?: string
+      userAgent?: string
     }
   | { ok: false; code: string; message: string }
 
@@ -94,12 +96,22 @@ export function normalizeSupportedUrl(value: unknown): UrlResult
 export function normalizeCapturedSource(
   rawUrl: unknown,
   rawFilename?: unknown,
-  evidence?: { contentType?: unknown; expectedBytes?: unknown }
+  evidence?: {
+    contentType?: unknown
+    expectedBytes?: unknown
+    referer?: unknown
+    userAgent?: unknown
+  }
 ): NormalizedCapturedSource
 export function sendQueueCapturedSource(
   rawUrl: unknown,
   rawFilename?: unknown,
-  evidence?: { contentType?: unknown; expectedBytes?: unknown }
+  evidence?: {
+    contentType?: unknown
+    expectedBytes?: unknown
+    referer?: unknown
+    userAgent?: unknown
+  }
 ): Promise<{ ok: true } | BridgeFailure>
 export function sendDurableHandoff(
   rawUrl: unknown,
@@ -108,6 +120,9 @@ export function sendDurableHandoff(
     timeoutMs?: number
     expectedBytes?: number
     expectedContentType?: string
+    referer?: string
+    userAgent?: string
+    cookie?: string
   }
 ): Promise<DurableHandoffResult>
 export function sendQueueDownload(

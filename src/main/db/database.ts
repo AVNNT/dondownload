@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -72,6 +72,8 @@ export interface StoredDownload {
   connections: number | null
   /** Persistent policy hold so restart recovery never resumes a user pause. */
   blockReason: DownloadBlockReason | null
+  /** One-job browser login marker; never contains the cookie itself. */
+  needsLogin: boolean
 }
 
 export interface StoredBatch {
@@ -82,6 +84,11 @@ export interface StoredBatch {
 export interface DownloadSaveEntry {
   record: DownloadItem
   explicitFilename: string | null
+  /**
+   * True when this job was queued with an opt-in browser Cookie. Only this
+   * boolean is persisted; the header itself stays in memory.
+   */
+  needsLogin?: boolean
 }
 
 interface Migration {
@@ -461,6 +468,16 @@ const MIGRATIONS: readonly Migration[] = [
         watch_clipboard, launch_at_login, interface_size_percent, updated_at
       ) VALUES (1, 1, 0, 0, 0, 100, 0);
     `
+  },
+  {
+    // Additive only: a job queued with an opt-in browser Cookie records that
+    // fact so a restart can ask for the browser login again instead of
+    // re-downloading anonymously. The Cookie header is never stored.
+    version: 12,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN needs_login INTEGER NOT NULL DEFAULT 0
+        CHECK (needs_login IN (0, 1));
+    `
   }
 ]
 
@@ -579,7 +596,8 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
     connections: nullableNumber(row, 'connections'),
     blockReason: isDownloadBlockReason(row.block_reason)
       ? row.block_reason
-      : null
+      : null,
+    needsLogin: number(row, 'needs_login', 0) === 1
   }
 }
 
@@ -799,8 +817,8 @@ export class DownloadDatabase {
         INSERT INTO downloads (
           id, gid, url, filename, explicit_filename, dir, file_path, status,
           total_bytes, completed_bytes, error_message, attempts, max_attempts,
-          created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          created_at, updated_at, completed_at, needs_login
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           gid = excluded.gid,
           url = excluded.url,
@@ -816,7 +834,8 @@ export class DownloadDatabase {
           max_attempts = excluded.max_attempts,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
-          completed_at = excluded.completed_at
+          completed_at = excluded.completed_at,
+          needs_login = excluded.needs_login
       `)
       this.selectAllStatement = this.db.prepare(`
         SELECT * FROM downloads ORDER BY created_at DESC, updated_at DESC
@@ -1516,7 +1535,8 @@ export class DownloadDatabase {
       Math.max(1, Math.trunc(record.maxAttempts)),
       Math.trunc(record.createdAt),
       Math.trunc(record.updatedAt),
-      record.completedAt === null ? null : Math.trunc(record.completedAt)
+      record.completedAt === null ? null : Math.trunc(record.completedAt),
+      entry.needsLogin === true ? 1 : 0
     )
   }
 

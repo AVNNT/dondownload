@@ -1,6 +1,8 @@
+import type { DownloadRequestHeaders } from './types'
 import {
   ValidationError,
   normalizeHttpUrl,
+  parseDownloadRequestHeaders,
   sanitizeFilename
 } from './validation'
 
@@ -38,6 +40,7 @@ export const HANDOFF_FILE_EXTENSIONS = Object.freeze([
   'docx',
   'epub',
   'exe',
+  'funscript',
   'gz',
   'img',
   'iso',
@@ -97,6 +100,11 @@ export interface DurableHandoffInput {
   expectedBytes?: number
   /** Browser-reported response media type, compared when it is specific. */
   expectedContentType?: string
+  /**
+   * Opt-in browser headers for this one job. Cookies are memory-only and must
+   * never be written to SQLite, an aria2 session file or a log.
+   */
+  requestHeaders?: DownloadRequestHeaders
 }
 
 export interface DurableHandoffReceipt {
@@ -106,7 +114,10 @@ export interface DurableHandoffReceipt {
 
 function extensionOf(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null
-  const match = /\.([a-z0-9]{1,8})$/i.exec(value.trim())
+  // A KVS-style URL may end in a trailing slash (`/1.mp4/`), which still names
+  // that container. Strip only trailing path separators, never a file name.
+  const trimmed = value.trim().replace(/\/+$/, '')
+  const match = /\.([a-z0-9]{1,12})$/i.exec(trimmed)
   return match ? match[1]!.toLowerCase() : null
 }
 
@@ -221,14 +232,41 @@ function readFilename(record: Record<string, unknown>): string | undefined {
   return filename
 }
 
+function readRequestHeaders(
+  record: Record<string, unknown>
+): DownloadRequestHeaders | undefined {
+  const keys = ['referer', 'userAgent', 'cookie'].filter((key) =>
+    Object.prototype.hasOwnProperty.call(record, key)
+  )
+  if (keys.length === 0) return undefined
+  const headers = parseDownloadRequestHeaders({
+    ...(record.referer === undefined ? {} : { referer: record.referer }),
+    ...(record.userAgent === undefined ? {} : { userAgent: record.userAgent }),
+    ...(record.cookie === undefined ? {} : { cookie: record.cookie })
+  })
+  return Object.keys(headers).length === 0 ? undefined : headers
+}
+
 /** Parse the loopback/native-host body for the strict hand-off route. */
 export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'], ['filename', 'expectedBytes', 'expectedContentType'])
+  exactKeys(
+    record,
+    ['url'],
+    [
+      'filename',
+      'expectedBytes',
+      'expectedContentType',
+      'referer',
+      'userAgent',
+      'cookie'
+    ]
+  )
   const url = normalizeHttpUrl(record.url)
   const filename = readFilename(record)
   const expectedBytes = readExpectedBytes(record)
   const expectedContentType = readExpectedContentType(record)
+  const requestHeaders = readRequestHeaders(record)
 
   let pathname = ''
   try {
@@ -251,7 +289,8 @@ export function parseDurableHandoffInput(value: unknown): DurableHandoffInput {
     url,
     ...(filename === undefined ? {} : { filename }),
     ...(expectedBytes === undefined ? {} : { expectedBytes }),
-    ...(expectedContentType === undefined ? {} : { expectedContentType })
+    ...(expectedContentType === undefined ? {} : { expectedContentType }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders })
   }
 }
 
@@ -260,7 +299,18 @@ export function parseNativeDurableHandoffMessage(
   value: unknown
 ): DurableHandoffInput & { type: typeof DURABLE_HANDOFF_CHANNEL } {
   const record = asPlainObject(value)
-  exactKeys(record, ['type', 'url'], ['filename', 'expectedBytes', 'expectedContentType'])
+  exactKeys(
+    record,
+    ['type', 'url'],
+    [
+      'filename',
+      'expectedBytes',
+      'expectedContentType',
+      'referer',
+      'userAgent',
+      'cookie'
+    ]
+  )
   if (record.type !== DURABLE_HANDOFF_CHANNEL) {
     throw new ValidationError('Unsupported durable hand-off operation.')
   }
@@ -274,7 +324,10 @@ export function parseNativeDurableHandoffMessage(
         : { expectedBytes: record.expectedBytes }),
       ...(record.expectedContentType === undefined
         ? {}
-        : { expectedContentType: record.expectedContentType })
+        : { expectedContentType: record.expectedContentType }),
+      ...(record.referer === undefined ? {} : { referer: record.referer }),
+      ...(record.userAgent === undefined ? {} : { userAgent: record.userAgent }),
+      ...(record.cookie === undefined ? {} : { cookie: record.cookie })
     })
   }
 }

@@ -351,18 +351,34 @@ describe('grant parameter validation', () => {
   })
 
   it('distinguishes a missing parameter from an invalid one', () => {
-    expect(readGrantParameter('')).toEqual({ present: false, origin: null })
+    expect(readGrantParameter('')).toEqual({
+      present: false,
+      origin: null,
+      cookies: false
+    })
     expect(readGrantParameter('?other=1')).toEqual({
       present: false,
-      origin: null
+      origin: null,
+      cookies: false
     })
     expect(readGrantParameter('?grant=https%3A%2F%2Fexample.com')).toEqual({
       present: true,
-      origin: 'https://example.com'
+      origin: 'https://example.com',
+      cookies: false
     })
-    expect(readGrantParameter('?grant=https%3A%2F%2Fexample.com%2Fpath')).toEqual({
+    expect(
+      readGrantParameter('?grant=https%3A%2F%2Fexample.com%2Fpath')
+    ).toEqual({
       present: true,
-      origin: null
+      origin: null,
+      cookies: false
+    })
+    expect(
+      readGrantParameter('?grant=https%3A%2F%2Fexample.com&cookies=1')
+    ).toEqual({
+      present: true,
+      origin: 'https://example.com',
+      cookies: true
     })
   })
 
@@ -370,6 +386,13 @@ describe('grant parameter validation', () => {
     expect(
       grantPageUrl('chrome-extension://abc/welcome.html', 'https://example.com')
     ).toBe('chrome-extension://abc/welcome.html?grant=https%3A%2F%2Fexample.com')
+    expect(
+      grantPageUrl('chrome-extension://abc/welcome.html', 'https://example.com', {
+        cookies: true
+      })
+    ).toBe(
+      'chrome-extension://abc/welcome.html?grant=https%3A%2F%2Fexample.com&cookies=1'
+    )
     expect(
       grantPageUrl('chrome-extension://abc/welcome.html', 'https://example.com/x')
     ).toBeNull()

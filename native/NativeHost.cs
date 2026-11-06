@@ -67,9 +67,9 @@ internal static class NativeHost
     private static readonly Regex ErrorCodePattern =
         new Regex("^[A-Z][A-Z0-9_]{1,63}$", RegexOptions.CultureInvariant);
     private static readonly Regex ProgressiveExtensionPattern =
-        new Regex("\\.(mp4|webm|m4v|mov|ogv|mkv)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        new Regex("\\.(mp4|webm|m4v|mov|ogv|mkv)/?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex HandoffExtensionPattern =
-        new Regex("\\.(7z|apk|bin|bz2|csv|deb|dmg|doc|docx|epub|exe|gz|img|iso|jar|json|md|msi|odp|ods|odt|pkg|pdf|ppt|pptx|rar|rpm|sqlite|tar|tgz|txt|whl|xls|xlsx|xz|zip|zst)$",
+        new Regex("\\.(7z|apk|bin|bz2|csv|deb|dmg|doc|docx|epub|exe|funscript|gz|img|iso|jar|json|md|msi|odp|ods|odt|pkg|pdf|ppt|pptx|rar|rpm|sqlite|tar|tgz|txt|whl|xls|xlsx|xz|zip|zst)/?$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex CompleteMediaTypePattern =
         new Regex("^video/(mp4|webm)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -411,11 +411,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "url" },
-            new string[] { "filename", "contentType", "expectedBytes" }))
+            new string[] { "filename", "contentType", "expectedBytes", "referer", "userAgent" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only queue-captured-source messages containing type, url and optional filename/contentType/expectedBytes are accepted.");
+                "Only queue-captured-source messages containing type, url and optional filename/contentType/expectedBytes/referer/userAgent are accepted.");
         }
 
         string normalizedUrl;
@@ -490,6 +490,26 @@ internal static class NativeHost
         {
             body.Add("contentType", contentType);
             body.Add("expectedBytes", expectedBytes);
+        }
+        if (message.ContainsKey("referer"))
+        {
+            string capturerReferer;
+            string refererError;
+            if (!TryNormalizeUrl(message["referer"] as string, out capturerReferer, out refererError) ||
+                capturerReferer.Length > 4096)
+            {
+                return Error("INVALID_MESSAGE", "The captured source referer is invalid.");
+            }
+            body.Add("referer", capturerReferer);
+        }
+        if (message.ContainsKey("userAgent"))
+        {
+            string capturerUserAgent = message["userAgent"] as string;
+            if (!IsSafeHeaderValue(capturerUserAgent, 512))
+            {
+                return Error("INVALID_MESSAGE", "The captured source user agent is invalid.");
+            }
+            body.Add("userAgent", capturerUserAgent);
         }
         return ForwardCapturedSource(body);
     }
@@ -681,11 +701,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "url" },
-            new string[] { "filename", "expectedBytes", "expectedContentType" }))
+            new string[] { "filename", "expectedBytes", "expectedContentType", "referer", "userAgent", "cookie" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only handoff-download messages containing type, url and optional filename/expectedBytes/expectedContentType are accepted.");
+                "Only handoff-download messages containing type, url and optional filename/expectedBytes/expectedContentType/referer/userAgent/cookie are accepted.");
         }
 
         string normalizedUrl;
@@ -724,6 +744,37 @@ internal static class NativeHost
             expectedContentType = expectedContentType.ToLowerInvariant();
         }
 
+        string referer = null;
+        if (message.ContainsKey("referer"))
+        {
+            string urlError2;
+            if (!TryNormalizeUrl(message["referer"] as string, out referer, out urlError2) ||
+                referer.Length > 4096)
+            {
+                return Error("INVALID_MESSAGE", "The hand-off referer is invalid.");
+            }
+        }
+
+        string userAgent = null;
+        if (message.ContainsKey("userAgent"))
+        {
+            userAgent = message["userAgent"] as string;
+            if (!IsSafeHeaderValue(userAgent, 512))
+            {
+                return Error("INVALID_MESSAGE", "The hand-off user agent is invalid.");
+            }
+        }
+
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
         bool supported = false;
         try
         {
@@ -758,6 +809,18 @@ internal static class NativeHost
         if (expectedContentType != null)
         {
             body.Add("expectedContentType", expectedContentType);
+        }
+        if (referer != null)
+        {
+            body.Add("referer", referer);
+        }
+        if (userAgent != null)
+        {
+            body.Add("userAgent", userAgent);
+        }
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
         }
         return ForwardHandoff(body);
     }

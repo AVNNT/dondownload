@@ -14,6 +14,18 @@ function errorText(value, fallback) {
   return typeof value === 'string' && value.length > 0 ? value : fallback
 }
 
+async function rememberCookieOptIn(chromeApi, origin) {
+  try {
+    const settings = await readCaptureSettings(chromeApi)
+    if (!settings.cookieOptInOrigins.includes(origin)) {
+      settings.cookieOptInOrigins.push(origin)
+    }
+    return await writeCaptureSettings(chromeApi, settings)
+  } catch {
+    return false
+  }
+}
+
 /** Read the exact-origin overlay grant for one page origin. */
 export async function siteAccessGranted(chromeApi, origin) {
   const pattern = originToMatchPattern(origin)
@@ -34,6 +46,7 @@ export function requestExactOriginAccess(chromeApi, site, onResult) {
   const origin = site && typeof site.origin === 'string' ? site.origin : null
   const tabId =
     site && Number.isInteger(site.tabId) && site.tabId >= 0 ? site.tabId : null
+  const requestCookies = site && site.cookies === true
   const pattern = originToMatchPattern(origin)
   if (origin === null || pattern === null) {
     onResult({ ok: false, error: 'This origin is not supported.' })
@@ -42,49 +55,73 @@ export function requestExactOriginAccess(chromeApi, site, onResult) {
 
   void rememberPendingEnable(chromeApi, origin, tabId)
   try {
-    chromeApi.permissions.request({ origins: [pattern] }, (granted) => {
-      const permissionError = chromeApi.runtime.lastError
-      if (permissionError || granted !== true) {
-        void clearPendingEnable(chromeApi)
-        onResult({
-          ok: false,
-          error: 'Site access was not granted. Nothing on the page changed.'
-        })
-        return
-      }
+    chromeApi.permissions.request(
+      {
+        origins: [pattern],
+        ...(requestCookies ? { permissions: ['cookies'] } : {})
+      },
+      (granted) => {
+        const permissionError = chromeApi.runtime.lastError
+        if (permissionError || granted !== true) {
+          void clearPendingEnable(chromeApi)
+          onResult({
+            ok: false,
+            error: requestCookies
+              ? 'The cookies permission was not granted. No cookie is read.'
+              : 'Site access was not granted. Nothing on the page changed.'
+          })
+          return
+        }
 
-      try {
-        chromeApi.runtime.sendMessage(
-          { type: 'dondownload:overlay-enable', origin, tabId },
-          (response) => {
-            const messageError = chromeApi.runtime.lastError
-            if (messageError) {
-              onResult({
-                ok: false,
-                error: 'The overlay request could not be completed.'
-              })
-              return
-            }
-            const failed = !response || response.ok === false
+        const finish = (cookieSaved) => {
+          if (!cookieSaved) {
             onResult({
-              ok: !failed,
-              response: response || null,
-              error: failed
-                ? errorText(
-                    response && response.error && response.error.message,
-                    'The overlay could not be enabled on this site.'
-                  )
-                : null
+              ok: false,
+              error:
+                'The permission was granted, but the cookie opt-in could not be saved in this browser profile.'
+            })
+            return
+          }
+          try {
+            chromeApi.runtime.sendMessage(
+              { type: 'dondownload:overlay-enable', origin, tabId },
+              (response) => {
+                const messageError = chromeApi.runtime.lastError
+                if (messageError) {
+                  onResult({
+                    ok: false,
+                    error: 'The overlay request could not be completed.'
+                  })
+                  return
+                }
+                const failed = !response || response.ok === false
+                onResult({
+                  ok: !failed,
+                  response: response || null,
+                  error: failed
+                    ? errorText(
+                        response && response.error && response.error.message,
+                        'The overlay could not be enabled on this site.'
+                      )
+                    : null
+                })
+              }
+            )
+          } catch {
+            onResult({
+              ok: false,
+              error: 'The overlay request could not be completed.'
             })
           }
-        )
-      } catch {
-        onResult({
-          ok: false,
-          error: 'The overlay request could not be completed.'
-        })
+        }
+
+        if (requestCookies) {
+          void rememberCookieOptIn(chromeApi, origin).then(finish)
+          return
+        }
+        finish(true)
       }
-    })
+    )
   } catch {
     void clearPendingEnable(chromeApi)
     onResult({ ok: false, error: 'Site access could not be requested.' })

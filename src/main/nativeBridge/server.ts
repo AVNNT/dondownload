@@ -493,24 +493,37 @@ export async function startNativeBridge(
       return
     }
 
-    if (capturedSourceExtension(pathname) === null) {
-      // An extensionless URL is not proven by a filename. Verify the same
-      // anonymous public response with one bounded range GET before queueing.
+    if (capturedSourceExtension(pathname) === null || input.requestHeaders) {
+      // An extensionless URL is not proven by a filename. A player URL that
+      // carries one-job headers (KVS) is also preflighted so the same bounded
+      // 302 redirect and exact response are verified before acceptance.
       if (input.contentType === undefined || input.expectedBytes === undefined) {
-        sendError(
-          response,
-          400,
-          'CAPTURED_SOURCE_UNVERIFIED',
-          'The extensionless captured source has no verified response evidence.'
-        )
-        return
+        if (capturedSourceExtension(pathname) === null) {
+          sendError(
+            response,
+            400,
+            'CAPTURED_SOURCE_UNVERIFIED',
+            'The extensionless captured source has no verified response evidence.'
+          )
+          return
+        }
       }
+      const expectedMediaType =
+        input.contentType ??
+        (capturedSourceExtension(pathname) === 'webm' ? 'video/webm' : 'video/mp4')
       try {
         await runPublicPreflight({
           url: input.url,
-          expectedBytes: input.expectedBytes,
-          expectedContentType: input.contentType,
-          expectedMediaType: input.contentType
+          ...(input.contentType === undefined
+            ? {}
+            : { expectedContentType: input.contentType }),
+          ...(input.expectedBytes === undefined
+            ? {}
+            : { expectedBytes: input.expectedBytes }),
+          expectedMediaType,
+          ...(input.requestHeaders === undefined
+            ? {}
+            : { requestHeaders: input.requestHeaders })
         })
       } catch (error) {
         const info = toErrorInfo(error)
@@ -519,7 +532,7 @@ export async function startNativeBridge(
           response,
           400,
           'CAPTURED_SOURCE_UNVERIFIED',
-          'The extensionless captured source could not be verified anonymously.'
+          'The captured source could not be verified before it was queued.'
         )
         return
       }
@@ -543,7 +556,10 @@ export async function startNativeBridge(
       // claim acceptance when the SQLite receipt cannot be verified.
       const raw = await addDurable.call(options.manager, {
         url: input.url,
-        ...(input.filename === undefined ? {} : { filename: input.filename })
+        ...(input.filename === undefined ? {} : { filename: input.filename }),
+        ...(input.requestHeaders === undefined
+          ? {}
+          : { requestHeaders: input.requestHeaders })
       })
       receipt = parseDurableHandoffReceipt(raw)
     } catch (error) {
@@ -714,7 +730,10 @@ export async function startNativeBridge(
           : { expectedBytes: input.expectedBytes }),
         ...(input.expectedContentType === undefined
           ? {}
-          : { expectedContentType: input.expectedContentType })
+          : { expectedContentType: input.expectedContentType }),
+        ...(input.requestHeaders === undefined
+          ? {}
+          : { requestHeaders: input.requestHeaders })
       })
     } catch (error) {
       const info = toErrorInfo(error)
@@ -722,8 +741,12 @@ export async function startNativeBridge(
       sendError(
         response,
         400,
-        'HANDOFF_PREFLIGHT_FAILED',
-        'The browser download could not be verified as the same anonymous public resource. It was left running.'
+        info.code === 'HANDOFF_NEEDS_LOGIN'
+          ? 'HANDOFF_NEEDS_LOGIN'
+          : 'HANDOFF_PREFLIGHT_FAILED',
+        info.code === 'HANDOFF_NEEDS_LOGIN'
+          ? 'This download needs your browser login. It was left running in the browser.'
+          : 'The browser download could not be verified as the same anonymous public resource. It was left running.'
       )
       return
     }

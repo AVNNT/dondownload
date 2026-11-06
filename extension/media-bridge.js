@@ -206,10 +206,16 @@ export async function queueCapturedSourceForSender(chromeApi, message, sender) {
     !hasExactKeys(
       message,
       ['type', 'url'],
-      ['filename', 'contentType', 'expectedBytes']
+      ['filename', 'contentType', 'expectedBytes', 'usePageHeaders']
     )
   ) {
     return failure('INVALID_MESSAGE', 'The captured source request is not valid.')
+  }
+  if (
+    message.usePageHeaders !== undefined &&
+    typeof message.usePageHeaders !== 'boolean'
+  ) {
+    return failure('INVALID_MESSAGE', 'The captured source header request is not valid.')
   }
   if (typeof message.url !== 'string' || message.url.length === 0) {
     return failure('INVALID_MESSAGE', 'The captured source URL is not valid.')
@@ -244,7 +250,17 @@ export async function queueCapturedSourceForSender(chromeApi, message, sender) {
       : { contentType: message.contentType }),
     ...(message.expectedBytes === undefined
       ? {}
-      : { expectedBytes: message.expectedBytes })
+      : { expectedBytes: message.expectedBytes }),
+    ...(message.usePageHeaders === true
+      ? {
+          referer: authorization.url,
+          userAgent:
+            typeof navigator !== 'undefined' &&
+            typeof navigator.userAgent === 'string'
+              ? navigator.userAgent
+              : ''
+        }
+      : {})
   })
   if (result.ok !== true) return result
   return { ok: true }

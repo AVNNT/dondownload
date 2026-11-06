@@ -31,7 +31,7 @@
       if (!isPlayingVideo(video)) continue
       var result = ns.usable(video)
       if (!result.usable) continue
-      var rect = video.getBoundingClientRect()
+      var rect = ns.rectFor(video)
       var area = rect.width * rect.height
       if (area > bestArea) {
         bestArea = area
@@ -72,7 +72,7 @@
       if (!isTriggerReady(video)) continue
       var result = ns.usable(video)
       if (!result.usable) continue
-      var rect = video.getBoundingClientRect()
+      var rect = ns.rectFor(video)
       candidates.push({
         video: video,
         ready: true,
@@ -220,6 +220,11 @@
       cleanups: []
     }
     state.capture.players.push(player)
+    // KVS declares its progressive qualities in inline flashvars before play.
+    // Attach them to this player immediately so the icon and rows are ready.
+    if (ns.applyKvsSources && ns.applyKvsSources(player, document, location.href)) {
+      if (video === state.activeVideo) renderCapturedSources()
+    }
     if (observedVideos && observedVideos.has(video)) return
     if (observedVideos) observedVideos.add(video)
     player.listening = true
@@ -785,7 +790,8 @@
         Number.isSafeInteger(source.sizeBytes) &&
         source.sizeBytes > 0
           ? { expectedBytes: source.sizeBytes }
-          : {})
+          : {}),
+        ...(source.usePageHeaders === true ? { usePageHeaders: true } : {})
       },
       function (response, runtimeError) {
         if (token !== state.capture.queueToken || state.disabled) {
@@ -850,7 +856,8 @@
         filename: source.filename,
         container: source.container,
         qualityLabel: source.qualityLabel || null,
-        current: source.current === true
+        current: source.current === true,
+        ...(source.usePageHeaders === true ? { usePageHeaders: true } : {})
       }
     })
   }

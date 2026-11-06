@@ -14,6 +14,7 @@ interface SeenRequest {
   authorization: string | undefined
   cookie: string | undefined
   referer: string | undefined
+  userAgent: string | undefined
 }
 
 const servers: Server[] = []
@@ -47,6 +48,103 @@ const connectLookup: PreflightConnectLookup = (_hostname, options, callback) => 
 }
 
 describe('bounded anonymous hand-off preflight', () => {
+  it('uses opt-in browser headers but never sends a cookie to another host', async () => {
+    const seen: SeenRequest[] = []
+    const { port } = await listen((request, response) => {
+      seen.push({
+        url: request.url ?? '',
+        method: request.method ?? '',
+        range: request.headers.range,
+        authorization: request.headers.authorization,
+        cookie: request.headers.cookie,
+        referer: request.headers.referer,
+        userAgent: request.headers['user-agent']
+      })
+      if (request.url === '/same-host') {
+        response.writeHead(302, { Location: '/file.zip' })
+        response.end()
+        return
+      }
+      if (request.url === '/other-host') {
+        response.writeHead(302, {
+          Location: `http://other.example:${port}/file.zip`
+        })
+        response.end()
+        return
+      }
+      if (request.url === '/needs-login') {
+        response.writeHead(401)
+        response.end()
+        return
+      }
+      response.writeHead(206, {
+        'Content-Type': 'application/zip',
+        'Content-Range': 'bytes 0-0/4',
+        'Content-Length': '1'
+      })
+      response.end('P')
+    })
+
+    await preflightPublicResource(
+      {
+        url: `http://public.example:${port}/same-host`,
+        requestHeaders: {
+          referer: 'https://public.example/page',
+          userAgent: 'BrowserAgent/1.0',
+          cookie: 'auth=1'
+        }
+      },
+      { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
+    )
+    expect(seen).toHaveLength(2)
+    expect(seen[0]!.cookie).toBe('auth=1')
+    expect(seen[1]!.cookie).toBe('auth=1')
+    expect(seen[1]!.referer).toBe('https://public.example/page')
+    expect(seen[1]!.userAgent).toBe('BrowserAgent/1.0')
+
+    seen.length = 0
+    // Referer and User-Agent may follow a same-site redirect, but a Cookie must
+    // not cross hosts. With a cookie present the preflight fails closed.
+    await expect(
+      preflightPublicResource(
+        {
+          url: `http://public.example:${port}/other-host`,
+          requestHeaders: {
+            referer: 'https://public.example/page',
+            userAgent: 'BrowserAgent/1.0',
+            cookie: 'auth=1'
+          }
+        },
+        { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
+      )
+    ).rejects.toMatchObject({ code: 'HANDOFF_PREFLIGHT_FAILED' })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.cookie).toBe('auth=1')
+
+    seen.length = 0
+    await preflightPublicResource(
+      {
+        url: `http://public.example:${port}/other-host`,
+        requestHeaders: {
+          referer: 'https://public.example/page',
+          userAgent: 'BrowserAgent/1.0'
+        }
+      },
+      { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
+    )
+    expect(seen).toHaveLength(2)
+    expect(seen[0]!.cookie).toBeUndefined()
+    expect(seen[1]!.cookie).toBeUndefined()
+    expect(seen[1]!.referer).toBe('https://public.example/page')
+
+    await expect(
+      preflightPublicResource(
+        { url: `http://public.example:${port}/needs-login` },
+        { lookup: publicLookup, connectLookup, timeoutMs: 5_000 }
+      )
+    ).rejects.toMatchObject({ code: 'HANDOFF_NEEDS_LOGIN' })
+  })
+
   it('proves the same small public resource with one anonymous range GET and never downloads the body', async () => {
     const seen: SeenRequest[] = []
     let completedBodies = 0
@@ -57,7 +155,8 @@ describe('bounded anonymous hand-off preflight', () => {
         range: request.headers.range,
         authorization: request.headers.authorization,
         cookie: request.headers.cookie,
-        referer: request.headers.referer
+        referer: request.headers.referer,
+        userAgent: request.headers['user-agent']
       })
       if (request.url === '/redirect') {
         response.writeHead(302, { Location: '/file.zip' })

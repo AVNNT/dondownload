@@ -652,7 +652,7 @@
     if (!state.drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return
     state.drag.moved = true
     state.suppressTriggerClick = true
-    var rect = state.activeVideo.getBoundingClientRect()
+    var rect = ns.rectFor(state.activeVideo)
     if (!rect || rect.width <= 0 || rect.height <= 0) return
     state.triggerOffset = {
       x: ns.clampNumber((event.clientX - rect.left) / rect.width, 0, 1),
@@ -878,7 +878,7 @@
       return
     }
 
-    var rect = target.getBoundingClientRect()
+    var rect = state.activeVideo ? ns.rectFor(state.activeVideo) : target.getBoundingClientRect()
     var triggerRect
     if (
       state.triggerOffset &&
@@ -984,7 +984,7 @@
       var video = videos[index]
       var result = usable(video)
       if (!result.usable) continue
-      var rect = video.getBoundingClientRect()
+      var rect = ns.rectFor(video)
       var area = rect.width * rect.height
       if (area > bestArea) {
         bestArea = area

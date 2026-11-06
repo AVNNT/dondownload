@@ -116,6 +116,11 @@ export interface CapturedSourceInput {
   contentType?: 'video/mp4' | 'video/webm'
   /** Complete-file total observed from Content-Range/Content-Length. */
   expectedBytes?: number
+  /**
+   * One-job Referer/User-Agent headers for a player URL that only the browser
+   * page can identify (for example a KVS file URL). Never persisted.
+   */
+  requestHeaders?: DownloadRequestHeaders
 }
 
 export const MAX_CAPTURED_SOURCE_FILENAME_LENGTH = 180

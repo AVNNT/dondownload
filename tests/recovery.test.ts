@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { DownloadStatus } from '../src/shared/types'
 import {
   INTERRUPTED_MESSAGE,
-  decideStartupRecovery
+  NEEDS_LOGIN_MESSAGE,
+  decideStartupRecovery,
+  shouldAutoResumeOnStartup
 } from '../src/main/downloads/recovery'
 
 describe('startup recovery policy', () => {
@@ -41,5 +43,19 @@ describe('startup recovery policy', () => {
     expect(INTERRUPTED_MESSAGE).toMatch(/interrupted/i)
     expect(INTERRUPTED_MESSAGE).toMatch(/partial file is kept/i)
     expect(INTERRUPTED_MESSAGE).toMatch(/retry/i)
+  })
+
+  it('never auto-resumes a job whose browser cookie is gone after restart', () => {
+    const base = {
+      resumeEnabled: true,
+      status: 'interrupted' as DownloadStatus,
+      blockReason: null,
+      completedBytes: 1024,
+      attempts: 1,
+      maxAttempts: 3
+    }
+    expect(shouldAutoResumeOnStartup(base)).toBe(true)
+    expect(shouldAutoResumeOnStartup({ ...base, needsLogin: true })).toBe(false)
+    expect(NEEDS_LOGIN_MESSAGE).toMatch(/browser login again/i)
   })
 })

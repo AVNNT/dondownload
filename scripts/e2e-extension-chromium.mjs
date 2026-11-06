@@ -91,6 +91,7 @@ const HELIUM_REG_KEY = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${
 
 const EXTENSION_NAME = 'DonDownload Capture'
 const HANDOFF_STATE_KEY = 'dondownloadHandoffState'
+const NEEDS_LOGIN_STATE_KEY = 'dondownloadHandoffNeedsLogin'
 const CAPTURE_SETTINGS_KEY = 'dondownloadCaptureSettings'
 const OPTIONS_TARGET_KEY = 'dondownloadOptionsTarget'
 
@@ -541,6 +542,111 @@ function makeSecureBin() {
   return makeDeterministicBytes(512 * 1024, 0x9abcdef0)
 }
 
+const KVS_LICENSE = '$123456789012345'
+const KVS_PRIMARY_TARGET = '0123456789abcdef0123456789abcdef'
+const KVS_ALT_TARGET = 'fedcba9876543210fedcba9876543210'
+const KVS_POSTER_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z9ZkAAAAASUVORK5CYII=',
+  'base64'
+)
+
+function kvsLicenseToken(licenseCode) {
+  const code = String(licenseCode).replace(/\$/g, '')
+  const values = code.split('').map(Number)
+  let modlicense = code.replace(/0/g, '1')
+  const center = Math.floor(modlicense.length / 2)
+  const front = Number.parseInt(modlicense.slice(0, center + 1), 10)
+  const back = Number.parseInt(modlicense.slice(center), 10)
+  modlicense = String(4 * Math.abs(front - back)).slice(0, center + 1)
+  const token = []
+  for (let index = 0; index < modlicense.length; index += 1) {
+    for (let offset = 0; offset < 4; offset += 1) {
+      token.push((values[index + offset] + Number(modlicense[index])) % 10)
+    }
+  }
+  return token
+}
+
+function kvsPermutation(licenseCode) {
+  const token = kvsLicenseToken(licenseCode)
+  const indices = Array.from({ length: 32 }, (_value, index) => index)
+  let accum = 0
+  for (let source = 31; source >= 0; source -= 1) {
+    accum += token[source]
+    const destination = (source + accum) % 32
+    const swap = indices[source]
+    indices[source] = indices[destination]
+    indices[destination] = swap
+  }
+  return indices
+}
+
+/** Build the obfuscated hash that decodes back to `target`. */
+function kvsEncodeHash(target, licenseCode) {
+  const indices = kvsPermutation(licenseCode)
+  const encoded = new Array(32)
+  for (let index = 0; index < 32; index += 1) {
+    encoded[indices[index]] = target[index]
+  }
+  return encoded.join('')
+}
+
+function kvsFixtureHtml(origin, obfuscated) {
+  const primaryHash = obfuscated
+    ? kvsEncodeHash(KVS_PRIMARY_TARGET, KVS_LICENSE)
+    : KVS_PRIMARY_TARGET
+  const altHash = obfuscated
+    ? kvsEncodeHash(KVS_ALT_TARGET, KVS_LICENSE)
+    : KVS_ALT_TARGET
+  const prefix = obfuscated ? 'function/0/' : ''
+  const flashvars = {
+    video_id: '1',
+    license_code: KVS_LICENSE,
+    video_url: `${prefix}${origin}/get_file/1/${primaryHash}/0/1/1.mp4/`,
+    video_url_text: '480p',
+    video_alt_url: `${prefix}${origin}/get_file/1/${altHash}/0/1/1_720p.mp4/`,
+    video_alt_url_text: '720p',
+    preview_url: `${origin}/poster.png`
+  }
+  return (
+    '<!doctype html><meta charset="utf-8"><title>KVS fixture</title>' +
+    '<body style="margin:0;background:#080808;color:#ddd;font:14px sans-serif">' +
+    '<div id="kt_player" style="position:relative;width:640px;height:360px;margin:20px auto;background:#000;background-image:url(\'/poster.png\');background-size:cover">' +
+    '<div class="kt_wrapper"><div class="video-holder" style="position:absolute;inset:0">' +
+    '<button class="play-button" type="button" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:4;width:84px;height:84px;border-radius:50%;border:0;background:rgba(255,255,255,.85);font-size:30px;cursor:pointer">▶</button>' +
+    '<div id="kt_click_catcher" style="position:absolute;inset:0;z-index:5;background:transparent"></div>' +
+    '</div></div></div>' +
+    '<div id="kvs-debug" style="text-align:center;color:#555">KVS player v6 fixture</div>' +
+    '<script src="/kt_player.js"></script>' +
+    `<script>var flashvars = ${JSON.stringify(flashvars)}; kt_player('kt_player', '/kt_player.js', '100%', '100%', flashvars);</script>` +
+    '</body>'
+  )
+}
+
+const KVS_PLAYER_JS =
+  "(function(){\n" +
+  "  function kt_player(id, script, width, height, flashvars) {\n" +
+  "    var root = document.getElementById(id)\n" +
+  "    if (!root) return\n" +
+  "    var holder = root.querySelector('.video-holder') || root\n" +
+  "    var video = document.createElement('video')\n" +
+  "    video.id = 'kvs-video'\n" +
+  "    video.preload = 'none'\n" +
+  "    video.playsInline = true\n" +
+  "    video.muted = true\n" +
+  "    video.setAttribute('style', 'width:100%;height:100%;display:block;background:#000;object-fit:contain')\n" +
+  "    holder.insertBefore(video, holder.firstChild)\n" +
+  "    root.__video = video\n" +
+  "    root.__flashvars = flashvars\n" +
+  "    root.addEventListener('click', function () {\n" +
+  "      if (!video.getAttribute('src')) video.src = flashvars.video_url\n" +
+  "      var played = video.play()\n" +
+  "      if (played && played.catch) played.catch(function () {})\n" +
+  "    }, false)\n" +
+  "  }\n" +
+  "  window.kt_player = kt_player\n" +
+  "})()\n"
+
 function localIpv4Address() {
   for (const entries of Object.values(os.networkInterfaces())) {
     for (const entry of entries || []) {
@@ -640,6 +746,10 @@ async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffe
       // enough to observe the durable receipt and the subsequent cancellation.
       let offset = 0
       const step = 64 * 1024
+      const delay =
+        Number.isSafeInteger(options.slowDelay) && options.slowDelay > 0
+          ? options.slowDelay
+          : 60
       let timer = null
       const stop = () => {
         if (timer !== null) {
@@ -660,7 +770,7 @@ async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffe
           stop()
           res.end()
         }
-      }, 60)
+      }, delay)
     }
 
     if (parsed.pathname === '/') {
@@ -808,6 +918,14 @@ async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffe
       )
       return
     }
+    if (parsed.pathname === '/short/secure.bin') {
+      res.writeHead(302, {
+        location: '/secure.bin',
+        'cache-control': 'no-store'
+      })
+      res.end()
+      return
+    }
     if (parsed.pathname === '/secure.bin') {
       const cookie = typeof req.headers.cookie === 'string' ? req.headers.cookie : ''
       if (!/(?:^|;\s*)auth=1(?:;|$)/.test(cookie)) {
@@ -819,11 +937,70 @@ async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffe
         res.end('authentication required')
         return
       }
-      sendBuffer(secureBin, 'application/octet-stream', {
-        'content-disposition': 'attachment; filename="secure.bin"',
+      sendBuffer(
+        secureBin,
+        'application/octet-stream',
+        {
+          'content-disposition': 'attachment; filename="secure.bin"',
+          'cache-control': 'no-store'
+        },
+        { slow: true, slowDelay: 120 }
+      )
+      return
+    }
+    if (
+      parsed.pathname === '/kvs' ||
+      parsed.pathname === '/kvs-obfuscated'
+    ) {
+      const origin = `http://${req.headers.host}`
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
       })
+      res.end(kvsFixtureHtml(origin, parsed.pathname === '/kvs-obfuscated'))
       return
+    }
+    if (parsed.pathname === '/kt_player.js') {
+      res.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'no-store'
+      })
+      res.end(KVS_PLAYER_JS)
+      return
+    }
+    if (parsed.pathname === '/poster.png') {
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'content-length': KVS_POSTER_PNG.length,
+        'cache-control': 'no-store'
+      })
+      res.end(KVS_POSTER_PNG)
+      return
+    }
+    if (
+      parsed.pathname.startsWith('/get_file/') &&
+      parsed.pathname.endsWith('.mp4/')
+    ) {
+      const file = /_720p\.mp4\/$/.test(parsed.pathname)
+        ? 'clip-720.mp4'
+        : 'clip.mp4'
+      res.writeHead(302, {
+        location: `/remote_control.php?file=${encodeURIComponent(file)}&rnd=${Date.now()}`,
+        'cache-control': 'no-store'
+      })
+      res.end()
+      return
+    }
+    if (parsed.pathname === '/remote_control.php') {
+      const file = parsed.searchParams.get('file')
+      if (file === 'clip.mp4') {
+        sendBuffer(clip, 'video/mp4', { 'cache-control': 'no-store' })
+        return
+      }
+      if (file === 'clip-720.mp4') {
+        sendBuffer(clip720, 'video/mp4', { 'cache-control': 'no-store' })
+        return
+      }
     }
     res.writeHead(404, { 'content-type': 'text/plain' })
     res.end('not found')
@@ -856,6 +1033,7 @@ async function startFixtureServer({ clip, clip720, hlsRoot = null, audio = Buffe
     nativeHost,
     clip,
     clipSha256: crypto.createHash('sha256').update(clip).digest('hex'),
+    clip720Sha256: crypto.createHash('sha256').update(clip720).digest('hex'),
     hiddenRefererBytes: clip720.length,
     hiddenRefererSha256: crypto.createHash('sha256').update(clip720).digest('hex'),
     audioBytes: audio.length,
@@ -1660,6 +1838,35 @@ async function ensureHandoffEnabled(browser, optionsSession) {
     5000,
     'automaticFileHandoff setting'
   ).then((value) => value[CAPTURE_SETTINGS_KEY])
+}
+
+async function enableCookieOptInForOrigin(browser, optionsSession, origin) {
+  const stored = await readStorage(browser, optionsSession, 'local', CAPTURE_SETTINGS_KEY)
+  const settings =
+    stored && stored[CAPTURE_SETTINGS_KEY]
+      ? { ...stored[CAPTURE_SETTINGS_KEY] }
+      : {}
+  const origins = Array.isArray(settings.cookieOptInOrigins)
+    ? settings.cookieOptInOrigins.slice()
+    : []
+  if (!origins.includes(origin)) origins.push(origin)
+  settings.cookieOptInOrigins = origins
+  settings.automaticFileHandoff = true
+  await browser.connection.evaluate(
+    optionsSession,
+    `chrome.storage.local.set({ ${JSON.stringify(CAPTURE_SETTINGS_KEY)}: ${JSON.stringify(settings)} })`,
+    { userGesture: false }
+  )
+  return waitForValue(
+    () => readStorage(browser, optionsSession, 'local', CAPTURE_SETTINGS_KEY),
+    (value) =>
+      value &&
+      value[CAPTURE_SETTINGS_KEY] &&
+      Array.isArray(value[CAPTURE_SETTINGS_KEY].cookieOptInOrigins) &&
+      value[CAPTURE_SETTINGS_KEY].cookieOptInOrigins.includes(origin),
+    5000,
+    'cookie opt-in setting'
+  )
 }
 
 async function installDownloadEventLog(browser, optionsSession) {
@@ -3393,11 +3600,19 @@ async function main() {
     // ------------------------------------------------------------------
     const harnessDir = path.join(tempRoot, 'extension-harness')
     const harnessManifest = copyIsolatedExtension(harnessDir)
-    harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest'])]
+    harnessManifest.permissions = [...new Set([...(harnessManifest.permissions || []), 'downloads', 'webRequest', 'cookies'])]
     harnessManifest.host_permissions =
       nativeOriginPattern === null
         ? [originPattern]
-        : [originPattern, nativeOriginPattern]
+        : [
+            originPattern,
+            nativeOriginPattern,
+            // Chromium's cookies.getAll host-permission check does not match a
+            // port-bearing match pattern in the harness build; the real
+            // production grants are port-less public origins. The port-less
+            // fixture pattern keeps the cookie API test faithful.
+            `http://${new URL(nativeOrigin).hostname}/*`
+          ]
     delete harnessManifest.optional_permissions
     delete harnessManifest.optional_host_permissions
     fs.writeFileSync(path.join(harnessDir, 'manifest.json'), `${JSON.stringify(harnessManifest, null, 2)}\n`)
@@ -3426,7 +3641,11 @@ async function main() {
       const expectedOrigins =
         nativeOriginPattern === null
           ? [originPattern]
-          : [originPattern, nativeOriginPattern]
+          : [
+              originPattern,
+              nativeOriginPattern,
+              `http://${new URL(nativeOrigin).hostname}/*`
+            ]
       const originsExact =
         origins.length === expectedOrigins.length &&
         expectedOrigins.every((pattern) => origins.includes(pattern))
@@ -4129,12 +4348,12 @@ async function main() {
         const rows = readDownloadRows(nativeRun.db)
         const queued = rows.some((row) => row.url === probeUrl)
         const appLog = nativeRun.appStderr()
-        const appSawIt = /Durable hand-off preflight rejected \(HANDOFF_PREFLIGHT_FAILED\)/.test(appLog)
+        const appSawIt = /Durable hand-off preflight rejected \(HANDOFF_NEEDS_LOGIN\)/.test(appLog)
         const ok =
           !probe.error &&
           probe.response &&
           probe.response.ok === false &&
-          code === 'HANDOFF_PREFLIGHT_FAILED' &&
+          code === 'HANDOFF_NEEDS_LOGIN' &&
           appSawIt &&
           !queued
         return {
@@ -4447,9 +4666,42 @@ async function main() {
           sessionState[HANDOFF_STATE_KEY].pending
         const newAppLog = nativeRun.appStderr().slice(stderrBefore)
         const preflightRejected =
-          /Durable hand-off preflight rejected \(HANDOFF_PREFLIGHT_FAILED\)/.test(
+          /Durable hand-off preflight rejected \(HANDOFF_NEEDS_LOGIN\)/.test(
             newAppLog
           )
+        const needsLoginStored = await readStorage(
+          browserB,
+          optionsB.sessionId,
+          'session',
+          NEEDS_LOGIN_STATE_KEY
+        )
+        const needsLoginState =
+          needsLoginStored && needsLoginStored[NEEDS_LOGIN_STATE_KEY]
+        const expectedHost = new URL(nativeOrigin).host
+        const popupView = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `(async () => {
+            const module = await import(chrome.runtime.getURL('capture-settings.js'))
+            const state = await module.readNeedsLoginState(chrome)
+            return { state, copy: state ? module.needsLoginCopy(state.host) : null }
+          })()`,
+          { userGesture: false }
+        )
+        const badge = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          'new Promise((resolve) => chrome.action.getBadgeText({}, (value) => resolve(value)))',
+          { userGesture: false }
+        )
+        const loginStateOk =
+          needsLoginState &&
+          needsLoginState.origin === nativeOrigin &&
+          needsLoginState.host === expectedHost
+        const popupOk =
+          popupView &&
+          popupView.state &&
+          popupView.copy &&
+          popupView.copy.message.includes(expectedHost) &&
+          popupView.copy.button.includes(expectedHost)
         const hashOk = hash.sha256 === server.secureBinSha256
         const ok =
           setting.automaticFileHandoff === true &&
@@ -4458,6 +4710,9 @@ async function main() {
           anonymousPreflight.length > 0 &&
           authenticatedBrowser.length > 0 &&
           preflightRejected &&
+          loginStateOk &&
+          popupOk &&
+          badge === '!' &&
           appRow === null &&
           !appFiles.includes('secure.bin') &&
           Array.isArray(processed) &&
@@ -4466,7 +4721,415 @@ async function main() {
           pending.length === 0
         return {
           status: ok ? 'PASS' : 'FAIL',
-          evidence: `cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: complete.state, totalBytes: complete.totalBytes, bytesReceived: complete.bytesReceived, filename: complete.filename })}; file (${hash.bytes}B) sha256=${hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; secure requests=${JSON.stringify(secureHits)}; anonymous range probes=${JSON.stringify(anonymousPreflight)}; authenticated browser requests=${authenticatedBrowser.length}; app preflight rejection logged=${preflightRejected}; app log=${JSON.stringify(newAppLog.slice(-1200))}; app row=${JSON.stringify(appRow)}; app files=${JSON.stringify(appFiles)}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+          evidence: `cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: complete.state, totalBytes: complete.totalBytes, bytesReceived: complete.bytesReceived, filename: complete.filename })}; file (${hash.bytes}B) sha256=${hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; secure requests=${JSON.stringify(secureHits)}; anonymous range probes=${JSON.stringify(anonymousPreflight)}; authenticated browser requests=${authenticatedBrowser.length}; app preflight rejection logged=${preflightRejected}; needsLogin=${JSON.stringify(needsLoginState)} expectedHost=${expectedHost}; popup=${JSON.stringify(popupView)}; badge=${JSON.stringify(badge)}; app log=${JSON.stringify(newAppLog.slice(-1200))}; app row=${JSON.stringify(appRow)}; app files=${JSON.stringify(appFiles)}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        }
+      })
+
+      await scenario('N8', 'Opted-in login hand-off downloads through the app and cancels only after acceptance', async () => {
+        if (setupError) return blocked()
+        const setting = await ensureHandoffEnabled(browserB, optionsB.sessionId)
+        await enableCookieOptInForOrigin(
+          browserB,
+          optionsB.sessionId,
+          nativeOrigin
+        )
+        // The browser has the session. Set it through the cookies API so the
+        // extension reads a real browser store rather than page DOM state.
+        const cookie = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `(async () => {
+            const base = { url: ${JSON.stringify(`${nativeOrigin}/`)}, path: '/', expirationDate: Math.floor(Date.now() / 1000) + 3600 }
+            await chrome.cookies.set({ ...base, name: 'auth', value: '1' })
+            await chrome.cookies.set({ ...base, name: 'ddsecret', value: 'supersecretvalue' })
+            return 'auth=1; ddsecret=supersecretvalue'
+          })()`,
+          { userGesture: false }
+        )
+        const browserDownloadDir = path.join(tempRoot, 'downloads-auth')
+        fs.mkdirSync(browserDownloadDir, { recursive: true })
+        await installDownloadEventLog(browserB, optionsB.sessionId)
+        await browserB.connection.send('Browser.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: browserDownloadDir,
+          eventsEnabled: true
+        })
+        const secureUrl = `${nativeOrigin}/short/secure.bin`
+        const cookieProbe = await browserB.connection.evaluate(
+          optionsB.sessionId,
+          `(async () => {
+            const module = await import(chrome.runtime.getURL('capture-settings.js'))
+            return {
+              header: await module.readCookieHeaderForOrigins(chrome, ${JSON.stringify(`${nativeOrigin}/secure.bin`)}, [${JSON.stringify(nativeOrigin)}]),
+              cookiesPermission: await chrome.permissions.contains({ permissions: ['cookies'] })
+            }
+          })()`,
+          { userGesture: false }
+        )
+        const logStart = server.log.length
+        const beforeItems = await searchDownloads(browserB, optionsB.sessionId)
+        const beforeItemIds = new Set(beforeItems.map((entry) => entry.id))
+        const beforeRowIds = new Set(readDownloadRows(nativeRun.db).map((entry) => entry.id))
+        const downloadPage = await createPage(browserB, secureUrl, {
+          waitForCommit: false
+        })
+        downloadPage.browser = browserB
+        const item = await waitForValue(
+          async () => {
+            const items = await searchDownloads(browserB, optionsB.sessionId)
+            return (
+              items.find(
+                (candidate) =>
+                  !beforeItemIds.has(candidate.id) &&
+                  /\/secure\.bin(?:[?#]|$)/.test(
+                    `${candidate.url || ''} ${candidate.finalUrl || ''}`
+                  )
+              ) || null
+            )
+          },
+          (match) => match !== null,
+          20000,
+          'browser download item for the authenticated secure.bin',
+          50
+        )
+        const itemId = item.id
+        const rowFound = await waitForValue(
+          () =>
+            readDownloadRows(nativeRun.db).find(
+              (entry) =>
+                !beforeRowIds.has(entry.id) &&
+                /\/secure\.bin(?:[?#]|$)/.test(entry.url)
+            ) || null,
+          (match) => match !== null,
+          20000,
+          'durable app row for the authenticated secure.bin',
+          10
+        ).catch(() => null)
+        if (rowFound === null) {
+          const debugHits = server.log.slice(logStart)
+          const debugState = await readStorage(
+            browserB,
+            optionsB.sessionId,
+            'session',
+            HANDOFF_STATE_KEY
+          )
+          return {
+            status: 'FAIL',
+            evidence: `no app row; cookie=${JSON.stringify(cookie)}; cookieProbe=${JSON.stringify(cookieProbe)}; server hits=${JSON.stringify(debugHits)}; handoff state=${JSON.stringify(debugState)}; app log=${JSON.stringify(nativeRun.appStderr().slice(-2000))}; settings=${JSON.stringify(await readStorage(browserB, optionsB.sessionId, 'local', CAPTURE_SETTINGS_KEY))}`
+          }
+        }
+        const dbObservedAt = Date.now()
+        const terminal = await waitForValue(
+          async () => {
+            const items = await searchDownloads(browserB, optionsB.sessionId)
+            return (
+              items.find(
+                (candidate) =>
+                  candidate.id === itemId &&
+                  (candidate.state === 'interrupted' ||
+                    candidate.state === 'complete')
+              ) || null
+            )
+          },
+          (match) => match !== null,
+          25000,
+          'browser download terminal state for the authenticated secure.bin',
+          50
+        )
+        const terminalObservedAt = Date.now()
+        const events = await readDownloadEvents(browserB, optionsB.sessionId)
+        const ownEvents = events.filter((event) => event.id === itemId)
+        const stateEvents = ownEvents.filter(
+          (event) => event.state === 'interrupted' || event.state === 'complete'
+        )
+        const terminalEvent = stateEvents[stateEvents.length - 1] || null
+        const completed = await waitForCompletedAppDownload(
+          nativeRun.db,
+          rowFound.url,
+          60000
+        )
+        const sessionState = await readStorage(
+          browserB,
+          optionsB.sessionId,
+          'session',
+          HANDOFF_STATE_KEY
+        )
+        const processed =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].processed
+        const pending =
+          sessionState &&
+          sessionState[HANDOFF_STATE_KEY] &&
+          sessionState[HANDOFF_STATE_KEY].pending
+        const newAppLog = nativeRun.appStderr()
+        const authenticatedPreflight = server.log
+          .slice(logStart)
+          .filter(
+            (entry) =>
+              entry.path === '/secure.bin' &&
+              typeof entry.cookie === 'string' &&
+              /auth=1/.test(entry.cookie) &&
+              typeof entry.range === 'string' &&
+              entry.range.startsWith('bytes=0-0')
+          )
+        const browserRequests = server.log
+          .slice(logStart)
+          .filter(
+            (entry) =>
+              entry.path === '/secure.bin' &&
+              typeof entry.cookie === 'string' &&
+              /auth=1/.test(entry.cookie)
+          )
+        let persistedText = ''
+        for (const name of ['downloads.sqlite3', 'downloads.sqlite3-wal']) {
+          try {
+            persistedText += fs
+              .readFileSync(path.join(nativeRun.userDataDir, name))
+              .toString('latin1')
+          } catch {
+            // WAL may already be checkpointed.
+          }
+        }
+        const cookieLeaked =
+          newAppLog.includes('supersecretvalue') ||
+          persistedText.includes('supersecretvalue')
+        const hashOk = completed.hash.sha256 === server.secureBinSha256
+        const cancelled =
+          terminal.state === 'interrupted' &&
+          /cancel/i.test(terminal.error || '')
+        const acceptedBeforeCancel =
+          completed.row.created_at <=
+            (terminalEvent ? terminalEvent.at : terminalObservedAt) &&
+          dbObservedAt <= terminalObservedAt
+        const ok =
+          setting.automaticFileHandoff === true &&
+          rowFound.url.endsWith('/secure.bin') &&
+          completed.row.status === 'complete' &&
+          hashOk &&
+          completed.filePath !== null &&
+          cancelled &&
+          acceptedBeforeCancel &&
+          authenticatedPreflight.length > 0 &&
+          browserRequests.length > 0 &&
+          !cookieLeaked &&
+          Array.isArray(processed) &&
+          processed.includes(itemId) &&
+          Array.isArray(pending) &&
+          pending.length === 0
+        const evidence = `setting=${JSON.stringify({ automaticFileHandoff: setting.automaticFileHandoff })}; cookieProbe=${JSON.stringify(cookieProbe)}; cookie=${JSON.stringify(cookie)}; browser item=${JSON.stringify({ id: itemId, state: terminal.state, error: terminal.error, totalBytes: terminal.totalBytes, bytesReceived: terminal.bytesReceived })}; state events=${JSON.stringify(stateEvents)}; app row=${JSON.stringify({ id: rowFound.id, url: completed.row.url, filename: completed.row.filename, created_at: completed.row.created_at, status: completed.row.status, total: completed.row.total_bytes })}; db observed at=${dbObservedAt}; terminal observed at=${terminalObservedAt}; accepted before cancel=${acceptedBeforeCancel}; app file=${completed.filePath} (${completed.hash.bytes}B) sha256=${completed.hash.sha256} expected=${server.secureBinSha256} match=${hashOk}; authenticated preflights=${JSON.stringify(authenticatedPreflight)}; cookie-bearing secure requests=${browserRequests.length}; cookie leaked to log/db=${cookieLeaked}; app log=${JSON.stringify(newAppLog.slice(-1200))}; handoff processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence
+        }
+      })
+
+      await scenario('K1', 'KVS icon appears before play and one-click 720p downloads through the app', async () => {
+        if (setupError) return blocked()
+        const page = nativeRun.page
+        const tab = nativeRun.tabId
+        await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+        await navigatePage(page, `${nativeOrigin}/kvs`)
+        const readyAt = Date.now()
+        const overlay = await waitForValue(
+          () =>
+            pageEvaluate(
+              page,
+              `(() => {
+                const host = document.getElementById('dondownload-overlay-host')
+                const shadow = host && host.shadowRoot
+                const trigger = shadow && shadow.querySelector('.trigger')
+                return { host: Boolean(host), trigger: Boolean(trigger), hidden: trigger ? trigger.hidden : null }
+              })()`,
+              { userGesture: false }
+            ),
+          (state) => state && state.host && state.trigger && state.hidden === false,
+          1000,
+          'KVS floating icon before play',
+          25
+        )
+        const iconMs = Date.now() - readyAt
+        const sources = await waitForCapturedSources(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) =>
+            list.some((entry) => entry.qualityLabel === '480p') &&
+            list.some((entry) => entry.qualityLabel === '720p')
+        )
+        const primary = sources.find((entry) => entry.qualityLabel === '480p')
+        const alt = sources.find((entry) => entry.qualityLabel === '720p')
+        const panel = await pageEvaluate(
+          page,
+          `(() => {
+            const host = document.getElementById('dondownload-overlay-host')
+            const shadow = host && host.shadowRoot
+            const trigger = shadow && shadow.querySelector('.trigger')
+            const panel = shadow && shadow.querySelector('.panel')
+            if (panel && panel.hidden && trigger) trigger.click()
+            const rows = shadow ? Array.from(shadow.querySelectorAll('.source-list .source')) : []
+            return rows.map((entry) => entry.textContent)
+          })()`,
+          { userGesture: true }
+        )
+        const clickResult = await pageEvaluate(
+          page,
+          `new Promise((resolve) => {
+            const host = document.getElementById('dondownload-overlay-host')
+            const shadow = host && host.shadowRoot
+            const panel = shadow && shadow.querySelector('.panel')
+            const trigger = shadow && shadow.querySelector('.trigger')
+            if (panel && panel.hidden && trigger) trigger.click()
+            const rows = shadow ? Array.from(shadow.querySelectorAll('.source-list .source')) : []
+            const row = rows.find((entry) => /720p/.test(entry.textContent || ''))
+            if (!row) {
+              resolve({ ok: false, error: 'row-not-found', rows: rows.map((entry) => entry.textContent) })
+              return
+            }
+            const button = row.querySelector('.source-action')
+            if (!button) {
+              resolve({ ok: false, error: 'button-not-found' })
+              return
+            }
+            const status = shadow.querySelector('.status')
+            const started = performance.now()
+            button.click()
+            const deadline = started + 30000
+            const timer = setInterval(() => {
+              const text = status ? status.textContent : ''
+              if (text && text.indexOf('Added to DonDownload') === 0) {
+                clearInterval(timer)
+                resolve({ ok: true, latencyMs: Math.round(performance.now() - started), status: text })
+              } else if (text && text.indexOf('Adding ') !== 0) {
+                clearInterval(timer)
+                resolve({ ok: false, latencyMs: Math.round(performance.now() - started), status: text })
+              } else if (performance.now() > deadline) {
+                clearInterval(timer)
+                resolve({ ok: false, timeout: true, status: text })
+              }
+            }, 10)
+          })`,
+          { userGesture: true }
+        )
+        const completed = await waitForCompletedAppDownload(
+          nativeRun.db,
+          alt.url,
+          90000
+        )
+        const hashOk = completed.hash.sha256 === server.clip720Sha256
+        const bytesOk = completed.hash.bytes === clip720.length
+        const refererHits = server.log.filter(
+          (entry) =>
+            /\/remote_control\.php/.test(entry.path) &&
+            typeof entry.referer === 'string' &&
+            /\/kvs(?:[?#]|$)/.test(entry.referer)
+        )
+        const ok =
+          overlay &&
+          iconMs <= 1000 &&
+          Array.isArray(panel) &&
+          panel.some((text) => /480p/.test(text)) &&
+          panel.some((text) => /720p/.test(text)) &&
+          primary &&
+          alt &&
+          /\/1\.mp4\/$/.test(primary.url) &&
+          /\/1_720p\.mp4\/$/.test(alt.url) &&
+          clickResult.ok === true &&
+          completed.row.status === 'complete' &&
+          hashOk &&
+          bytesOk &&
+          refererHits.length > 0
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `icon visible in ${iconMs} ms; sources=${JSON.stringify(sources.map((entry) => ({ url: entry.url, qualityLabel: entry.qualityLabel })))}; panel=${JSON.stringify(panel)}; click=${JSON.stringify(clickResult)}; app row=${JSON.stringify({ id: completed.row.id, url: completed.row.url, filename: completed.row.filename, status: completed.row.status, total: completed.row.total_bytes })}; file=${completed.filePath} (${completed.hash.bytes}B) sha256=${completed.hash.sha256} expected=${server.clip720Sha256} match=${hashOk}; refererHits=${JSON.stringify(refererHits.slice(-3))}`
+        }
+      })
+
+      await scenario('K2', 'KVS function/0 obfuscation decodes to the real qualities', async () => {
+        if (setupError) return blocked()
+        const page = nativeRun.page
+        const tab = nativeRun.tabId
+        await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+        await navigatePage(page, `${nativeOrigin}/kvs-obfuscated`)
+        await waitForOverlayHost(page)
+        const sources = await waitForCapturedSources(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) =>
+            list.some((entry) => entry.qualityLabel === '480p') &&
+            list.some((entry) => entry.qualityLabel === '720p')
+        )
+        const primary = sources.find((entry) => entry.qualityLabel === '480p')
+        const alt = sources.find((entry) => entry.qualityLabel === '720p')
+        const expectedPrimary = `${nativeOrigin}/get_file/1/${KVS_PRIMARY_TARGET}/0/1/1.mp4/`
+        const expectedAlt = `${nativeOrigin}/get_file/1/${KVS_ALT_TARGET}/0/1/1_720p.mp4/`
+        const ok =
+          primary &&
+          alt &&
+          primary.url === expectedPrimary &&
+          alt.url === expectedAlt
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `sources=${JSON.stringify(sources.map((entry) => ({ url: entry.url, qualityLabel: entry.qualityLabel })))}; expectedPrimary=${expectedPrimary}; expectedAlt=${expectedAlt}`
+        }
+      })
+
+      await scenario('K3', 'KVS playback lists the .mp4/ source once without duplicates', async () => {
+        if (setupError) return blocked()
+        const page = nativeRun.page
+        const tab = nativeRun.tabId
+        await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
+        await navigatePage(page, `${nativeOrigin}/kvs`)
+        await waitForOverlayHost(page)
+        await pageEvaluate(
+          page,
+          `(() => {
+            const button = document.querySelector('#kt_player .play-button')
+            if (button) button.click()
+            return true
+          })()`,
+          { userGesture: true }
+        )
+        const media = await waitForSniffed(
+          browserB,
+          optionsB.sessionId,
+          tab,
+          (list) =>
+            list.some(
+              (entry) =>
+                /\/get_file\/.+\.mp4\/$/.test(entry.url) &&
+                entry.kind === 'file'
+            )
+        ).catch(async (error) => {
+          const pageState = await pageEvaluate(
+            page,
+            `(() => {
+              const video = document.getElementById('kvs-video')
+              return video ? { src: video.getAttribute('src'), currentSrc: video.currentSrc, paused: video.paused, readyState: video.readyState, error: video.error && video.error.code } : null
+            })()`,
+            { userGesture: false }
+          )
+          throw new Error(
+            `KVS playback was not sniffed: ${error instanceof Error ? error.message : String(error)}; page=${JSON.stringify(pageState)}; serverHits=${JSON.stringify(server.log.filter((entry) => /get_file|remote_control/.test(entry.path)).slice(-10))}`
+          )
+        })
+        const matches = media.filter((entry) =>
+          /\/get_file\/.+\.mp4\/$/.test(entry.url)
+        )
+        const exact = matches[0]
+        const duplicateRows = media.filter(
+          (entry) => exact && entry.url === exact.url
+        )
+        const uniqueUrls = new Set(media.map((entry) => entry.url))
+        const ok =
+          matches.length === 1 &&
+          duplicateRows.length === 1 &&
+          uniqueUrls.size === media.length &&
+          exact &&
+          /\/1\.mp4\/$/.test(exact.url)
+        return {
+          status: ok ? 'PASS' : 'FAIL',
+          evidence: `media=${JSON.stringify(media.map((entry) => ({ url: entry.url, kind: entry.kind, filename: entry.filename, sizeBytes: entry.sizeBytes })))}; matching=${matches.length}; rowsWithExactUrl=${duplicateRows.length}; uniqueUrls=${uniqueUrls.size}/${media.length}`
         }
       })
 

@@ -96,6 +96,32 @@ describe('media response classification', () => {
     ).toBeNull()
   })
 
+  it('classifies a redirecting .mp4/ URL by extension before its target', () => {
+    const entry = classified({
+      url: 'https://media.example/get_file/1/a/0/1/1_720p.mp4/',
+      statusCode: 302,
+      contentType: null,
+      contentLength: null
+    })
+    expect(entry).toMatchObject({
+      kind: 'file',
+      url: 'https://media.example/get_file/1/a/0/1/1_720p.mp4/',
+      filename: '1_720p.mp4',
+      sizeBytes: null
+    })
+    expect(
+      classifyMediaResponse(
+        observe({
+          url: 'https://media.example/get_file/1/a/0/1/1_720p.mp4/',
+          statusCode: 404,
+          contentType: null,
+          contentLength: null
+        }),
+        NOW
+      )
+    ).toBeNull()
+  })
+
   it('suppresses HLS/DASH segments instead of listing them', () => {
     const segment = classifyMediaResponse(
       observe({

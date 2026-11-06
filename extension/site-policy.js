@@ -11,6 +11,7 @@ export const OVERLAY_CORE_FILE = 'overlay-core.js'
 export const OVERLAY_RUNTIME_FILE = 'overlay-runtime.js'
 export const OVERLAY_UI_FILE = 'overlay-ui.js'
 export const OVERLAY_QUALITIES_FILE = 'overlay-qualities.js'
+export const OVERLAY_KVS_FILE = 'overlay-kvs.js'
 export const OVERLAY_CAPTURE_FILE = 'overlay-capture.js'
 export const OVERLAY_ENTRY_FILE = 'overlay.js'
 
@@ -21,6 +22,7 @@ export const OVERLAY_SCRIPT_FILES = Object.freeze([
   OVERLAY_RUNTIME_FILE,
   OVERLAY_UI_FILE,
   OVERLAY_QUALITIES_FILE,
+  OVERLAY_KVS_FILE,
   OVERLAY_CAPTURE_FILE,
   OVERLAY_ENTRY_FILE
 ])

@@ -7,6 +7,7 @@
 import { originToMatchPattern } from './site-policy.js'
 
 export const GRANT_PARAM = 'grant'
+export const GRANT_COOKIES_PARAM = 'cookies'
 
 /** Return the exact origin named by a grant parameter, or null. */
 export function parseGrantParameter(value) {
@@ -41,19 +42,28 @@ export function readGrantParameter(search) {
   try {
     params = new URLSearchParams(typeof search === 'string' ? search : '')
   } catch {
-    return { present: true, origin: null }
+    return { present: true, origin: null, cookies: false }
   }
-  if (!params.has(GRANT_PARAM)) return { present: false, origin: null }
-  return { present: true, origin: parseGrantParameter(params.get(GRANT_PARAM)) }
+  if (!params.has(GRANT_PARAM)) {
+    return { present: false, origin: null, cookies: false }
+  }
+  return {
+    present: true,
+    origin: parseGrantParameter(params.get(GRANT_PARAM)),
+    cookies: params.get(GRANT_COOKIES_PARAM) === '1'
+  }
 }
 
 /** Build the welcome-page URL for one exact origin, or null when invalid. */
-export function grantPageUrl(baseUrl, origin) {
+export function grantPageUrl(baseUrl, origin, options = {}) {
   const exact = parseGrantParameter(origin)
   if (exact === null) return null
   try {
     const url = new URL(baseUrl)
     url.searchParams.set(GRANT_PARAM, exact)
+    if (options && options.cookies === true) {
+      url.searchParams.set(GRANT_COOKIES_PARAM, '1')
+    }
     return url.href
   } catch {
     return null

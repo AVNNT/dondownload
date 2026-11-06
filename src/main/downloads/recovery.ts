@@ -22,6 +22,14 @@ export type RecoveryOutcome =
 export const INTERRUPTED_MESSAGE =
   'Interrupted before it finished because DonDownload or aria2 stopped. Your partial file is kept. Use Retry to continue it.'
 
+/**
+ * A login-protected hand-off keeps its Cookie only in memory. After a restart
+ * the app cannot replay the authenticated request, so it fails honestly and
+ * asks the user to restart from the browser instead of downloading anonymously.
+ */
+export const NEEDS_LOGIN_MESSAGE =
+  'This download needs your browser login again — click it in the browser to restart'
+
 export interface AutoResumeSelection {
   /** User preference "Resume interrupted downloads on startup". */
   resumeEnabled: boolean
@@ -31,6 +39,8 @@ export interface AutoResumeSelection {
   completedBytes: number
   attempts: number
   maxAttempts: number
+  /** True when the job was queued with an in-memory browser Cookie. */
+  needsLogin?: boolean
 }
 
 /**
@@ -48,6 +58,8 @@ export function shouldAutoResumeOnStartup(
   if (!input.resumeEnabled) return false
   if (input.status !== 'interrupted') return false
   if (input.blockReason !== null) return false
+  // An opt-in browser Cookie is memory-only and is gone after a restart.
+  if (input.needsLogin === true) return false
   if (input.completedBytes <= 0) return false
   return input.attempts >= 1 && input.attempts < input.maxAttempts
 }

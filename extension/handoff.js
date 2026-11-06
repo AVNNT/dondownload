@@ -8,13 +8,57 @@
 import { sendDurableHandoff } from './bridge.js'
 import {
   claimHandoffDownload,
+  clearNeedsLoginState,
   finishHandoffDownload,
-  readCaptureSettings
+  readCaptureSettings,
+  readCookieHeaderForOrigins,
+  recordNeedsLoginState
 } from './capture-settings.js'
-import { automaticHandoffCandidate } from './handoff-policy.js'
+import {
+  automaticHandoffCandidate,
+  originFromPageUrl
+} from './handoff-policy.js'
 
 export const HANDOFF_BADGE_CLEAR_MS = 4_000
 let badgeGeneration = 0
+let needsLoginBadge = false
+
+function hostOf(value) {
+  try {
+    return new URL(value).host
+  } catch {
+    return ''
+  }
+}
+
+function setNeedsLoginBadge(chromeApi, host) {
+  needsLoginBadge = true
+  // Invalidate any pending "DD" clear from an earlier successful hand-off.
+  badgeGeneration += 1
+  const action = chromeApi && chromeApi.action
+  if (!action) return
+  try {
+    ignoreResult(action.setBadgeBackgroundColor({ color: '#a16207' }))
+    ignoreResult(action.setBadgeText({ text: '!' }))
+    ignoreResult(
+      action.setTitle({
+        title: `DonDownload: This download needs your login on ${host || 'this site'}`
+      })
+    )
+  } catch {
+    // Badge feedback is best effort; the popup still explains the state.
+  }
+}
+
+/** True while the persistent "needs login" badge owns the toolbar. */
+export function hasNeedsLoginBadge() {
+  return needsLoginBadge
+}
+
+/** A successful later hand-off clears the stale login warning. */
+export function clearNeedsLoginBadge() {
+  needsLoginBadge = false
+}
 
 function ignoreResult(result) {
   if (result && typeof result.catch === 'function') result.catch(() => undefined)
@@ -110,6 +154,30 @@ export async function handleCreatedDownload(chromeApi, item) {
   const candidate = automaticHandoffCandidate(item, settings.excludedOrigins)
   if (!candidate.ok) return `ignored:${candidate.reason}`
 
+  const downloadOrigin = candidate.origin
+  const pageOrigin = originFromPageUrl(item.referrer)
+  const cookieUrl =
+    typeof item.finalUrl === 'string' && item.finalUrl.length > 0
+      ? item.finalUrl
+      : candidate.url
+  // Cookies are used only for the exact download URL and only when either the
+  // download URL origin or the referring page origin is on the user's opt-in
+  // list. `getAll({ url })` returns cookies for that host; nothing is stored.
+  const optInOrigins = []
+  if (downloadOrigin !== null) optInOrigins.push(downloadOrigin)
+  if (pageOrigin !== null) optInOrigins.push(pageOrigin)
+  const authenticated = optInOrigins.some((origin) =>
+    settings.cookieOptInOrigins.includes(origin)
+  )
+  let cookie
+  if (authenticated) {
+    cookie = await readCookieHeaderForOrigins(
+      chromeApi,
+      cookieUrl,
+      optInOrigins
+    )
+  }
+
   const claim = await claimHandoffDownload(chromeApi, item.id)
   if (!claim.ok) {
     if (claim.reason === 'duplicate') return 'duplicate-uncertain'
@@ -120,7 +188,16 @@ export async function handleCreatedDownload(chromeApi, item) {
   try {
     handoff = await sendDurableHandoff(candidate.url, candidate.filename, {
       expectedBytes: candidate.expectedBytes,
-      expectedContentType: candidate.expectedContentType
+      expectedContentType: candidate.expectedContentType,
+      ...(authenticated && originFromPageUrl(item.referrer) !== null
+        ? { referer: item.referrer }
+        : {}),
+      ...(authenticated &&
+      typeof navigator !== 'undefined' &&
+      typeof navigator.userAgent === 'string'
+        ? { userAgent: navigator.userAgent }
+        : {}),
+      ...(cookie === undefined ? {} : { cookie })
     })
   } catch {
     handoff = {
@@ -134,9 +211,27 @@ export async function handleCreatedDownload(chromeApi, item) {
   // retries an uncertain transfer.
   if (!handoff || handoff.ok !== true || handoff.durable !== true) {
     await finishHandoffDownload(chromeApi, item.id)
+    if (
+      !authenticated &&
+      handoff &&
+      handoff.error &&
+      handoff.error.code === 'HANDOFF_NEEDS_LOGIN'
+    ) {
+      // The anonymous preflight reached a login wall. Remember it for the
+      // popup so the user can opt this exact origin in with one click.
+      const origin = pageOrigin ?? downloadOrigin
+      const host = hostOf(cookieUrl)
+      if (origin !== null && host.length > 0) {
+        await recordNeedsLoginState(chromeApi, { origin, host })
+        setNeedsLoginBadge(chromeApi, host)
+        return 'needs-login'
+      }
+    }
     notifyHandoff(chromeApi, settings, '!', 'Hand-off not confirmed; browser download kept')
     return 'left-running'
   }
+  await clearNeedsLoginState(chromeApi)
+  clearNeedsLoginBadge()
 
   const reread = await searchDownload(chromeApi, item.id)
   if (!reread.ok) {

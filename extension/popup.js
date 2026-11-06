@@ -1,7 +1,7 @@
 import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, sendQueueDownload } from './bridge.js'
 import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
-import { rememberOptionsTarget } from './capture-settings.js'
+import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy } from './capture-settings.js'
 import {
   popupConnectionLine,
   siteEnableLabel,
@@ -39,6 +39,9 @@ const siteAccessState = document.getElementById('site-access-state')
 const siteHint = document.getElementById('site-hint')
 const enableSiteButton = document.getElementById('enable-site')
 const siteStatus = document.getElementById('site-status')
+const handoffLogin = document.getElementById('handoff-login')
+const handoffLoginText = document.getElementById('handoff-login-text')
+const handoffLoginButton = document.getElementById('handoff-login-button')
 
 let pageUrl = null
 let pageOrigin = null
@@ -146,6 +149,42 @@ async function refreshSiteAccess() {
     'Enable the optional overlay and media detection for this exact site only.'
   enableSiteButton.hidden = false
   enableSiteButton.disabled = false
+}
+
+async function refreshNeedsLogin() {
+  if (handoffLogin === null || pageOrigin === null) {
+    if (handoffLogin !== null) handoffLogin.hidden = true
+    return
+  }
+  const state = await readNeedsLoginState(chrome)
+  if (!state || state.origin !== pageOrigin) {
+    handoffLogin.hidden = true
+    return
+  }
+  try {
+    const settings = await readCaptureSettings(chrome)
+    if (settings.cookieOptInOrigins.includes(pageOrigin)) {
+      handoffLogin.hidden = true
+      return
+    }
+  } catch {
+    // Show the actionable state rather than hiding a real login warning.
+  }
+  const copy = needsLoginCopy(state.host)
+  handoffLoginText.textContent = copy.message
+  handoffLoginButton.textContent = copy.button
+  handoffLoginButton.disabled = false
+  handoffLogin.hidden = false
+}
+
+function clearNeedsLogin() {
+  if (handoffLogin !== null) handoffLogin.hidden = true
+  void clearNeedsLoginState(chrome)
+  try {
+    chrome.runtime.sendMessage({ type: 'dondownload:handoff-login-clear' })
+  } catch {
+    // Best effort.
+  }
 }
 
 function clearCaptureList() {
@@ -640,6 +679,7 @@ function loadActiveTab() {
     setDetectedState('Checking…', '')
     querySniffedMedia()
     void refreshSiteAccess()
+    void refreshNeedsLogin()
     queryCapturedSources()
   })
 }
@@ -689,8 +729,26 @@ openOptionsButton.addEventListener('click', async () => {
   chrome.runtime.openOptionsPage()
 })
 
-enableSiteButton.addEventListener('click', () => {
-  if (pageOrigin === null || activeTabId === null) return
+handoffLoginButton.addEventListener('click', () => {
+  if (pageOrigin === null) return
+  handoffLoginButton.disabled = true
+  // The permission prompt closes this popup, so finish the cookies grant in a
+  // normal welcome tab through the existing exact-origin grant flow.
+  const grantUrl = grantPageUrl(welcomeUrl(chrome), pageOrigin, { cookies: true })
+  clearNeedsLogin()
+  if (grantUrl !== null) {
+    try {
+      chrome.tabs.create({ url: grantUrl })
+      return
+    } catch {
+      // Fall back to the options page below.
+    }
+  }
+  handoffLoginButton.disabled = false
+  chrome.runtime.openOptionsPage()
+})
+
+enableSiteButton.addEventListener('click', () => {  if (pageOrigin === null || activeTabId === null) return
   enableSiteButton.disabled = true
   setSiteStatus('', '')
   // A permission prompt closes the toolbar popup before its callback runs, so

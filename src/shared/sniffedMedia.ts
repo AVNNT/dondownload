@@ -258,7 +258,7 @@ export function parseSniffedMediaInput(value: unknown): SniffedMediaInput {
 }
 
 function allowedExtension(value: string): string | null {
-  const match = /\.([a-z0-9]{2,5})$/i.exec(value)
+  const match = /\.([a-z0-9]{2,5})$/i.exec(value.replace(/\/+$/, ''))
   if (!match) return null
   const extension = match[1]?.toLowerCase() ?? ''
   return MEDIA_EXTENSIONS.includes(extension) ? extension : null

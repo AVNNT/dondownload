@@ -22,6 +22,7 @@ const grantStatus = document.getElementById('grant-status')
 
 let checking = false
 let grantOrigin = null
+let grantCookies = false
 
 function setChoicesStatus(kind, message) {
   choicesStatus.className = kind ? `status ${kind}` : 'status'
@@ -97,7 +98,9 @@ function renderGranted() {
   grantDetail.textContent = `Site access is enabled for ${grantOrigin} only.`
   setGrantStatus(
     'success',
-    'Reload the page you want to use, then open the DonDownload toolbar popup.'
+    grantCookies
+      ? 'Cookies will be sent only for downloads from this exact origin and never saved. Click the same link again.'
+      : 'Reload the page you want to use, then open the DonDownload toolbar popup.'
   )
 }
 
@@ -114,11 +117,16 @@ function renderGrantSection() {
   }
 
   grantOrigin = grant.origin
-  grantButton.textContent = siteEnableLabel(grantOrigin)
-  grantDetail.textContent = `Grant media detection and the optional overlay for ${grantOrigin} only. The browser shows its normal permission prompt after you click.`
+  grantCookies = grant.cookies === true
+  grantButton.textContent = grantCookies
+    ? `Let DonDownload use my login on ${grant.origin}`
+    : siteEnableLabel(grantOrigin)
+  grantDetail.textContent = grantCookies
+    ? `Grant the optional cookies permission for ${grantOrigin} only. DonDownload will read this site's cookies for the download you clicked, keep them in memory for that job, and never save them. The browser shows its normal permission prompt after you click.`
+    : `Grant media detection and the optional overlay for ${grantOrigin} only. The browser shows its normal permission prompt after you click.`
   setGrantStatus('', '')
   void siteAccessGranted(chrome, grantOrigin).then((granted) => {
-    if (granted) renderGranted()
+    if (granted && grantCookies !== true) renderGranted()
   })
 }
 
@@ -129,7 +137,7 @@ grantButton.addEventListener('click', () => {
   setGrantStatus('', '')
   requestExactOriginAccess(
     chrome,
-    { origin: grantOrigin, tabId: null },
+    { origin: grantOrigin, tabId: null, cookies: grantCookies },
     (result) => {
       grantButton.disabled = false
       if (!result.ok) {

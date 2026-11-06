@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { IncomingMessage } from 'node:http'
+import type { DownloadRequestHeaders } from '@shared/types'
 import { AppError } from '../errors'
 import {
   resolvePublicTargetAddresses,
@@ -42,6 +43,12 @@ export interface PublicResourcePreflightInput {
   expectedContentType?: string
   /** For an extensionless captured video: the exact allowed media type. */
   expectedMediaType?: 'video/mp4' | 'video/webm'
+  /**
+   * Opt-in browser headers for the exact download host. A Cookie is attached
+   * only when the hop host still equals the initial input URL host; Referer and
+   * User-Agent may follow a same-site redirect. Nothing is persisted.
+   */
+  requestHeaders?: DownloadRequestHeaders
 }
 
 export interface PublicResourcePreflightOptions {
@@ -146,7 +153,9 @@ function isMediaContentType(contentType: string): boolean {
 
 function requestHeaders(
   url: string,
-  options: PublicResourcePreflightOptions
+  options: PublicResourcePreflightOptions,
+  input: PublicResourcePreflightInput,
+  cookieHost: string
 ): Promise<HeaderResponse> {
   const parsed = new URL(url)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -154,6 +163,24 @@ function requestHeaders(
   }
   if (parsed.username || parsed.password) {
     return Promise.reject(failure('Credentials are not accepted in a preflight URL.'))
+  }
+  const headers: Record<string, string> = {
+    Range: 'bytes=0-0',
+    'Accept-Encoding': 'identity'
+  }
+  const requestHeaders = input.requestHeaders
+  if (requestHeaders) {
+    // A Cookie is host-scoped: never send it to a redirect on another host.
+    // Referer and User-Agent are ordinary browser context for the same job.
+    if (requestHeaders.referer !== undefined) {
+      headers.Referer = requestHeaders.referer
+    }
+    if (requestHeaders.userAgent !== undefined) {
+      headers['User-Agent'] = requestHeaders.userAgent
+    }
+    if (requestHeaders.cookie !== undefined && parsed.host === cookieHost) {
+      headers.Cookie = requestHeaders.cookie
+    }
   }
   const timeoutMs =
     Number.isSafeInteger(options.timeoutMs) && (options.timeoutMs ?? 0) > 0
@@ -187,10 +214,7 @@ function requestHeaders(
           port: parsed.port || undefined,
           path: `${parsed.pathname}${parsed.search}`,
           method: 'GET',
-          headers: {
-            Range: 'bytes=0-0',
-            'Accept-Encoding': 'identity'
-          },
+          headers,
           agent: false,
           ...(options.connectLookup
             ? { lookup: options.connectLookup as never }
@@ -282,6 +306,19 @@ function validateResponse(
   input: PublicResourcePreflightInput,
   response: HeaderResponse
 ): PublicResourcePreflightResult {
+  if (
+    response.status === 401 ||
+    response.status === 403 ||
+    response.status === 404
+  ) {
+    // These statuses usually mean the browser session is required. The caller
+    // reports a distinct code so the extension can offer the per-site login
+    // opt-in instead of silently leaving the file in the browser.
+    throw new AppError(
+      'HANDOFF_NEEDS_LOGIN',
+      'The resource needs the browser login to be downloaded.'
+    )
+  }
   if (response.status !== 200 && response.status !== 206) {
     throw failure('The public resource did not return HTTP success.')
   }
@@ -371,6 +408,7 @@ export async function preflightPublicResource(
   }
 
   const lookup = options.lookup
+  const cookieHost = new URL(current).host
   const maximumRedirects =
     Number.isSafeInteger(options.maxRedirects) && (options.maxRedirects ?? 0) >= 0
       ? Math.min(options.maxRedirects ?? PREFLIGHT_MAX_REDIRECTS, 10)
@@ -380,7 +418,12 @@ export async function preflightPublicResource(
     try {
       const addresses = await resolvePublicTargetAddresses(current, lookup)
       const connectLookup = options.connectLookup ?? pinResolvedAddresses(addresses)
-      const response = await requestHeaders(current, { ...options, connectLookup })
+      const response = await requestHeaders(
+        current,
+        { ...options, connectLookup },
+        input,
+        cookieHost
+      )
       if (response.redirect !== null) {
         if (redirect === maximumRedirects) {
           throw failure('The public resource redirected too many times.')
@@ -396,6 +439,17 @@ export async function preflightPublicResource(
         }
         if (next.username || next.password) {
           throw failure('The redirect target contains credentials.')
+        }
+        // aria2 sends one per-job header set across redirects. A Cookie is only
+        // safe when every hop stays on the exact original host.
+        if (
+          input.requestHeaders &&
+          input.requestHeaders.cookie !== undefined &&
+          next.host !== cookieHost
+        ) {
+          throw failure(
+            'An authenticated download redirected to a different host, so its cookie cannot be sent safely.'
+          )
         }
         current = next.href
         continue

@@ -113,6 +113,60 @@ afterEach(async () => {
   }
 })
 
+describe('browser login jobs stay out of persistence', () => {
+  it('passes one-job headers to aria2, stores no cookie, and fails honestly after restart', async () => {
+    const { dir, database, downloadDir } = await makeWorkspace()
+    const { manager, calls } = createManager(database, downloadDir)
+    const cookie = 'session=super-secret-cookie-value'
+    const receipt = await manager.addDurable({
+      url: 'https://example.com/files/report.zip',
+      requestHeaders: {
+        referer: 'https://example.com/page',
+        userAgent: 'BrowserAgent/1.0',
+        cookie
+      }
+    })
+    expect(receipt.downloadId).toBeTruthy()
+
+    const addCall = calls.find((entry) => entry.method === 'aria2.addUri')
+    const options = addCall?.params[1] as Record<string, unknown>
+    expect(options.header).toEqual([`Cookie: ${cookie}`])
+    expect(options.referer).toBe('https://example.com/page')
+    expect(options['user-agent']).toBe('BrowserAgent/1.0')
+
+    // The database stores only a boolean marker. Read the main file and WAL so
+    // a value accidentally written to either is caught.
+    const persisted: Buffer[] = []
+    for (const name of ['downloads.sqlite3', 'downloads.sqlite3-wal']) {
+      try {
+        persisted.push(await readFile(path.join(dir, name)))
+      } catch {
+        // WAL may not exist after a checkpoint.
+      }
+    }
+    const persistedText = Buffer.concat(persisted).toString('latin1')
+    expect(persistedText).toContain('report.zip')
+    expect(persistedText).not.toContain('super-secret-cookie-value')
+    expect(persistedText).not.toContain('Cookie:')
+
+    manager.close()
+    const reopened = openDownloadDatabase(path.join(dir, 'downloads.sqlite3'))
+    const restarted = createManager(reopened, downloadDir)
+    await restarted.manager.reconcileDownloads()
+    const row = restarted.manager
+      .getSnapshot()
+      .downloads.find((entry) => entry.id === receipt.downloadId)
+    expect(row).toMatchObject({
+      status: 'error',
+      errorMessage:
+        'This download needs your browser login again — click it in the browser to restart'
+    })
+    await expect(restarted.manager.retry(receipt.downloadId)).rejects.toMatchObject(
+      { code: 'HANDOFF_NEEDS_BROWSER_LOGIN' }
+    )
+  })
+})
+
 describe('strict durable hand-off', () => {
   it('returns a verified receipt, rolls back uncertain aria2 work, and exposes a separate fail-closed route', async () => {
     const { dir, database, downloadDir } = await makeWorkspace()

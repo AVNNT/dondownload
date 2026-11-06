@@ -23,11 +23,12 @@ import {
   queueCapturedSourceForSender,
   queueMediaForSender
 } from './media-bridge.js'
-import { handleCreatedDownload, installDownloadsListener } from './handoff.js'
+import { handleCreatedDownload, installDownloadsListener, hasNeedsLoginBadge, clearNeedsLoginBadge } from './handoff.js'
 import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
 import {
   CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
+  readNeedsLoginState,
   readOptInCookieHeader
 } from './capture-settings.js'
 import {
@@ -172,6 +173,30 @@ async function updateBadgeForTab(tabId) {
 }
 
 async function applyBadgeCount(count) {
+  if (count === 0) {
+    let needsLogin = hasNeedsLoginBadge()
+    if (!needsLogin) {
+      try {
+        needsLogin = (await readNeedsLoginState(chrome)) !== null
+      } catch {
+        needsLogin = false
+      }
+    }
+    if (needsLogin) {
+      try {
+        ignoreResult(chrome.action.setBadgeBackgroundColor({ color: '#a16207' }))
+        ignoreResult(chrome.action.setBadgeText({ text: '!' }))
+        ignoreResult(
+          chrome.action.setTitle({
+            title: 'DonDownload: This download needs your browser login'
+          })
+        )
+      } catch {
+        // Badge feedback is best effort.
+      }
+      return
+    }
+  }
   const text = formatBadgeCount(count)
   try {
     ignoreResult(chrome.action.setBadgeBackgroundColor({ color: DETECTED_BADGE_COLOR }))
@@ -642,6 +667,16 @@ chrome.tabs.onActivated.addListener((info) => {
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes || !changes[CAPTURE_SETTINGS_KEY]) return
+    const previous = changes[CAPTURE_SETTINGS_KEY].oldValue
+    const next = changes[CAPTURE_SETTINGS_KEY].newValue
+    if (
+      previous &&
+      next &&
+      JSON.stringify(previous.cookieOptInOrigins || []) !==
+        JSON.stringify(next.cookieOptInOrigins || [])
+    ) {
+      clearNeedsLoginBadge()
+    }
     void refreshNetworkObservation().catch(() => undefined)
     void refreshMediaSniffing().catch(() => undefined)
   })
@@ -731,8 +766,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
-  if (message.type === MEDIA_SNIFFER_MESSAGE_TYPES.QUERY) {
-    try {
+  if (message.type === 'dondownload:handoff-login-clear') {
+    clearNeedsLoginBadge()
+    refreshActiveBadge()
+    return false
+  }
+
+  if (message.type === MEDIA_SNIFFER_MESSAGE_TYPES.QUERY) {    try {
       sendResponse(querySniffedForSender(message, sender))
     } catch {
       sendResponse(

@@ -97,7 +97,9 @@ export function normalizeSupportedUrl(value) {
 
 function progressiveExtension(value) {
   if (typeof value !== 'string') return null
-  const match = /\.([a-z0-9]{2,5})$/i.exec(value.trim())
+  // KVS player URLs end with a slash after the file name (`/1.mp4/`).
+  const trimmed = value.trim().replace(/\/+$/, '')
+  const match = /\.([a-z0-9]{2,5})$/i.exec(trimmed)
   if (!match) return null
   const extension = match[1].toLowerCase()
   return PROGRESSIVE_EXTENSIONS.indexOf(extension) === -1 ? null : extension
@@ -173,11 +175,37 @@ export function normalizeCapturedSource(rawUrl, rawFilename, rawEvidence) {
   }
 
   const pathExtension = progressiveExtension(path)
+  let referer
+  if (rawEvidence && typeof rawEvidence === 'object' && rawEvidence.referer !== undefined) {
+    const normalizedReferer = normalizeSupportedUrl(rawEvidence.referer)
+    if (!normalizedReferer.ok) {
+      return {
+        ok: false,
+        code: normalizedReferer.code,
+        message: normalizedReferer.message
+      }
+    }
+    referer = normalizedReferer.url
+  }
+  let userAgent
+  if (rawEvidence && typeof rawEvidence === 'object' && rawEvidence.userAgent !== undefined) {
+    userAgent = normalizeHeaderText(rawEvidence.userAgent, MAX_USER_AGENT_LENGTH)
+    if (userAgent === null) {
+      return {
+        ok: false,
+        code: 'INVALID_MESSAGE',
+        message: 'The browser user agent is not valid.'
+      }
+    }
+  }
+
   if (pathExtension !== null) {
     return {
       ok: true,
       url: normalized.url,
-      ...(filename === undefined ? {} : { filename })
+      ...(filename === undefined ? {} : { filename }),
+      ...(referer === undefined ? {} : { referer }),
+      ...(userAgent === undefined ? {} : { userAgent })
     }
   }
 
@@ -218,7 +246,9 @@ export function normalizeCapturedSource(rawUrl, rawFilename, rawEvidence) {
     url: normalized.url,
     ...(filename === undefined ? {} : { filename }),
     contentType,
-    expectedBytes: evidence.expectedBytes
+    expectedBytes: evidence.expectedBytes,
+    ...(referer === undefined ? {} : { referer }),
+    ...(userAgent === undefined ? {} : { userAgent })
   }
 }
 
@@ -258,7 +288,13 @@ export function sendQueueCapturedSource(rawUrl, rawFilename, rawEvidence) {
             : {
                 contentType: normalized.contentType,
                 expectedBytes: normalized.expectedBytes
-              })
+              }),
+          ...(normalized.referer === undefined
+            ? {}
+            : { referer: normalized.referer }),
+          ...(normalized.userAgent === undefined
+            ? {}
+            : { userAgent: normalized.userAgent })
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError
@@ -624,6 +660,40 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
       error: { code: normalized.code, message: normalized.message }
     })
   }
+  // The extension already scoped these values to the browser's login. They are
+  // validated again here and travel only in this native message; nothing is
+  // written to extension storage.
+  const cookie = normalizeHeaderText(
+    options && options.cookie,
+    MAX_COOKIE_HEADER_LENGTH
+  )
+  const userAgent = normalizeHeaderText(
+    options && options.userAgent,
+    MAX_USER_AGENT_LENGTH
+  )
+  let referer
+  if (options && options.referer !== undefined) {
+    const normalizedReferer = normalizeSupportedUrl(options.referer)
+    if (!normalizedReferer.ok) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: normalizedReferer.code,
+          message: normalizedReferer.message
+        }
+      })
+    }
+    referer = normalizedReferer.url
+  }
+  if (cookie !== null && /[\r\n]/.test(cookie)) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_MESSAGE',
+        message: 'The browser cookie header is not valid.'
+      }
+    })
+  }
   const configured =
     options && typeof options.timeoutMs === 'number' ? options.timeoutMs : 0
   const timeoutMs =
@@ -663,7 +733,12 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
             : { expectedBytes: normalized.expectedBytes }),
           ...(normalized.expectedContentType === undefined
             ? {}
-            : { expectedContentType: normalized.expectedContentType })
+            : { expectedContentType: normalized.expectedContentType }),
+          ...(referer === undefined ? {} : { referer }),
+          ...(userAgent === undefined || userAgent === null
+            ? {}
+            : { userAgent }),
+          ...(cookie === undefined || cookie === null ? {} : { cookie })
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError

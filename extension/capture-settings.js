@@ -6,6 +6,7 @@ import { originFromPageUrl } from './handoff-policy.js'
 
 export const CAPTURE_SETTINGS_KEY = 'dondownloadCaptureSettings'
 export const HANDOFF_STATE_KEY = 'dondownloadHandoffState'
+export const NEEDS_LOGIN_STATE_KEY = 'dondownloadHandoffNeedsLogin'
 export const OPTIONS_TARGET_KEY = 'dondownloadOptionsTarget'
 export const MAX_HANDOFF_IDS = 300
 export const MAX_EXCLUDED_ORIGINS = 100
@@ -75,12 +76,54 @@ export function normalizeCaptureSettings(value) {
  * opted-in top page.
  */
 export async function readOptInCookieHeader(chromeApi, pageUrl, cookieUrl) {
+  const origin = originFromPageUrl(pageUrl)
+  if (origin === null) return undefined
+  return readCookieHeaderForOrigins(chromeApi, cookieUrl, [origin])
+}
+
+function cookiesForUrl(chromeApi, url) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (cookies) => {
+      if (settled) return
+      settled = true
+      resolve(Array.isArray(cookies) ? cookies : [])
+    }
+    try {
+      const result = chromeApi.cookies.getAll({ url }, (cookies) => {
+        // Read lastError so a denied call does not surface as an unchecked error.
+        void (chromeApi.runtime && chromeApi.runtime.lastError)
+        finish(cookies)
+      })
+      if (result && typeof result.then === 'function') {
+        result.then(finish).catch(() => finish([]))
+      }
+    } catch {
+      finish([])
+    }
+  })
+}
+
+/**
+ * Hand-off variant: either the download URL origin or the referring page
+ * origin may be opted in. The Cookie is still read for the exact download URL,
+ * so a different host never receives another site's cookies.
+ */
+export async function readCookieHeaderForOrigins(
+  chromeApi,
+  cookieUrl,
+  allowedOrigins
+) {
   try {
     const settings = await readCaptureSettings(chromeApi)
-    const origin = originFromPageUrl(pageUrl)
+    const origins = Array.isArray(allowedOrigins)
+      ? allowedOrigins
+          .map((value) => originFromPageUrl(value))
+          .filter((value) => value !== null)
+      : []
     if (
-      origin === null ||
-      !settings.cookieOptInOrigins.includes(origin)
+      origins.length === 0 ||
+      !origins.some((origin) => settings.cookieOptInOrigins.includes(origin))
     ) {
       return undefined
     }
@@ -93,7 +136,7 @@ export async function readOptInCookieHeader(chromeApi, pageUrl, cookieUrl) {
     if (!chromeApi.cookies || typeof chromeApi.cookies.getAll !== 'function') {
       return undefined
     }
-    const cookies = await chromeApi.cookies.getAll({ url: cookieUrl })
+    const cookies = await cookiesForUrl(chromeApi, cookieUrl)
     if (!Array.isArray(cookies) || cookies.length === 0) return undefined
     const parts = []
     for (const cookie of cookies.slice(0, 100)) {
@@ -116,6 +159,69 @@ export async function readOptInCookieHeader(chromeApi, pageUrl, cookieUrl) {
       : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * "This one needs your login" is a short-lived, session-only record. It holds
+ * the exact page origin and its visible host, never a cookie or a full URL.
+ */
+export function normalizeNeedsLoginState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const origin = originFromPageUrl(value.origin)
+  const host = typeof value.host === 'string' ? value.host.trim() : ''
+  if (
+    origin === null ||
+    host.length === 0 ||
+    host.length > 255 ||
+    !/^[a-z0-9.-]+(?::\d{1,5})?$/i.test(host)
+  ) {
+    return null
+  }
+  const at = Number.isSafeInteger(value.at) && value.at > 0 ? value.at : Date.now()
+  return { origin, host, at }
+}
+
+export async function readNeedsLoginState(chromeApi) {
+  const session = storageArea(chromeApi, 'session')
+  if (session === null) return null
+  try {
+    const stored = await session.get(NEEDS_LOGIN_STATE_KEY)
+    return normalizeNeedsLoginState(stored && stored[NEEDS_LOGIN_STATE_KEY])
+  } catch {
+    return null
+  }
+}
+
+export async function recordNeedsLoginState(chromeApi, value) {
+  const state = normalizeNeedsLoginState(value)
+  const session = storageArea(chromeApi, 'session')
+  if (state === null || session === null) return false
+  try {
+    await session.set({ [NEEDS_LOGIN_STATE_KEY]: state })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function clearNeedsLoginState(chromeApi) {
+  const session = storageArea(chromeApi, 'session')
+  if (session === null) return false
+  try {
+    await session.remove(NEEDS_LOGIN_STATE_KEY)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Plain popup copy; the host is already validated by the state parser. */
+export function needsLoginCopy(host) {
+  const safe = typeof host === 'string' && host.length > 0 ? host : 'this site'
+  return {
+    message: `This download stayed in your browser because it needs your login on ${safe}.`,
+    button: `Let DonDownload use my login on ${safe}`
   }
 }
 

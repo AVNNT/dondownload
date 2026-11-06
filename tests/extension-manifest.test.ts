@@ -132,6 +132,7 @@ describe('browser extension manifest', () => {
       'overlay-runtime.js',
       'overlay-ui.js',
       'overlay-qualities.js',
+      'overlay-kvs.js',
       'overlay-capture.js',
       'overlay.js',
       'overlay-controller.js',

@@ -240,17 +240,17 @@
   }
 
   /**
-   * The floating trigger should appear as soon as a real player is attached and
-   * visible, not only after the first rendered frame. `paused === false` means
-   * play() was requested; readyState >= HAVE_METADATA means metadata arrived.
-   * Neither value is ever used as proof of a downloadable source.
+   * The floating trigger should appear for any visible, attached player, not
+   * only after play or metadata. KVS v6 creates a `preload="none"` video with
+   * no src until the user presses play, and a transparent click-catcher can
+   * cover it; the large visible element is still a real player surface.
+   * Neither playback state nor dimensions ever prove a downloadable source.
    */
   function isTriggerReady(input) {
     if (!input || typeof input !== 'object') return false
     if (input.error) return false
     if (input.isConnected === false) return false
-    if (input.paused === false) return true
-    return typeof input.readyState === 'number' && input.readyState >= 1
+    return true
   }
 
   /**
@@ -394,7 +394,8 @@
   var MAX_CAPTURED_SOURCES_PER_PLAYER = 32
 
   function pathExtension(value) {
-    var match = /\.([a-z0-9]{2,5})$/i.exec(String(value || '').trim())
+    var trimmed = String(value || '').trim().replace(/\/+$/, '')
+    var match = /\.([a-z0-9]{2,5})$/i.exec(trimmed)
     return match ? match[1].toLowerCase() : null
   }
 
@@ -642,6 +643,7 @@
         candidate.contentType === 'video/mp4' || candidate.contentType === 'video/webm'
           ? candidate.contentType
           : null,
+      ...(candidate.usePageHeaders === true ? { usePageHeaders: true } : {}),
       current: true
     })
     for (var index = 0; index < previous.length; index += 1) {
@@ -664,6 +666,7 @@
           entry.contentType === 'video/mp4' || entry.contentType === 'video/webm'
             ? entry.contentType
             : null,
+        ...(entry.usePageHeaders === true ? { usePageHeaders: true } : {}),
         current: false
       })
       if (next.length >= MAX_CAPTURED_SOURCES_PER_PLAYER) break

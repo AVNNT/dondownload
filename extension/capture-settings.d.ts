@@ -1,5 +1,6 @@
 export const CAPTURE_SETTINGS_KEY: string
 export const HANDOFF_STATE_KEY: string
+export const NEEDS_LOGIN_STATE_KEY: string
 export const OPTIONS_TARGET_KEY: string
 export const MAX_HANDOFF_IDS: number
 export const MAX_EXCLUDED_ORIGINS: number
@@ -9,7 +10,16 @@ export interface CaptureSettings {
   automaticFileHandoff: boolean
   handoffNotifications: boolean
   networkObservation: boolean
+  mediaSniffing: boolean
+  detectAllSites: boolean
+  cookieOptInOrigins: string[]
   excludedOrigins: string[]
+}
+
+export interface NeedsLoginState {
+  origin: string
+  host: string
+  at: number
 }
 
 export interface HandoffState {
@@ -42,3 +52,21 @@ export function rememberOptionsTarget(
 export function readOptionsTarget(
   chromeApi: unknown
 ): Promise<{ tabId: number; origin: string } | null>
+export function readOptInCookieHeader(
+  chromeApi: unknown,
+  pageUrl: unknown,
+  cookieUrl: unknown
+): Promise<string | undefined>
+export function readCookieHeaderForOrigins(
+  chromeApi: unknown,
+  cookieUrl: unknown,
+  allowedOrigins: unknown[]
+): Promise<string | undefined>
+export function normalizeNeedsLoginState(value: unknown): NeedsLoginState | null
+export function readNeedsLoginState(chromeApi: unknown): Promise<NeedsLoginState | null>
+export function recordNeedsLoginState(
+  chromeApi: unknown,
+  value: unknown
+): Promise<boolean>
+export function clearNeedsLoginState(chromeApi: unknown): Promise<boolean>
+export function needsLoginCopy(host: unknown): { message: string; button: string }

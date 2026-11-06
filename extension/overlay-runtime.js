@@ -180,12 +180,37 @@
   }
 
 
+  function rectFor(element) {
+    var rect = element.getBoundingClientRect()
+    var tag = String(element.tagName || '').toUpperCase()
+    if (tag !== 'VIDEO') return rect
+    var hasSource =
+      typeof element.currentSrc === 'string' && element.currentSrc.length > 0
+    // A KVS-style player can create the video with no source and zero inline
+    // size until play. Its visible wrapper is the real player surface, and a
+    // transparent click-catcher may hide the video from pointer hit-testing.
+    if (
+      !hasSource &&
+      element.readyState === 0 &&
+      (rect.width < 120 || rect.height < 68)
+    ) {
+      var node = element.parentElement
+      while (node && node !== document.documentElement) {
+        var candidate = node.getBoundingClientRect()
+        if (candidate.width >= 120 && candidate.height >= 68) return candidate
+        node = node.parentElement
+      }
+    }
+    return rect
+  }
+
+
   function candidateFor(video) {
     return {
       tagName: video.tagName,
       isConnected: video.isConnected,
       hidden: video.hidden,
-      rect: video.getBoundingClientRect(),
+      rect: rectFor(video),
       styles: readStyles(video)
     }
   }
@@ -230,6 +255,7 @@
   ns.viewport = viewport
   ns.readStyles = readStyles
   ns.candidateFor = candidateFor
+  ns.rectFor = rectFor
   ns.clampNumber = clampNumber
   ns.storageFor = storageFor
   ns.setMediaStatus = setMediaStatus

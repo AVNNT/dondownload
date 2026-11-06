@@ -6,9 +6,9 @@
 
 export const HANDOFF_FILE_EXTENSIONS = Object.freeze([
   '7z', 'apk', 'bin', 'bz2', 'csv', 'deb', 'dmg', 'doc', 'docx', 'epub',
-  'exe', 'gz', 'img', 'iso', 'jar', 'json', 'md', 'msi', 'odp', 'ods', 'odt',
-  'pkg', 'pdf', 'ppt', 'pptx', 'rar', 'rpm', 'sqlite', 'tar', 'tgz', 'txt',
-  'whl', 'xls', 'xlsx', 'xz', 'zip', 'zst'
+  'exe', 'funscript', 'gz', 'img', 'iso', 'jar', 'json', 'md', 'msi', 'odp',
+  'ods', 'odt', 'pkg', 'pdf', 'ppt', 'pptx', 'rar', 'rpm', 'sqlite', 'tar',
+  'tgz', 'txt', 'whl', 'xls', 'xlsx', 'xz', 'zip', 'zst'
 ])
 
 export const MEDIA_FILE_EXTENSIONS = Object.freeze([
@@ -23,7 +23,9 @@ const SUPPORTED_PROTOCOLS = new Set(['http:', 'https:'])
 
 function extensionOf(value) {
   if (typeof value !== 'string') return null
-  const match = /\.([a-z0-9]{1,8})$/i.exec(value.trim())
+  // A KVS-style URL may end in a trailing slash (`/1.mp4/`).
+  const trimmed = value.trim().replace(/\/+$/, '')
+  const match = /\.([a-z0-9]{1,12})$/i.exec(trimmed)
   return match ? match[1].toLowerCase() : null
 }
 

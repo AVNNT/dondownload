@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(11)
+    expect(SCHEMA_VERSION).toBe(12)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -808,7 +808,8 @@ describe('per-download control persistence', () => {
       'scheduled_at',
       'speed_limit_bps',
       'connections',
-      'block_reason'
+      'block_reason',
+      'needs_login'
     ])
     const invalidUpdates = [
       'UPDATE downloads SET scheduled_at = -1',
@@ -1014,7 +1015,8 @@ describe('v5 to v8 migration', () => {
       'scheduled_at',
       'speed_limit_bps',
       'connections',
-      'block_reason'
+      'block_reason',
+      'needs_login'
     ])
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(before, DOWNLOAD_COLUMNS)
@@ -1041,6 +1043,7 @@ describe('v7 to v8 theme migration', () => {
     const legacy = new DatabaseSync(filePath)
     legacy.exec(`
       ALTER TABLE download_settings DROP COLUMN theme;
+      ALTER TABLE downloads DROP COLUMN needs_login;
       UPDATE download_settings
       SET max_concurrent_downloads = 9,
           per_host_connections = 7,

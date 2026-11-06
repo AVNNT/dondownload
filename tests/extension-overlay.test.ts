@@ -118,6 +118,10 @@ const qualitiesSource = readFileSync(
   path.join(extensionDir, 'overlay-qualities.js'),
   'utf8'
 )
+const kvsSource = readFileSync(
+  path.join(extensionDir, 'overlay-kvs.js'),
+  'utf8'
+)
 const captureSource = readFileSync(
   path.join(extensionDir, 'overlay-capture.js'),
   'utf8'
@@ -129,6 +133,7 @@ const overlaySource = [
   runtimeSource,
   uiSource,
   qualitiesSource,
+  kvsSource,
   captureSource,
   entrySource
 ].join('\n')

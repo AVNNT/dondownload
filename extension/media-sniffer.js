@@ -148,7 +148,7 @@ export function mediaExtension(value) {
   } catch {
     return null
   }
-  const match = /\.([a-z0-9]{2,5})$/i.exec(parsed.pathname)
+  const match = /\.([a-z0-9]{2,5})$/i.exec(parsed.pathname.replace(/\/+$/, ''))
   return match ? match[1].toLowerCase() : null
 }
 
@@ -267,18 +267,25 @@ export function classifyMediaResponse(input, now = Date.now()) {
   }
   if (isAdvertisingHost(parsed.hostname)) return null
   if (isGoogleVideoPlayback(url)) return null
-  if (
-    typeof input.statusCode === 'number' &&
-    (input.statusCode < 200 || input.statusCode >= 300) &&
-    input.statusCode !== 304
-  ) {
-    return null
-  }
 
   const key = canonicalMediaUrl(url)
   if (key === null) return null
   const contentType = normalizeContentType(input.contentType)
   const extension = mediaExtension(key)
+  const redirectWithKnownType =
+    extension !== null &&
+    (PROGRESSIVE_EXTENSIONS.includes(extension) ||
+      extension === 'm3u8' ||
+      extension === 'mpd')
+  if (
+    typeof input.statusCode === 'number' &&
+    (input.statusCode < 200 || input.statusCode >= 300) &&
+    input.statusCode !== 304 &&
+    !(input.statusCode >= 300 && input.statusCode < 400 && redirectWithKnownType)
+  ) {
+    return null
+  }
+
   const isSegment =
     extension !== null && SEGMENT_EXTENSIONS.includes(extension)
   if (isSegment) {

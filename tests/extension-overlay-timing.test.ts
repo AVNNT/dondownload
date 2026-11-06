@@ -32,17 +32,19 @@ const core = vm.runInNewContext(
 ) as CoreApi
 
 describe('floating icon readiness', () => {
-  it('shows for a play() request or loaded metadata, not only a rendered frame', () => {
+  it('shows for a visible player before play or metadata', () => {
     // play() was called even before a frame is decoded.
     expect(core.isTriggerReady({ paused: false, readyState: 0 })).toBe(true)
     expect(core.isTriggerReady({ paused: false, readyState: 1 })).toBe(true)
     // Paused but metadata is available (user paused immediately or at inject).
     expect(core.isTriggerReady({ paused: true, readyState: 1 })).toBe(true)
     expect(core.isTriggerReady({ paused: true, readyState: 4 })).toBe(true)
+    // KVS v6: a preload="none" video has no source until the play button is
+    // clicked. It is still a visible player surface and must show the icon.
+    expect(core.isTriggerReady({ paused: true, readyState: 0 })).toBe(true)
   })
 
-  it('does not show for an empty, errored or detached player', () => {
-    expect(core.isTriggerReady({ paused: true, readyState: 0 })).toBe(false)
+  it('does not show for an errored or detached player', () => {
     expect(core.isTriggerReady({ paused: false, readyState: 4, error: {} })).toBe(false)
     expect(
       core.isTriggerReady({ paused: false, readyState: 4, isConnected: false })

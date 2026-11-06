@@ -1,8 +1,14 @@
 import {
   MAX_CAPTURED_SOURCE_FILENAME_LENGTH,
-  type CapturedSourceInput
+  type CapturedSourceInput,
+  type DownloadRequestHeaders
 } from './types'
-import { ValidationError, normalizeHttpUrl, sanitizeFilename } from './validation'
+import {
+  ValidationError,
+  normalizeHttpUrl,
+  parseDownloadRequestHeaders,
+  sanitizeFilename
+} from './validation'
 
 /**
  * Shared contract for a progressive media file detected during real playback.
@@ -40,7 +46,9 @@ export function capturedSourceExtension(
   value: string | null | undefined
 ): string | null {
   if (typeof value !== 'string') return null
-  const match = /\.([a-z0-9]{2,5})$/i.exec(value.trim())
+  // KVS player URLs end in a slash after the file name (`/1.mp4/`).
+  const trimmed = value.trim().replace(/\/+$/, '')
+  const match = /\.([a-z0-9]{2,5})$/i.exec(trimmed)
   if (!match) return null
   const extension = match[1]?.toLowerCase()
   return extension && CAPTURED_SOURCE_EXTENSIONS.includes(extension)
@@ -139,6 +147,20 @@ function readFilename(record: Record<string, unknown>): string | undefined {
   return filename
 }
 
+function readRequestHeaders(
+  record: Record<string, unknown>
+): DownloadRequestHeaders | undefined {
+  const keys = ['referer', 'userAgent'].filter((key) =>
+    Object.prototype.hasOwnProperty.call(record, key)
+  )
+  if (keys.length === 0) return undefined
+  const headers = parseDownloadRequestHeaders({
+    ...(record.referer === undefined ? {} : { referer: record.referer }),
+    ...(record.userAgent === undefined ? {} : { userAgent: record.userAgent })
+  })
+  return Object.keys(headers).length === 0 ? undefined : headers
+}
+
 /**
  * Parse the loopback body. The URL is normalized exactly like the manual
  * download path, but the path or supplied filename must identify a progressive
@@ -146,11 +168,16 @@ function readFilename(record: Record<string, unknown>): string | undefined {
  */
 export function parseCapturedSourceInput(value: unknown): CapturedSourceInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['url'], ['filename', 'contentType', 'expectedBytes'])
+  exactKeys(
+    record,
+    ['url'],
+    ['filename', 'contentType', 'expectedBytes', 'referer', 'userAgent']
+  )
   const url = normalizeHttpUrl(record.url)
   const filename = readFilename(record)
   const contentType = readContentType(record)
   const expectedBytes = readExpectedBytes(record)
+  const requestHeaders = readRequestHeaders(record)
 
   let pathname = ''
   try {
@@ -179,7 +206,8 @@ export function parseCapturedSourceInput(value: unknown): CapturedSourceInput {
     url,
     ...(filename === undefined ? {} : { filename }),
     ...(contentType === undefined ? {} : { contentType }),
-    ...(expectedBytes === undefined ? {} : { expectedBytes })
+    ...(expectedBytes === undefined ? {} : { expectedBytes }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders })
   }
 }
 
@@ -188,7 +216,11 @@ export function parseNativeCapturedSourceMessage(
   value: unknown
 ): CapturedSourceInput & { type: typeof CAPTURED_SOURCE_CHANNEL } {
   const record = asPlainObject(value)
-  exactKeys(record, ['type', 'url'], ['filename', 'contentType', 'expectedBytes'])
+  exactKeys(
+    record,
+    ['type', 'url'],
+    ['filename', 'contentType', 'expectedBytes', 'referer', 'userAgent']
+  )
   if (record.type !== CAPTURED_SOURCE_CHANNEL) {
     throw new ValidationError('Unsupported captured source operation.')
   }
@@ -202,7 +234,9 @@ export function parseNativeCapturedSourceMessage(
         : { contentType: record.contentType }),
       ...(record.expectedBytes === undefined
         ? {}
-        : { expectedBytes: record.expectedBytes })
+        : { expectedBytes: record.expectedBytes }),
+      ...(record.referer === undefined ? {} : { referer: record.referer }),
+      ...(record.userAgent === undefined ? {} : { userAgent: record.userAgent })
     })
   }
 }

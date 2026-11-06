@@ -7,6 +7,7 @@ export type HandoffOutcome =
   | 'left-running-completed'
   | 'left-running-cancel-failed'
   | 'duplicate-uncertain'
+  | 'needs-login'
   | 'disabled'
   | 'downloads-unavailable'
   | 'permission-required'
@@ -22,3 +23,5 @@ export function installDownloadsListener(
   chromeApi: unknown,
   onCreated: (item: unknown) => unknown
 ): boolean
+export function hasNeedsLoginBadge(): boolean
+export function clearNeedsLoginBadge(): void

@@ -113,6 +113,7 @@ describe('per-site overlay permission policy', () => {
         'overlay-runtime.js',
         'overlay-ui.js',
         'overlay-qualities.js',
+        'overlay-kvs.js',
         'overlay-capture.js',
         'overlay.js'
       ],
@@ -194,7 +195,8 @@ describe('extension wiring guardrails', () => {
     expect(options).toContain('requestExactOriginAccess')
     expect(options).not.toContain('chrome.permissions.request({ origins: [pattern] }')
     expect(siteEnable).toContain('originToMatchPattern(origin)')
-    expect(siteEnable).toContain('chromeApi.permissions.request({ origins: [pattern] }')
+    expect(siteEnable).toContain('origins: [pattern]')
+    expect(siteEnable).toContain('permissions: [\'cookies\']')
     expect(siteEnable).toContain('rememberPendingEnable(chromeApi, origin, tabId)')
     expect(controller).toContain('overlayRegistrationForOrigin(origin)')
     expect(controller).toContain('chromeApi.scripting.registerContentScripts')

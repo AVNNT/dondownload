@@ -43,6 +43,7 @@ import {
 } from './deleteFile'
 import {
   INTERRUPTED_MESSAGE,
+  NEEDS_LOGIN_MESSAGE,
   decideStartupRecovery,
   shouldAutoResumeOnStartup
 } from './recovery'
@@ -122,6 +123,11 @@ export class DownloadManager {
    * restart cannot recover them, so cookies never touch disk.
    */
   private readonly requestHeaders = new Map<string, DownloadRequestHeaders>()
+  /**
+   * IDs queued with an opt-in browser Cookie. Only the boolean is persisted so
+   * a restart can fail honestly; the Cookie itself never touches disk.
+   */
+  private readonly needsLoginIds = new Set<string>()
   private readonly controls = new Map<string, DownloadControls>()
   private readonly blockReasons = new Map<string, DownloadBlockReason | null>()
   /**
@@ -220,6 +226,23 @@ export class DownloadManager {
         if (!this.records.has(record.id)) continue
 
         const blockReason = this.blockReasons.get(record.id) ?? null
+
+        // The browser Cookie was memory-only. A restart cannot replay the
+        // authenticated request, so fail with a clear message and never fall
+        // back to an anonymous re-download.
+        if (this.needsLoginIds.has(record.id)) {
+          this.updateRecord(record, {
+            gid: '',
+            status: 'error',
+            speedBps: 0,
+            etaSeconds: null,
+            errorMessage: NEEDS_LOGIN_MESSAGE
+          })
+          this.setBlockReason(record, null)
+          this.persistNow(record)
+          continue
+        }
+
         let tracked: Aria2StatusSnapshot | null = null
         // An unavailable service is not evidence that an in-flight GID was
         // lost. Keep the persisted row intact until aria2 is ready to answer.
@@ -305,7 +328,8 @@ export class DownloadManager {
               blockReason: this.blockReasons.get(record.id) ?? null,
               completedBytes: record.completedBytes,
               attempts: record.attempts,
-              maxAttempts: record.maxAttempts
+              maxAttempts: record.maxAttempts,
+              needsLogin: this.needsLoginIds.has(record.id)
             })
           ) {
             continue
@@ -440,13 +464,17 @@ export class DownloadManager {
       }
       if (input.requestHeaders) {
         this.requestHeaders.set(id, input.requestHeaders)
+        if (input.requestHeaders.cookie !== undefined) {
+          this.needsLoginIds.add(id)
+        }
       }
 
       if (durable) {
         try {
           this.database!.saveDurable({
             record,
-            explicitFilename: this.explicitFilenames.get(id) ?? null
+            explicitFilename: this.explicitFilenames.get(id) ?? null,
+            needsLogin: this.needsLoginIds.has(id)
           })
           this.dirtyIds.delete(id)
         } catch {
@@ -491,6 +519,7 @@ export class DownloadManager {
     this.records.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
+    this.needsLoginIds.delete(id)
     this.controls.delete(id)
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
@@ -638,6 +667,16 @@ export class DownloadManager {
         'Only interrupted or failed downloads can be retried.'
       )
     }
+    if (
+      this.needsLoginIds.has(record.id) &&
+      !this.requestHeaders.has(record.id)
+    ) {
+      throw new AppError(
+        'HANDOFF_NEEDS_BROWSER_LOGIN',
+        NEEDS_LOGIN_MESSAGE,
+        'Click the same link in the browser so DonDownload can use your login again.'
+      )
+    }
     const interruptedRecovery = record.status === 'interrupted'
     if (!interruptedRecovery && !canRetry(record.attempts, record.maxAttempts)) {
       throw new AppError(
@@ -692,6 +731,7 @@ export class DownloadManager {
     this.records.delete(record.id)
     this.explicitFilenames.delete(record.id)
     this.requestHeaders.delete(record.id)
+    this.needsLoginIds.delete(record.id)
     this.controls.delete(record.id)
     this.blockReasons.delete(record.id)
     this.startNowIds.delete(record.id)
@@ -1097,6 +1137,7 @@ export class DownloadManager {
           connections: stored.connections
         })
         this.blockReasons.set(stored.record.id, stored.blockReason)
+        if (stored.needsLogin) this.needsLoginIds.add(stored.record.id)
       }
     } catch (error) {
       this.logPersistenceError('could not be loaded', error)
@@ -1170,6 +1211,12 @@ export class DownloadManager {
     client: Aria2Client,
     record: DownloadItem
   ): Promise<void> {
+    if (
+      this.needsLoginIds.has(record.id) &&
+      !this.requestHeaders.has(record.id)
+    ) {
+      throw new AppError('HANDOFF_NEEDS_BROWSER_LOGIN', NEEDS_LOGIN_MESSAGE)
+    }
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
@@ -1408,7 +1455,8 @@ export class DownloadManager {
     try {
       this.database.save({
         record,
-        explicitFilename: this.explicitFilenames.get(record.id) ?? null
+        explicitFilename: this.explicitFilenames.get(record.id) ?? null,
+        needsLogin: this.needsLoginIds.has(record.id)
       })
       this.dirtyIds.delete(record.id)
     } catch (error) {
@@ -1452,7 +1500,8 @@ export class DownloadManager {
       if (record) {
         entries.push({
           record,
-          explicitFilename: this.explicitFilenames.get(id) ?? null
+          explicitFilename: this.explicitFilenames.get(id) ?? null,
+          needsLogin: this.needsLoginIds.has(id)
         })
       } else {
         this.dirtyIds.delete(id)
