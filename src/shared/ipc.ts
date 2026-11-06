@@ -48,5 +48,12 @@ export const IPC = {
   getBrowserExtensionStatus: 'browser-extension:get-status',
   repairBrowserExtension: 'browser-extension:repair',
   openBrowserExtensionFolder: 'browser-extension:open-folder',
-  copyBrowserExtensionFolderPath: 'browser-extension:copy-folder-path'
+  copyBrowserExtensionFolderPath: 'browser-extension:copy-folder-path',
+  // Application self-update (additive). State is renderer-safe and never
+  // contains an installer URL or path. Installing is only an explicit action.
+  getAppUpdateState: 'app-update:get-state',
+  checkAppUpdate: 'app-update:check',
+  installAppUpdate: 'app-update:install',
+  setAppUpdateAutoCheck: 'app-update:set-auto-check',
+  appUpdateStateChanged: 'app-update:state-changed'
 } as const

@@ -31,6 +31,11 @@ import {
   defaultMediaToolSettings,
   type MediaToolSettings
 } from '@shared/mediaTools'
+import {
+  defaultAppUpdateSettings,
+  type AppUpdateSettings,
+  type AppUpdateState
+} from '@shared/appUpdate'
 import type {
   AddDownloadInput,
   ApiResult,
@@ -133,6 +138,7 @@ export function createPreviewApi(
   let batches = seedBatches(anchor)
   let settings = seedSettings()
   let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
+  let appUpdateSettings: AppUpdateSettings = defaultAppUpdateSettings()
 
   const analyses = new Map<string, MediaAnalysis>()
   const previews = new Map<string, CollectionPreview>()
@@ -141,6 +147,7 @@ export function createPreviewApi(
   const downloadListeners = new Set<Listener<AppSnapshot>>()
   const mediaListeners = new Set<Listener<MediaSnapshot>>()
   const batchListeners = new Set<Listener<{ batches: Batch[] }>>()
+  const appUpdateListeners = new Set<Listener<AppUpdateState>>()
 
   const nextId = (prefix: string): string => `${prefix}-${++sequence}`
 
@@ -432,6 +439,27 @@ export function createPreviewApi(
     item.updatedAt = now()
     recomputeBatch(batch, now())
     return ok(emitBatches())
+  }
+
+  function appUpdateState(): AppUpdateState {
+    return {
+      status: 'not-configured',
+      configured: false,
+      currentVersion: '0.1.0',
+      latestVersion: null,
+      progressPercent: null,
+      message: 'Update source not configured',
+      releaseNotes: null,
+      lastCheckedAt: appUpdateSettings.lastCheckedAt,
+      autoCheck: appUpdateSettings.autoCheck,
+      canInstall: false
+    }
+  }
+
+  function emitAppUpdate(): AppUpdateState {
+    const state = appUpdateState()
+    for (const listener of appUpdateListeners) listener(state)
+    return state
   }
 
   return {
@@ -814,7 +842,25 @@ export function createPreviewApi(
     getBrowserExtensionStatus: async () => ok(browserExtensionFixture),
     repairBrowserExtension: async () => ok(browserExtensionFixture),
     openBrowserExtensionFolder: async () => ok(null),
-    copyBrowserExtensionFolderPath: async () => ok(null)
+    copyBrowserExtensionFolderPath: async () => ok(null),
+    getAppUpdateState: async () => ok(appUpdateState()),
+
+    checkAppUpdate: async () => ok(emitAppUpdate()),
+
+    installAppUpdate: async () => ok(emitAppUpdate()),
+
+    setAppUpdateAutoCheck: async (input: { autoCheck: boolean }) => {
+      appUpdateSettings = {
+        ...appUpdateSettings,
+        autoCheck: input.autoCheck
+      }
+      return ok(emitAppUpdate())
+    },
+
+    onAppUpdateStateChanged: (listener) => {
+      appUpdateListeners.add(listener)
+      return () => appUpdateListeners.delete(listener)
+    }
   }
 }
 

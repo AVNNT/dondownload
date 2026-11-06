@@ -31,6 +31,7 @@ import type {
   YtdlpUpdateState
 } from '../shared/mediaTools'
 import type { BrowserExtensionStatus } from '../shared/browserExtension'
+import type { AppUpdateState } from '../shared/appUpdate'
 
 const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
@@ -180,7 +181,35 @@ const api: DonDownloadApi = {
   copyBrowserExtensionFolderPath: () =>
     ipcRenderer.invoke(IPC.copyBrowserExtensionFolderPath) as Promise<
       ApiResult<null>
-    >
+    >,
+  getAppUpdateState: () =>
+    ipcRenderer.invoke(IPC.getAppUpdateState) as Promise<
+      ApiResult<AppUpdateState>
+    >,
+  checkAppUpdate: () =>
+    ipcRenderer.invoke(IPC.checkAppUpdate) as Promise<ApiResult<AppUpdateState>>,
+  installAppUpdate: () =>
+    ipcRenderer.invoke(IPC.installAppUpdate) as Promise<
+      ApiResult<AppUpdateState>
+    >,
+  setAppUpdateAutoCheck: (input: { autoCheck: boolean }) =>
+    ipcRenderer.invoke(IPC.setAppUpdateAutoCheck, input) as Promise<
+      ApiResult<AppUpdateState>
+    >,
+  onAppUpdateStateChanged: (
+    listener: (state: AppUpdateState) => void
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: AppUpdateState
+    ): void => {
+      listener(state)
+    }
+    ipcRenderer.on(IPC.appUpdateStateChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.appUpdateStateChanged, handler)
+    }
+  }
 }
 
 contextBridge.exposeInMainWorld('donDownload', api)

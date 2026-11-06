@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
 import { isAllowedAt } from '@shared/schedule'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
@@ -11,6 +12,10 @@ import { DownloadManager } from './downloads/manager'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMediaEngine } from './media/engine'
 import { createYtdlpUpdater, type YtdlpUpdater } from './media/updater'
+import {
+  createAppUpdateChecker,
+  type AppUpdateChecker
+} from './appUpdate/checker'
 import { MediaJobsManager } from './mediaJobs/manager'
 import { registerIpc } from './ipc'
 import { SettingsManager } from './settings/manager'
@@ -55,6 +60,7 @@ let mediaJobs: MediaJobsManager | null = null
 let batches: BatchManager | null = null
 let settingsManager: SettingsManager | null = null
 let mediaUpdater: YtdlpUpdater | null = null
+let appUpdate: AppUpdateChecker | null = null
 let nativeBridge: NativeBridge | null = null
 let nativeHostRegistrar: NativeHostRegistrar | null = null
 /** A user or OS quit request has been accepted; windows may now close. */
@@ -149,6 +155,23 @@ function isMainWindowVisible(): boolean {
   return Boolean(
     mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
   )
+}
+
+/**
+ * True while a download is queued, waiting for the policy gate or actively
+ * transferring. A paused, completed or failed download does not block an app
+ * update install.
+ */
+function hasActiveDownloadJobs(): boolean {
+  if (!manager) return false
+  return manager
+    .getSnapshot()
+    .downloads.some(
+      (download) =>
+        download.status === 'queued' ||
+        download.status === 'active' ||
+        download.status === 'waiting'
+    )
 }
 
 function refreshTray(): void {
@@ -377,6 +400,31 @@ if (unregisterRequested) {
       nativeHostRegistrar = createNativeHostRegistrar(createRegistrationDependencies())
       void nativeHostRegistrar.repair()
     }
+    // GitHub Releases application updater. `UPDATE_REPO` is null until a
+    // public repository exists, so ordinary builds make no network request.
+    appUpdate = createAppUpdateChecker({
+      userDataPath: app.getPath('userData'),
+      appVersion: app.getVersion(),
+      store: database,
+      // Ordinary smoke verification must never perform background network
+      // work. A manual check remains available in the normal desktop app.
+      autoCheckAllowed: smoke === null,
+      isJobActive: () =>
+        (mediaJobs?.hasActiveJobs() ?? false) || hasActiveDownloadJobs(),
+      spawn: (filePath, args) =>
+        spawn(filePath, args, {
+          detached: true,
+          stdio: 'ignore',
+          shell: false,
+          windowsHide: false
+        }),
+      quit: () => app.quit(),
+      onStateChanged: (state) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.appUpdateStateChanged, state)
+        }
+      }
+    })
 
     registerIpc({
       manager,
@@ -386,6 +434,7 @@ if (unregisterRequested) {
       settings,
       mediaUpdater,
       browserExtension: nativeHostRegistrar ?? undefined,
+      appUpdate,
       getWindow: () => mainWindow
     })
 
@@ -600,9 +649,10 @@ if (unregisterRequested) {
 
     void startServices()
 
-    // At most one background check per 24 hours. It never delays the window
-    // and is disabled entirely in smoke mode by the updater option above.
+    // At most one background check per 24 hours. Neither check delays the
+    // window; both are disabled in smoke mode by their updater options.
     void mediaUpdater.autoCheck()
+    void appUpdate.autoCheck()
 
     app.on('activate', () => {
       // macOS Dock activation and Windows taskbar relaunches restore the same

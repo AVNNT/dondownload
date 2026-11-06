@@ -20,6 +20,7 @@ import type {
   YtdlpUpdateState
 } from './mediaTools'
 import type { BrowserExtensionStatus } from './browserExtension'
+import type { AppUpdateState } from './appUpdate'
 
 export type DownloadStatus =
   | 'queued'
@@ -286,4 +287,15 @@ export interface DonDownloadApi {
   repairBrowserExtension: () => Promise<ApiResult<BrowserExtensionStatus>>
   openBrowserExtensionFolder: () => Promise<ApiResult<null>>
   copyBrowserExtensionFolderPath: () => Promise<ApiResult<null>>
+  // Application self-update. State is renderer-safe and never carries an
+  // installer URL or path. Installing is only ever an explicit user action.
+  getAppUpdateState: () => Promise<ApiResult<AppUpdateState>>
+  checkAppUpdate: () => Promise<ApiResult<AppUpdateState>>
+  installAppUpdate: () => Promise<ApiResult<AppUpdateState>>
+  setAppUpdateAutoCheck: (input: {
+    autoCheck: boolean
+  }) => Promise<ApiResult<AppUpdateState>>
+  onAppUpdateStateChanged: (
+    listener: (state: AppUpdateState) => void
+  ) => () => void
 }
