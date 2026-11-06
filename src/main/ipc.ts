@@ -16,7 +16,8 @@ import type {
   ApiResult,
   AppSnapshot,
   BatchSnapshot,
-  SmartBatchSubmitResult
+  SmartBatchSubmitResult,
+  UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
 import type { DesktopSettings } from '@shared/desktopSettings'
@@ -38,6 +39,7 @@ import {
 } from '@shared/scanner'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
+import { probeUrlSize } from './net/urlSize'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
 import type { MediaJobsManager } from './mediaJobs/manager'
@@ -119,6 +121,11 @@ export function registerIpc(context: IpcContext): void {
   }
 
   invoke<AppSnapshot>(IPC.getSnapshot, () => context.manager.getSnapshot())
+
+  invoke<UrlSizeProbe>(IPC.probeUrlSize, (_event, url) => {
+    if (typeof url !== 'string') return Promise.resolve({ size: null })
+    return probeUrlSize(url)
+  })
 
   invoke<AppSnapshot>(IPC.restartAria2, async () => {
     await context.aria2.restart()

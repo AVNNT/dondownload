@@ -23,7 +23,8 @@ import type {
   BatchSnapshot,
   DonDownloadApi,
   SmartBatchSubmitInput,
-  SmartBatchSubmitResult
+  SmartBatchSubmitResult,
+  UrlSizeProbe
 } from '../shared/types'
 import type { DownloadSettings } from '../shared/settings'
 import type { DesktopSettings } from '../shared/desktopSettings'
@@ -72,6 +73,10 @@ const api: DonDownloadApi = {
     >,
   restartAria2: () =>
     ipcRenderer.invoke(IPC.restartAria2) as Promise<ApiResult<AppSnapshot>>,
+  probeUrlSize: (url: string) =>
+    ipcRenderer.invoke(IPC.probeUrlSize, url) as Promise<
+      ApiResult<UrlSizeProbe>
+    >,
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot): void => {
       listener(snapshot)

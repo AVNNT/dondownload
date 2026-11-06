@@ -79,6 +79,9 @@ export const IPC = {
   scanUpdated: 'scan:updated',
   scanQueueSelection: 'scan:queue-selection',
   scanQueueSelections: 'scan:queue-selections',
+  // Direct-file size probe (additive). Bounded anonymous HEAD request used by
+  // the Add dialog to show a link's size before queueing.
+  probeUrlSize: 'download:probe-url-size',
   scanOpenInBrowser: 'scan:open-in-browser',
   scanPickMatchVideo: 'scan:pick-match-video',
   scanMarkAsVideo: 'scan:mark-as-video'
