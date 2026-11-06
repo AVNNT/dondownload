@@ -25,8 +25,8 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * details|shortcuts, optional ?theme=light|dark|oled, and ?overflow=1 renders
- * a badge with the horizontal-overflow metrics.
+ * details|shortcuts|undo, optional ?theme=light|dark|oled, and ?overflow=1
+ * renders a badge with the horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
   // React StrictMode runs effects twice in dev; the automation must run once.
@@ -141,6 +141,23 @@ function runPreviewAutomation(): void {
         ?.dispatchEvent(
           new MouseEvent('click', { bubbles: true, cancelable: true })
         )
+    }
+    if (state === 'undo') {
+      // Remove the first row so the deferred-removal toast is visible.
+      await wait(300)
+      const row = window.document.querySelector<HTMLElement>('[data-row-key]')
+      if (row === null) return
+      row.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true })
+      )
+      await wait(150)
+      row.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Delete',
+          bubbles: true,
+          cancelable: true
+        })
+      )
     }
   })()
 }

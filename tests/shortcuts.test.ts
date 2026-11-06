@@ -107,6 +107,20 @@ describe('matchShortcut', () => {
     ).toBeNull()
   })
 
+  it('maps undo to Ctrl+Z', () => {
+    expect(matchShortcut(key('z', { ctrlKey: true }), IDLE)).toBe('undo')
+    expect(matchShortcut(key('Z', { ctrlKey: true }), IDLE)).toBe('undo')
+    expect(matchShortcut(key('z', { metaKey: true }), IDLE)).toBe('undo')
+    // Shift+Ctrl+Z is redo, not undo; typing and dialogs keep their own undo.
+    expect(matchShortcut(key('z', { ctrlKey: true, shiftKey: true }), IDLE)).toBeNull()
+    expect(
+      matchShortcut(key('z', { ctrlKey: true }), { ...IDLE, isTyping: true })
+    ).toBeNull()
+    expect(
+      matchShortcut(key('z', { ctrlKey: true }), { ...IDLE, dialogOpen: true })
+    ).toBeNull()
+  })
+
   it('ignores unrelated keys', () => {
     expect(matchShortcut(key('x'), IDLE)).toBeNull()
     expect(matchShortcut(key('a', { ctrlKey: true }), IDLE)).toBeNull()
@@ -195,5 +209,12 @@ describe('SHORTCUT_HELP', () => {
     expect(search).toHaveLength(1)
     expect(search[0]?.keys).toEqual(['Ctrl', 'F'])
     expect(search[0]?.alt).toEqual([['/']])
+  })
+
+  it('documents undo for removing downloads', () => {
+    const entries = SHORTCUT_HELP.flatMap((section) => section.entries)
+    const undo = entries.filter((entry) => entry.label === 'Undo remove')
+    expect(undo).toHaveLength(1)
+    expect(undo[0]?.keys).toEqual(['Ctrl', 'Z'])
   })
 })

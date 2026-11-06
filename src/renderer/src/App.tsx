@@ -36,6 +36,7 @@ import { AddDialog, type AddDialogTab } from './components/AddDialog'
 import { ScanSheet } from './components/ScanSheet'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
+import { UndoToast } from './components/UndoToast'
 import { ContextMenu } from './components/ContextMenu'
 import { DetailsPane } from './components/DetailsPane'
 import { Icon, type IconName } from './components/Icon'
@@ -73,7 +74,6 @@ import {
   executeActionPlan,
   planBulkAction,
   planRowAction,
-  removeConfirmation,
   clearCompletedConfirmation,
   type ActionPlanEntry,
   type RowActionId
@@ -91,6 +91,17 @@ import {
 } from './lib/dnd'
 import { applyRendererTheme } from './theme'
 import {
+  EMPTY_PENDING_REMOVAL,
+  addPendingRemoval,
+  expirePendingRemoval,
+  failPendingRemoval,
+  pendingRemovalLabel,
+  reconcilePendingRemoval,
+  settlePendingRemoval,
+  undoPendingRemoval,
+  type PendingRemovalState
+} from './lib/pendingRemoval'
+import {
   firstHttpUrl,
   isTypingTarget,
   matchShortcut,
@@ -98,6 +109,9 @@ import {
 } from './lib/shortcuts'
 
 type AppPage = 'library' | 'batches' | 'settings'
+
+/** How long a removed row can be brought back with Undo. */
+export const UNDO_REMOVE_MS = 6_000
 
 interface AddRequest {
   tab: AddDialogTab
@@ -174,6 +188,10 @@ export default function App(): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [showReleaseNotes, setShowReleaseNotes] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  /** Rows hidden by a pending (undoable) removal, plus that removal's plan. */
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemovalState>(
+    EMPTY_PENDING_REMOVAL
+  )
   const dragDepth = useRef(0)
   const dragOrigin = useRef<DragOriginState>(IDLE_DRAG_ORIGIN)
   const addSequence = useRef(0)
@@ -356,13 +374,33 @@ export default function App(): JSX.Element {
     () => buildUnifiedRows(downloads, mediaJobs),
     [downloads, mediaJobs]
   )
+  /** Rows the backend still lists, minus the ones hidden by a pending undo. */
+  const listedRows = useMemo(() => {
+    if (pendingRemoval.hidden.size === 0) return allRows
+    return allRows.filter((row) => !pendingRemoval.hidden.has(row.key))
+  }, [allRows, pendingRemoval.hidden])
+  // A committed removal may already be gone from the snapshot; the hidden
+  // keys then need no further bookkeeping. Reconcile against the backend
+  // snapshot, not the filtered list: hidden rows are absent from `listedRows`
+  // by definition, so using it would drop every pending key immediately.
+  const snapshotKeys = useMemo(
+    () => new Set(allRows.map((row) => row.key)),
+    [allRows]
+  )
+  /* eslint-disable react-hooks/set-state-in-effect -- the hidden set is reconciled against the latest snapshot after it changes */
+  useEffect(() => {
+    setPendingRemoval((current) =>
+      reconcilePendingRemoval(current, snapshotKeys)
+    )
+  }, [snapshotKeys])
+  /* eslint-enable react-hooks/set-state-in-effect */
   const statusCounts = useMemo(
-    () => buildStatusCounts(allRows, 'all', query),
-    [allRows, query]
+    () => buildStatusCounts(listedRows, 'all', query),
+    [listedRows, query]
   )
   const filteredRows = useMemo(
-    () => filterRows(allRows, { category: 'all', status: statusFilter, query }),
-    [allRows, statusFilter, query]
+    () => filterRows(listedRows, { category: 'all', status: statusFilter, query }),
+    [listedRows, statusFilter, query]
   )
   const visibleRows = useMemo(
     () => sortRows(filteredRows, sortKey, sortDirection),
@@ -557,6 +595,93 @@ export default function App(): JSX.Element {
     [copyText, refreshAll]
   )
 
+  /**
+   * Commits a deferred removal: runs the stored plan, then drops the keys from
+   * the hidden set. On failure the rows come back and the error banner shows.
+   */
+  const commitRemoval = useCallback(
+    async (keys: readonly string[], plan: readonly ActionPlanEntry[]): Promise<void> => {
+      setPendingRemoval((current) => expirePendingRemoval(current))
+      try {
+        await runPlan(plan)
+      } catch {
+        setPendingRemoval((current) => failPendingRemoval(current, keys))
+        return
+      }
+      setPendingRemoval((current) => settlePendingRemoval(current, keys))
+    },
+    [runPlan]
+  )
+
+  const requestRemove = useCallback(
+    (rows: readonly UnifiedRow[]): void => {
+      if (rows.length === 0) return
+      const plan = planRowAction('remove', rows)
+      if (plan.length === 0) return
+      const keys = rows.map((row) => row.key)
+      const keySet = new Set(keys)
+      // Another removal replaces the undo window: commit the previous one first.
+      const previous = pendingRemoval.pending
+      if (previous !== null) {
+        void commitRemoval(
+          previous.keys,
+          planRowAction('remove', previous.rows as UnifiedRow[])
+        )
+      }
+      setPendingRemoval((current) =>
+        addPendingRemoval(
+          current,
+          keys,
+          rows.map((row) => row.title),
+          rows
+        )
+      )
+      setMenu(null)
+      setSelection((current) => pruneSelection(
+        visibleRows.filter((row) => !keySet.has(row.key)),
+        current
+      ))
+      if (focusedKey !== null && keySet.has(focusedKey)) {
+        setFocusedKey(null)
+      }
+      if (detailsClosedFor !== null && keySet.has(detailsClosedFor)) {
+        setDetailsClosedFor(null)
+      }
+    },
+    [commitRemoval, detailsClosedFor, focusedKey, pendingRemoval.pending, visibleRows]
+  )
+
+  /** Undo: show the rows again. The backend was never told about them. */
+  const undoRemoval = useCallback((): void => {
+    setPendingRemoval((current) => undoPendingRemoval(current))
+  }, [])
+
+  /** Expire/Esc: commit the pending removal now. */
+  const expireRemoval = useCallback((): void => {
+    const pending = pendingRemoval.pending
+    if (pending === null) return
+    void commitRemoval(
+      pending.keys,
+      planRowAction('remove', pending.rows as UnifiedRow[])
+    )
+  }, [commitRemoval, pendingRemoval.pending])
+
+  // The window is going away: a hidden row that was never committed would be
+  // lost from the list without the backend knowing, so commit on unload.
+  const pendingRemovalRef = useRef(pendingRemoval)
+  useEffect(() => {
+    pendingRemovalRef.current = pendingRemoval
+  })
+  useEffect(() => {
+    const onBeforeUnload = (): void => {
+      const pending = pendingRemovalRef.current.pending
+      if (pending === null) return
+      void runPlan(planRowAction('remove', pending.rows as UnifiedRow[]))
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [runPlan])
+
   const openAddDialog = useCallback((tab: AddDialogTab, url = ''): void => {
     setAddRequest({ tab, url, nonce: ++addSequence.current })
   }, [])
@@ -615,12 +740,16 @@ export default function App(): JSX.Element {
           setMenu(null)
           setShortcutsOpen(true)
           return
+        case 'undo':
+          // Only acts while a removal can still be undone.
+          undoRemoval()
+          return
         case 'escape':
           setPage('library')
           return
       }
     },
-    [openAddDialog, openAddFromClipboardText]
+    [openAddDialog, openAddFromClipboardText, undoRemoval]
   )
 
   // The window-level shortcut listener. It reads the latest UI state through
@@ -650,6 +779,11 @@ export default function App(): JSX.Element {
         isTyping: isTypingTarget(event.target as Element | null)
       })
       if (shortcut === null) return
+      // Ctrl+Z only belongs to the undo toast while one is open; otherwise
+      // leave it to the focused field or the platform.
+      if (shortcut === 'undo' && pendingRemovalRef.current.pending === null) {
+        return
+      }
       event.preventDefault()
       handleShortcutRef.current(shortcut)
     }
@@ -705,25 +839,6 @@ export default function App(): JSX.Element {
       return undefined
     },
     [allRows]
-  )
-
-  const requestRemove = useCallback(
-    (rows: readonly UnifiedRow[]): void => {
-      if (rows.length === 0) return
-      const plan = planRowAction('remove', rows)
-      if (rows.length > 1) {
-        const copy = removeConfirmation(rows.length)
-        setConfirm({
-          ...copy,
-          onConfirm: () => {
-            void runPlan(plan)
-          }
-        })
-      } else {
-        void runPlan(plan)
-      }
-    },
-    [runPlan]
   )
 
   const requestDeleteFile = useCallback(
@@ -1047,9 +1162,9 @@ export default function App(): JSX.Element {
 
   const filtersActive =
     query.trim().length > 0 || statusFilter !== 'all'
-  const activeDownloadCount = runningCount(allRows)
-  const aggregateSpeed = totalSpeed(allRows)
-  const totalOnDisk = allRows.reduce((sum, row) => sum + row.completedBytes, 0)
+  const activeDownloadCount = runningCount(listedRows)
+  const aggregateSpeed = totalSpeed(listedRows)
+  const totalOnDisk = listedRows.reduce((sum, row) => sum + row.completedBytes, 0)
   const saveDir = snapshot?.downloads[0]?.dir ?? null
   const menuActions = menu ? buildContextActions(menu.rows) : []
   const selectMode = selection.selected.length > 1
@@ -1349,8 +1464,8 @@ export default function App(): JSX.Element {
 
             <footer className="flex shrink-0 items-center gap-4 border-t border-white/[0.07] px-4 py-1.5 text-[12px] text-zinc-500">
               <span className="truncate">
-                {allRows.length}{' '}
-                {allRows.length === 1 ? 'download' : 'downloads'} ·{' '}
+                {listedRows.length}{' '}
+                {listedRows.length === 1 ? 'download' : 'downloads'} ·{' '}
                 {formatBytes(totalOnDisk)} on disk
               </span>
               {saveDir ? (
@@ -1511,6 +1626,17 @@ export default function App(): JSX.Element {
         >
           {toast}
         </div>
+      ) : null}
+
+      {pendingRemoval.pending !== null ? (
+        <UndoToast
+          key={pendingRemoval.pending.keys.join('|')}
+          label={pendingRemovalLabel(pendingRemoval.pending.titles)}
+          durationMs={UNDO_REMOVE_MS}
+          onUndo={undoRemoval}
+          onDismiss={expireRemoval}
+          onExpire={expireRemoval}
+        />
       ) : null}
 
       {adding ? (

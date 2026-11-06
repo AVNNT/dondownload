@@ -13,6 +13,7 @@ export type ShortcutId =
   | 'batches'
   | 'focus-search'
   | 'shortcuts-help'
+  | 'undo'
   | 'escape'
 
 export interface ShortcutEvent {
@@ -58,6 +59,7 @@ export function isTypingTarget(
  * - Open dialogs/menus swallow every global shortcut.
  * - Ctrl+N / Ctrl+, / Ctrl+B / Ctrl+F use Ctrl or Cmd.
  * - Ctrl+V only counts as paste-add when no dialog is open.
+ * - Ctrl+Z maps to undo; the caller only acts while an undo toast is open.
  * - `?` (Shift+/) opens the shortcut help; plain `/` focuses search.
  * - Escape leaves Settings/Batches back to the library.
  */
@@ -98,6 +100,8 @@ export function matchShortcut(
         return 'batches'
       case 'f':
         return 'focus-search'
+      case 'z':
+        return 'undo'
       case 'v':
         // Ctrl+V is a paste event, not a keydown; handled above.
         return null
@@ -162,6 +166,7 @@ export const SHORTCUT_HELP: readonly ShortcutHelpSection[] = [
       { keys: ['Enter'], label: 'Open the selected download' },
       { keys: ['Space'], label: 'Pause or resume the focused download' },
       { keys: ['Delete'], label: 'Remove the selected downloads' },
+      { keys: ['Ctrl', 'Z'], label: 'Undo remove' },
       { keys: ['Shift', 'F10'], label: 'Open the context menu' },
       { keys: ['Esc'], label: 'Clear the selection or go back' }
     ]
