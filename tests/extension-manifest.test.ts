@@ -113,6 +113,7 @@ describe('browser extension manifest', () => {
       'manifest.json',
       'background.js',
       'bridge.js',
+      'browser-downloads.js',
       'capture-settings.js',
       'handoff-policy.js',
       'handoff.js',

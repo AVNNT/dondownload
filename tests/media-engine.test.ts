@@ -987,7 +987,8 @@ describe('media engine format mapping', () => {
       analyzeJson: sampleInfo({ is_live: true })
     })
     await expect(live.engine.analyze(SOURCE_URL)).rejects.toMatchObject({
-      code: 'MEDIA_UNSUPPORTED_LIVE'
+      code: 'MEDIA_UNSUPPORTED_LIVE',
+      message: 'This is a live stream. Download it after it ends (as a VOD).'
     })
 
     const malformed = await makeHarness({ analyzeStdout: 'not json' })

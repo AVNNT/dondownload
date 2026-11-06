@@ -11,7 +11,7 @@ import {
   clearNeedsLoginState,
   finishHandoffDownload,
   readCaptureSettings,
-  readCookieHeaderForOrigins,
+  readHandoffCookieHeader,
   recordNeedsLoginState
 } from './capture-settings.js'
 import {
@@ -126,6 +126,10 @@ function cancelDownload(chromeApi, downloadId) {
 /**
  * Handle one chrome.downloads.onCreated item. Returns a short outcome string for
  * focused tests; callers never need to log it with a URL.
+ *
+ * This is the download-manager path: the browser already decided the transfer
+ * is a download, so no extension allowlist applies. The user's "only files
+ * larger than" threshold is enforced from the browser's exact total.
  */
 export async function handleCreatedDownload(chromeApi, item) {
   let settings
@@ -139,7 +143,7 @@ export async function handleCreatedDownload(chromeApi, item) {
   const downloads = chromeApi && chromeApi.downloads
   if (!downloads) return 'downloads-unavailable'
 
-  let granted = false
+  let granted
   try {
     const permissions = chromeApi && chromeApi.permissions
     granted =
@@ -151,7 +155,12 @@ export async function handleCreatedDownload(chromeApi, item) {
   }
   if (!granted) return 'permission-required'
 
-  const candidate = automaticHandoffCandidate(item, settings.excludedOrigins)
+  const candidateOptions = { minBytes: settings.handoffMinBytes }
+  const candidate = automaticHandoffCandidate(
+    item,
+    settings.excludedOrigins,
+    candidateOptions
+  )
   if (!candidate.ok) return `ignored:${candidate.reason}`
 
   const downloadOrigin = candidate.origin
@@ -160,23 +169,11 @@ export async function handleCreatedDownload(chromeApi, item) {
     typeof item.finalUrl === 'string' && item.finalUrl.length > 0
       ? item.finalUrl
       : candidate.url
-  // Cookies are used only for the exact download URL and only when either the
-  // download URL origin or the referring page origin is on the user's opt-in
-  // list. `getAll({ url })` returns cookies for that host; nothing is stored.
-  const optInOrigins = []
-  if (downloadOrigin !== null) optInOrigins.push(downloadOrigin)
-  if (pageOrigin !== null) optInOrigins.push(pageOrigin)
-  const authenticated = optInOrigins.some((origin) =>
-    settings.cookieOptInOrigins.includes(origin)
-  )
-  let cookie
-  if (authenticated) {
-    cookie = await readCookieHeaderForOrigins(
-      chromeApi,
-      cookieUrl,
-      optInOrigins
-    )
-  }
+  // The user switched this on and granted the optional cookies permission with
+  // it, so the browser's cookies for exactly this download URL are read without
+  // a per-site opt-in. `getAll({ url })` returns cookies for that URL only;
+  // nothing is stored and nothing is logged.
+  const cookie = await readHandoffCookieHeader(chromeApi, cookieUrl)
 
   const claim = await claimHandoffDownload(chromeApi, item.id)
   if (!claim.ok) {
@@ -189,11 +186,11 @@ export async function handleCreatedDownload(chromeApi, item) {
     handoff = await sendDurableHandoff(candidate.url, candidate.filename, {
       expectedBytes: candidate.expectedBytes,
       expectedContentType: candidate.expectedContentType,
-      ...(authenticated && originFromPageUrl(item.referrer) !== null
+      minBytes: settings.handoffMinBytes,
+      ...(originFromPageUrl(item.referrer) !== null
         ? { referer: item.referrer }
         : {}),
-      ...(authenticated &&
-      typeof navigator !== 'undefined' &&
+      ...(typeof navigator !== 'undefined' &&
       typeof navigator.userAgent === 'string'
         ? { userAgent: navigator.userAgent }
         : {}),
@@ -212,13 +209,13 @@ export async function handleCreatedDownload(chromeApi, item) {
   if (!handoff || handoff.ok !== true || handoff.durable !== true) {
     await finishHandoffDownload(chromeApi, item.id)
     if (
-      !authenticated &&
+      cookie === undefined &&
       handoff &&
       handoff.error &&
       handoff.error.code === 'HANDOFF_NEEDS_LOGIN'
     ) {
-      // The anonymous preflight reached a login wall. Remember it for the
-      // popup so the user can opt this exact origin in with one click.
+      // The preflight reached a login wall without a cookie. Remember it for
+      // the popup so the user can opt this exact origin in with one click.
       const origin = pageOrigin ?? downloadOrigin
       const host = hostOf(cookieUrl)
       if (origin !== null && host.length > 0) {
@@ -247,7 +244,11 @@ export async function handleCreatedDownload(chromeApi, item) {
     return 'left-running-completed'
   }
   const currentSettings = await readCaptureSettings(chromeApi)
-  const currentCandidate = automaticHandoffCandidate(reread.item, currentSettings.excludedOrigins)
+  const currentCandidate = automaticHandoffCandidate(
+    reread.item,
+    currentSettings.excludedOrigins,
+    { minBytes: currentSettings.handoffMinBytes }
+  )
   if (!currentSettings.automaticFileHandoff || !currentCandidate.ok || currentCandidate.url !== candidate.url) {
     await finishHandoffDownload(chromeApi, item.id)
     return 'left-running-changed'
@@ -266,6 +267,12 @@ export async function handleCreatedDownload(chromeApi, item) {
 /** Register the downloads listener only when the optional grant is present. */
 let downloadsListenerInstalled = false
 
+/**
+ * Register the chrome.downloads listeners. Safe to call again after the
+ * optional downloads permission is granted at runtime: the permission may
+ * expose `chrome.downloads` only after the grant, and only one listener is ever
+ * added per worker generation.
+ */
 export function installDownloadsListener(chromeApi, onCreated) {
   const downloads = chromeApi && chromeApi.downloads
   if (!downloads || !downloads.onCreated) return false
@@ -297,4 +304,9 @@ export function installDownloadsListener(chromeApi, onCreated) {
   } catch {
     return false
   }
+}
+
+/** Test hook: forget that listeners were installed for a previous fake API. */
+export function resetDownloadsListenerForTests() {
+  downloadsListenerInstalled = false
 }

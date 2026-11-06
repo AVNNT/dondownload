@@ -82,7 +82,7 @@ enableAllButton.addEventListener('click', () => {
     enableAllButton.textContent = 'Recommended setup enabled'
     setChoicesStatus(
       'success',
-      'Capture is on: media is detected on all normal http/https sites and browser downloads are handed to DonDownload. You can change both in Settings.'
+      'Capture is on: media is detected on all normal http/https sites and new browser downloads, including video and audio files, are taken over by DonDownload with your browser sign-in. You can change both in Settings.'
     )
   })
 })
@@ -115,7 +115,7 @@ function renderGrantSection() {
   if (grant.origin === null) {
     grantButton.hidden = true
     grantDetail.textContent =
-      'This link did not name a valid http(s) origin. Open the toolbar popup and choose Enable on this site instead.'
+      'This link did not name a valid http(s) origin. Open the toolbar popup and turn on "Use DonDownload on all sites" instead.'
     setGrantStatus('error', 'Nothing was enabled.')
     return
   }

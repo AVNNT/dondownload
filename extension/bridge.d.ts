@@ -124,6 +124,8 @@ export function sendDurableHandoff(
     referer?: string
     userAgent?: string
     cookie?: string
+    /** Minimum known size for an automatic browser download. */
+    minBytes?: number
   }
 ): Promise<DurableHandoffResult>
 export function sendQueueDownload(

@@ -145,6 +145,56 @@ export function overlayRegistrationForOrigin(origin) {
   }
 }
 
+/** Fixed id of the one NDM-style "all sites" overlay registration. */
+export const OVERLAY_ALL_SITES_ID = 'dondownload-overlay-all-sites'
+
+/** The broad host patterns the all-sites overlay and detection need. */
+export const OVERLAY_ALL_SITES_MATCHES = Object.freeze([
+  'http://*/*',
+  'https://*/*'
+])
+
+/**
+ * The single persistent registration used when the user turns on "Use
+ * DonDownload on all sites". It has the same script list and timing as the
+ * per-origin registration, so the content script behaves identically. The
+ * content script itself checks excluded origins at runtime (the exclusion list
+ * is a user setting, not a match pattern).
+ */
+export function overlayAllSitesRegistration() {
+  return {
+    id: OVERLAY_ALL_SITES_ID,
+    matches: [...OVERLAY_ALL_SITES_MATCHES],
+    js: [...OVERLAY_SCRIPT_FILES],
+    runAt: 'document_idle',
+    allFrames: false,
+    persistAcrossSessions: true,
+    world: 'ISOLATED'
+  }
+}
+
+/**
+ * True only when all-sites mode should be active: the user turned on the
+ * floating trigger and all-sites detection, and the broad host grant is present.
+ */
+export function allSitesOverlayWanted(settings, broadHostsGranted) {
+  return Boolean(
+    settings &&
+      settings.floatingTriggerEnabled !== false &&
+      settings.detectAllSites === true &&
+      broadHostsGranted === true
+  )
+}
+
+/** True for a stored registration that is exactly the all-sites one. */
+export function isAllSitesRegistration(registration) {
+  return Boolean(
+    registration &&
+      typeof registration === 'object' &&
+      registration.id === OVERLAY_ALL_SITES_ID
+  )
+}
+
 /** True only when the exact origin pattern is currently granted. */
 export function hasExactOriginGrant(grantedOrigins, origin) {
   if (!Array.isArray(grantedOrigins)) return false

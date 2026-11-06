@@ -350,3 +350,175 @@ describe('strict durable hand-off', () => {
     expect(options.header).toBeUndefined()
   })
 })
+
+describe('automatic browser download takeover', () => {
+  it('accepts a direct media file and keeps the browser cookies in memory only', async () => {
+    const { dir, database, downloadDir } = await makeWorkspace()
+    const { manager, calls } = createManager(database, downloadDir, {
+      resolveCookieTarget: async (input) => ({ finalUrl: input.url })
+    })
+    const cookie = 'session=super-secret-video-cookie'
+    const preflights: unknown[] = []
+
+    const bridge = await startNativeBridge({
+      manager,
+      userDataPath: dir,
+      logger: () => undefined,
+      publicTargetLookup: async () => [
+        { address: '93.184.216.34', family: 4 }
+      ],
+      publicResourcePreflight: async (input) => {
+        preflights.push(input)
+        return {
+          finalUrl: input.url,
+          status: 206,
+          contentType: 'video/mp4',
+          contentDisposition: null,
+          totalBytes: 25_000_000
+        }
+      }
+    })
+    bridges.push(bridge)
+    const endpoint = parseNativeBridgeEndpoint(
+      JSON.parse(await readFile(bridge.statePath, 'utf8'))
+    )
+
+    async function postHandoff(body: unknown): Promise<Response> {
+      return fetch(`http://127.0.0.1:${endpoint.port}/handoff-download`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${endpoint.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      })
+    }
+
+    const accepted = await postHandoff({
+      url: 'https://example.com/media/clip.mp4',
+      filename: 'clip.mp4',
+      expectedBytes: 25_000_000,
+      expectedContentType: 'video/mp4',
+      referer: 'https://example.com/watch',
+      userAgent: 'BrowserAgent/1.0',
+      cookie
+    })
+    expect(accepted.status).toBe(200)
+    const body = (await accepted.json()) as Record<string, unknown>
+    expect(body).toMatchObject({
+      ok: true,
+      accepted: true,
+      durable: true,
+      operation: 'handoff-download'
+    })
+
+    // The preflight saw the browser headers and was allowed to accept media.
+    expect(preflights).toHaveLength(1)
+    expect(preflights[0]).toMatchObject({
+      url: 'https://example.com/media/clip.mp4',
+      allowMedia: true,
+      expectedContentType: 'video/mp4',
+      expectedBytes: 25_000_000,
+      requestHeaders: {
+        referer: 'https://example.com/watch',
+        userAgent: 'BrowserAgent/1.0',
+        cookie
+      }
+    })
+
+    const addCall = calls.find((entry) => entry.method === 'aria2.addUri')
+    const urls = addCall?.params[0] as string[]
+    const options = addCall?.params[1] as Record<string, unknown>
+    expect(urls).toEqual(['https://example.com/media/clip.mp4'])
+    expect(options.header).toEqual([`Cookie: ${cookie}`])
+    expect(options.referer).toBe('https://example.com/watch')
+
+    // The cookie lives only in the manager's in-memory request-header map and
+    // never reaches SQLite, a session file or the download row.
+    const receipt = body.receipt as { downloadId: string }
+    const stored = manager
+      .getSnapshot()
+      .downloads.find((entry) => entry.id === receipt.downloadId)
+    expect(stored).toMatchObject({ url: 'https://example.com/media/clip.mp4' })
+    expect(JSON.stringify(stored)).not.toContain('super-secret-video-cookie')
+
+    const persisted: Buffer[] = []
+    for (const name of ['downloads.sqlite3', 'downloads.sqlite3-wal']) {
+      try {
+        persisted.push(await readFile(path.join(dir, name)))
+      } catch {
+        // WAL may not exist after a checkpoint.
+      }
+    }
+    const persistedText = Buffer.concat(persisted).toString('latin1')
+    expect(persistedText).toContain('clip.mp4')
+    expect(persistedText).not.toContain('super-secret-video-cookie')
+    expect(persistedText).not.toContain('Cookie:')
+    expect(JSON.stringify(database.loadAll())).not.toContain(
+      'super-secret-video-cookie'
+    )
+
+    // A restart cannot recover the cookie: the job fails honestly instead of
+    // retrying without the login.
+    manager.close()
+    const reopened = openDownloadDatabase(path.join(dir, 'downloads.sqlite3'))
+    const restarted = createManager(reopened, downloadDir)
+    await restarted.manager.reconcileDownloads()
+    const afterRestart = restarted.manager
+      .getSnapshot()
+      .downloads.find((entry) => entry.id === receipt.downloadId)
+    expect(afterRestart).toMatchObject({ status: 'error' })
+    expect(JSON.stringify(afterRestart)).not.toContain(
+      'super-secret-video-cookie'
+    )
+  })
+
+  it('still rejects HTML pages, HLS/DASH manifests and segments', async () => {
+    const { dir, database, downloadDir } = await makeWorkspace()
+    const { manager, calls } = createManager(database, downloadDir)
+    const bridge = await startNativeBridge({
+      manager,
+      userDataPath: dir,
+      logger: () => undefined,
+      publicTargetLookup: async () => [
+        { address: '93.184.216.34', family: 4 }
+      ],
+      publicResourcePreflight: async (input) => ({
+        finalUrl: input.url,
+        status: 206,
+        contentType: 'video/mp4',
+        contentDisposition: null,
+        totalBytes: 4
+      })
+    })
+    bridges.push(bridge)
+    const endpoint = parseNativeBridgeEndpoint(
+      JSON.parse(await readFile(bridge.statePath, 'utf8'))
+    )
+
+    for (const body of [
+      { url: 'https://example.com/page/index.html', expectedContentType: 'text/html' },
+      { url: 'https://example.com/media/master.m3u8' },
+      { url: 'https://example.com/media/manifest.mpd' },
+      { url: 'https://example.com/media/segment.m4s' },
+      { url: 'https://example.com/download', filename: 'saved.html' },
+      { url: 'https://example.com/download', expectedContentType: 'application/x-mpegurl' }
+    ]) {
+      const response = await fetch(
+        `http://127.0.0.1:${endpoint.port}/handoff-download`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${endpoint.token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        }
+      )
+      expect(response.status, JSON.stringify(body)).toBe(400)
+      const result = (await response.json()) as Record<string, unknown>
+      expect(result).toMatchObject({ ok: false })
+    }
+    expect(calls).toEqual([])
+  })
+})

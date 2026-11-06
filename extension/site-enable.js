@@ -130,8 +130,10 @@ export function requestExactOriginAccess(chromeApi, site, onResult) {
 
 /**
  * Optional permissions the recommended welcome action asks for. `downloads`
- * is included only when the loaded manifest actually declares it as optional,
- * so the request stays valid if the manifest is tightened later.
+ * and `cookies` are included only when the loaded manifest actually declares
+ * them as optional, so the request stays valid if the manifest is tightened
+ * later. `cookies` is what lets an automatic browser download carry the
+ * browser's own sign-in for exactly that URL.
  */
 export function recommendedCapturePermissions(chromeApi) {
   const permissions = ['webRequest']
@@ -146,6 +148,9 @@ export function recommendedCapturePermissions(chromeApi) {
   }
   if (optional === null || optional.has('downloads')) {
     permissions.unshift('downloads')
+  }
+  if (optional === null || optional.has('cookies')) {
+    permissions.push('cookies')
   }
   return {
     permissions,

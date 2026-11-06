@@ -1921,6 +1921,29 @@ describe('overlay media flow', () => {
     expect(harness.mediaResults.hidden).toBe(true)
   })
 
+  it('tells the user a live stream can only be downloaded as a VOD later', () => {
+    harness = createHarness({
+      analyzeResponse: {
+        ok: false,
+        error: {
+          code: 'MEDIA_UNSUPPORTED_LIVE',
+          message: 'This is a live stream. Download it after it ends (as a VOD).'
+        }
+      }
+    })
+    openPanel(harness)
+    harness.analyzeButton.dispatch(
+      'click',
+      pointerEvent(harness.analyzeButton, [harness.analyzeButton, harness.panel])
+    )
+
+    expect(harness.status.textContent).toContain(
+      'This is a live stream. Download it after it ends (as a VOD).'
+    )
+    expect(harness.status.className).toBe('status error')
+    expect(JSON.stringify(collectText(harness.panel))).not.toMatch(/recording/i)
+  })
+
   it('queues the best video + audio option in one click', () => {
     harness = createHarness({
       analyzeResponse: { ok: true, analysis: fakeAnalysis() },

@@ -6,6 +6,10 @@ import {
   writeCaptureSettings
 } from './capture-settings.js'
 import {
+  browserDownloadPermissionsGranted,
+  enableBrowserDownloadTakeover
+} from './browser-downloads.js'
+import {
   overlayRemovalConfirmed
 } from './overlay-controller.js'
 import {
@@ -17,6 +21,7 @@ import { originFromUrl, originToMatchPattern } from './site-policy.js'
 const floatingTrigger = document.getElementById('floating-trigger')
 const handoffNotifications = document.getElementById('handoff-notifications')
 const automaticHandoff = document.getElementById('automatic-handoff')
+const handoffMinBytes = document.getElementById('handoff-min-bytes')
 const requestDownloads = document.getElementById('request-downloads')
 const removeDownloads = document.getElementById('remove-downloads')
 const permissionState = document.getElementById('permission-state')
@@ -79,17 +84,23 @@ function saveSettings(message) {
 
 function renderPermissionState() {
   automaticHandoff.disabled = !downloadsGranted
+  handoffMinBytes.disabled = !downloadsGranted
+  const minBytes = String(settings.handoffMinBytes)
+  handoffMinBytes.value = ['0', '1000000', '10000000'].includes(minBytes)
+    ? minBytes
+    : '1000000'
   if (!downloadsGranted) {
     automaticHandoff.checked = false
     permissionState.textContent =
-      'Downloads permission is not granted. Automatic hand-off is off.'
+      'Download permissions are not granted. Browser downloads stay in the browser.'
     requestDownloads.hidden = false
     removeDownloads.hidden = true
     return
   }
   automaticHandoff.checked = settings.automaticFileHandoff === true
-  permissionState.textContent =
-    'Downloads permission is granted. Automatic hand-off can be turned on.'
+  permissionState.textContent = cookiesGranted
+    ? 'Download permissions are granted. Browser downloads can be taken over with your browser sign-in.'
+    : 'Download permissions are granted, but the cookies permission is not, so login-protected files are left in the browser.'
   requestDownloads.hidden = true
   removeDownloads.hidden = false
 }
@@ -288,6 +299,15 @@ async function loadSettings() {
     settings.automaticFileHandoff = false
     if (changed) void writeCaptureSettings(chrome, settings)
   }
+  // The switch is only honest when the whole optional permission set (downloads,
+  // cookies and site access) is present, exactly like the popup.
+  if (settings.automaticFileHandoff === true) {
+    const complete = await browserDownloadPermissionsGranted(chrome)
+    if (!complete) {
+      settings.automaticFileHandoff = false
+      void writeCaptureSettings(chrome, settings)
+    }
+  }
   if (!networkGranted) {
     const changed = settings.networkObservation === true
     settings.networkObservation = false
@@ -480,8 +500,21 @@ automaticHandoff.addEventListener('change', () => {
   settings.automaticFileHandoff = automaticHandoff.checked
   saveSettings(
     automaticHandoff.checked
-      ? 'Automatic hand-off is on for supported non-media files.'
-      : 'Automatic hand-off is off.'
+      ? 'Browser download takeover is on.'
+      : 'Browser download takeover is off. Downloads stay in the browser.'
+  )
+})
+
+handoffMinBytes.addEventListener('change', () => {
+  settings.handoffMinBytes = Number(handoffMinBytes.value)
+  settings.handoffMinBytes = normalizeCaptureSettings(settings).handoffMinBytes
+  renderPermissionState()
+  saveSettings(
+    settings.handoffMinBytes === 0
+      ? 'Every browser download size is handed off.'
+      : `Only browser downloads larger than ${
+          settings.handoffMinBytes >= 10_000_000 ? '10 MB' : '1 MB'
+        } are handed off.`
   )
 })
 
@@ -653,27 +686,29 @@ siteCookies.addEventListener('change', () => {
 
 requestDownloads.addEventListener('click', () => {
   // This must remain a direct user-gesture request with no preceding await.
-  try {
-    chrome.permissions.request({ permissions: ['downloads'] }, (granted) => {
-      const runtimeError = chrome.runtime.lastError
-      if (runtimeError) {
-        setStatus(handoffStatus, 'error', 'The downloads permission could not be requested.')
-        return
-      }
-      downloadsGranted = granted === true
-      if (!downloadsGranted) {
-        settings.automaticFileHandoff = false
-        renderPermissionState()
-        setStatus(handoffStatus, 'error', 'Permission was not granted. Automatic hand-off stays off.')
-        return
-      }
-      settings.automaticFileHandoff = true
+  // One call asks for downloads, cookies and the broad host permission.
+  requestDownloads.disabled = true
+  setStatus(handoffStatus, '', '')
+  enableBrowserDownloadTakeover(chrome, (result) => {
+    requestDownloads.disabled = false
+    if (!result.ok) {
+      downloadsGranted = false
+      settings.automaticFileHandoff = false
       renderPermissionState()
-      saveSettings('Downloads permission granted. Automatic hand-off is on.')
-    })
-  } catch {
-    setStatus(handoffStatus, 'error', 'The downloads permission could not be requested.')
-  }
+      setStatus(handoffStatus, 'error', result.error || 'Downloads stay in the browser.')
+      return
+    }
+    downloadsGranted = true
+    cookiesGranted = true
+    settings.automaticFileHandoff = true
+    renderPermissionState()
+    renderSniffingState()
+    setStatus(
+      handoffStatus,
+      'success',
+      'Browser download takeover is on. New downloads go to DonDownload.'
+    )
+  })
 })
 
 removeDownloads.addEventListener('click', () => {
@@ -687,7 +722,7 @@ removeDownloads.addEventListener('click', () => {
       downloadsGranted = false
       settings.automaticFileHandoff = false
       renderPermissionState()
-      saveSettings('Downloads permission removed. Automatic hand-off is off.')
+      saveSettings('Downloads permission removed. Browser downloads stay in the browser.')
     })
   } catch {
     setStatus(handoffStatus, 'error', 'The downloads permission could not be removed.')

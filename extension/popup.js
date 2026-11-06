@@ -11,6 +11,12 @@ import {
 } from './scan-draft.js'
 import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
+  browserDownloadPermissionsGranted,
+  browserDownloadStateCopy,
+  disableBrowserDownloadTakeover,
+  enableBrowserDownloadTakeover
+} from './browser-downloads.js'
+import {
   popupConnectionLine,
   siteEnableLabel,
   welcomeUrl
@@ -60,6 +66,10 @@ const handoffLoginText = document.getElementById('handoff-login-text')
 const handoffLoginButton = document.getElementById('handoff-login-button')
 const connectionDot = document.getElementById('connection-dot')
 const connectionLabel = document.getElementById('connection-label')
+const takeoverToggle = document.getElementById('takeover-toggle')
+const takeoverState = document.getElementById('takeover-state')
+const takeoverHint = document.getElementById('takeover-hint')
+const takeoverStatus = document.getElementById('takeover-status')
 
 let pageUrl = null
 let pageOrigin = null
@@ -172,6 +182,22 @@ async function refreshSiteAccess() {
     if (siteSection !== null) siteSection.hidden = true
     return
   }
+  // All-sites mode already covers every site, so the per-site enable button
+  // would be redundant (and its registration would inject the overlay twice).
+  let settings
+  try {
+    settings = await readCaptureSettings(chrome)
+  } catch {
+    settings = null
+  }
+  if (settings !== null && settings.detectAllSites === true) {
+    siteSection.hidden = false
+    siteAccessState.textContent = 'All sites'
+    siteHint.textContent =
+      'The overlay is on for every site. Turn off "Use DonDownload on all sites" to pick sites one by one.'
+    enableSiteButton.hidden = true
+    return
+  }
   siteSection.hidden = false
   const granted = await siteAccessGranted(chrome, pageOrigin)
   enableSiteButton.textContent = siteEnableLabel(pageOrigin)
@@ -223,6 +249,74 @@ function clearNeedsLogin() {
     // Best effort.
   }
 }
+
+function setTakeoverStatus(kind, message) {
+  takeoverStatus.className = kind ? `status ${kind}` : 'status'
+  takeoverStatus.textContent = message
+}
+
+function renderTakeover(enabled, minBytes) {
+  const copy = browserDownloadStateCopy({ enabled, minBytes })
+  takeoverToggle.checked = copy.enabled
+  takeoverState.textContent = copy.state
+  takeoverHint.textContent = copy.hint
+}
+
+/**
+ * Show the current switch state on open. The switch counts as on only when the
+ * setting is saved AND every optional permission it needs is still granted.
+ */
+async function refreshTakeover() {
+  let settings
+  try {
+    settings = await readCaptureSettings(chrome)
+  } catch {
+    settings = { automaticFileHandoff: false, handoffMinBytes: 1_000_000 }
+  }
+  const granted = await browserDownloadPermissionsGranted(chrome)
+  renderTakeover(settings.automaticFileHandoff === true && granted, settings.handoffMinBytes)
+}
+
+takeoverToggle.addEventListener('change', () => {
+  if (takeoverToggle.checked) {
+    // Direct user gesture: permissions.request runs synchronously inside this
+    // click, so all three optional grants are asked for in one prompt.
+    takeoverToggle.disabled = true
+    setTakeoverStatus('', '')
+    enableBrowserDownloadTakeover(chrome, (result) => {
+      takeoverToggle.disabled = false
+      if (!result.ok) {
+        renderTakeover(false, 1_000_000)
+        setTakeoverStatus('error', result.error || 'Downloads stay in the browser.')
+        return
+      }
+      void refreshTakeover()
+      setTakeoverStatus(
+        'success',
+        'On. New browser downloads go to DonDownload and the video overlay shows on every site.'
+      )
+    })
+    return
+  }
+  takeoverToggle.disabled = true
+  setTakeoverStatus('', '')
+  void disableBrowserDownloadTakeover(chrome)
+    .then((saved) => {
+      takeoverToggle.disabled = false
+      if (!saved) {
+        setTakeoverStatus('error', 'The setting could not be saved in this browser profile.')
+        void refreshTakeover()
+        return
+      }
+      void refreshTakeover()
+      setTakeoverStatus('success', 'Off. Browser downloads stay in the browser and the overlay is limited to sites you enable one by one.')
+    })
+    .catch(() => {
+      takeoverToggle.disabled = false
+      setTakeoverStatus('error', 'The setting could not be saved in this browser profile.')
+      void refreshTakeover()
+    })
+})
 
 function clearCaptureList() {
   while (captureList.children.length > 0) {
@@ -1131,4 +1225,5 @@ nativeFix.addEventListener('click', (event) => {
 window.addEventListener('unload', clearPolling)
 
 void checkNativeConnection()
+void refreshTakeover()
 loadActiveTab()

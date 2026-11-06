@@ -338,11 +338,80 @@ body {
 }
 
 /* Per-site toggle card */
-.site-card {
+.site-card,
+.takeover {
   padding: 11px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Browser download takeover: the prominent first card. */
+.takeover {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+}
+
+.takeover .toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.takeover .toggle .t {
+  flex: 1;
+  min-width: 0;
+}
+
+.takeover h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.takeover .section-state {
+  display: block;
+  font-size: 12px;
+}
+
+.takeover #takeover-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.takeover input.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line2);
+  background:
+    radial-gradient(circle at 11px 50%, var(--t3) 0 8px, transparent 8.5px),
+    var(--s3);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.takeover input.switch:checked {
+  border-color: var(--accent);
+  background:
+    radial-gradient(circle at 27px 50%, #fff 0 9px, transparent 9.5px),
+    var(--accent);
+}
+
+.takeover input.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .takeover input.switch {
+    transition: none;
+  }
 }
 
 .site-card .toggle {
@@ -356,13 +425,15 @@ body {
   min-width: 0;
 }
 
-.site-card h2 {
+.site-card h2,
+.takeover h2 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
 }
 
-.site-card .section-state {
+.site-card .section-state,
+.takeover .section-state {
   display: block;
   font-size: 12px;
 }

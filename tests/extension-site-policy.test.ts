@@ -185,11 +185,13 @@ describe('extension wiring guardrails', () => {
     }
 
     // The popup hands the active tab's exact origin to the shared enable
-    // helper and never requests an origin itself.
+    // helper and never requests an origin itself. Its one permission request
+    // is the browser-download takeover set, made through the shared helper.
     expect(popup).toContain(
       'rememberOptionsTarget(chrome, { tabId: activeTabId, origin: pageOrigin })'
     )
     expect(popup).toContain('requestExactOriginAccess')
+    expect(popup).toContain('enableBrowserDownloadTakeover')
     expect(popup).not.toContain('chrome.permissions.request')
     // The options page and popup share one exact-origin request implementation.
     expect(options).toContain('requestExactOriginAccess')
@@ -224,11 +226,12 @@ describe('extension wiring guardrails', () => {
   it('keeps page-facing code off download/network/cookie APIs and gates cookies behind the exact-origin opt-in', () => {
     // The optional response-evidence and media-sniffer listeners live in the
     // background/worker modules and run only after the user grants webRequest.
-    // The page-facing overlay and popup still never touch those APIs.
-    for (const source of [popup, overlay, controller]) {
+    // The page-facing overlay, popup and options page still never touch those
+    // APIs: the popup asks for the browser-download permission set through the
+    // shared browser-downloads helper instead.
+    for (const source of [popup, overlay, controller, options]) {
       for (const forbidden of [
         'chrome.downloads',
-        'webRequest',
         'chrome.cookies',
         'chrome.history',
         'chrome.tabs.captureVisibleTab'
@@ -236,6 +239,8 @@ describe('extension wiring guardrails', () => {
         expect(source).not.toContain(forbidden)
       }
     }
+    // Only the shared helper asks for webRequest; the popup never does.
+    expect(popup).not.toContain('webRequest')
     for (const forbidden of [
       'chrome.history',
       'chrome.tabs.captureVisibleTab'
@@ -245,6 +250,7 @@ describe('extension wiring guardrails', () => {
     // A cookie is read only after the exact origin is on the user's opt-in list
     // and the optional cookies permission is present. The single helper now
     // lives in capture-settings and both background and media-bridge call it.
+    // The automatic browser-download path has its own explicit reader.
     const cookieHelper = readFileSync(
       path.join(process.cwd(), 'extension', 'capture-settings.js'),
       'utf8'
@@ -256,6 +262,7 @@ describe('extension wiring guardrails', () => {
     expect(cookieHelper.indexOf('cookieOptInOrigins.includes(origin)')).toBeLessThan(
       cookieHelper.indexOf('chromeApi.cookies.getAll')
     )
+    expect(cookieHelper).toContain('export async function readHandoffCookieHeader')
     expect(background).toContain('readOptInCookieHeader')
     expect(background).not.toContain('chrome.cookies.getAll')
   })

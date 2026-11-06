@@ -138,6 +138,31 @@
   }
 
 
+  /**
+   * All-sites mode injects this script into every http(s) page, so a page the
+   * user excluded must never show the overlay. The exclusion list is a user
+   * setting, so it is checked here at runtime and again whenever it changes.
+   */
+  function isExcludedSite(settings) {
+    if (!settings || !Array.isArray(settings.excludedOrigins)) return false
+    return settings.excludedOrigins.indexOf(location.origin) !== -1
+  }
+
+
+  function applyExclusions(settings) {
+    if (isExcludedSite(settings)) {
+      if (!state.disabled) teardown()
+      return
+    }
+    if (state.disabled) {
+      // The site was excluded and is no longer: a reload re-runs this script.
+      return
+    }
+    state.floatingEnabled = !settings || settings.floatingTriggerEnabled !== false
+    if (state.floatingEnabled) ns.syncFloatingTrigger()
+  }
+
+
   function installRuntimeListener() {
     if (!chrome || !chrome.runtime || !chrome.runtime.onMessage) return
     if (typeof chrome.runtime.onMessage.addListener !== 'function') return
@@ -255,6 +280,8 @@
     }
   }
 
+  ns.isExcludedSite = isExcludedSite
+  ns.applyExclusions = applyExclusions
   ns.teardown = teardown
   ns.disableSite = disableSite
   ns.installRuntimeListener = installRuntimeListener
@@ -269,6 +296,24 @@
     ns.installSettingsListener()
     ns.restoreCaptureSettings()
     ns.clearLegacyTriggerOffsets()
+    // An excluded site never shows the overlay, even when all-sites mode
+    // injected this script into it.
+    try {
+      var local = ns.storageFor('local')
+      if (local && typeof local.get === 'function') {
+        local.get('dondownloadCaptureSettings', function (stored) {
+          if (chrome && chrome.runtime && chrome.runtime.lastError) return
+          var settings = stored && stored.dondownloadCaptureSettings
+          if (isExcludedSite(settings)) {
+            teardown()
+            return
+          }
+          ns.applyExclusions(settings)
+        })
+      }
+    } catch {
+      // Without settings the overlay stays on; the worker still skips it.
+    }
     announceReady()
   } catch {
     // Fail closed: a broken overlay must never interfere with the page player.

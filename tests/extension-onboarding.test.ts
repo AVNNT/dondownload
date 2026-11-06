@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   PROBE_MESSAGE_TYPE,
   NATIVE_HOST,
   probeNativeConnection
 } from '../extension/bridge'
+import { browserDownloadStateCopy } from '../extension/browser-downloads'
 import {
   connectionView,
   popupConnectionLine,
@@ -252,7 +255,7 @@ describe('welcome recommended capture setup', () => {
   it('requests the all-sites host grant plus optional downloads, then saves both options', async () => {
     const fake = installFakeChrome()
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'webRequest'],
+      permissions: ['downloads', 'webRequest', 'cookies'],
       origins: ['http://*/*', 'https://*/*']
     })
 
@@ -262,7 +265,7 @@ describe('welcome recommended capture setup', () => {
 
     expect(fake.permissionRequests).toEqual([
       {
-        permissions: ['downloads', 'webRequest'],
+        permissions: ['downloads', 'webRequest', 'cookies'],
         origins: ['http://*/*', 'https://*/*']
       }
     ])
@@ -279,9 +282,39 @@ describe('welcome recommended capture setup', () => {
       optional_permissions: ['webRequest', 'cookies']
     })
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['webRequest'],
+      permissions: ['webRequest', 'cookies'],
       origins: ['http://*/*', 'https://*/*']
     })
+  })
+
+  it('describes browser download takeover as media-inclusive and one switch', () => {
+    const copy = browserDownloadStateCopy({ enabled: true, minBytes: 1_000_000 })
+    expect(copy.enabled).toBe(true)
+    expect(copy.hint).toContain('browser cookies')
+    expect(copy.hint).not.toMatch(/non-media|opt-in only/i)
+    const off = browserDownloadStateCopy({ enabled: false })
+    expect(off.state).toBe('Off')
+    expect(off.hint).toContain('downloads, cookies, media detection and site access')
+
+    // The popup and options page both describe the same one-switch takeover.
+    const welcome = readFileSync(
+      path.join(process.cwd(), 'extension', 'welcome.html'),
+      'utf8'
+    )
+    expect(welcome).toContain('video and audio files')
+    const options = readFileSync(
+      path.join(process.cwd(), 'extension', 'options.html'),
+      'utf8'
+    )
+    expect(options).toContain('Use DonDownload on all sites')
+    expect(options).toContain('Download browser files with DonDownload')
+    expect(options).toContain('Only files larger than')
+    expect(options).toContain('handoff-min-bytes')
+    const popupHtml = readFileSync(
+      path.join(process.cwd(), 'extension', 'popup.html'),
+      'utf8'
+    )
+    expect(popupHtml).toContain('takeover-toggle')
   })
 
   it('writes nothing before the grant succeeds and nothing on denial', async () => {

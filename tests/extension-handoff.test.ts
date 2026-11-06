@@ -1,6 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { handleCreatedDownload, installDownloadsListener } from '../extension/handoff.js'
-import { claimHandoffDownload, finishHandoffDownload, readHandoffState, readNeedsLoginState, writeCaptureSettings } from '../extension/capture-settings.js'
+import {
+  handleCreatedDownload,
+  installDownloadsListener,
+  resetDownloadsListenerForTests
+} from '../extension/handoff.js'
+import {
+  DEFAULT_CAPTURE_SETTINGS,
+  normalizeCaptureSettings,
+  claimHandoffDownload,
+  finishHandoffDownload,
+  readHandoffState,
+  readNeedsLoginState,
+  writeCaptureSettings
+} from '../extension/capture-settings.js'
 import { automaticHandoffCandidate } from '../extension/handoff-policy.js'
 import { sendDurableHandoff } from '../extension/bridge.js'
 const DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
@@ -14,6 +26,7 @@ interface FakeOptions {
   cancelFails?: boolean
   byExtensionId?: string
   cookies?: Array<{ name: string; value: string }>
+  cookiesGranted?: boolean
   searchItem?: Record<string, unknown>
 }
 
@@ -85,7 +98,9 @@ function createFake(options: FakeOptions = {}) {
       session: area(session, options.storageFails === true)
     },
     permissions: {
-      async contains() {
+      async contains(query?: { permissions?: string[] }) {
+        const wanted = query && Array.isArray(query.permissions) ? query.permissions : []
+        if (wanted.includes('cookies')) return options.cookiesGranted !== false
         return true
       }
     },
@@ -106,17 +121,23 @@ function createFake(options: FakeOptions = {}) {
     downloads: {
       search(query: { id: number }, callback: (items: unknown[]) => void) {
         searched.push(query.id)
+        const base = {
+          id: query.id,
+          state: options.searchState ?? 'in_progress',
+          danger: 'safe',
+          url: 'https://example.com/files/report.zip',
+          totalBytes: 4_000_000,
+          mime: 'application/zip',
+          filename: 'C:\\Downloads\\report.zip'
+        }
+        const merged: Record<string, unknown> = { ...base, ...(options.searchItem ?? {}) }
+        // A search result reports the trusted final URL, so a redirect that
+        // already settled keeps the same identity.
+        if (typeof merged.finalUrl !== 'string') merged.finalUrl = merged.url
         callback([
           {
-            id: query.id,
-            state: options.searchState ?? 'in_progress',
-            danger: 'safe',
-            url: 'https://example.com/files/report.zip',
-            totalBytes: 4,
-            mime: 'application/zip',
-            filename: 'C:\\Downloads\\report.zip',
-            ...(options.byExtensionId ? { byExtensionId: options.byExtensionId } : {}),
-            ...(options.searchItem ?? {})
+            ...merged,
+            ...(options.byExtensionId ? { byExtensionId: options.byExtensionId } : {})
           }
         ])
       },
@@ -161,6 +182,7 @@ async function seedSettings(fake: ReturnType<typeof createFake>) {
 
 afterEach(() => {
   delete (globalThis as any).chrome
+  resetDownloadsListenerForTests()
 })
 
 function useFake(fake: ReturnType<typeof createFake>) {
@@ -175,10 +197,27 @@ function fileItem(overrides: Record<string, unknown> = {}) {
     danger: 'safe',
     url: 'https://example.com/files/report.zip',
     filename: 'C:\\Downloads\\report.zip',
-    totalBytes: 4,
+    totalBytes: 4_000_000,
     mime: 'application/zip',
     ...overrides
   }
+}
+
+function mediaItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 52,
+    state: 'in_progress',
+    danger: 'safe',
+    url: 'https://example.com/media/clip.mp4',
+    filename: 'C:\\Downloads\\clip.mp4',
+    totalBytes: 25_000_000,
+    mime: 'video/mp4',
+    ...overrides
+  }
+}
+
+function nativeMessage(fake: ReturnType<typeof createFake>, index = 0) {
+  return (fake.nativeMessages[index] as { message: Record<string, unknown> }).message
 }
 
 describe('automatic browser hand-off is strict and conservative', () => {
@@ -189,18 +228,14 @@ describe('automatic browser hand-off is strict and conservative', () => {
     useFake(success)
     expect(automaticHandoffCandidate(fileItem(), []).ok).toBe(true)
     expect(await handleCreatedDownload(success.chrome, fileItem())).toBe('cancelled')
-    expect(success.nativeMessages).toEqual([
-      {
-        host: 'com.dondownload.bridge',
-        message: {
-          type: 'handoff-download',
-          url: 'https://example.com/files/report.zip',
-          filename: 'report.zip',
-          expectedBytes: 4,
-          expectedContentType: 'application/zip'
-        }
-      }
-    ])
+    expect(nativeMessage(success)).toEqual({
+      type: 'handoff-download',
+      url: 'https://example.com/files/report.zip',
+      filename: 'report.zip',
+      expectedBytes: 4_000_000,
+      expectedContentType: 'application/zip',
+      userAgent: expect.any(String)
+    })
     expect(success.cancelled).toEqual([42])
     expect(success.searched).toEqual([42])
 
@@ -249,8 +284,8 @@ describe('automatic browser hand-off is strict and conservative', () => {
     )
     expect(unavailable.cancelled).toEqual([])
 
-    // Anonymous preflight failure (for example an authenticated or POST-only
-    // transfer): the browser download is kept.
+    // Preflight failure (for example a POST-only transfer): the browser
+    // download is kept.
     const preflightFailure = createFake({
       nativeResponse: {
         ok: false,
@@ -325,8 +360,18 @@ describe('automatic browser hand-off is strict and conservative', () => {
     expect(await claimHandoffDownload(concurrent.chrome, 72)).toEqual({ ok: false, reason: 'storage-unavailable' })
     expect(automaticHandoffCandidate(fileItem({ danger: 'uncommon' }), []).ok).toBe(false)
     expect(automaticHandoffCandidate(fileItem({ paused: true }), []).ok).toBe(false)
-    expect(automaticHandoffCandidate(fileItem({ mime: 'video/mp4' }), []).ok).toBe(false)
-    expect(automaticHandoffCandidate(fileItem({ totalBytes: -1 }), []).ok).toBe(false)
+    // An unknown size stays in the browser unless the URL names a real file.
+    expect(
+      automaticHandoffCandidate(
+        fileItem({
+          url: 'https://example.com/download',
+          filename: 'C:\\Downloads\\download',
+          mime: 'application/octet-stream',
+          totalBytes: -1
+        }),
+        []
+      ).ok
+    ).toBe(false)
     expect(automaticHandoffCandidate(fileItem({ referrer: 'https://excluded.example/page' }), ['https://excluded.example']).ok).toBe(false)
 
     // The browser may not know the total at onCreated. Wait for the exact size
@@ -345,39 +390,221 @@ describe('automatic browser hand-off is strict and conservative', () => {
     expect(installDownloadsListener(delayedSize.chrome, (item) => handleCreatedDownload(delayedSize.chrome, item))).toBe(true)
     createdListener!(fileItem({ id: 88, totalBytes: -1 }))
     expect(delayedSize.nativeMessages).toEqual([])
-    changedListener!({ id: 88, totalBytes: { current: 4 } })
+    changedListener!({ id: 88, totalBytes: { current: 4_000_000 } })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(delayedSize.nativeMessages).toHaveLength(1)
     expect(delayedSize.cancelled).toEqual([88])
   })
 })
 
-describe('opt-in browser login hand-off', () => {
-  it('sends no cookie or browser headers when no origin is opted in', async () => {
-    const fake = createFake({ cookies: [{ name: 'auth', value: '1' }] })
+describe('download-manager takeover rules', () => {
+  it('hands off a direct media file of at least 1 MB', async () => {
+    const fake = createFake({
+      searchItem: {
+        url: 'https://example.com/media/clip.mp4',
+        filename: 'C:\\Downloads\\clip.mp4',
+        totalBytes: 25_000_000,
+        mime: 'video/mp4'
+      }
+    })
     await seedSettings(fake)
     useFake(fake)
+    expect(automaticHandoffCandidate(mediaItem(), []).ok).toBe(true)
+    expect(await handleCreatedDownload(fake.chrome, mediaItem())).toBe('cancelled')
+    expect(nativeMessage(fake)).toMatchObject({
+      type: 'handoff-download',
+      url: 'https://example.com/media/clip.mp4',
+      filename: 'clip.mp4',
+      expectedBytes: 25_000_000,
+      expectedContentType: 'video/mp4'
+    })
+    expect(fake.cancelled).toEqual([52])
+
+    // An audio file and an extensionless media URL named by its file are the
+    // same kind of ordinary browser download.
     expect(
-      await handleCreatedDownload(
-        fake.chrome,
-        fileItem({ referrer: 'https://example.com/page' })
-      )
-    ).toBe('cancelled')
-    const message = (fake.nativeMessages[0] as { message: Record<string, unknown> })
-      .message
-    expect(message).not.toHaveProperty('cookie')
-    expect(message).not.toHaveProperty('referer')
-    expect(message).not.toHaveProperty('userAgent')
-    expect(fake.cookieUrls).toEqual([])
+      automaticHandoffCandidate(
+        mediaItem({
+          id: 53,
+          url: 'https://example.com/audio/song',
+          filename: 'C:\\Downloads\\song.flac',
+          mime: 'audio/flac'
+        }),
+        []
+      ).ok
+    ).toBe(true)
   })
 
-  it('reads cookies for the exact download URL when its origin is opted in', async () => {
-    const fake = createFake({ cookies: [{ name: 'auth', value: '1' }] })
-    await writeCaptureSettings(fake.chrome, {
-      automaticFileHandoff: true,
-      handoffNotifications: false,
-      cookieOptInOrigins: ['https://example.com']
+  it('never hands off an HLS/DASH manifest, a segment or an HTML page', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+
+    const manifest = mediaItem({
+      id: 60,
+      url: 'https://example.com/media/master.m3u8',
+      filename: 'C:\\Downloads\\master.m3u8',
+      mime: 'application/vnd.apple.mpegurl'
     })
+    expect(automaticHandoffCandidate(manifest, [])).toEqual({
+      ok: false,
+      reason: 'page-or-manifest'
+    })
+    expect(await handleCreatedDownload(fake.chrome, manifest)).toBe(
+      'ignored:page-or-manifest'
+    )
+
+    const dash = mediaItem({
+      id: 61,
+      url: 'https://example.com/media/manifest',
+      filename: 'C:\\Downloads\\manifest.mpd',
+      mime: 'application/dash+xml'
+    })
+    expect(await handleCreatedDownload(fake.chrome, dash)).toBe(
+      'ignored:page-or-manifest'
+    )
+
+    const segment = mediaItem({
+      id: 62,
+      url: 'https://example.com/media/segment.m4s',
+      filename: 'C:\\Downloads\\segment.m4s',
+      mime: 'video/iso.segment'
+    })
+    expect(automaticHandoffCandidate(segment, [])).toEqual({
+      ok: false,
+      reason: 'segment-or-manifest'
+    })
+
+    const page = fileItem({
+      id: 63,
+      url: 'https://example.com/page/index.html',
+      filename: 'C:\\Downloads\\index.html',
+      mime: 'text/html'
+    })
+    expect(automaticHandoffCandidate(page, [])).toEqual({
+      ok: false,
+      reason: 'page-or-manifest'
+    })
+
+    const pageNamedOnly = fileItem({
+      id: 64,
+      url: 'https://example.com/download',
+      filename: 'C:\\Downloads\\saved.html',
+      mime: 'application/octet-stream'
+    })
+    expect(await handleCreatedDownload(fake.chrome, pageNamedOnly)).toBe(
+      'ignored:page-or-manifest'
+    )
+
+    expect(fake.nativeMessages).toEqual([])
+    expect(fake.cancelled).toEqual([])
+  })
+
+  it('leaves a 500 KB file and an unknown-size download in the browser', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+
+    const small = fileItem({ id: 70, totalBytes: 500_000 })
+    expect(automaticHandoffCandidate(small, [])).toEqual({
+      ok: false,
+      reason: 'below-minimum'
+    })
+    expect(await handleCreatedDownload(fake.chrome, small)).toBe(
+      'ignored:below-minimum'
+    )
+
+    // An unknown size is handed off only when the URL or type names a real
+    // file; the desktop preflight still proves the size.
+    const unknownMedia = mediaItem({ id: 71, totalBytes: -1 })
+    expect(automaticHandoffCandidate(unknownMedia, []).ok).toBe(true)
+
+    const unknownOpaque = fileItem({
+      id: 72,
+      url: 'https://example.com/download',
+      filename: 'C:\\Downloads\\download',
+      mime: 'application/octet-stream',
+      totalBytes: -1
+    })
+    expect(automaticHandoffCandidate(unknownOpaque, [])).toEqual({
+      ok: false,
+      reason: 'size-unavailable'
+    })
+    expect(await handleCreatedDownload(fake.chrome, unknownOpaque)).toBe(
+      'ignored:size-unavailable'
+    )
+
+    // Exactly 1 MB is enough; 999,999 bytes is not.
+    expect(automaticHandoffCandidate(fileItem({ totalBytes: 1_000_000 }), []).ok).toBe(true)
+    expect(
+      automaticHandoffCandidate(fileItem({ totalBytes: 999_999 }), [])
+    ).toEqual({ ok: false, reason: 'below-minimum' })
+
+    // The user's "only files larger than" choice is honoured.
+    expect(
+      automaticHandoffCandidate(fileItem({ totalBytes: 2_000_000 }), [], {
+        minBytes: 10_000_000
+      })
+    ).toEqual({ ok: false, reason: 'below-minimum' })
+    expect(
+      automaticHandoffCandidate(fileItem({ totalBytes: 500_000 }), [], {
+        minBytes: 0
+      }).ok
+    ).toBe(true)
+
+    expect(fake.nativeMessages).toEqual([])
+    expect(fake.cancelled).toEqual([])
+  })
+
+  it('does not require the extension file allowlist for a browser download', async () => {
+    const iso = fileItem({
+      id: 80,
+      url: 'https://example.com/files/disc.iso',
+      filename: 'C:\\Downloads\\disc.iso',
+      mime: 'application/octet-stream'
+    })
+    const unknownType = fileItem({
+      id: 81,
+      url: 'https://example.com/files/archive.xyz',
+      filename: 'C:\\Downloads\\archive.xyz',
+      mime: 'application/octet-stream'
+    })
+    for (const item of [iso, unknownType]) {
+      const fake = createFake({
+        searchItem: {
+          url: item.url,
+          filename: item.filename,
+          mime: item.mime,
+          totalBytes: item.totalBytes
+        }
+      })
+      await seedSettings(fake)
+      useFake(fake)
+      expect(await handleCreatedDownload(fake.chrome, item)).toBe('cancelled')
+      expect(fake.cancelled).toEqual([item.id])
+    }
+  })
+
+  it('keeps blob:, data: and extension-created downloads out', async () => {
+    expect(
+      automaticHandoffCandidate(fileItem({ url: 'blob:https://example.com/1' }), [])
+    ).toEqual({ ok: false, reason: 'unsupported-url' })
+    expect(
+      automaticHandoffCandidate(
+        fileItem({ url: 'data:application/octet-stream;base64,AAAA' }),
+        []
+      )
+    ).toEqual({ ok: false, reason: 'unsupported-url' })
+    expect(
+      automaticHandoffCandidate(fileItem({ byExtensionName: 'Other extension' }), [])
+    ).toEqual({ ok: false, reason: 'extension-download' })
+  })
+})
+
+describe('browser cookies for the automatic hand-off', () => {
+  it('reads cookies for the exact download URL without any per-site opt-in', async () => {
+    const fake = createFake({ cookies: [{ name: 'auth', value: '1' }] })
+    await seedSettings(fake)
     useFake(fake)
     expect(
       await handleCreatedDownload(
@@ -389,48 +616,33 @@ describe('opt-in browser login hand-off', () => {
       )
     ).toBe('cancelled')
     expect(fake.cookieUrls).toEqual(['https://example.com/files/report.zip'])
-    const message = (fake.nativeMessages[0] as { message: Record<string, unknown> })
-      .message
+    const message = nativeMessage(fake)
     expect(message.cookie).toBe('auth=1')
     expect(message.referer).toBe('https://example.com/page')
     expect(typeof message.userAgent).toBe('string')
     expect(fake.cancelled).toEqual([42])
+
+    // Nothing about the cookie is written to extension storage.
+    const stored = JSON.stringify([...fake.local.entries(), ...fake.session.entries()])
+    expect(stored).not.toContain('auth=1')
+    expect(stored).not.toContain('auth')
   })
 
-  it('uses a page-origin opt-in but still reads only the download host cookies', async () => {
+  it('sends no cookie when the cookies permission is not granted', async () => {
     const fake = createFake({
-      cookies: [{ name: 'cdn', value: 'yes' }],
-      searchItem: {
-        url: 'https://cdn.example.net/files/report.zip',
-        totalBytes: 4,
-        mime: 'application/zip',
-        filename: 'C:\\Downloads\\report.zip'
-      }
+      cookies: [{ name: 'auth', value: '1' }],
+      cookiesGranted: false
     })
-    await writeCaptureSettings(fake.chrome, {
-      automaticFileHandoff: true,
-      handoffNotifications: false,
-      cookieOptInOrigins: ['https://page.example']
-    })
+    await seedSettings(fake)
     useFake(fake)
-    const item = fileItem({
-      url: 'https://cdn.example.net/files/report.zip',
-      finalUrl: 'https://cdn.example.net/files/report.zip',
-      referrer: 'https://page.example/post'
-    })
-    expect(await handleCreatedDownload(fake.chrome, item)).toBe('cancelled')
-    expect(fake.cookieUrls).toEqual([
-      'https://cdn.example.net/files/report.zip'
-    ])
-    expect(
-      (
-        fake.nativeMessages[0] as { message: Record<string, unknown> }
-      ).message.cookie
-    ).toBe('cdn=yes')
+    expect(await handleCreatedDownload(fake.chrome, fileItem())).toBe('cancelled')
+    expect(fake.cookieUrls).toEqual([])
+    expect(nativeMessage(fake)).not.toHaveProperty('cookie')
   })
 
-  it('records the needs-login state and keeps the browser download when not opted in', async () => {
+  it('records the needs-login state and keeps the browser download on a login wall', async () => {
     const fake = createFake({
+      cookies: [],
       nativeResponse: {
         ok: false,
         error: {
@@ -452,32 +664,31 @@ describe('opt-in browser login hand-off', () => {
       origin: 'https://example.com',
       host: 'example.com'
     })
-    expect(fake.cookieUrls).toEqual([])
   })
+})
 
-  it('does not offer the login opt-in when the origin was already opted in', async () => {
-    const fake = createFake({
-      nativeResponse: {
-        ok: false,
-        error: {
-          code: 'HANDOFF_NEEDS_LOGIN',
-          message: 'This download needs your browser login.'
-        }
-      }
-    })
-    await writeCaptureSettings(fake.chrome, {
-      automaticFileHandoff: true,
-      handoffNotifications: false,
-      cookieOptInOrigins: ['https://example.com']
-    })
-    useFake(fake)
+describe('handoffMinBytes setting', () => {
+  it('defaults to 1 MB and normalizes only the allowed values', () => {
+    expect(DEFAULT_CAPTURE_SETTINGS.handoffMinBytes).toBe(1_000_000)
+    expect(normalizeCaptureSettings({}).handoffMinBytes).toBe(1_000_000)
+    expect(normalizeCaptureSettings({ handoffMinBytes: 0 }).handoffMinBytes).toBe(0)
     expect(
-      await handleCreatedDownload(
-        fake.chrome,
-        fileItem({ referrer: 'https://example.com/page' })
-      )
-    ).toBe('left-running')
-    expect(await readNeedsLoginState(fake.chrome)).toBeNull()
-    expect(fake.cancelled).toEqual([])
+      normalizeCaptureSettings({ handoffMinBytes: 10_000_000 }).handoffMinBytes
+    ).toBe(10_000_000)
+    for (const value of [
+      -1,
+      1,
+      500_000,
+      2_000_000,
+      Number.NaN,
+      '1000000',
+      null,
+      undefined,
+      {}
+    ]) {
+      expect(
+        normalizeCaptureSettings({ handoffMinBytes: value }).handoffMinBytes
+      ).toBe(1_000_000)
+    }
   })
 })
