@@ -78,7 +78,9 @@ only; no URL, header or cookie is stored. The policy lives in the pure module
 
 Each download sets aria2's `split` to its effective connection count, so a
 lowered count also lowers the split. The launch arguments keep
-`--min-split-size=1M` and `--optimize-concurrent-downloads=true`.
+`--min-split-size=1M`, `--optimize-concurrent-downloads=true`,
+`--stream-piece-selector=inorder` and `--disk-cache=0` (see Performance tuning
+below).
 
 ### Runtime defaults and the 5/8 to 3/4 change
 
@@ -242,7 +244,75 @@ other secrets have no place in the contract.
 - `SCHEMA_VERSION` is `19`. Databases written by a newer schema are still
   refused rather than modified.
 
-## Verification
+## Performance tuning
+
+Measured with the local loopback benchmark in `tests/bench/`
+(`npm run bench:throughput`, excluded from `test:fast`). It serves a generated
+1 GiB file with HTTP Range support through the real `buildAria2Args` launch
+path, optionally capping every socket at 8 MiB/s to model a slow server. Each
+row is a median over rotated runs, so a variant does not always run first.
+
+### aria2 launch flags (chosen)
+
+| Flag | Why it is kept |
+| --- | --- |
+| `--split=16` / `--max-connection-per-server=16` | 16 connections per file measured ~2x the throughput of 8; already the user's configurable ceiling. |
+| `--min-split-size=1M` | Smaller pieces let all 16 connections start early. aria2's 20M default used only 8 connections on a 256 MiB file (53.8 vs 101.1 MiB/s). |
+| `--optimize-concurrent-downloads=true` | Disabling it dropped the 1 GiB loopback run from ~466 to ~131 MiB/s on a short sweep. |
+| `--stream-piece-selector=inorder` | New. In-order pieces let 16 parallel connections write the file sequentially instead of out of order. 1 GiB / 16 connections: **427 -> 590 MiB/s** (median of 4 rounds). |
+| `--disk-cache=0` | New. With sequential writes, the 16 MiB default cache only adds buffering: **590 -> 676 MiB/s** and aria2 CPU 1.48 s -> 1.27 s per 1 GiB (median of 8 rounds). |
+| `--file-allocation=none` | Unchanged. `falloc` was neutral and `prealloc` pushed time-to-first-byte from ~80 ms to 664 ms with no throughput gain. Keeping `none` also avoids the documented `falloc` stall on non-NTFS/FAT32 and network targets. |
+
+Before/after for the combined change on the 1 GiB unlimited-loopback fixture:
+
+| Metric | Previous profile | Tuned profile |
+| --- | ---: | ---: |
+| Throughput | 427 MiB/s | **676 MiB/s** (1.58x) |
+| Elapsed | 2396 ms | **1516 ms** |
+| Time to first byte | 24 ms | 23 ms (within noise) |
+| aria2 CPU per 1 GiB | 1.32 s | 1.27 s |
+| Peak aria2 RAM | 13.5 MiB | 13.1 MiB |
+
+On the 8 MiB/s-per-socket slow-server fixture the same change is neutral
+(102.7 vs 105.5 MiB/s, 512 MiB file), because the server, not the disk, is the
+bottleneck. The per-host connection back-off is unchanged and every download
+still sets `split` to its own effective connection count.
+
+Candidates measured and deliberately **not** kept: 32M/64M disk cache
+(415/343 vs 466 MiB/s), HTTP pipelining (360 vs 466 MiB/s), `piece-length=4M`
+(no gain), `stream-piece-selector=inorder` without disabling the cache (less
+gain than the pair), `prealloc`/`falloc`, and `--lowest-speed-limit` (aborts
+legitimately slow transfers without improving speed).
+
+### yt-dlp media flags
+
+`--concurrent-fragments` is now **8** (was 4). The native HLS/DASH downloader
+already reports per-fragment progress, so fragments stay on yt-dlp and FFmpeg
+is still used only for the merge/remux. Local HLS fixture: 100 fragments, 100 ms
+latency per request.
+
+| Concurrent fragments | Fragment download window | Whole job (startup + merge) |
+| ---: | ---: | ---: |
+| 4 (previous) | 3077 ms | 5507 ms |
+| 8 (chosen) | **1567 ms** (1.96x) | **4017 ms** |
+| 12 | 1215 ms | 3633 ms |
+
+12 was faster on the synthetic fixture but is not used: 8 is the upper end of
+the conservative range for real CDNs, and media jobs do not have the per-host
+back-off that aria2 downloads have.
+
+Not adopted for media:
+
+- `--http-chunk-size`: no local evidence with per-connection throttling, and it
+  adds Range requests and retry surface for servers that do not honour them.
+- `--no-part`: hurts resume after an interruption; the current `.part` behavior
+  is kept.
+- yt-dlp's aria2c external downloader: no clear win for fragments, and it would
+  duplicate progress/back-off handling outside the aria2 service.
+- FFmpeg `-c copy` is already how yt-dlp merges; no transcode, `-threads` or
+  postprocessor arguments were added because a stream copy does not decode.
+
+
 
 | Command | Result |
 | --- | --- |

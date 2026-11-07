@@ -55,6 +55,19 @@ describe('buildAria2Args', () => {
     expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(16)
   })
 
+  it('uses the measured sequential-write download profile', () => {
+    const args = buildAria2Args({ port: 1, secret: 's', downloadDir: 'D:\\x' })
+
+    // Loopback 1 GiB measurements: in-order pieces plus no disk cache beat the
+    // previous out-of-order/16M-cache profile without changing the per-host
+    // connection ceiling.
+    expect(args).toContain('--stream-piece-selector=inorder')
+    expect(args).toContain('--disk-cache=0')
+    expect(args).not.toContain('--disk-cache=32M')
+    expect(args).not.toContain('--disk-cache=64M')
+    expect(args).not.toContain('--enable-http-pipelining=true')
+  })
+
   it('keeps the split ceiling above every configurable per-host limit', () => {
     const args = buildAria2Args({ port: 1, secret: 's', downloadDir: 'D:\\x' })
     const split = args.find((arg) => arg.startsWith('--split='))
