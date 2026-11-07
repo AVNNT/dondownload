@@ -283,6 +283,39 @@ describeWindows('Windows native messaging host', () => {
     ])
   })
 
+  it('echoes the request id so one port can multiplex concurrent requests', async () => {
+    const run = await runHost([
+      frame(JSON.stringify({ type: 'probe', id: '1' })),
+      frame(JSON.stringify({ type: 'probe', id: '2' })),
+      // A one-shot sendNativeMessage carries no id and gets no echo.
+      frame(JSON.stringify({ type: 'probe' }))
+    ])
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      { ok: true, operation: 'probe', id: '1' },
+      { ok: true, operation: 'probe', id: '2' },
+      { ok: true, operation: 'probe' }
+    ])
+  })
+
+  it('rejects an invalid request id instead of echoing it', async () => {
+    const run = await runHost([
+      frame(JSON.stringify({ type: 'probe', id: { nested: true } }))
+    ])
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      {
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message: 'The native message request id is invalid.'
+        }
+      }
+    ])
+  })
+
   it('rejects a probe carrying extra fields', async () => {
     const run = await runHost([
       frame(JSON.stringify({ type: 'probe', url: 'https://example.com/' }))

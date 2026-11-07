@@ -19,7 +19,7 @@ export const HANDOFF_CARD_MESSAGE_TYPES = Object.freeze({
 /** A page may only ask about ids this worker handed off in this session. */
 export const MAX_HANDED_OFF_DOWNLOAD_IDS = 200
 export const MAX_HANDOFF_CARDS = 3
-export const HANDOFF_CARD_POLL_MS = 1_000
+export const HANDOFF_CARD_POLL_MS = 2_000
 export const HANDOFF_CARD_MAX_POLL_MS = 30 * 60 * 1_000
 export const HANDOFF_CARD_DONE_HIDE_MS = 6_000
 export const HANDOFF_CARD_MAX_FAILURES = 3
@@ -98,14 +98,15 @@ export function handoffCardPayload(receipt, rawFilename) {
  * The card itself, serialized into the tab by chrome.scripting.executeScript.
  *
  * One fixed bottom-right container per page holds up to three cards, newest on
- * top. Each card polls the service worker once a second while it is visible,
- * stops on done/error/close, and gives up after three consecutive failures or
- * thirty minutes. Every value is assigned with textContent.
+ * top. Each card polls the service worker every two seconds while the page is
+ * visible, pauses while the document is hidden, stops on done/error/close, and
+ * gives up after three consecutive failures or thirty minutes. Every value is
+ * assigned with textContent.
  */
 export function handoffCardInjected(payload) {
   var HOST_ID = 'dondownload-handoff-cards'
   var MAX_CARDS = 3
-  var POLL_MS = 1000
+  var POLL_MS = 2000
   var MAX_POLL_MS = 1800000
   var DONE_HIDE_MS = 6000
   var MAX_FAILURES = 3
@@ -252,6 +253,24 @@ export function handoffCardInjected(payload) {
     }
   }
 
+  function startPolling() {
+    if (finished || timer !== null) return
+    if (doc.hidden === true) return
+    timer = setInterval(tick, POLL_MS)
+  }
+
+  // A hidden tab needs no progress updates: pause the interval and resume with
+  // one immediate tick when the page becomes visible again.
+  function onVisibilityChange() {
+    if (finished) return
+    if (doc.hidden === true) {
+      stopPolling()
+      return
+    }
+    startPolling()
+    tick()
+  }
+
   function setProgress(completedBytes, totalBytes) {
     var percent = 0
     if (typeof totalBytes === 'number' && totalBytes > 0) {
@@ -268,6 +287,9 @@ export function handoffCardInjected(payload) {
 
   function remove() {
     stopPolling()
+    if (typeof doc.removeEventListener === 'function') {
+      doc.removeEventListener('visibilitychange', onVisibilityChange)
+    }
     if (hideTimer !== null) {
       clearTimeout(hideTimer)
       hideTimer = null
@@ -368,7 +390,10 @@ export function handoffCardInjected(payload) {
     }
   })
 
-  timer = setInterval(tick, POLL_MS)
+  if (typeof doc.addEventListener === 'function') {
+    doc.addEventListener('visibilitychange', onVisibilityChange)
+  }
+  startPolling()
   tick()
   return true
 }

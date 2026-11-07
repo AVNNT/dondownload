@@ -8,6 +8,11 @@
   var core = ns.core
   var copy = ns.copy
 
+  // Trailing debounce for the DOM mutation observer, and the slow URL check
+  // that backs up the history hook for the page's own SPA navigations.
+  var MUTATION_DEBOUNCE_MS = 120
+  var NAVIGATION_FALLBACK_MS = 2000
+
   var STYLES = [
     ':host { all: initial; }',
     ':host { box-sizing: border-box; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; font-size: 12px; line-height: 1.45; }',
@@ -920,31 +925,50 @@
   }
 
 
-  function observeMutations() {
-    if (typeof MutationObserver !== 'function' || !document.documentElement) return
-    state.mutationObserver = new MutationObserver(function () {
-      ns.maybeResetCaptureForNavigation()
-      ns.pruneDisconnectedPlayers()
-      ns.installSourceObservers()
-      syncFloatingTrigger()
-      if (state.activeEmbed) {
-        if (
-          state.activeEmbed.isConnected === false ||
-          !usableEmbed(state.activeEmbed).usable
-        ) {
-          hideNow()
-          return
-        }
-        scheduleReposition()
-        return
-      }
-      if (!state.activeVideo) return
-      var next = core.nextActiveVideo(state.activeVideo)
-      if (!next) {
+  function runMutationPass() {
+    ns.maybeResetCaptureForNavigation()
+    ns.pruneDisconnectedPlayers()
+    ns.installSourceObservers()
+    syncFloatingTrigger()
+    if (state.activeEmbed) {
+      if (
+        state.activeEmbed.isConnected === false ||
+        !usableEmbed(state.activeEmbed).usable
+      ) {
         hideNow()
         return
       }
       scheduleReposition()
+      return
+    }
+    if (!state.activeVideo) return
+    var next = core.nextActiveVideo(state.activeVideo)
+    if (!next) {
+      hideNow()
+      return
+    }
+    scheduleReposition()
+  }
+
+
+  // A busy page mutates constantly, so the observer only schedules one pass per
+  // quiet window instead of running the full scan for every record batch.
+  function scheduleMutationPass() {
+    if (state.mutationTimer) {
+      window.clearTimeout(state.mutationTimer)
+      state.mutationTimer = 0
+    }
+    state.mutationTimer = window.setTimeout(function () {
+      state.mutationTimer = 0
+      runMutationPass()
+    }, MUTATION_DEBOUNCE_MS)
+  }
+
+
+  function observeMutations() {
+    if (typeof MutationObserver !== 'function' || !document.documentElement) return
+    state.mutationObserver = new MutationObserver(function () {
+      scheduleMutationPass()
     })
     state.mutationObserver.observe(document.documentElement, {
       childList: true,
@@ -1073,6 +1097,29 @@
   }
 
 
+  function hookHistoryNavigation() {
+    var history = window.history
+    if (!history || typeof history !== 'object') return
+    var names = ['pushState', 'replaceState']
+    for (var index = 0; index < names.length; index += 1) {
+      var name = names[index]
+      var original = history[name]
+      if (typeof original !== 'function') continue
+      try {
+        history[name] = (function (method) {
+          return function () {
+            var result = method.apply(history, arguments)
+            ns.maybeResetCaptureForNavigation()
+            return result
+          }
+        })(original)
+      } catch {
+        // A read-only history object leaves the fallback interval in charge.
+      }
+    }
+  }
+
+
   function installListeners() {
     ns.on(document, 'pointerover', handlePointerOver, true)
     ns.on(document, 'pointerout', handlePointerOut, true)
@@ -1099,13 +1146,15 @@
       ns.on(window.visualViewport, 'resize', scheduleReposition, { passive: true })
       ns.on(window.visualViewport, 'scroll', scheduleReposition, { passive: true })
     }
-    // Content scripts cannot observe the page's own history.pushState calls
-    // across the isolated world. A cheap URL check catches those SPA moves even
-    // when no event reaches this script.
+    // popstate/hashchange already cover back/forward and hash moves. The
+    // history hook catches pushState/replaceState calls that reach this
+    // isolated world, and the slow fallback interval below still catches the
+    // page's own SPA moves, which a content script cannot observe directly.
+    hookHistoryNavigation()
     if (typeof window.setInterval === 'function') {
       state.navigationTimer = window.setInterval(function () {
         ns.maybeResetCaptureForNavigation()
-      }, 500)
+      }, NAVIGATION_FALLBACK_MS)
       state.cleanup.push(function () {
         if (state.navigationTimer) {
           window.clearInterval(state.navigationTimer)

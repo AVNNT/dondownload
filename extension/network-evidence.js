@@ -510,15 +510,26 @@ export function installNetworkObservation(chromeApi, options = {}) {
       : createNetworkEvidenceStore()
   const onEvidence =
     typeof options.onEvidence === 'function' ? options.onEvidence : null
-  const filter = { urls: ['http://*/*', 'https://*/*'] }
+  const urls = ['http://*/*', 'https://*/*']
+  // Only a top-frame media response can become evidence, so the browser
+  // filters out every other request before this extension is woken.
+  const mediaFilter = { urls, types: ['media'] }
+  const navigationFilter = { urls, types: ['main_frame'] }
   let enabled = false
   let permissionGranted = false
   let installed = false
+  let listening = false
+
+  /** The cheap structural checks, run before any tab lookup or authorization. */
+  function isCandidateEvent(details) {
+    if (!details || details.method !== 'GET') return false
+    if (!Number.isInteger(details.tabId) || details.tabId < 0) return false
+    if (details.frameId !== 0) return false
+    if (details.type !== 'media') return false
+    return normalizeEvidenceUrl(details.url) !== null
+  }
 
   async function authorizeEvent(details) {
-    if (!Number.isInteger(details.tabId) || details.tabId < 0) return null
-    if (details.frameId !== 0) return null
-    if (details.type !== 'media') return null
     const url = normalizeEvidenceUrl(details.url)
     if (url === null) return null
     const mediaOrigin = originFromUrl(url)
@@ -550,7 +561,7 @@ export function installNetworkObservation(chromeApi, options = {}) {
 
   async function handleHeaders(details) {
     if (!enabled || !permissionGranted) return
-    if (!details || details.method !== 'GET') return
+    if (!isCandidateEvent(details)) return
     const authorized = await authorizeEvent(details)
     if (authorized === null) return
     const evidence = store.record(
@@ -587,6 +598,52 @@ export function installNetworkObservation(chromeApi, options = {}) {
     store.clearTab(details.tabId)
   }
 
+  function headersListener(details) {
+    void handleHeaders(details).catch(() => undefined)
+  }
+
+  function beforeRequestListener(details) {
+    handleBeforeRequest(details)
+  }
+
+  /**
+   * Keep the webRequest listeners registered only while observation is both
+   * enabled and permitted. Idle listeners would otherwise wake the service
+   * worker for requests that can never produce evidence.
+   */
+  function syncListeners() {
+    if (!installed) return
+    const webRequest = chromeApi && chromeApi.webRequest
+    if (
+      !webRequest ||
+      !webRequest.onHeadersReceived ||
+      !webRequest.onBeforeRequest
+    ) {
+      return
+    }
+    const wanted = enabled && permissionGranted
+    if (wanted === listening) return
+    try {
+      if (wanted) {
+        // `responseHeaders` only. `extraHeaders` is never requested, so cookie,
+        // credential and DRM-related headers are not exposed to this extension.
+        webRequest.onHeadersReceived.addListener(headersListener, mediaFilter, [
+          'responseHeaders'
+        ])
+        webRequest.onBeforeRequest.addListener(
+          beforeRequestListener,
+          navigationFilter
+        )
+      } else {
+        webRequest.onHeadersReceived.removeListener(headersListener)
+        webRequest.onBeforeRequest.removeListener(beforeRequestListener)
+      }
+      listening = wanted
+    } catch {
+      // A listener that could not be registered leaves observation idle.
+    }
+  }
+
   function install() {
     if (installed) return true
     const webRequest = chromeApi && chromeApi.webRequest
@@ -597,25 +654,9 @@ export function installNetworkObservation(chromeApi, options = {}) {
     ) {
       return false
     }
-    try {
-      // `responseHeaders` only. `extraHeaders` is never requested, so cookie,
-      // credential and DRM-related headers are not exposed to this extension.
-      webRequest.onHeadersReceived.addListener(
-        (details) => {
-          void handleHeaders(details).catch(() => undefined)
-        },
-        filter,
-        ['responseHeaders']
-      )
-      webRequest.onBeforeRequest.addListener(
-        (details) => handleBeforeRequest(details),
-        filter
-      )
-      installed = true
-      return true
-    } catch {
-      return false
-    }
+    installed = true
+    syncListeners()
+    return true
   }
 
   return {
@@ -623,9 +664,11 @@ export function installNetworkObservation(chromeApi, options = {}) {
     install,
     setEnabled(value) {
       enabled = value === true
+      syncListeners()
     },
     setPermissionGranted(value) {
       permissionGranted = value === true
+      syncListeners()
     },
     isEnabled() {
       return enabled && permissionGranted

@@ -3,6 +3,8 @@ import {
   NATIVE_HOST,
   SCAN_PAGE_MESSAGE_TYPE,
   normalizeCapturedSource,
+  probeNativeConnection,
+  resetNativeBridgeForTests,
   sendAnalyzeMedia,
   sendQueueCapturedSource,
   sendDownloadStatus,
@@ -97,6 +99,7 @@ function installFakeNative(): FakeNative {
 }
 
 afterEach(() => {
+  resetNativeBridgeForTests()
   delete (globalThis as any).chrome
 })
 
@@ -494,5 +497,147 @@ describe('hand-off card bridge operations', () => {
       ok: false,
       error: { code: 'INVALID_DOWNLOAD_ID' }
     })
+  })
+})
+
+interface FakeNativePort {
+  posted: Array<Record<string, unknown>>
+  messageListener: ((value: unknown) => void) | null
+  disconnectListener: (() => void) | null
+  onMessage: { addListener(listener: (value: unknown) => void): void }
+  onDisconnect: { addListener(listener: () => void): void }
+  postMessage(message: Record<string, unknown>): void
+  disconnect(): void
+  reply(value: Record<string, unknown>): void
+  close(): void
+}
+
+interface FakePortChrome {
+  port: FakeNativePort
+  oneShot: Array<{ host: string; message: unknown }>
+  response: unknown
+  runtimeError: string | null
+}
+
+function installFakePort(): FakePortChrome {
+  const fake: FakePortChrome = {
+    port: null as any,
+    oneShot: [],
+    response: null,
+    runtimeError: null
+  }
+  const port: FakeNativePort = {
+    posted: [],
+    messageListener: null,
+    disconnectListener: null,
+    onMessage: {
+      addListener(listener) {
+        port.messageListener = listener
+      }
+    },
+    onDisconnect: {
+      addListener(listener) {
+        port.disconnectListener = listener
+      }
+    },
+    postMessage(message) {
+      port.posted.push(message)
+    },
+    disconnect() {
+      // The bridge never disconnects the port itself.
+    },
+    reply(value) {
+      if (port.messageListener) port.messageListener(value)
+    },
+    close() {
+      if (port.disconnectListener) port.disconnectListener()
+    }
+  }
+  fake.port = port
+  const chrome: any = {
+    runtime: {
+      lastError: undefined,
+      connectNative() {
+        return port
+      },
+      sendNativeMessage(host: string, message: unknown, callback: (value: unknown) => void) {
+        fake.oneShot.push({ host, message })
+        if (fake.runtimeError) chrome.runtime.lastError = { message: fake.runtimeError }
+        callback(fake.response)
+        chrome.runtime.lastError = undefined
+      }
+    }
+  }
+  ;(globalThis as any).chrome = chrome
+  return fake
+}
+
+describe('one persistent native port serves every request', () => {
+  it('multiplexes concurrent requests by id and hides the transport id', async () => {
+    const fake = installFakePort()
+
+    const queued = sendQueueDownload('https://example.com/files/a.bin')
+    const probed = probeNativeConnection()
+
+    expect(fake.port.posted).toHaveLength(2)
+    expect(fake.port.posted[0]).toEqual({
+      type: 'queue-download',
+      url: 'https://example.com/files/a.bin',
+      id: '1'
+    })
+    expect(fake.port.posted[1]).toEqual({ type: 'probe', id: '2' })
+
+    // Replies may arrive out of order; the echoed id routes each one.
+    fake.port.reply({ id: '2', ok: true, operation: 'probe' })
+    fake.port.reply({ id: '1', ok: true, accepted: true })
+
+    await expect(probed).resolves.toEqual({ ok: true })
+    await expect(queued).resolves.toEqual({ ok: true })
+    // The one-shot path was never used.
+    expect(fake.oneShot).toHaveLength(0)
+  })
+
+  it('reuses the same port for later requests', async () => {
+    const fake = installFakePort()
+    const first = sendQueueDownload('https://example.com/a.bin')
+    fake.port.reply({ id: '1', ok: true })
+    await expect(first).resolves.toEqual({ ok: true })
+
+    const second = sendQueueDownload('https://example.com/b.bin')
+    fake.port.reply({ id: '2', ok: true })
+    await expect(second).resolves.toEqual({ ok: true })
+    expect(fake.port.posted.map((message) => message.id)).toEqual(['1', '2'])
+  })
+
+  it('falls back to one native message when the port closes unanswered', async () => {
+    const fake = installFakePort()
+    const pending = sendQueueDownload('https://example.com/files/a.bin')
+    fake.response = { ok: true, accepted: true }
+
+    fake.port.close()
+
+    await expect(pending).resolves.toEqual({ ok: true })
+    expect(fake.oneShot).toEqual([
+      {
+        host: NATIVE_HOST,
+        message: { type: 'queue-download', url: 'https://example.com/files/a.bin' }
+      }
+    ])
+  })
+
+  it('reports a host that disconnects with an error instead of retrying', async () => {
+    const fake = installFakePort()
+    const pending = sendQueueDownload('https://example.com/files/a.bin')
+    ;(globalThis as any).chrome.runtime.lastError = {
+      message: 'Specified native messaging host not found.'
+    }
+
+    fake.port.close()
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'NATIVE_HOST_NOT_REGISTERED' }
+    })
+    expect(fake.oneShot).toHaveLength(0)
   })
 })
