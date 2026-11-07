@@ -24,12 +24,14 @@ import { Icon, type IconName } from './Icon'
 const BATCH_KIND_ICON: Record<BatchKind, IconName> = {
   'media-playlist': 'video',
   'pixeldrain-list': 'layers',
+  'mega-folder': 'layers',
   'direct-urls': 'link'
 }
 
 const BATCH_KIND_LABEL: Record<BatchKind, string> = {
   'media-playlist': 'Playlist',
   'pixeldrain-list': 'Pixeldrain list',
+  'mega-folder': 'MEGA folder',
   'direct-urls': 'Direct links'
 }
 

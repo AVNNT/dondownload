@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(14)
+    expect(SCHEMA_VERSION).toBe(15)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -1149,8 +1149,112 @@ describe('v13 to v14 per-host connection migration', () => {
   })
 })
 
-describe('v5 migration rollback', () => {
-  it('rolls back added columns and settings when the migration fails', async () => {
+describe('v14 to v15 MEGA folder migration', () => {
+  const batchRecord = {
+    id: 'batch_legacy',
+    kind: 'pixeldrain-list' as const,
+    title: 'Legacy list',
+    status: 'complete' as const,
+    sourceUrl: 'https://pixeldrain.com/l/abcd1234',
+    mediaQuality: null,
+    maxBytesPerItem: null,
+    errorMessage: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    completedAt: NOW
+  }
+  const batchItems = [
+    {
+      id: 'bitem_legacy_1',
+      batchId: 'batch_legacy',
+      position: 0,
+      kind: 'download' as const,
+      status: 'complete' as const,
+      title: 'First file',
+      label: 'Pixeldrain',
+      childId: 'download_1',
+      completedBytes: 10,
+      totalBytes: 10,
+      errorMessage: null,
+      sourceUrl: 'https://pixeldrain.com/u/abcd1234',
+      createdAt: NOW,
+      updatedAt: NOW,
+      completedAt: NOW
+    },
+    {
+      id: 'bitem_legacy_2',
+      batchId: 'batch_legacy',
+      position: 1,
+      kind: 'download' as const,
+      status: 'error' as const,
+      title: 'Second file',
+      label: 'Pixeldrain',
+      childId: null,
+      completedBytes: 0,
+      totalBytes: null,
+      errorMessage: 'The item failed.',
+      sourceUrl: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      completedAt: null
+    }
+  ]
+
+  /** Seed a database whose schema version is still 14. */
+  async function seedV14(): Promise<string> {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    seed.saveBatchWithItems(batchRecord, batchItems)
+    close(seed)
+
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec('PRAGMA user_version = 14;')
+    legacy.close()
+    return filePath
+  }
+
+  it('keeps every batch and item row while widening the kind list', async () => {
+    const filePath = await seedV14()
+    const migrated = open(filePath)
+
+    expect(migrated.schemaVersion).toBe(SCHEMA_VERSION)
+    const batches = migrated.loadBatches()
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.record).toMatchObject({
+      id: 'batch_legacy',
+      kind: 'pixeldrain-list',
+      sourceUrl: 'https://pixeldrain.com/l/abcd1234'
+    })
+    // The parent table is rebuilt, so the cascade must not eat the children.
+    expect(batches[0]!.items).toHaveLength(2)
+    expect(batches[0]!.items.map((item) => item.id).sort()).toEqual([
+      'bitem_legacy_1',
+      'bitem_legacy_2'
+    ])
+
+    // The new kind is accepted and the old ones still are.
+    migrated.saveBatch({
+      ...batchRecord,
+      id: 'batch_mega',
+      kind: 'mega-folder',
+      title: 'MEGA folder'
+    })
+    expect(
+      migrated.loadBatch('batch_mega')?.record.kind
+    ).toBe('mega-folder')
+    close(migrated)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(indexNames(verify, 'batches')).toEqual(
+      expect.arrayContaining(['batches_created_at_idx', 'batches_status_idx'])
+    )
+    expect(tableExists(verify, 'batch_items_v15_backup')).toBe(false)
+    verify.close()
+  })
+})
+
+describe('v5 migration rollback', () => {  it('rolls back added columns and settings when the migration fails', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
     const fixture = createLegacyDatabase(filePath, 4)

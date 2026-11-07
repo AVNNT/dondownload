@@ -1,4 +1,5 @@
 import { Parser } from 'htmlparser2'
+import { isMegaHost } from '@shared/urlFragment'
 import { isLikelyVideoPageUrl } from '../classify'
 import { isVideoHostVideoUrl } from '../videoHosts'
 import { resolveScanUrl } from './url'
@@ -92,13 +93,12 @@ function looksLikeCandidateUrl(url: string, nameHint: string | null): boolean {
   }
   if (isVideoHostVideoUrl(url)) return true
   if (isLikelyVideoPageUrl(url)) return true
+  if (isMegaHost(hostname)) return true
   return (
     hostname === 'pixeldrain.com' ||
     hostname === 'www.pixeldrain.com' ||
     hostname === 'gofile.io' ||
-    hostname === 'www.gofile.io' ||
-    hostname === 'mega.nz' ||
-    hostname === 'www.mega.nz'
+    hostname === 'www.gofile.io'
   )
 }
 

@@ -3,6 +3,7 @@ import {
   type ScanCategory,
   type ScanItemKind
 } from '@shared/scanner'
+import { isMegaHost } from '@shared/urlFragment'
 import { pathnameOf } from './extract/url'
 import {
   hasSingleVideoRules,
@@ -469,6 +470,20 @@ export function classifyScanCandidate(
     return { category: 'other', kind: 'file', name, extension }
   }
 
+  // A public MEGA link is a JavaScript application page, but it identifies one
+  // file (or a folder of files) and carries its own key. The scanner resolves
+  // the real name and size through the public adapter, so it is never queued as
+  // a page. A folder link is expanded into one card per file. A MEGA URL without
+  // its key fragment cannot be resolved and stays a page.
+  if (
+    hostname.length > 0 &&
+    isMegaHost(hostname) &&
+    hasUrlFragment(input.url) &&
+    isMegaLinkPath(pathnameOf(input.url))
+  ) {
+    return { category: 'other', kind: 'file', name, extension }
+  }
+
   if (input.fromScript === true) {
     return { category: 'other', kind: 'file', name, extension }
   }
@@ -485,5 +500,27 @@ function extensionOfExtensionHint(value: string | null | undefined): string | nu
   if (typeof value !== 'string') return null
   const match = /\.([a-z0-9]{1,12})$/i.exec(value.trim())
   return match ? match[1]!.toLowerCase() : null
+}
+
+/**
+ * Path shapes a public MEGA link can have. The legacy `/#!id!key` form has no
+ * path at all, so an empty or `/` path is accepted too.
+ */
+function isMegaLinkPath(path: string): boolean {
+  const trimmed = path.replace(/\/+$/, '')
+  if (trimmed.length === 0) return true
+  return (
+    /^\/(?:embed\/)?file\/[A-Za-z0-9_-]{6,16}$/.test(trimmed) ||
+    /^\/folder\/[A-Za-z0-9_-]{6,16}(?:\/file\/[A-Za-z0-9_-]{6,16})?$/.test(trimmed)
+  )
+}
+
+/** True when the URL carries a non-empty fragment (a MEGA key). */
+function hasUrlFragment(value: string): boolean {
+  try {
+    return new URL(value).hash.length > 1
+  } catch {
+    return false
+  }
 }
 

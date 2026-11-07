@@ -445,7 +445,12 @@ export function createPreviewApi(
     })
     const batch = finalizeBatch({
       id: batchId,
-      kind: preview.kind === 'playlist' ? 'media-playlist' : 'pixeldrain-list',
+      kind:
+        preview.kind === 'playlist'
+          ? 'media-playlist'
+          : preview.kind === 'mega-folder'
+            ? 'mega-folder'
+            : 'pixeldrain-list',
       title: `${preview.title} · selected`,
       status: 'queued',
       progress: summarizeBatchItems(items),
@@ -2800,7 +2805,9 @@ function collectionItemLabel(
   const selected = quality ?? 'best'
   return preview.kind === 'playlist'
     ? `${qualityLabel(selected)} · playlist`
-    : 'Pixeldrain file'
+    : preview.kind === 'mega-folder'
+      ? 'MEGA file'
+      : 'Pixeldrain file'
 }
 
 function qualityLabel(quality: BatchMediaQuality): string {

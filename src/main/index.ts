@@ -18,6 +18,7 @@ import { BatchManager } from './batches/manager'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
+import { createMegaAdapter } from './hosts/mega'
 import { createMediaEngine } from './media/engine'
 import { createYtdlpUpdater, type YtdlpUpdater } from './media/updater'
 import {
@@ -539,6 +540,7 @@ if (unregisterRequested) {
       mediaJobs,
       collectionEngine: mediaEngine,
       pixeldrain: createPixeldrainAdapter(),
+      mega: createMegaAdapter(),
       database,
       scanMediaDir: mediaDir,
       scanRootDir: downloadDir,
@@ -554,6 +556,7 @@ if (unregisterRequested) {
     // single explicit selection path and revalidates every item first.
     scanner = new ScanSessionManager({
       pixeldrain: createPixeldrainAdapter(),
+      mega: createMegaAdapter(),
       ...(mediaJobs === null
         ? {}
         : {
