@@ -14,6 +14,14 @@ export interface CompletionNotificationOptions {
   onActivate?: (kind: NotificationJobKind, id: string) => void
 }
 
+/** A status that can never move again without a new explicit user action. */
+const TERMINAL_STATUSES = new Set([
+  'complete',
+  'error',
+  'cancelled',
+  'interrupted'
+])
+
 /**
  * Turns terminal job transitions into Windows notifications.
  *
@@ -21,6 +29,11 @@ export interface CompletionNotificationOptions {
  * history at startup never floods the user. Cancelled jobs (including the
  * shutdown transition to `interrupted`) are silent because only `complete` and
  * `error` produce a decision.
+ *
+ * Only non-terminal rows are remembered: once a job settles there is nothing
+ * left to announce, so the map never grows with download history. A publish
+ * visits every row, but the map work and the prune are bounded by the number
+ * of active jobs instead of the whole list.
  */
 export class CompletionNotificationService {
   private readonly isEnabled: () => boolean
@@ -28,7 +41,9 @@ export class CompletionNotificationService {
   private readonly onActivate:
     | ((kind: NotificationJobKind, id: string) => void)
     | null
-  private readonly statuses = new Map<string, string>()
+  /** Non-terminal statuses only, keyed by the opaque job id. */
+  private readonly downloadStatuses = new Map<string, string>()
+  private readonly mediaStatuses = new Map<string, string>()
 
   constructor(options: CompletionNotificationOptions) {
     this.isEnabled = options.isEnabled
@@ -37,42 +52,74 @@ export class CompletionNotificationService {
   }
 
   observeDownloads(snapshot: AppSnapshot): void {
-    const seen = new Set<string>()
-    for (const item of snapshot.downloads) {
-      const key = `download:${item.id}`
-      seen.add(key)
-      this.observe('download', item.id, item.status, item.filename)
-    }
-    this.prune(seen, 'download:')
+    this.observeAll(
+      'download',
+      this.downloadStatuses,
+      snapshot.downloads,
+      (item) => item.filename
+    )
   }
 
   observeMedia(snapshot: MediaSnapshot): void {
-    const seen = new Set<string>()
-    for (const job of snapshot.jobs) {
-      const key = `media:${job.id}`
-      seen.add(key)
-      this.observe('media', job.id, job.status, job.title)
-    }
-    this.prune(seen, 'media:')
+    this.observeAll(
+      'media',
+      this.mediaStatuses,
+      snapshot.jobs,
+      (job) => job.title
+    )
   }
 
-  private observe(
+  private observeAll<T extends { id: string; status: string }>(
+    kind: NotificationJobKind,
+    statuses: Map<string, string>,
+    rows: readonly T[],
+    titleOf: (row: T) => string
+  ): void {
+    let seen: Set<string> | null = null
+
+    for (const row of rows) {
+      if (TERMINAL_STATUSES.has(row.status)) {
+        const previousStatus = statuses.get(row.id)
+        if (previousStatus === undefined) continue
+        statuses.delete(row.id)
+        this.announce(kind, row.id, previousStatus, row.status, titleOf(row))
+        continue
+      }
+
+      if (seen === null) seen = new Set()
+      seen.add(row.id)
+      const previousStatus = statuses.get(row.id)
+      if (previousStatus === row.status) continue
+      statuses.set(row.id, row.status)
+      if (previousStatus === undefined) continue
+      this.announce(kind, row.id, previousStatus, row.status, titleOf(row))
+    }
+
+    // Removed non-terminal rows are the only keys that can go stale.
+    if (statuses.size === 0) return
+    if (seen === null) {
+      statuses.clear()
+      return
+    }
+    if (statuses.size === seen.size) return
+    for (const id of statuses.keys()) {
+      if (!seen.has(id)) statuses.delete(id)
+    }
+  }
+
+  private announce(
     kind: NotificationJobKind,
     id: string,
-    status: string,
+    previousStatus: string,
+    nextStatus: string,
     title: string
   ): void {
-    const key = `${kind}:${id}`
-    const previousStatus = this.statuses.get(key)
-    this.statuses.set(key, status)
-    if (previousStatus === undefined) return
-
     const decision = decideCompletionNotification({
       enabled: this.isEnabled(),
       supported: this.isSupported(),
       kind,
       previousStatus,
-      nextStatus: status,
+      nextStatus,
       title
     })
     if (!decision.notify) return
@@ -92,13 +139,6 @@ export class CompletionNotificationService {
       notification.show()
     } catch {
       // Notifications are a non-critical convenience.
-    }
-  }
-
-  private prune(seen: Set<string>, prefix: string): void {
-    for (const key of this.statuses.keys()) {
-      if (!key.startsWith(prefix)) continue
-      if (!seen.has(key)) this.statuses.delete(key)
     }
   }
 }

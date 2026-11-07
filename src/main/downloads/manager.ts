@@ -73,6 +73,7 @@ import {
   refusalKind
 } from './perHostConnections'
 import { nextPollDelay } from './pollInterval'
+import type { TaskbarActiveProgress } from '../taskbar/progress'
 
 /** Progress is flushed at most this often; critical transitions write at once. */
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
@@ -192,6 +193,8 @@ export interface DurableHandoffAcceptance {
 
 export class DownloadManager {
   private readonly records = new Map<string, DownloadItem>()
+  /** Only records currently `active`; keeps the taskbar aggregate O(active). */
+  private readonly activeIds = new Set<string>()
   private readonly explicitFilenames = new Map<string, string>()
   /**
    * One-job Referer/User-Agent/Cookie values. Deliberately memory-only: a
@@ -558,6 +561,30 @@ export class DownloadManager {
   }
 
   /**
+   * Aggregate for the Windows taskbar, without building or sorting a snapshot.
+   * Only active rows are visited, so publication cost does not grow with the
+   * size of the download history.
+   */
+  getActiveProgress(): TaskbarActiveProgress {
+    let activeCount = 0
+    let sizedCount = 0
+    let completedBytes = 0
+    let totalBytes = 0
+    for (const id of this.activeIds) {
+      const record = this.records.get(id)
+      if (!record || record.status !== 'active') continue
+      activeCount += 1
+      if (!(record.totalBytes > 0)) continue
+      sizedCount += 1
+      totalBytes += record.totalBytes
+      completedBytes += Number.isFinite(record.completedBytes)
+        ? Math.max(0, record.completedBytes)
+        : 0
+    }
+    return { activeCount, sizedCount, completedBytes, totalBytes }
+  }
+
+  /**
    * Keep a completed child's record pointing at a script that was renamed in
    * place. The path must still be inside the download root.
    */
@@ -800,6 +827,7 @@ export class DownloadManager {
     this.clearAutoRetry(id)
     this.autoRetriesUsed.delete(id)
     this.records.delete(id)
+    this.activeIds.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
     this.resolvedUrls.delete(id)
@@ -1536,6 +1564,9 @@ export class DownloadManager {
     try {
       for (const stored of this.database.loadAll()) {
         this.records.set(stored.record.id, stored.record)
+        if (stored.record.status === 'active') {
+          this.activeIds.add(stored.record.id)
+        }
         if (stored.explicitFilename) {
           this.explicitFilenames.set(stored.record.id, stored.explicitFilename)
         }
@@ -2022,7 +2053,30 @@ export class DownloadManager {
     patch: Partial<DownloadItem>
   ): void {
     Object.assign(record, patch, { updatedAt: this.now() })
+    if (patch.status !== undefined) {
+      if (record.status === 'active') {
+        this.activeIds.add(record.id)
+      } else {
+        this.activeIds.delete(record.id)
+      }
+      this.releaseTerminalCredentials(record)
+    }
     this.markSnapshotDirty()
+  }
+
+  /**
+   * A job that can no longer be retried has no use for its one-job
+   * Referer/User-Agent/Cookie or cookie-host scope. Drop them as soon as the
+   * terminal state is final so history does not pin browser secrets in memory.
+   * A failed job that still has an attempt left keeps them for Retry.
+   */
+  private releaseTerminalCredentials(record: DownloadItem): void {
+    const finalFailure =
+      record.status === 'error' &&
+      !canRetry(record.attempts, record.maxAttempts)
+    if (record.status !== 'complete' && !finalFailure) return
+    this.requestHeaders.delete(record.id)
+    this.cookieHosts.delete(record.id)
   }
 
   private applyStatus(record: DownloadItem, rawStatus: unknown): void {
@@ -2203,6 +2257,7 @@ export class DownloadManager {
     this.clearAutoRetry(id)
     this.autoRetriesUsed.delete(id)
     this.records.delete(id)
+    this.activeIds.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
     this.resolvedUrls.delete(id)
