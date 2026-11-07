@@ -34,5 +34,6 @@ export function installDownloadsListener(
   onCreated: (item: unknown, options?: HandoffOptions) => unknown
 ): boolean
 export function resetDownloadsListenerForTests(): void
+export function rememberDecidedDownload(item: unknown): void
 export function hasNeedsLoginBadge(): boolean
 export function clearNeedsLoginBadge(): void

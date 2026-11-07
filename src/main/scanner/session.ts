@@ -68,12 +68,14 @@ import {
   type ScanVideoRequest
 } from '@shared/scanVideo'
 import type { ScanImagesRequest } from '@shared/scanImages'
-import type { ScanGofileRequest } from '@shared/scanBridge'
+import type { ScanGofileRequest, ScanGofileRow } from '@shared/scanBridge'
 import {
   GOFILE_BROWSER_ONLY_REASON,
+  GOFILE_ROW_UNRESOLVED_REASON,
   GOFILE_SHARE_EMPTY_REASON,
   isGofileHostname,
   gofileStatusReason,
+  type GofileShareLink,
   type GofileShareStatus
 } from '@shared/gofile'
 import { gofileShareOf, normalizeGofileFiles } from './gofile'
@@ -657,11 +659,12 @@ export class ScanSessionManager {
     this.pruneExpired()
 
     const files = normalizeGofileFiles(input.files)
+    const rows = input.unavailable ?? []
     const reason = gofileStatusReason(input.status)
 
     const existing = this.sessionForGofileShare(share.id)
     if (existing !== null) {
-      this.mergeGofileShare(existing, share.id, files, input.status, input.cookie)
+      this.mergeGofileShare(existing, share, files, rows, input.status, input.cookie)
       this.touch(existing)
       this.publish(existing, true)
       return this.fullSnapshot(existing)
@@ -680,7 +683,7 @@ export class ScanSessionManager {
         ? input.cookie
         : null
 
-    if (files.length === 0) {
+    if (files.length === 0 && rows.length === 0) {
       // A share that could not be listed keeps one truthful card with the
       // fixed reason instead of an empty session.
       const id = this.newOpaqueId('item')
@@ -720,6 +723,13 @@ export class ScanSessionManager {
         })
         if (created !== null) this.ensureGofileFileItem(created)
       }
+      for (const row of rows) {
+        if (session.items.size >= MAX_SCAN_ITEMS) {
+          session.limited = true
+          break
+        }
+        this.addGofileRowItem(session, share, row, null, null)
+      }
       if (session.limited) {
         session.status = 'limited'
         session.message = safeMessage(
@@ -754,11 +764,13 @@ export class ScanSessionManager {
    */
   private mergeGofileShare(
     session: StoredScanSession,
-    shareId: string,
+    share: GofileShareLink,
     files: readonly { name: string; size: number | null; url: string }[],
+    rows: readonly ScanGofileRow[],
     status: GofileShareStatus,
     cookie: string | undefined
   ): void {
+    const shareId = share.id
     if (typeof cookie === 'string' && cookie.length > 0) {
       session.gofileCookie = cookie
     }
@@ -770,7 +782,7 @@ export class ScanSessionManager {
       shareItems.find((item) => item.postNumber !== null)?.postNumber ?? null
     const author = shareItems.find((item) => item.author !== null)?.author ?? null
 
-    if (files.length === 0) {
+    if (files.length === 0 && rows.length === 0) {
       const reason = gofileStatusReason(status) ?? GOFILE_BROWSER_ONLY_REASON
       for (const item of shareItems) {
         item.status = 'unavailable'
@@ -816,6 +828,15 @@ export class ScanSessionManager {
       }
     }
 
+    for (const row of rows) {
+      if (session.items.size >= MAX_SCAN_ITEMS) {
+        session.limited = true
+        break
+      }
+      const created = this.addGofileRowItem(session, share, row, postNumber, author)
+      if (created !== null) added += 1
+    }
+
     if (session.limited) {
       session.limitedMessage ??= `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
     }
@@ -828,6 +849,51 @@ export class ScanSessionManager {
       item.status = 'unavailable'
       item.unavailableReason = GOFILE_SHARE_EMPTY_REASON
     }
+  }
+
+  /**
+   * One card for a rendered row whose download URL the page never exposed. The
+   * row is a real file the user can see, so it stays visible as an unavailable
+   * card instead of disappearing.
+   *
+   * The fragment keeps the item out of `gofileShareOf`, so a later merge never
+   * mistakes it for the share card itself.
+   */
+  private addGofileRowItem(
+    session: StoredScanSession,
+    share: GofileShareLink,
+    row: ScanGofileRow,
+    postNumber: number | null,
+    author: string | null
+  ): StoredScanItem | null {
+    const name = cleanText(row.name, MAX_SCAN_NAME_LENGTH)
+    const url = `${share.canonicalUrl}#${encodeURIComponent(name)}`
+    for (const item of session.items.values()) {
+      if (item.url === url) return null
+    }
+    const id = this.newOpaqueId('item')
+    const item: StoredScanItem = {
+      id,
+      category: 'other',
+      kind: 'page-link',
+      name,
+      hostname: 'gofile.io',
+      sizeBytes: row.size,
+      verified: false,
+      status: 'unavailable',
+      postNumber,
+      author,
+      url,
+      fallbackUrl: null,
+      videoIdentity: null,
+      videoAnalysis: null,
+      videoMedia: null,
+      browserMatchPending: false,
+      unavailableReason: GOFILE_ROW_UNRESOLVED_REASON
+    }
+    session.items.set(id, item)
+    session.order.push(id)
+    return item
   }
 
   /**

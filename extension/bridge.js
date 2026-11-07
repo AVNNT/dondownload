@@ -1325,6 +1325,27 @@ export function sendScanGofile(input) {
     files.push({ name, size, url: url.url })
   }
 
+  // A rendered row whose URL the page never exposed: it carries a name and an
+  // optional size so the desktop can show it as an unavailable card.
+  const unavailable = []
+  const seenNames = new Set()
+  for (const entry of Array.isArray(raw.unavailable) ? raw.unavailable : []) {
+    if (unavailable.length >= MAX_SCAN_GOFILE_FILES) break
+    if (entry === null || typeof entry !== 'object') continue
+    const name = normalizeHeaderText(entry.name, MAX_GOFILE_NAME_LENGTH)
+    if (name === null) continue
+    const key = name.toLowerCase()
+    if (seenNames.has(key)) continue
+    seenNames.add(key)
+    const size =
+      typeof entry.size === 'number' &&
+      Number.isFinite(entry.size) &&
+      entry.size > 0
+        ? Math.round(entry.size)
+        : null
+    unavailable.push({ name, size })
+  }
+
   let cookie
   if (raw.cookie !== undefined && raw.cookie !== null) {
     cookie = normalizeHeaderText(raw.cookie, MAX_COOKIE_HEADER_LENGTH)
@@ -1344,6 +1365,7 @@ export function sendScanGofile(input) {
     shareId,
     status,
     files,
+    ...(unavailable.length === 0 ? {} : { unavailable }),
     ...(cookie === undefined ? {} : { cookie })
   }).then((result) => {
     if (result.ok === false) return result

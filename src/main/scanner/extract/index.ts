@@ -2,7 +2,7 @@ import { Parser } from 'htmlparser2'
 import { isMegaHost } from '@shared/urlFragment'
 import { isLikelyVideoPageUrl } from '../classify'
 import { isVideoHostVideoUrl } from '../videoHosts'
-import { resolveScanUrl } from './url'
+import { resolveAbsoluteUrl, resolveScanUrl } from './url'
 
 /**
  * Pure HTML discovery. `htmlparser2` is an event parser: this module never
@@ -237,6 +237,26 @@ export function extractCandidates(
 
   const raw: RawCandidate[] = []
   let baseHref: string | null = null
+  /**
+   * Effective document base. `<base href>` normally sits in `<head>`, but it may
+   * appear anywhere, so it is read again for every link instead of once at the
+   * end: a relative href has to be resolved before any host rule can match it.
+   */
+  const documentBaseUrl = (): string => {
+    if (baseHref === null) return pageUrl
+    try {
+      const resolvedBase = new URL(baseHref, pageUrl)
+      if (
+        resolvedBase.protocol === 'http:' ||
+        resolvedBase.protocol === 'https:'
+      ) {
+        return resolvedBase.href
+      }
+    } catch {
+      // Fall back to the page URL for an invalid <base>.
+    }
+    return pageUrl
+  }
   let inScript = false
   let scriptIsJsonLd = false
   let scriptText = ''
@@ -425,10 +445,14 @@ export function extractCandidates(
           anchor = null
           if (current.href === null) return
           const name = current.name.replace(/\s+/g, ' ').trim().slice(0, 500)
+          // Host rules need an absolute URL: `/video-abc/slug/` and
+          // `/view_video.php?viewkey=…` are what real video sites emit.
+          const absoluteHref =
+            resolveAbsoluteUrl(current.href, documentBaseUrl()) ?? current.href
           if (
             current.downloadAttribute ||
             current.isAttachment ||
-            looksLikeCandidateUrl(current.href, name.length > 0 ? name : null)
+            looksLikeCandidateUrl(absoluteHref, name.length > 0 ? name : null)
           ) {
             push({
               url: current.href,
@@ -471,17 +495,7 @@ export function extractCandidates(
     }
   }
 
-  let documentBase = pageUrl
-  if (baseHref !== null) {
-    try {
-      const resolvedBase = new URL(baseHref, pageUrl)
-      if (resolvedBase.protocol === 'http:' || resolvedBase.protocol === 'https:') {
-        documentBase = resolvedBase.href
-      }
-    } catch {
-      // Fall back to the page URL for an invalid <base>.
-    }
-  }
+  const documentBase = documentBaseUrl()
 
   const deduped = new Map<string, ExtractedCandidate>()
   for (const candidate of raw) {

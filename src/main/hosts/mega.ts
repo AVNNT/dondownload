@@ -349,12 +349,20 @@ export function decryptMegaNodeKey(
  *
  * The field is `<handle>:<base64urlKey>`; a node shared with several owners
  * carries one such entry per owner, separated by `/`. The owning handle is not
- * needed to decrypt, so only the key part of each entry is kept.
+ * needed to decrypt, so only the key part of each entry is kept. Entries whose
+ * handle matches `preferredHandle` are tried first: the live API prefixes keys
+ * with the owner handle, which for a public folder listing is the parent's, but
+ * a different prefix must not make the node undecryptable.
  */
-function nodeKeyCandidates(raw: string): Buffer[] {
-  const candidates: Buffer[] = []
+function nodeKeyCandidates(
+  raw: string,
+  preferredHandle: string | null = null
+): Buffer[] {
+  const matching: Buffer[] = []
+  const others: Buffer[] = []
   for (const part of raw.split('/')) {
     const separator = part.indexOf(':')
+    const handle = separator === -1 ? '' : part.slice(0, separator)
     const encoded = separator === -1 ? part : part.slice(separator + 1)
     if (encoded.length === 0) continue
     let decoded: Buffer
@@ -364,9 +372,10 @@ function nodeKeyCandidates(raw: string): Buffer[] {
       continue
     }
     if (decoded.length === 0 || decoded.length % 16 !== 0) continue
-    candidates.push(decoded)
+    if (preferredHandle !== null && handle === preferredHandle) matching.push(decoded)
+    else others.push(decoded)
   }
-  return candidates
+  return [...matching, ...others]
 }
 
 /* -------------------------------- links -------------------------------- */
@@ -891,7 +900,7 @@ function decryptNode(
   const wantsFolderKey = node.type === 1
   let fallbackFolderKey: Buffer | null = null
 
-  for (const candidate of nodeKeyCandidates(node.key)) {
+  for (const candidate of nodeKeyCandidates(node.key, node.parentId)) {
     if (candidate.length !== (wantsFolderKey ? 16 : 32)) continue
     let key: Buffer
     try {
@@ -958,6 +967,11 @@ interface MegaFolderListing {
  * opened once its parent folder is known; the response order is not guaranteed,
  * so the walk repeats until nothing new resolves. Subfolder nodes are never
  * entries: their key only unlocks that folder's own attributes and children.
+ *
+ * The root of the listing is not identified by the link id: the live API returns
+ * the root folder node under its own handle and gives it a parent handle that is
+ * never part of the listing. Roots are therefore the nodes whose parent handle is
+ * absent, and the link key is the root folder's key.
  */
 function buildFolderListing(
   folderId: string,
@@ -970,24 +984,32 @@ function buildFolderListing(
     if (node !== null) nodes.push(node)
   }
 
-  // Folder handle -> raw 16-byte key. The link key is the root folder's key and
-  // is used raw both for the root attributes and for its direct children.
-  const folderKeys = new Map<string, Buffer>()
-  folderKeys.set(folderId, folderKey)
+  const handles = new Set(nodes.map((node) => node.id))
+  const roots = nodes.filter(
+    (node) => node.parentId === null || !handles.has(node.parentId)
+  )
 
+  // Folder handle -> raw 16-byte key.
+  const folderKeys = new Map<string, Buffer>()
   let title = 'MEGA folder'
-  for (const node of nodes) {
-    if (node.type !== 2) continue
+  let titled = false
+  for (const node of roots) {
+    // A node whose parent handle is missing from the listing hangs directly off
+    // the root folder, so that parent handle carries the link key.
+    if (node.parentId !== null) folderKeys.set(node.parentId, folderKey)
+    // A file at the root is decrypted by the walk below with the link key.
+    if (node.type === 0) continue
     folderKeys.set(node.id, folderKey)
-    if (node.attributes.length === 0) continue
+    if (titled || node.attributes.length === 0) continue
     try {
-      title = parseAttributeName(
-        decryptMegaAttributes(folderKey, node.attributes)
-      )
+      title = parseAttributeName(decryptMegaAttributes(folderKey, node.attributes))
+      titled = true
     } catch {
-      title = 'MEGA folder'
+      // A root whose attributes do not decrypt keeps the placeholder title.
     }
   }
+  // Some responses only reference the link id as a parent handle.
+  if (!folderKeys.has(folderId)) folderKeys.set(folderId, folderKey)
 
   const decrypted = new Map<string, DecryptedNode>()
   let pending = nodes.filter((node) => node.type === 0 || node.type === 1)
@@ -995,8 +1017,9 @@ function buildFolderListing(
     const unresolved: MegaNode[] = []
     let progressed = false
     for (const node of pending) {
+      // A node without a parent handle is listed at the root of the folder.
       const parentKey =
-        node.parentId === null ? undefined : folderKeys.get(node.parentId)
+        node.parentId === null ? folderKey : folderKeys.get(node.parentId)
       if (parentKey === undefined) {
         unresolved.push(node)
         continue

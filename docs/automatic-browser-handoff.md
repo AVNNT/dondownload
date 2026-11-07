@@ -71,6 +71,22 @@ Feedback uses a short extension action badge. It never opens or focuses the
 desktop window. The preference is on by default but remains a visual
 notification only.
 
+## Gofile row capture takes priority while armed
+
+The real gofile.io frontend never puts a download URL in the DOM: `manager.js`
+builds a transient anchor, clicks it and removes it. "Scan this Gofile share"
+therefore reads each row's URL from the browser download that the row's own
+download button starts (`extension/gofile-capture.js`).
+
+That capture window is armed only for the duration of one scan (hard timeout,
+hard download cap, `gofile.io` / `*.gofile.io` URLs only, the armed tab and the
+share's own referrer when the browser reports them). While it is armed it is
+checked before the hand-off decision in the same `chrome.downloads` listener, so
+a captured download is never also sent to DonDownload. A captured download is
+recorded (URL + file name), cancelled immediately and erased from the download
+list, so Chrome keeps no copy. The window is disarmed as soon as the scan
+settles, and from then on the normal hand-off rules apply unchanged.
+
 ## Options, popup and commands
 
 - `options.html` is a normal options tab with: floating-icon preference (on by

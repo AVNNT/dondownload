@@ -244,6 +244,28 @@ describe('follow scoring', () => {
       ])
     )
   })
+
+  it('resolves relative hrefs before scoring them', () => {
+    // Real video listings link with root-relative hrefs.
+    const candidates = extractFollowCandidates(
+      `<a href="/video-n6g7P51nAb4/slug/">video</a>
+       <a href="/cat/all/">categories</a>`,
+      'https://www.eporner.com/'
+    )
+    const urls = candidates.map((candidate) => candidate.url)
+    expect(urls).toContain('https://www.eporner.com/video-n6g7P51nAb4/slug/')
+    const scored = candidates
+      .map((candidate) =>
+        scoreFollowLink({
+          url: candidate.url,
+          baseUrl: 'https://www.eporner.com/',
+          text: candidate.text,
+          rel: candidate.rel
+        })
+      )
+      .filter((decision) => decision !== null)
+    expect(scored).toEqual([{ score: 90, reason: 'video-host' }])
+  })
 })
 
 describe('robots parser', () => {

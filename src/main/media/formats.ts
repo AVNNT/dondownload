@@ -128,6 +128,13 @@ interface FormatDescriptor {
   audioCodec: string | null
   width: number | null
   height: number | null
+  /**
+   * Frame height when `height` is null but the format names one: yt-dlp's
+   * generic HTML5 extractor (hanime1 and similar pages) reports `height: null`
+   * while the format id, note or URL still says `1080p`. Null when no known
+   * height appears anywhere.
+   */
+  heightHint: number | null
   fps: number | null
   filesize: number | null
   filesizeApprox: number | null
@@ -484,6 +491,13 @@ function describeFormat(raw: unknown): FormatDescriptor | null {
     audioCodec: audio.value,
     width,
     height,
+    heightHint:
+      height ??
+      resolutionHintFrom(formatNote) ??
+      resolutionHintFrom(resolutionText) ??
+      resolutionHintFrom(formatName) ??
+      resolutionHintFrom(formatId) ??
+      resolutionHintFrom(urlPath),
     fps,
     filesize,
     filesizeApprox,
@@ -535,13 +549,7 @@ function resolutionHintFrom(text: string): number | null {
 }
 
 function descriptorResolutionHint(descriptor: FormatDescriptor): number | null {
-  return (
-    resolutionHintFrom(descriptor.formatNote) ??
-    resolutionHintFrom(descriptor.resolutionText) ??
-    resolutionHintFrom(descriptor.formatName) ??
-    resolutionHintFrom(descriptor.formatId) ??
-    resolutionHintFrom(descriptor.urlPath)
-  )
+  return descriptor.heightHint
 }
 
 interface ResolutionLabel {
@@ -861,7 +869,7 @@ function buildVideoDrafts(
           ),
           container,
           width: descriptor.width,
-          height: descriptor.height,
+          height: descriptor.height ?? descriptor.heightHint,
           fps: descriptor.fps,
           videoCodec: descriptor.videoCodec,
           audioCodec: descriptor.audioCodec,
@@ -911,7 +919,7 @@ function buildVideoDrafts(
         ),
         container,
         width: descriptor.width,
-        height: descriptor.height,
+        height: descriptor.height ?? descriptor.heightHint,
         fps: descriptor.fps,
         videoCodec,
         audioCodec: autoAudio.audioCodec,

@@ -46,6 +46,14 @@ export const GOFILE_SHARE_EMPTY_REASON =
 export const GOFILE_SHARE_TIMEOUT_REASON =
   'The Gofile page did not finish rendering its file list. Reload the share in your browser and scan it again.'
 
+/**
+ * A rendered row whose download URL the page never exposed. The real frontend
+ * starts the transfer from a transient anchor, so the URL only exists inside the
+ * browser download the row's button creates.
+ */
+export const GOFILE_ROW_UNRESOLVED_REASON =
+  'The Gofile page did not expose a download link for this file. Reload the share and scan it again.'
+
 /** What the extension reports about one share after reading the live page. */
 export const GOFILE_SHARE_STATUSES = [
   'ok',

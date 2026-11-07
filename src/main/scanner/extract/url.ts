@@ -56,6 +56,24 @@ export function normalizeScanUrl(raw: string): string {
   return parsed.href
 }
 
+/**
+ * Resolve a possibly-relative link against a base URL without normalizing it.
+ * Host and path rules must inspect the absolute form: `new URL('/video-x/')`
+ * throws, so an unresolved href never matches a host rule.
+ */
+export function resolveAbsoluteUrl(value: string, baseUrl: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  try {
+    const resolved = new URL(trimmed, baseUrl)
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return null
+    if (resolved.username || resolved.password) return null
+    return resolved.href
+  } catch {
+    return null
+  }
+}
+
 /** Resolve an extracted link against a document/base URL; HTTP(S) only. */
 export function resolveScanUrl(value: string, baseUrl: string): string | null {
   const trimmed = value.trim()

@@ -7,19 +7,37 @@
 // reads the one-shot Gofile Cookie when the user already allowed it, and sends
 // everything through the existing scan bridge.
 //
+// The real frontend keeps each file's download URL out of the DOM, so the
+// collector clicks the row's download button and this module records the browser
+// download that starts: a short-lived capture window (see gofile-capture.js)
+// takes priority over the automatic hand-off, records the URL and file name,
+// and cancels and erases the browser's copy immediately. Rows whose URL was not
+// captured are still reported, as unavailable rows.
+//
 // Nothing here calls api.gofile.io, reads a token from page storage, creates a
 // guest account or stores a cookie.
 
 import { sendScanGofile } from './bridge.js'
 import { readOptInCookieHeader } from './capture-settings.js'
+import {
+  armGofileCapture,
+  disarmGofileCapture,
+  isGofileHostUrl,
+  readGofileCapture
+} from './gofile-capture.js'
 
 export const GOFILE_SCAN_MESSAGE_TYPE = 'dondownload:gofile-scan'
 export const GOFILE_COLLECTOR_FILE = 'gofile-collector.js'
 /** The collector's own bounded wait is 15s; this leaves room for injection. */
 export const GOFILE_RESULT_TIMEOUT_MS = 25_000
 export const GOFILE_POLL_MS = 250
+/** A capture window only has to outlive the collector's own click pass. */
+export const GOFILE_CAPTURE_WINDOW_MS = 30_000
+/** The last click's download can still be arriving when the run resolves. */
+export const GOFILE_CAPTURE_SETTLE_MS = 400
 
 const SHARE_ID = /^[A-Za-z0-9_-]{4,64}$/
+const DOWNLOAD_PATH = /^\/download\//
 
 /** True for `https://gofile.io/d/<id>` (and the `www` host). */
 export function isGofileShareUrl(raw) {
@@ -88,6 +106,9 @@ function resultFromInjection(outcome) {
 /**
  * Inject the collector, start a run and poll for its bounded result.
  * Resolves with the collector's `{ shareId, status, files }` or null.
+ *
+ * `captureDownloads` makes the collector click every row's download button, so
+ * the armed capture window in the background can learn each row's URL.
  */
 async function collectFromTab(chromeApi, tabId, deps) {
   const sleep = deps.sleep ?? defaultSleep
@@ -102,7 +123,7 @@ async function collectFromTab(chromeApi, tabId, deps) {
     func: () => {
       const api = globalThis.DonDownloadGofileCollector
       if (!api) return false
-      return api.startRun(document, window, {})
+      return api.startRun(document, window, { captureDownloads: true })
     }
   })
   if (resultFromInjection(started) !== true) return null
@@ -129,6 +150,101 @@ function failure(code, message) {
   return { ok: false, error: { code, message } }
 }
 
+/** A Gofile download URL, HTTPS only. */
+function isGofileDownloadUrl(raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) return false
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:') return false
+  if (parsed.username !== '' || parsed.password !== '') return false
+  if (!isGofileHostUrl(parsed.href)) return false
+  return DOWNLOAD_PATH.test(parsed.pathname)
+}
+
+function decodeSegment(value) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+/** The file name a Gofile download URL ends in, or null. */
+function fileNameOfDownloadUrl(raw) {
+  try {
+    const parsed = new URL(raw)
+    const segments = parsed.pathname.split('/').filter((part) => part.length > 0)
+    if (segments.length === 0) return null
+    return decodeSegment(segments[segments.length - 1] ?? '')
+  } catch {
+    return null
+  }
+}
+
+function normalizeName(value) {
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase()
+}
+
+/**
+ * Match the downloads the capture window recorded to the rows the collector
+ * read. A row is matched by its file name, first against the browser-decided
+ * file name and then against the name the download URL ends in; each captured
+ * download is used once. A row with no match keeps `url: null` and stays an
+ * unavailable card.
+ */
+export function matchCapturedDownloads(rows, downloads) {
+  const files = []
+  const unavailable = []
+  const remaining = []
+  for (const download of Array.isArray(downloads) ? downloads : []) {
+    if (!download || typeof download !== 'object') continue
+    const url = typeof download.url === 'string' ? download.url : ''
+    if (!isGofileDownloadUrl(url)) continue
+    remaining.push({
+      url,
+      filename: normalizeName(download.filename),
+      urlName: normalizeName(fileNameOfDownloadUrl(url))
+    })
+  }
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row !== 'object') continue
+    const name = typeof row.name === 'string' ? row.name.trim() : ''
+    if (name.length === 0) continue
+    const size =
+      typeof row.size === 'number' && Number.isFinite(row.size) && row.size > 0
+        ? Math.round(row.size)
+        : null
+    const direct = typeof row.url === 'string' ? row.url : ''
+    if (isGofileDownloadUrl(direct)) {
+      files.push({ name, size, url: direct })
+      continue
+    }
+    const wanted = normalizeName(name)
+    let matched = -1
+    for (let index = 0; index < remaining.length; index += 1) {
+      const candidate = remaining[index]
+      if (candidate.filename === wanted || candidate.urlName === wanted) {
+        matched = index
+        break
+      }
+    }
+    if (matched === -1) {
+      unavailable.push({ name, size })
+      continue
+    }
+    const [captured] = remaining.splice(matched, 1)
+    files.push({ name, size, url: captured.url })
+  }
+
+  return { files, unavailable }
+}
+
 /**
  * Run one Gofile share scan for an already-open tab. The Cookie is read for
  * `gofile.io` only when the user already allowed it for that origin, is sent
@@ -144,15 +260,27 @@ export async function runGofileScan(chromeApi, input, deps = {}) {
     return failure('NOT_GOFILE', 'This page is not a Gofile share link.')
   }
 
+  const sleep = deps.sleep ?? defaultSleep
+  // The window is armed before the collector can click anything and closed as
+  // soon as the run settles, so no unrelated download can be captured.
+  armGofileCapture({
+    tabId,
+    pageUrl,
+    timeoutMs: GOFILE_CAPTURE_WINDOW_MS
+  })
   let collected
   try {
     collected = await collectFromTab(chromeApi, tabId, deps)
+    if (collected !== null) await sleep(GOFILE_CAPTURE_SETTLE_MS)
   } catch {
+    disarmGofileCapture()
     return failure(
       'GOFILE_TAB_UNREADABLE',
       'The Gofile tab could not be read. Reload the share and scan it again.'
     )
   }
+  const captured = readGofileCapture().downloads
+  disarmGofileCapture()
   if (collected === null) {
     return failure(
       'GOFILE_TIMEOUT',
@@ -164,14 +292,16 @@ export async function runGofileScan(chromeApi, input, deps = {}) {
   if (shareId === null || !SHARE_ID.test(shareId)) {
     return failure('GOFILE_SHARE_UNKNOWN', 'That Gofile share could not be read.')
   }
-  const files = Array.isArray(collected.files) ? collected.files : []
+  const rows = Array.isArray(collected.files) ? collected.files : []
   const status = typeof collected.status === 'string' ? collected.status : 'empty'
+  const { files, unavailable } = matchCapturedDownloads(rows, captured)
 
   const cookie = await readOptInCookieHeader(chromeApi, pageUrl, pageUrl)
   const sent = await sendScanGofile({
     shareId,
     status,
     files,
+    ...(unavailable.length === 0 ? {} : { unavailable }),
     ...(cookie === undefined ? {} : { cookie })
   })
   if (!sent.ok) return sent
@@ -181,6 +311,7 @@ export async function runGofileScan(chromeApi, input, deps = {}) {
     shareId,
     status,
     fileCount: files.length,
+    unavailableCount: unavailable.length,
     cookieAttached: cookie !== undefined
   }
 }

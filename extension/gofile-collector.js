@@ -7,9 +7,17 @@
 //
 // The page https://gofile.io/d/<id> is a JavaScript application: the file rows,
 // their sizes and the store<N>.gofile.io download links only exist after the
-// app rendered them. The collector therefore waits for that render (bounded),
-// reads the rows from the live DOM, and reports them to the extension, which
-// forwards them through the existing scan bridge.
+// app rendered them. The collector therefore waits for that render (bounded)
+// and reads the rows from the live DOM.
+//
+// The real frontend renders a row with buttons, not anchors: the name cell is a
+// `<button type="button" data-action="…">name</button>`, the download control is
+// `<button type="button" data-action="download">`, and the only anchor in a row
+// is a folder link `<a href="/d/<code>" data-action="navigate">`. The download
+// URL is never in the DOM at all — manager.js creates a transient anchor,
+// clicks it and removes it. So a row's URL can only be learned by letting the
+// browser start that download and reading it back in the background, which is
+// why `captureDownloads` clicks each row's download button in turn.
 //
 // Hard rules, enforced here and re-checked by the desktop:
 //  - never call api.gofile.io, never read localStorage/sessionStorage tokens,
@@ -29,11 +37,17 @@
   var FOLDER_WAIT_MS = 5000
   var POLL_MS = 200
   var MAX_ANCESTOR_DEPTH = 6
+  var MAX_ROW_NODES = 400
   var MAX_ROW_TEXT = 400
   var MAX_PAGE_TEXT = 8000
+  /** Pause between two download-button clicks, so each download is recorded. */
+  var CLICK_DELAY_MS = 120
+  /** Hard cap on the whole click pass; a huge share must never hang the scan. */
+  var CAPTURE_BUDGET_MS = 20000
   var RUN_KEY = '__donDownloadGofileRun'
   var SHARE_ID = /^[A-Za-z0-9_-]{4,64}$/
   var SIZE_TEXT = /(\d+(?:[.,]\d+)?)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB|K|M|G)(?![a-z0-9])/i
+  var SIZE_ONLY = /^\s*(\d+(?:[.,]\d+)?)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB|K|M|G)\s*$/i
   var UNIT_BYTES = {
     B: 1,
     K: 1024,
@@ -150,24 +164,53 @@
     return Math.round(value * unit)
   }
 
+  /** A cell that holds nothing but a size, so a name is never read as one. */
+  function parseSizeOnly(text) {
+    if (typeof text !== 'string') return null
+    var match = SIZE_ONLY.exec(text)
+    if (!match) return null
+    return parseSizeText(match[0])
+  }
+
   function textOf(node) {
     if (!node || typeof node.textContent !== 'string') return ''
     return node.textContent
   }
 
-  /** The nearest ancestor row text that carries a size, bounded and cheap. */
-  function sizeForAnchor(anchor) {
-    var node = anchor
-    for (var depth = 0; depth < MAX_ANCESTOR_DEPTH; depth += 1) {
-      if (!node) return null
-      var text = textOf(node).slice(0, MAX_ROW_TEXT)
-      if (text.length > 0) {
-        var size = parseSizeText(text)
-        if (size !== null) return size
-      }
-      node = node.parentNode
+  function actionOf(node) {
+    if (!node || typeof node.getAttribute !== 'function') return ''
+    var value = node.getAttribute('data-action')
+    return typeof value === 'string' ? value.trim().toLowerCase() : ''
+  }
+
+  function queryAll(doc, selector) {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return []
+    var found
+    try {
+      found = doc.querySelectorAll(selector)
+    } catch {
+      return []
     }
-    return null
+    if (!found) return []
+    var list = []
+    var length = typeof found.length === 'number' ? found.length : 0
+    for (var index = 0; index < length && index < MAX_FILES * 4; index += 1) {
+      list.push(found[index])
+    }
+    return list
+  }
+
+  /** Depth-first walk of the rendered children, bounded. */
+  function walk(node, visit) {
+    if (!node) return
+    var children = node.children
+    if (!children || typeof children.length !== 'number') return
+    for (var index = 0; index < children.length; index += 1) {
+      var child = children[index]
+      if (!child) continue
+      visit(child)
+      walk(child, visit)
+    }
   }
 
   function absoluteHref(anchor, base) {
@@ -184,11 +227,78 @@
   }
 
   /**
-   * Read every rendered row. Files are the download links; folders are the
-   * same-share links the page rendered (they are followed by `collectShare`
-   * only when asked to).
+   * The row container of one download button: the nearest ancestor that holds a
+   * name cell. Bounded, so a row-less button cannot walk the whole document.
    */
-  function readRows(doc, shareId) {
+  function rowFor(node) {
+    var current = node && node.parentNode ? node.parentNode : null
+    for (var depth = 0; depth < MAX_ANCESTOR_DEPTH && current; depth += 1) {
+      if (nameInRow(current) !== null) return current
+      current = current.parentNode
+    }
+    return node && node.parentNode ? node.parentNode : null
+  }
+
+  /**
+   * The name cell of a row. The real frontend puts it in a button with its own
+   * `data-action`, so that is read first; otherwise the first text-only leaf
+   * that is not the download control and not a size cell is used.
+   */
+  function nameInRow(row) {
+    if (!row) return null
+    var actionName = null
+    var leafName = null
+    var visited = 0
+    walk(row, function (node) {
+      if (actionName !== null || visited >= MAX_ROW_NODES) return
+      visited += 1
+      var action = actionOf(node)
+      if (action === 'download' || action === 'navigate') return
+      var text = cleanName(textOf(node))
+      if (text === null) return
+      if (action.length > 0 && actionName === null) {
+        actionName = text
+        return
+      }
+      if (leafName !== null) return
+      var children = node.children
+      if (children && typeof children.length === 'number' && children.length > 0) return
+      if (parseSizeOnly(text) !== null) return
+      leafName = text
+    })
+    return actionName !== null ? actionName : leafName
+  }
+
+  /** The size the row shows, from a size-only cell first, then its text. */
+  function sizeInRow(row) {
+    if (!row) return null
+    var exact = null
+    var visited = 0
+    walk(row, function (node) {
+      if (exact !== null || visited >= MAX_ROW_NODES) return
+      visited += 1
+      var children = node.children
+      if (children && typeof children.length === 'number' && children.length > 0) return
+      var size = parseSizeOnly(textOf(node))
+      if (size !== null) exact = size
+    })
+    if (exact !== null) return exact
+    return parseSizeText(textOf(row).slice(0, MAX_ROW_TEXT))
+  }
+
+  function tagOf(node) {
+    if (!node) return ''
+    var tag = node.tagName || node.localName || node.tag || ''
+    return typeof tag === 'string' ? tag.toLowerCase() : ''
+  }
+
+  /**
+   * Read every rendered row, in document order. A row is a download button (the
+   * real frontend) or, on a page that does render links, a Gofile download
+   * anchor. `url` is null for a button row: the page never exposes that URL, so
+   * the background fills it from the browser download the click produced.
+   */
+  function readRowElements(doc, shareId) {
     var files = []
     var folders = []
     var seenFiles = {}
@@ -197,28 +307,83 @@
       return { files: files, folders: folders }
     }
     var base = pageUrl(doc, null)
-    var anchors = doc.querySelectorAll('a[href]')
-    for (var index = 0; index < anchors.length; index += 1) {
-      var anchor = anchors[index]
-      var href = absoluteHref(anchor, base)
-      if (href === null) continue
-      if (isDownloadUrl(href)) {
-        if (seenFiles[href]) continue
-        seenFiles[href] = true
-        var name = fileNameFromUrl(href)
-        if (name === null) name = cleanName(textOf(anchor))
-        if (name === null) continue
-        files.push({ name: name, size: sizeForAnchor(anchor), url: href })
-        if (files.length >= MAX_FILES) break
-        continue
+    var body = doc.body ? doc.body : null
+    if (body === null) return { files: files, folders: folders }
+
+    walk(body, function (node) {
+      if (files.length >= MAX_FILES) return
+      if (typeof node.getAttribute !== 'function') return
+      var action = actionOf(node)
+
+      if (action === 'download') {
+        var row = rowFor(node)
+        var name = nameInRow(row)
+        if (name === null) return
+        var key = name.toLowerCase()
+        if (seenFiles[key]) return
+        seenFiles[key] = true
+        files.push({ name: name, size: sizeInRow(row), url: null, node: node })
+        return
       }
-      if (shareIdFromUrl(href) !== shareId) continue
-      if (href === base) continue
-      if (seenFolders[href]) continue
+
+      if (tagOf(node) !== 'a') return
+      var href = absoluteHref(node, base)
+      if (href === null) return
+      if (isDownloadUrl(href)) {
+        if (seenFiles[href]) return
+        seenFiles[href] = true
+        var hrefName = fileNameFromUrl(href)
+        if (hrefName === null) hrefName = nameInRow(rowFor(node))
+        if (hrefName === null) hrefName = cleanName(textOf(node))
+        if (hrefName === null) return
+        files.push({
+          name: hrefName,
+          size: sizeInRow(rowFor(node)),
+          url: href,
+          node: node
+        })
+        return
+      }
+      if (href === base) return
+      if (folders.length >= MAX_FOLDERS) return
+      // A folder link the frontend renders is `/d/<folder code>` with its own
+      // action; a plain anchor still has to name this same share.
+      var isFolderLink = action === 'navigate' && isShareHost(hostOf(href))
+      if (!isFolderLink && shareIdFromUrl(href) !== shareId) return
+      if (seenFolders[href]) return
       seenFolders[href] = true
-      folders.push({ url: href, name: cleanName(textOf(anchor)) })
+      folders.push({ url: href, name: cleanName(textOf(node)), node: node })
+    })
+
+    return { files: files, folders: folders }
+  }
+
+  function hostOf(raw) {
+    try {
+      return new URL(raw).hostname.toLowerCase()
+    } catch {
+      return ''
+    }
+  }
+
+  /** The public row shape: the click target never leaves this file. */
+  function publicRows(rows) {
+    var files = []
+    for (var index = 0; index < rows.files.length; index += 1) {
+      var file = rows.files[index]
+      files.push({ name: file.name, size: file.size, url: file.url })
+    }
+    var folders = []
+    for (var folderIndex = 0; folderIndex < rows.folders.length; folderIndex += 1) {
+      var folder = rows.folders[folderIndex]
+      folders.push({ url: folder.url, name: folder.name })
     }
     return { files: files, folders: folders }
+  }
+
+  /** Read every rendered row, without the internal click targets. */
+  function readRows(doc, shareId) {
+    return publicRows(readRowElements(doc, shareId))
   }
 
   /**
@@ -240,18 +405,34 @@
     return 'empty'
   }
 
+  function fileKey(file) {
+    if (typeof file.url === 'string' && file.url.length > 0) return file.url
+    return 'name:' + file.name.toLowerCase()
+  }
+
   function mergeFiles(target, incoming) {
     var seen = {}
     var index
-    for (index = 0; index < target.length; index += 1) seen[target[index].url] = true
+    for (index = 0; index < target.length; index += 1) seen[fileKey(target[index])] = true
     for (index = 0; index < incoming.length; index += 1) {
       var file = incoming[index]
-      if (seen[file.url]) continue
-      seen[file.url] = true
+      var key = fileKey(file)
+      if (seen[key]) continue
+      seen[key] = true
       target.push(file)
       if (target.length >= MAX_FILES) break
     }
     return target
+  }
+
+  function sleep(win, ms) {
+    return new Promise(function (resolve) {
+      if (win && typeof win.setTimeout === 'function') {
+        win.setTimeout(resolve, ms)
+        return
+      }
+      resolve()
+    })
   }
 
   /**
@@ -340,9 +521,8 @@
 
   /** Find the rendered anchor for one folder link. */
   function anchorForFolder(doc, url) {
-    if (!doc || typeof doc.querySelectorAll !== 'function') return null
+    var anchors = queryAll(doc, 'a[href]')
     var base = pageUrl(doc, null)
-    var anchors = doc.querySelectorAll('a[href]')
     for (var index = 0; index < anchors.length; index += 1) {
       if (absoluteHref(anchors[index], base) === url) return anchors[index]
     }
@@ -393,9 +573,54 @@
   }
 
   /**
+   * Click every row's download button in turn. The page creates the transfer
+   * from a transient anchor, so this is the only way to learn a row's URL; the
+   * background records each started download and cancels it. Bounded by the
+   * file cap, the per-click pause and a total budget.
+   */
+  function clickDownloadRows(doc, win, options) {
+    var settings = options && typeof options === 'object' ? options : {}
+    var shareId = shareIdFromUrl(pageUrl(doc, win))
+    var delay = typeof settings.clickDelayMs === 'number' && settings.clickDelayMs >= 0
+      ? settings.clickDelayMs
+      : CLICK_DELAY_MS
+    var budget = typeof settings.captureBudgetMs === 'number' && settings.captureBudgetMs > 0
+      ? settings.captureBudgetMs
+      : CAPTURE_BUDGET_MS
+    var rows = readRowElements(doc, shareId)
+    var targets = []
+    for (var index = 0; index < rows.files.length; index += 1) {
+      var file = rows.files[index]
+      if (file.url !== null) continue
+      if (!file.node || typeof file.node.click !== 'function') continue
+      targets.push(file.node)
+      if (targets.length >= MAX_FILES) break
+    }
+    var started = Date.now()
+    var next = 0
+
+    function step() {
+      if (next >= targets.length) return Promise.resolve(next)
+      if (Date.now() - started >= budget) return Promise.resolve(next)
+      var node = targets[next]
+      next += 1
+      try {
+        node.click()
+      } catch {
+        // A detached row cannot be clicked; the next one still can.
+      }
+      return sleep(win, delay).then(step)
+    }
+
+    return step()
+  }
+
+  /**
    * Collect one share. Resolves with `{ shareId, status, files, folders }`:
-   * `status` is `ok` when files were read, otherwise the reason the page shows
-   * (`empty`, `password`, `premium`, `not-found`, `timeout`).
+   * `status` is `ok` when rows were read, otherwise the reason the page shows
+   * (`empty`, `password`, `premium`, `not-found`, `timeout`). A file whose
+   * download URL the page never exposed has `url: null`; the background fills
+   * it from the browser download the click produced.
    */
   function collectShare(doc, win, options) {
     var settings = options && typeof options === 'object' ? options : {}
@@ -437,6 +662,12 @@
           }
         }
       )
+    }).then(function (result) {
+      if (settings.captureDownloads !== true) return result
+      if (result.status !== 'ok') return result
+      return clickDownloadRows(doc, win, settings).then(function () {
+        return result
+      })
     })
   }
 
@@ -465,6 +696,8 @@
     MAX_FILES: MAX_FILES,
     MAX_DEPTH: MAX_DEPTH,
     WAIT_MS: WAIT_MS,
+    CLICK_DELAY_MS: CLICK_DELAY_MS,
+    CAPTURE_BUDGET_MS: CAPTURE_BUDGET_MS,
     RUN_KEY: RUN_KEY,
     isGofileHost: isGofileHost,
     shareIdFromUrl: shareIdFromUrl,
@@ -474,6 +707,7 @@
     readRows: readRows,
     shareState: shareState,
     waitForRows: waitForRows,
+    clickDownloadRows: clickDownloadRows,
     collectShare: collectShare,
     startRun: startRun
   }

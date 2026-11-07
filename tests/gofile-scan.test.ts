@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Batch } from '../src/shared/batches'
 import {
   GOFILE_BROWSER_ONLY_REASON,
+  GOFILE_ROW_UNRESOLVED_REASON,
   GOFILE_SHARE_PASSWORD_REASON,
   GOFILE_SHARE_PREMIUM_REASON,
   gofileCookieApplies,
@@ -21,7 +22,12 @@ import {
   type ScanPageFetcher
 } from '../src/main/scanner/session'
 import { resetNativeBridgeForTests } from '../extension/bridge'
-import { runGofileScan } from '../extension/gofile-scan'
+import { runGofileScan, matchCapturedDownloads } from '../extension/gofile-scan'
+import {
+  isGofileCaptureArmed,
+  recordGofileCapture,
+  resetGofileCaptureForTests
+} from '../extension/gofile-capture'
 
 const SHARE_ID = 'AbCd1234'
 const SHARE_URL = `https://gofile.io/d/${SHARE_ID}`
@@ -109,6 +115,39 @@ describe('scan-gofile bridge contract', () => {
     })
     expect(parsed.status).toBe('password')
     expect(parsed.files).toEqual([])
+  })
+
+  it('keeps the rendered rows whose URL the page never exposed', () => {
+    const parsed = parseScanGofileRequest({
+      ...valid,
+      unavailable: [{ name: 'Hidden.mp4', size: 4096 }, { name: 'NoSize.mp4' }]
+    })
+    expect(parsed.unavailable).toEqual([
+      { name: 'Hidden.mp4', size: 4096 },
+      { name: 'NoSize.mp4', size: null }
+    ])
+    // Duplicate names collapse and an unknown field is rejected.
+    expect(
+      parseScanGofileRequest({
+        ...valid,
+        unavailable: [
+          { name: 'Hidden.mp4', size: 1 },
+          { name: 'hidden.mp4', size: 2 }
+        ]
+      }).unavailable
+    ).toEqual([{ name: 'Hidden.mp4', size: 1 }])
+    expect(() =>
+      parseScanGofileRequest({
+        ...valid,
+        unavailable: [{ name: 'Hidden.mp4', url: downloadUrl('f1', 'a.mp4') }]
+      })
+    ).toThrow(ValidationError)
+    expect(() =>
+      parseScanGofileRequest({ ...valid, unavailable: [{ name: '' }] })
+    ).toThrow(ValidationError)
+    expect(() =>
+      parseScanGofileRequest({ ...valid, unavailable: [{ name: 'a.mp4', size: -1 }] })
+    ).toThrow(ValidationError)
   })
 
   it('keeps the one-shot cookie when it is a valid header', () => {
@@ -351,8 +390,50 @@ describe('Gofile scan sessions', () => {
     expect(JSON.stringify(session)).not.toContain('https://')
   })
 
-  it('shows the reason for a share that cannot be listed', () => {
+  it('keeps a rendered row without a URL as an unavailable card', () => {
     const sessions = managed()
+    const session = sessions.startGofile({
+      type: SCAN_GOFILE_CHANNEL,
+      shareId: SHARE_ID,
+      status: 'ok',
+      files: [fileEntry('Fancam 01.mp4', 'f1', 10)],
+      unavailable: [{ name: 'Hidden.mp4', size: 2048 }]
+    })
+
+    expect(session.items).toHaveLength(2)
+    const resolved = session.items.find((item) => item.name === 'Fancam 01.mp4')
+    expect(resolved).toMatchObject({ kind: 'file', status: 'ready' })
+    const hidden = session.items.find((item) => item.name === 'Hidden.mp4')
+    expect(hidden).toMatchObject({
+      status: 'unavailable',
+      sizeBytes: 2048,
+      unavailableReason: GOFILE_ROW_UNRESOLVED_REASON
+    })
+    // The share card itself is replaced by the row cards.
+    expect(session.items.some((item) => item.kind === 'page-link' && item.name.startsWith('Gofile share'))).toBe(
+      false
+    )
+  })
+
+  it('shows only unavailable row cards when no URL was captured', () => {
+    const sessions = managed()
+    const session = sessions.startGofile({
+      type: SCAN_GOFILE_CHANNEL,
+      shareId: SHARE_ID,
+      status: 'ok',
+      files: [],
+      unavailable: [{ name: 'Hidden.mp4', size: null }]
+    })
+
+    expect(session.items).toHaveLength(1)
+    expect(session.items[0]).toMatchObject({
+      name: 'Hidden.mp4',
+      status: 'unavailable',
+      unavailableReason: GOFILE_ROW_UNRESOLVED_REASON
+    })
+  })
+
+  it('shows the reason for a share that cannot be listed', () => {    const sessions = managed()
     const password = sessions.startGofile({
       type: SCAN_GOFILE_CHANNEL,
       shareId: SHARE_ID,
@@ -480,6 +561,7 @@ interface FakeChrome {
 function fakeChrome(options: {
   collected: unknown
   cookieOptIn?: boolean
+  onStart?: () => void
 }): { chrome: FakeChrome; native: unknown[] } {
   const native: unknown[] = []
   const chrome: FakeChrome = {
@@ -488,7 +570,10 @@ function fakeChrome(options: {
         // The collector file injection, the start call and the polling calls.
         if (Array.isArray(input.files)) return [{ result: null }]
         const source = String(input.func)
-        if (source.includes('startRun')) return [{ result: true }]
+        if (source.includes('startRun')) {
+          options.onStart?.()
+          return [{ result: true }]
+        }
         return [{ result: options.collected }]
       }
     },
@@ -524,7 +609,51 @@ function fakeChrome(options: {
 
 afterEach(() => {
   resetNativeBridgeForTests()
+  resetGofileCaptureForTests()
   delete (globalThis as { chrome?: unknown }).chrome
+})
+
+describe('captured download matching', () => {
+  it('matches a row by the browser file name and by the URL name', () => {
+    const matched = matchCapturedDownloads(
+      [
+        { name: 'Fancam 01.mp4', size: 10, url: null },
+        { name: 'Fancam 01.funscript', size: 20, url: null },
+        { name: 'Missing.mp4', size: 30, url: null }
+      ],
+      [
+        { url: downloadUrl('f1', 'Fancam 01.mp4'), filename: 'Fancam 01.mp4' },
+        { url: downloadUrl('f2', 'Fancam 01.funscript'), filename: null }
+      ]
+    )
+
+    expect(matched.files).toEqual([
+      { name: 'Fancam 01.mp4', size: 10, url: downloadUrl('f1', 'Fancam 01.mp4') },
+      {
+        name: 'Fancam 01.funscript',
+        size: 20,
+        url: downloadUrl('f2', 'Fancam 01.funscript')
+      }
+    ])
+    expect(matched.unavailable).toEqual([{ name: 'Missing.mp4', size: 30 }])
+  })
+
+  it('never reuses one captured download and drops a foreign URL', () => {
+    const matched = matchCapturedDownloads(
+      [
+        { name: 'Same.mp4', size: null, url: null },
+        { name: 'Same.mp4 (2)', size: null, url: null }
+      ],
+      [
+        { url: 'https://evil.example/download/f1/Same.mp4', filename: 'Same.mp4' },
+        { url: downloadUrl('f1', 'Same.mp4'), filename: 'Same.mp4' }
+      ]
+    )
+    expect(matched.files).toEqual([
+      { name: 'Same.mp4', size: null, url: downloadUrl('f1', 'Same.mp4') }
+    ])
+    expect(matched.unavailable).toEqual([{ name: 'Same.mp4 (2)', size: null }])
+  })
 })
 
 describe('extension Gofile scan runner', () => {
@@ -574,8 +703,51 @@ describe('extension Gofile scan runner', () => {
     expect(native[0]).not.toHaveProperty('cookie')
   })
 
-  it('refuses a page that is not a Gofile share', async () => {
-    const { chrome, native } = fakeChrome({ collected: null })
+  it('fills each button row from the download the click started', async () => {
+    // The real page exposes no URL: the collector reports the rows with
+    // `url: null` and the armed capture window supplies the URL.
+    const collected = {
+      shareId: SHARE_ID,
+      status: 'ok',
+      files: [
+        { name: 'Fancam 01.mp4', size: 10, url: null },
+        { name: 'Hidden.mp4', size: 20, url: null }
+      ],
+      folders: 0
+    }
+    const { chrome, native } = fakeChrome({
+      collected,
+      onStart: () => {
+        expect(isGofileCaptureArmed()).toBe(true)
+        recordGofileCapture({
+          id: 11,
+          url: downloadUrl('f1', 'Fancam 01.mp4'),
+          finalUrl: downloadUrl('f1', 'Fancam 01.mp4'),
+          filename: 'Fancam 01.mp4',
+          referrer: SHARE_URL
+        })
+      }
+    })
+    ;(globalThis as { chrome?: unknown }).chrome = chrome
+
+    const result = await runGofileScan(
+      chrome,
+      { tabId: 7, pageUrl: SHARE_URL },
+      { sleep: async () => undefined }
+    )
+
+    expect(result).toMatchObject({ ok: true, fileCount: 1, unavailableCount: 1 })
+    expect(native[0]).toMatchObject({
+      type: 'scan-gofile',
+      shareId: SHARE_ID,
+      files: [{ name: 'Fancam 01.mp4', size: 10, url: downloadUrl('f1', 'Fancam 01.mp4') }],
+      unavailable: [{ name: 'Hidden.mp4', size: 20 }]
+    })
+    // The window never outlives the scan.
+    expect(isGofileCaptureArmed()).toBe(false)
+  })
+
+  it('refuses a page that is not a Gofile share', async () => {    const { chrome, native } = fakeChrome({ collected: null })
     ;(globalThis as { chrome?: unknown }).chrome = chrome
     const result = await runGofileScan(chrome, {
       tabId: 7,

@@ -230,9 +230,48 @@ function shortSide(option: MediaFormatOption): number | null {
   return option.height ?? option.width
 }
 
+/** Frame heights a quality label may name; anything else is not a resolution. */
+const KNOWN_HEIGHTS = new Set([
+  144, 180, 240, 288, 320, 360, 400, 432, 480, 540, 576, 720, 1080, 1440,
+  2160, 4320
+])
+
+/**
+ * Read a frame height out of free-form text. Only known heights are accepted,
+ * so a bitrate or an arbitrary format id number never becomes a quality.
+ */
+function heightHintFrom(text: string): number | null {
+  const lower = text.toLowerCase()
+  if (/\b(?:8k|4320p?)\b/.test(lower)) return 4320
+  if (/\b(?:4k|2160p?)\b/.test(lower)) return 2160
+  if (/\b(?:2k|1440p?)\b/.test(lower)) return 1440
+  for (const match of lower.matchAll(/(?:^|[^0-9])(\d{3,4})(?:p(?![a-z])|(?![0-9]))/g)) {
+    const value = Number(match[1])
+    if (KNOWN_HEIGHTS.has(value)) return value
+  }
+  return null
+}
+
+/**
+ * The frame height of a video option. yt-dlp's generic HTML5 extractor (the
+ * hanime1 page and similar ones) reports `height: null` while the format id,
+ * note or stream URL still says `1080p`, so the label and the original format
+ * ids are read as a fallback instead of showing no resolution at all.
+ */
+function heightOf(option: MediaFormatOption): number | null {
+  const side = shortSide(option)
+  if (side !== null) return side
+  for (const text of [option.label, ...(option.formatIds ?? [])]) {
+    if (typeof text !== 'string') continue
+    const hint = heightHintFrom(text)
+    if (hint !== null) return hint
+  }
+  return null
+}
+
 function resolutionLabel(option: MediaFormatOption | undefined): string | null {
   if (!option || option.kind !== 'video') return null
-  const side = shortSide(option)
+  const side = heightOf(option)
   if (side === null) return null
   return `${side}p`
 }
@@ -286,7 +325,7 @@ function buildResolution(
     thumbnailUrl: safeThumbnail(analysis.thumbnailUrl),
     durationSeconds: duration,
     width: selected?.width ?? null,
-    height: selected?.height ?? null,
+    height: selected === undefined ? null : heightOf(selected),
     bestResolution: resolutionLabel(selected),
     sizeBytes: size.bytes,
     sizeIsEstimate: size.isEstimate,

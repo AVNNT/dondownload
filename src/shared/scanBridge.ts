@@ -42,11 +42,23 @@ export interface ScanGofileFile {
   url: string
 }
 
+/**
+ * A rendered row whose download URL the page never exposed. The real gofile.io
+ * frontend builds the download from a transient anchor, so a row can stay
+ * without a URL; it is still reported so the desktop can show it as an
+ * unavailable card instead of hiding the file.
+ */
+export interface ScanGofileRow {
+  name: string
+  size: number | null
+}
+
 export interface ScanGofileRequest {
   type: typeof SCAN_GOFILE_CHANNEL
   shareId: string
   status: GofileShareStatus
   files: ScanGofileFile[]
+  unavailable?: ScanGofileRow[]
   cookie?: string
 }
 
@@ -132,6 +144,36 @@ function parseGofileFile(value: unknown): ScanGofileFile | null {
 }
 
 /**
+ * Validate one rendered Gofile row that has no download URL. It carries a name
+ * and an optional size and nothing else: there is no URL to validate.
+ */
+function parseGofileRow(value: unknown): ScanGofileRow | null {
+  const record = asPlainObject(value)
+  for (const key of Object.keys(record)) {
+    if (key !== 'name' && key !== 'size') {
+      throw new ValidationError('A Gofile row entry contains unsupported fields.')
+    }
+  }
+  const name = boundedText(record.name, MAX_GOFILE_NAME_LENGTH)
+  if (name === null) {
+    throw new ValidationError('A Gofile file name is invalid.')
+  }
+  let size: number | null = null
+  if (record.size !== undefined && record.size !== null) {
+    if (
+      typeof record.size !== 'number' ||
+      !Number.isFinite(record.size) ||
+      record.size <= 0 ||
+      record.size > MAX_GOFILE_SIZE_BYTES
+    ) {
+      throw new ValidationError('A Gofile file size is invalid.')
+    }
+    size = Math.round(record.size)
+  }
+  return { name, size }
+}
+
+/**
  * Validate one extension-reported Gofile share. Files are deduplicated by URL
  * and capped, and a share that failed to render may report no files at all.
  */
@@ -143,6 +185,7 @@ export function parseScanGofileRequest(value: unknown): ScanGofileRequest {
       key !== 'shareId' &&
       key !== 'status' &&
       key !== 'files' &&
+      key !== 'unavailable' &&
       key !== 'cookie'
     ) {
       throw new ValidationError('The Gofile scan request contains unsupported fields.')
@@ -183,6 +226,27 @@ export function parseScanGofileRequest(value: unknown): ScanGofileRequest {
     files.push(file)
   }
 
+  const unavailable: ScanGofileRow[] = []
+  if (record.unavailable !== undefined) {
+    if (!Array.isArray(record.unavailable)) {
+      throw new ValidationError('The Gofile row list is invalid.')
+    }
+    if (record.unavailable.length > MAX_GOFILE_FILES) {
+      throw new ValidationError(
+        `A Gofile share can report at most ${MAX_GOFILE_FILES} rows at once.`
+      )
+    }
+    const seenNames = new Set<string>()
+    for (const rawRow of record.unavailable) {
+      const row = parseGofileRow(rawRow)
+      if (row === null) continue
+      const key = row.name.toLowerCase()
+      if (seenNames.has(key)) continue
+      seenNames.add(key)
+      unavailable.push(row)
+    }
+  }
+
   let cookie: string | undefined
   if (record.cookie !== undefined) {
     const headers = parseDownloadRequestHeaders({ cookie: record.cookie })
@@ -197,6 +261,7 @@ export function parseScanGofileRequest(value: unknown): ScanGofileRequest {
     shareId: record.shareId,
     status: record.status,
     files,
+    ...(unavailable.length === 0 ? {} : { unavailable }),
     ...(cookie === undefined ? {} : { cookie })
   }
 }

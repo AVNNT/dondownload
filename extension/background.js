@@ -25,7 +25,14 @@ import {
   queueCapturedSourceForSender,
   queueMediaForSender
 } from './media-bridge.js'
-import { handleCreatedDownload, installDownloadsListener, hasNeedsLoginBadge, clearNeedsLoginBadge } from './handoff.js'
+import {
+  clearNeedsLoginBadge,
+  handleCreatedDownload,
+  hasNeedsLoginBadge,
+  installDownloadsListener,
+  rememberDecidedDownload
+} from './handoff.js'
+import { captureGofileDownload } from './gofile-capture.js'
 import {
   HANDOFF_CARD_MESSAGE_TYPES,
   handleHandoffCardMessage
@@ -630,9 +637,15 @@ function installLifecycleListeners(details) {
  * and no button.
  */
 function installDownloadsSupport() {
-  return installDownloadsListener(chrome, (item, options) =>
-    handleCreatedDownload(chrome, item, options)
-  )
+  return installDownloadsListener(chrome, (item, options) => {
+    // A Gofile row capture takes priority over the automatic hand-off: the
+    // download a scan started must never also be sent to DonDownload.
+    if (captureGofileDownload(chrome, item)) {
+      rememberDecidedDownload(item)
+      return 'captured'
+    }
+    return handleCreatedDownload(chrome, item, options)
+  })
 }
 
 async function toggleOverlayOnActiveTab() {
