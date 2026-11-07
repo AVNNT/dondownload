@@ -2171,6 +2171,13 @@ function seedMediaJobDetails(): Map<string, MediaJobDetails> {
       }
     ],
     [
+      'preview-media-merging-unknown',
+      {
+        sourceUrl: 'https://videos.example.com/watch/field-recordings-harbour',
+        filePath: null
+      }
+    ],
+    [
       'preview-media-complete',
       {
         sourceUrl: 'https://audio.example.com/mixes/ambient-coding-mix',
@@ -2231,6 +2238,7 @@ function seedMediaJobs(anchor: number): MediaJob[] {  const minute = 60_000
       thumbnailUrl: PREVIEW_THUMBNAIL_A
     },
     {
+      // Merging with a measured merge output: determinate bar and byte detail.
       id: 'preview-media-merging',
       analysisId: 'preview-analysis-seed',
       optionId: 'preview-option-720',
@@ -2245,7 +2253,25 @@ function seedMediaJobs(anchor: number): MediaJob[] {  const minute = 60_000
       createdAt: anchor - 45 * minute,
       updatedAt: anchor - 4_000,
       completedAt: null,
+      mergeProgress: { completedBytes: 104 * mib, totalBytes: 268 * mib },
       thumbnailUrl: PREVIEW_THUMBNAIL_B
+    },
+    {
+      // Merging without a measurable output: the honest indeterminate shimmer.
+      id: 'preview-media-merging-unknown',
+      analysisId: 'preview-analysis-seed',
+      optionId: 'preview-option-1080',
+      kind: 'video',
+      title: 'Field recordings: harbour at dawn',
+      label: '1080p · MKV · video + audio',
+      status: 'merging',
+      completedBytes: 1_240 * mib,
+      totalBytes: 1_240 * mib,
+      speedBps: 0,
+      errorMessage: null,
+      createdAt: anchor - 52 * minute,
+      updatedAt: anchor - 3_000,
+      completedAt: null
     },
     {
       id: 'preview-media-complete',

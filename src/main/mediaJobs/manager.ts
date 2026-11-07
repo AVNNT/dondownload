@@ -17,6 +17,7 @@ import {
   type MediaJobDetails,
   type MediaJobRecord,
   type MediaJobStatus,
+  type MediaMergeProgress,
   type MediaOutputFormat,
   type MediaSnapshot,
   type MediaToolState
@@ -32,6 +33,7 @@ import {
   deleteTargetError,
   type DeleteTargetEntry
 } from '../downloads/deleteFile'
+import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -169,6 +171,11 @@ interface ManagedMediaJob {
   record: MediaJobRecord
   /** Transient progress speed; not persisted by the database schema. */
   speedBps: number
+  /**
+   * Transient merge-phase byte progress, sampled from the merge output file.
+   * Never persisted: it is only meaningful while the merge is running.
+   */
+  mergeProgress: MediaMergeProgress | null
   /** Memory-only detected-stream headers; never persisted. */
   direct: MediaDirectDownloadRequest | null
   /** Memory-only analysis cookie; never persisted. */
@@ -294,6 +301,8 @@ export class MediaJobsManager {
   private readonly jobs = new Map<string, ManagedMediaJob>()
   private readonly analyses = new Map<string, CachedMediaAnalysis>()
   private readonly dirtyIds = new Set<string>()
+  /** One merge-output size poller per job, active only while merging. */
+  private readonly mergePollers = new Map<string, ReturnType<typeof setInterval>>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private publishTimer: ReturnType<typeof setTimeout> | null = null
   /** Bumped by every change that the published snapshot must reflect. */
@@ -533,6 +542,7 @@ export class MediaJobsManager {
     const job: ManagedMediaJob = {
       record,
       speedBps: 0,
+      mergeProgress: null,
       direct: null,
       cookie: input.cookie ?? null,
       optionFingerprint,
@@ -632,6 +642,7 @@ export class MediaJobsManager {
     const job: ManagedMediaJob = {
       record,
       speedBps: 0,
+      mergeProgress: null,
       direct: {
         kind: input.kind,
         referer: input.referer,
@@ -671,6 +682,7 @@ export class MediaJobsManager {
       return this.toMediaJob(job)
     }
 
+    this.endMergePhase(job)
     const updatedAt = this.now()
     job.record.status = 'cancelled'
     job.record.errorMessage = null
@@ -703,6 +715,7 @@ export class MediaJobsManager {
       )
     }
 
+    this.endMergePhase(job)
     job.record.status = 'paused'
     job.record.errorMessage = null
     job.record.updatedAt = this.now()
@@ -765,6 +778,7 @@ export class MediaJobsManager {
     }
     this.assertSelectionAvailable(job)
 
+    this.endMergePhase(job)
     job.record.status = 'queued'
     job.record.completedBytes = 0
     job.record.errorMessage = null
@@ -888,8 +902,15 @@ export class MediaJobsManager {
 
   /** Drop every in-memory trace of one job. Media files are untouched. */
   private forgetJob(id: string): void {
+    this.stopMergeProgressPolling(id)
     this.jobs.delete(id)
     this.dirtyIds.delete(id)
+  }
+
+  /** Leave the merge phase: stop sampling and drop the transient sample. */
+  private endMergePhase(job: ManagedMediaJob): void {
+    this.stopMergeProgressPolling(job.record.id)
+    job.mergeProgress = null
   }
 
   /** True when the pinned selection can still be used without a new analysis. */
@@ -1069,6 +1090,9 @@ export class MediaJobsManager {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    for (const id of [...this.mergePollers.keys()]) {
+      this.stopMergeProgressPolling(id)
+    }
 
     const updatedAt = this.now()
     let changed = false
@@ -1149,6 +1173,7 @@ export class MediaJobsManager {
       return
     }
     job.awaitingPolicy = false
+    this.endMergePhase(job)
     const runId = job.runId + 1
     job.runId = runId
 
@@ -1236,6 +1261,17 @@ export class MediaJobsManager {
     if (filePath !== null) job.record.filePath = filePath
     job.record.updatedAt = this.now()
 
+    // The merge output is the only measurable thing in this phase, and it only
+    // exists between the merge start and the rename that completes the job.
+    if (previousStatus !== nextStatus) {
+      if (nextStatus === 'merging') {
+        this.startMergeProgressPolling(job)
+      } else {
+        this.stopMergeProgressPolling(job.record.id)
+        job.mergeProgress = null
+      }
+    }
+
     const critical =
       previousStatus !== nextStatus ||
       (filePath !== null && filePath !== previousFilePath)
@@ -1257,6 +1293,72 @@ export class MediaJobsManager {
     this.publish()
   }
 
+  /**
+   * Sample the merge output file about once a second. ffmpeg merges with
+   * stream copy, so its size tracks the sum of the downloaded parts and gives
+   * the row real progress instead of an opaque "merging" bar.
+   */
+  private startMergeProgressPolling(job: ManagedMediaJob): void {
+    const id = job.record.id
+    job.mergeProgress = null
+    if (this.mergePollers.has(id)) return
+
+    const since = this.now()
+    const timer = setInterval(() => {
+      void this.sampleMergeProgress(id, since)
+    }, MERGE_PROGRESS_POLL_MS)
+    timer.unref?.()
+    this.mergePollers.set(id, timer)
+  }
+
+  /** Any status change ends the merge phase, so polling stops with it. */
+  private stopMergeProgressPolling(id: string): void {
+    const timer = this.mergePollers.get(id)
+    if (timer === undefined) return
+    clearInterval(timer)
+    this.mergePollers.delete(id)
+  }
+
+  private async sampleMergeProgress(id: string, since: number): Promise<void> {
+    const job = this.jobs.get(id)
+    if (!job || job.record.status !== 'merging' || this.closed) {
+      this.stopMergeProgressPolling(id)
+      return
+    }
+
+    let sample: MediaMergeProgress | null = null
+    try {
+      sample = await readMergeProgress({
+        dir: job.record.dir,
+        since,
+        totalBytes: job.record.totalBytes
+      })
+    } catch {
+      // An unreadable output directory is not a job failure.
+      sample = null
+    }
+
+    const current = this.jobs.get(id)
+    // A status change during the read wins: drop the sample and stop polling.
+    if (!current || current !== job || current.record.status !== 'merging') {
+      this.stopMergeProgressPolling(id)
+      return
+    }
+    if (sample === null) return
+
+    const previous = current.mergeProgress
+    if (
+      previous !== null &&
+      previous.completedBytes === sample.completedBytes &&
+      previous.totalBytes === sample.totalBytes
+    ) {
+      return
+    }
+    current.mergeProgress = sample
+    // Coalesced like every other progress update; the merge lasts minutes.
+    this.publish()
+  }
+
   private completeJob(
     id: string,
     runId: number,
@@ -1272,6 +1374,7 @@ export class MediaJobsManager {
       return
     }
 
+    this.endMergePhase(job)
     const filePath =
       result && typeof result.filePath === 'string' ? result.filePath.trim() : ''
     if (filePath.length === 0) {
@@ -1327,6 +1430,7 @@ export class MediaJobsManager {
       return
     }
 
+    this.endMergePhase(job)
     job.record.status = 'error'
     job.record.errorMessage =
       error instanceof AppError && error.code === 'MEDIA_SIZE_CAP_EXCEEDED'
@@ -1398,7 +1502,11 @@ export class MediaJobsManager {
       errorMessage: record.errorMessage,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      completedAt: record.completedAt
+      completedAt: record.completedAt,
+      // Additive and optional: only a running merge can measure its output.
+      ...(job.mergeProgress === null
+        ? {}
+        : { mergeProgress: Object.freeze({ ...job.mergeProgress }) })
     })
   }
 
@@ -1441,6 +1549,7 @@ export class MediaJobsManager {
       this.jobs.set(record.id, {
         record,
         speedBps: 0,
+        mergeProgress: null,
         direct: null,
         cookie: null,
         optionFingerprint: '',

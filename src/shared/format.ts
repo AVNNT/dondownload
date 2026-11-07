@@ -74,3 +74,48 @@ export function formatPercent(completedBytes: number, totalBytes: number): numbe
   }
   return Math.min(100, Math.max(0, (completedBytes / totalBytes) * 100))
 }
+
+/**
+ * A merge never reports 100%: the last percent belongs to the rename that
+ * follows ffmpeg, so the bar must not claim the job is finished early.
+ */
+export const MERGE_PROGRESS_MAX_PERCENT = 99
+
+/** Integer merge percent, clamped to 99 until the merge actually ends. */
+export function mergePercent(
+  completedBytes: number,
+  totalBytes: number
+): number {
+  if (!Number.isFinite(completedBytes) || !Number.isFinite(totalBytes)) {
+    return 0
+  }
+  if (totalBytes <= 0 || completedBytes <= 0) {
+    return 0
+  }
+  const percent = Math.floor((completedBytes / totalBytes) * 100)
+  return Math.min(MERGE_PROGRESS_MAX_PERCENT, Math.max(0, percent))
+}
+
+/** `formatBytes` with trailing zeros trimmed: "4.10 GB" reads as "4.1 GB". */
+export function formatCompactBytes(bytes: number): string {
+  const [value = '0', unit = 'B'] = formatBytes(bytes).split(' ')
+  if (!value.includes('.')) return `${value} ${unit}`
+  const trimmed = value.replace(/0+$/, '').replace(/\.$/, '')
+  return `${trimmed} ${unit}`
+}
+
+/**
+ * Merge detail text: `4.1 of 10.2 GB`. The unit is dropped from the first
+ * number only when both values share it, which is the normal case.
+ */
+export function formatMergeProgressLabel(
+  completedBytes: number,
+  totalBytes: number
+): string {
+  const completed = formatCompactBytes(completedBytes)
+  const total = formatCompactBytes(totalBytes)
+  const [completedValue, completedUnit] = completed.split(' ')
+  const totalUnit = total.split(' ')[1]
+  const left = completedUnit === totalUnit ? completedValue : completed
+  return `${left} of ${total}`
+}

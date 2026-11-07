@@ -11,6 +11,23 @@ vi.mock('electron', () => ({
   shell: { showItemInFolder }
 }))
 
+// The merge-output probe is exercised on its own (media-merge-progress.test.ts);
+// here only its scheduling and publication are under test.
+const { readMergeProgress } = vi.hoisted(() => ({
+  readMergeProgress: vi.fn(
+    async (_probe: {
+      dir: string
+      since: number
+      totalBytes?: number | null
+    }): Promise<{ completedBytes: number; totalBytes: number } | null> => null
+  )
+}))
+
+vi.mock('../src/main/mediaJobs/mergeProgress', () => ({
+  MERGE_PROGRESS_POLL_MS: 1_000,
+  readMergeProgress
+}))
+
 import type {
   MediaAnalysis,
   MediaFormatOption,
@@ -336,6 +353,8 @@ async function completeVideo(
 
 beforeEach(() => {
   showItemInFolder.mockReset()
+  readMergeProgress.mockReset()
+  readMergeProgress.mockResolvedValue(null)
 })
 
 afterEach(async () => {
@@ -1376,5 +1395,152 @@ describe('MediaJobsManager pause, resume and pinned retry', () => {
     await expect(harness.manager.resumeMedia(job.id)).rejects.toMatchObject({
       code: 'MEDIA_NOT_PAUSED'
     })
+  })
+})
+
+describe('MediaJobsManager merge progress', () => {
+  it('samples the merge output once a second and publishes it coalesced', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness()
+    await queueVideo(harness)
+    await flushMicrotasks()
+
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 1_000, totalBytes: 1_000 })
+    )
+    expect(readMergeProgress).not.toHaveBeenCalled()
+
+    readMergeProgress.mockResolvedValue({
+      completedBytes: 410,
+      totalBytes: 1_000
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+    expect(readMergeProgress.mock.calls[0]?.[0]).toEqual({
+      dir: harness.mediaDir,
+      since: expect.any(Number),
+      totalBytes: 1_000
+    })
+
+    // The sample is published through the same coalesced trailing update.
+    const before = harness.updates.length
+    await vi.advanceTimersByTimeAsync(200)
+    expect(harness.updates.length).toBeGreaterThan(before)
+    const published = harness.manager.getMediaSnapshot().jobs[0]
+    expect(published?.mergeProgress).toEqual({
+      completedBytes: 410,
+      totalBytes: 1_000
+    })
+
+    // The next tick re-reads the growing file.
+    readMergeProgress.mockResolvedValue({
+      completedBytes: 820,
+      totalBytes: 1_000
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(readMergeProgress).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(harness.manager.getMediaSnapshot().jobs[0]?.mergeProgress).toEqual({
+      completedBytes: 820,
+      totalBytes: 1_000
+    })
+  })
+
+  it('keeps the row indeterminate while the merge output is unmeasurable', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 1_000, totalBytes: 1_000 })
+    )
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+    const published = harness.manager.getMediaSnapshot().jobs[0]
+    expect(published?.status).toBe('merging')
+    expect(published?.mergeProgress).toBeUndefined()
+    expect(Object.keys(harness.manager.getMediaJob(job.id))).not.toContain(
+      'mergeProgress'
+    )
+  })
+
+  it('stops polling as soon as the job leaves the merging status', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 1_000, totalBytes: 1_000 })
+    )
+    readMergeProgress.mockResolvedValue({
+      completedBytes: 410,
+      totalBytes: 1_000
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+
+    harness.engine.pending.resolve({
+      filePath: path.join(harness.mediaDir, 'done.mp4'),
+      totalBytes: 1_000
+    })
+    await flushMicrotasks()
+
+    const completed = harness.manager.getMediaJob(job.id)
+    expect(completed.status).toBe('complete')
+    expect(completed.mergeProgress).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops polling when the job is paused', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 1_000, totalBytes: 1_000 })
+    )
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+
+    await harness.manager.pauseMedia(job.id)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(readMergeProgress).toHaveBeenCalledTimes(1)
+    expect(harness.manager.getMediaJob(job.id).mergeProgress).toBeUndefined()
+  })
+
+  it('ignores a sample that arrives after the job left the merge phase', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness()
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 1_000, totalBytes: 1_000 })
+    )
+
+    let release: (value: { completedBytes: number; totalBytes: number }) => void =
+      () => undefined
+    readMergeProgress.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+    )
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await harness.manager.pauseMedia(job.id)
+    release({ completedBytes: 410, totalBytes: 1_000 })
+    await flushMicrotasks()
+
+    expect(harness.manager.getMediaJob(job.id).mergeProgress).toBeUndefined()
   })
 })
