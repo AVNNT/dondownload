@@ -3,6 +3,7 @@ import { BrowserWindow, session, shell } from 'electron'
 import { isPublicOpenableUrl } from './scanner/openExternal'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import { themeWindowColors } from './settings/theme'
+import { traceStartup } from './startupTrace'
 import windowIconPath from './assets/icon.ico?asset'
 
 export interface CreateMainWindowOptions {
@@ -77,9 +78,16 @@ export function createMainWindow(
   })
 
   window.once('ready-to-show', () => {
+    // `ready-to-show` fires when the renderer has produced its first frame, so
+    // it doubles as the first-paint mark for startup tracing.
+    traceStartup('window ready-to-show (renderer first paint)')
     if (show) window.show()
   })
+  window.webContents.once('did-finish-load', () => {
+    traceStartup('renderer did-finish-load')
+  })
 
+  traceStartup('window created; loading renderer')
   const developmentUrl = process.env.ELECTRON_RENDERER_URL
   if (developmentUrl) {
     void window.loadURL(developmentUrl)
