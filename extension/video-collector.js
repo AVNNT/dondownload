@@ -30,10 +30,15 @@
   var MAX_SCRIPT_BYTES = 512 * 1024
   var RUN_KEY = '__donDownloadVideoRun'
   var MEDIA_PATH = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov)(?:$|[?#])/i
-  var MEDIA_URL =
-    /(?:https?:)?\/\/[^\s"'<>\\]+?\.(?:m3u8|mpd|mp4|m4v|webm|mkv|mov)(?:\?[^\s"'<>\\]*)?/gi
-  var ROOT_RELATIVE_MEDIA_URL =
-    /(?:^|["'(=\s])(\/[^\s"'<>\\]+?\.(?:m3u8|mpd|mp4|m4v|webm|mkv|mov)(?:\?[^\s"'<>\\]*)?)/gi
+  // A URL is captured whole, up to the first delimiter, and only then
+  // classified by its LAST path extension. Pornhub serves HLS as
+  // `.../1080P_4000K_65036195.mp4/master.m3u8?h=…`, so a pattern that stops at
+  // the first media extension would truncate it to a `.mp4` that is not the
+  // media at all.
+  var MEDIA_URL = /(?:https?:)?\/\/[^\s"'<>\\]+/gi
+  var ROOT_RELATIVE_MEDIA_URL = /(?:^|["'(=\s])(\/[^\s"'<>\\]+)/gi
+  /** Trailing punctuation a URL picks up from the text around it. */
+  var URL_TRAILING = /[),.;\]}]+$/
   var QUALITY_KEYS =
     /["']?(?:label|quality|res|resolution|height|size)["']?\s*:\s*["']?([^"',}\]\n]{1,40})/gi
   var SIZE_ATTRIBUTE_AS_BYTES = 100000
@@ -67,11 +72,35 @@
     return parsed.href
   }
 
+  /**
+   * The media kind of a URL, from the LAST extension of its path. A URL that
+   * only carries a media extension in an earlier segment
+   * (`.../1080P_4000K_65036195.mp4/master.m3u8`) is an HLS manifest, not an
+   * mp4, so the last segment alone decides.
+   */
   function kindFromUrl(url) {
-    var path = url.toLowerCase()
-    if (/\.m3u8(?:$|[?#])/.test(path)) return 'hls'
-    if (/\.mpd(?:$|[?#])/.test(path)) return 'dash'
-    if (/\.(mp4|m4v|webm|mkv|mov)(?:$|[?#])/.test(path)) return 'file'
+    var pathname
+    try {
+      pathname = new URL(url, 'https://placeholder.invalid/').pathname.toLowerCase()
+    } catch {
+      return null
+    }
+    var segments = pathname.split('/')
+    var last = segments[segments.length - 1]
+    var dot = last.lastIndexOf('.')
+    if (dot === -1 || dot === last.length - 1) return null
+    var extension = last.slice(dot + 1)
+    if (extension === 'm3u8') return 'hls'
+    if (extension === 'mpd') return 'dash'
+    if (
+      extension === 'mp4' ||
+      extension === 'm4v' ||
+      extension === 'webm' ||
+      extension === 'mkv' ||
+      extension === 'mov'
+    ) {
+      return 'file'
+    }
     return null
   }
 
@@ -371,8 +400,10 @@
 
     function emit(value, index) {
       if (typeof value !== 'string') return
-      var url = value.replace(/[),.;]+$/, '')
+      var url = value.replace(URL_TRAILING, '')
       if (url.length === 0 || url.length > 4096) return
+      // The pattern now matches any URL, so a non-media one is dropped here.
+      if (kindFromUrl(url) === null) return
       if (seen[index + ':' + url]) return
       seen[index + ':' + url] = true
       var start = Math.max(0, index - 420)

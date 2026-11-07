@@ -84,6 +84,32 @@ describe('generic HTML extraction', () => {
     expect(byUrl.has('https://discuss.example/t/another-topic/1')).toBe(false)
   })
 
+  it('keeps a script URL whole when a media extension sits in an earlier segment', () => {
+    const html = `<!doctype html>
+<html>
+  <body>
+    <script>
+      var flashvars_1 = {
+        "mediaDefinitions": [
+          {"format":"hls","videoUrl":"https://hv-h.phncdn.com/hls/videos/202310/23/440000000/1080P_4000K_65036195.mp4/master.m3u8?h=abc&e=1700000000&f=1","quality":"1080"},
+          {"format":"mp4","videoUrl":"https://ev-h.phncdn.com/videos/202310/23/440000000/240P_1000K_65036195.mp4?validfrom=1&hash=x","quality":"240"}
+        ]
+      };
+    </script>
+  </body>
+</html>`
+    const urls = extractCandidates(html, 'https://www.pornhub.example/view_video.php?viewkey=1')
+      .filter((candidate) => candidate.fromScript)
+      .map((candidate) => candidate.url)
+
+    expect(urls).toContain(
+      'https://hv-h.phncdn.com/hls/videos/202310/23/440000000/1080P_4000K_65036195.mp4/master.m3u8?e=1700000000&f=1&h=abc'
+    )
+    expect(urls).toContain(
+      'https://ev-h.phncdn.com/videos/202310/23/440000000/240P_1000K_65036195.mp4?hash=x&validfrom=1'
+    )
+  })
+
   it('resolves relative links against <base> and rejects non-HTTP schemes', () => {
     expect(resolveScanUrl('/x.zip', 'https://example.com/a/b')).toBe(
       'https://example.com/x.zip'

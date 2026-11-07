@@ -197,6 +197,48 @@ describe('video collector DOM reading', () => {
     })
   })
 
+  it('keeps the full Pornhub HLS URL whose path carries an .mp4 segment', () => {
+    const hls =
+      'https://hv-h.phncdn.com/hls/videos/202310/23/440000000/1080P_4000K_65036195.mp4/master.m3u8?h=abc&e=1700000000&f=1'
+    const mp4 =
+      'https://ev-h.phncdn.com/videos/202310/23/440000000/240P_1000K_65036195.mp4?validfrom=1&hash=x'
+    const script = node(
+      'script',
+      {},
+      {
+        text: `var flashvars = {
+          "mediaDefinitions": [
+            {"format":"hls","videoUrl":"${hls}","quality":"1080"},
+            {"format":"mp4","videoUrl":"${mp4}","quality":"240"}
+          ]
+        };`
+      }
+    )
+    const result = collector.readSources(
+      document('https://www.pornhub.example/view_video.php?viewkey=1', [script]),
+      windowFor('https://www.pornhub.example/view_video.php?viewkey=1')
+    )
+
+    expect(result.sources.map((source) => source.url).sort()).toEqual([hls, mp4].sort())
+    const byUrl = new Map(result.sources.map((source) => [source.url, source]))
+    expect(byUrl.get(hls)).toMatchObject({ kind: 'hls', height: 1080 })
+    expect(byUrl.get(mp4)).toMatchObject({ kind: 'file', height: 240 })
+  })
+
+  it('classifies a URL by its last path extension only', () => {
+    expect(
+      collector.kindFromUrl(
+        'https://hv-h.phncdn.com/hls/videos/1/1080P_4000K_65036195.mp4/master.m3u8?h=abc'
+      )
+    ).toBe('hls')
+    expect(
+      collector.kindFromUrl(
+        'https://ev-h.phncdn.com/videos/1/240P_1000K_65036195.mp4?validfrom=1&hash=x'
+      )
+    ).toBe('file')
+    expect(collector.kindFromUrl('https://cdn.example/page.html')).toBeNull()
+  })
+
   it('resolves relative sources and drops data: and credential URLs', () => {
     const dom = [
       node('video', {}, {

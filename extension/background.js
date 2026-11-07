@@ -32,7 +32,7 @@ import {
   installDownloadsListener,
   rememberDecidedDownload
 } from './handoff.js'
-import { captureGofileDownload } from './gofile-capture.js'
+import { captureGofileDownload, installGofileCaptureListeners } from './gofile-capture.js'
 import {
   HANDOFF_CARD_MESSAGE_TYPES,
   handleHandoffCardMessage
@@ -665,6 +665,10 @@ async function toggleOverlayOnActiveTab() {
 // also re-asserts the always-on all-sites registration, so a registration lost
 // to a browser reset comes back without user action.
 installDownloadsSupport()
+// The Gofile row capture listens on its own onCreated/onChanged, so it records
+// and cancels a scan's downloads whether or not the browser fires the held
+// onDeterminingFilename event the hand-off prefers.
+installGofileCaptureListeners(chrome)
 void ensureAllSitesMode(false).catch(() => undefined)
 
 if (chrome.commands && chrome.commands.onCommand) {

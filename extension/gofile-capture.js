@@ -240,3 +240,64 @@ export function captureGofileDownload(chromeApi, item) {
   }
   return true
 }
+
+/**
+ * Fold a later `onChanged` delta into a record the window already holds: the
+ * browser can report the final URL and the decided file name only after the item
+ * was created. A delta for an id the window never recorded is ignored, so an
+ * unrelated download can never enter the capture.
+ */
+export function updateGofileCapture(delta) {
+  if (armed === null || !delta || typeof delta !== 'object') return false
+  if (typeof delta.id !== 'number' || !Number.isInteger(delta.id)) return false
+  const record = armed.downloads.get(delta.id)
+  if (!record) return false
+  const finalUrl =
+    delta.finalUrl && typeof delta.finalUrl.current === 'string' ? delta.finalUrl.current : null
+  if (finalUrl !== null && finalUrl !== record.url && isGofileHostUrl(finalUrl)) {
+    record.url = finalUrl
+  }
+  const filename =
+    delta.filename && typeof delta.filename.current === 'string' ? delta.filename.current : null
+  if (filename !== null) {
+    const base = fileNameOf({ filename })
+    if (base !== null) record.filename = base
+  }
+  return true
+}
+
+/** One registration per worker generation. */
+let captureListenersInstalled = false
+
+/**
+ * The Gofile capture listens on `chrome.downloads.onCreated` itself, so it never
+ * depends on which event the automatic hand-off registered (the held
+ * onDeterminingFilename event does not fire for every download). `onChanged`
+ * carries the final URL and file name the browser decides after creation.
+ */
+export function installGofileCaptureListeners(chromeApi) {
+  const downloads = chromeApi && chromeApi.downloads
+  if (!downloads) return false
+  if (captureListenersInstalled) return true
+  try {
+    if (downloads.onCreated && typeof downloads.onCreated.addListener === 'function') {
+      downloads.onCreated.addListener((item) => {
+        captureGofileDownload(chromeApi, item)
+      })
+    }
+    if (downloads.onChanged && typeof downloads.onChanged.addListener === 'function') {
+      downloads.onChanged.addListener((delta) => {
+        updateGofileCapture(delta)
+      })
+    }
+    captureListenersInstalled = true
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Test hook: forget that listeners were installed for a previous fake API. */
+export function resetGofileCaptureListenersForTests() {
+  captureListenersInstalled = false
+}

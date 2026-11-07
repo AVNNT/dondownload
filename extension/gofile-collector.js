@@ -10,14 +10,18 @@
 // app rendered them. The collector therefore waits for that render (bounded)
 // and reads the rows from the live DOM.
 //
-// The real frontend renders a row with buttons, not anchors: the name cell is a
-// `<button type="button" data-action="…">name</button>`, the download control is
-// `<button type="button" data-action="download">`, and the only anchor in a row
-// is a folder link `<a href="/d/<code>" data-action="navigate">`. The download
+// The real frontend renders every listing entry as a row:
+// `div.fm-row[data-type="file"]` or `div.fm-row[data-type="folder"]`. A file row
+// holds its name in `button[data-action="open-file"]`, a `[data-action="preview"]`
+// button labelled "Preview", a `[data-action="download"]` button, and the size as
+// row text. A folder row holds one `a[data-action="navigate"]` link. The download
 // URL is never in the DOM at all — manager.js creates a transient anchor,
 // clicks it and removes it. So a row's URL can only be learned by letting the
 // browser start that download and reading it back in the background, which is
 // why `captureDownloads` clicks each row's download button in turn.
+//
+// A navigate link outside a folder row is a breadcrumb or the "go to parent
+// folder" control, never a subfolder, so it is never followed.
 //
 // Hard rules, enforced here and re-checked by the desktop:
 //  - never call api.gofile.io, never read localStorage/sessionStorage tokens,
@@ -46,6 +50,35 @@
   var CAPTURE_BUDGET_MS = 20000
   var RUN_KEY = '__donDownloadGofileRun'
   var SHARE_ID = /^[A-Za-z0-9_-]{4,64}$/
+  /** The real frontend marks every listing row with this class and data-type. */
+  var ROW_SELECTOR = '.fm-row[data-type]'
+  /** The row cell that holds the file name. */
+  var NAME_ACTION = 'open-file'
+  /**
+   * Row controls whose text is a label, never a file name. Any text inside one
+   * of them is skipped too, so "Preview" can never become a file name.
+   */
+  var CONTROL_ACTIONS = {
+    preview: true,
+    download: true,
+    copy: true,
+    share: true,
+    more: true,
+    navigate: true,
+    delete: true,
+    remove: true,
+    rename: true,
+    move: true,
+    options: true,
+    menu: true,
+    'item-menu': true,
+    'toggle-select': true,
+    'copy-link': true,
+    'select-all': true
+  }
+  /** A rendered timestamp ("Nov 7, 2026, 11:17 AM"), never a file name. */
+  var DATE_TEXT =
+    /\b(?:\d{1,2}:\d{2}\s*(?:am|pm)|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b/i
   var SIZE_TEXT = /(\d+(?:[.,]\d+)?)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB|K|M|G)(?![a-z0-9])/i
   var SIZE_ONLY = /^\s*(\d+(?:[.,]\d+)?)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB|K|M|G)\s*$/i
   var UNIT_BYTES = {
@@ -183,6 +216,11 @@
     return typeof value === 'string' ? value.trim().toLowerCase() : ''
   }
 
+  /** True for a row control whose text is a label, never a file name. */
+  function isControlAction(action) {
+    return action.length > 0 && CONTROL_ACTIONS[action] === true
+  }
+
   function queryAll(doc, selector) {
     if (!doc || typeof doc.querySelectorAll !== 'function') return []
     var found
@@ -200,17 +238,29 @@
     return list
   }
 
-  /** Depth-first walk of the rendered children, bounded. */
-  function walk(node, visit) {
+  /**
+   * Depth-first walk of the rendered children. `visit` returns false to skip a
+   * subtree (a control label must never contribute its text to a file name),
+   * and `limit` caps how many nodes are visited.
+   */
+  function walk(node, visit, limit) {
     if (!node) return
-    var children = node.children
-    if (!children || typeof children.length !== 'number') return
-    for (var index = 0; index < children.length; index += 1) {
-      var child = children[index]
-      if (!child) continue
-      visit(child)
-      walk(child, visit)
+    var budget = typeof limit === 'number' && limit > 0 ? limit : Infinity
+    var visited = 0
+    function descend(current) {
+      if (!current || visited >= budget) return
+      var children = current.children
+      if (!children || typeof children.length !== 'number') return
+      for (var index = 0; index < children.length; index += 1) {
+        if (visited >= budget) return
+        var child = children[index]
+        if (!child) continue
+        visited += 1
+        if (visit(child) === false) continue
+        descend(child)
+      }
     }
+    descend(node)
   }
 
   function absoluteHref(anchor, base) {
@@ -226,47 +276,183 @@
     }
   }
 
+  /** True when the element carries this exact class token. */
+  function hasClass(node, name) {
+    var raw = node && typeof node.getAttribute === 'function' ? node.getAttribute('class') : null
+    if (typeof raw !== 'string') return false
+    var parts = raw.split(/\s+/)
+    for (var index = 0; index < parts.length; index += 1) {
+      if (parts[index] === name) return true
+    }
+    return false
+  }
+
   /**
-   * The row container of one download button: the nearest ancestor that holds a
-   * name cell. Bounded, so a row-less button cannot walk the whole document.
+   * `file` or `folder` for a rendered listing row, `''` for anything else. The
+   * real frontend marks every row `div.fm-row[data-type="file"|"folder"]`.
+   */
+  function rowTypeOf(node) {
+    if (!node || typeof node.getAttribute !== 'function') return ''
+    if (!hasClass(node, 'fm-row')) return ''
+    var type = node.getAttribute('data-type')
+    if (typeof type !== 'string') return ''
+    var normalized = type.trim().toLowerCase()
+    return normalized === 'file' || normalized === 'folder' ? normalized : ''
+  }
+
+  /**
+   * The name cell of a row. The real frontend puts it in the
+   * `[data-action="open-file"]` button, whose own text also holds the timestamp
+   * and the size, so the first text-only leaf inside it is read instead. A
+   * control label ("Preview", "Download", "Copy", "Share", "More"), a size cell
+   * and a timestamp are never a file name.
+   */
+  function nameInRow(row) {
+    if (!row) return null
+    var cells = []
+    walk(
+      row,
+      function (node) {
+        if (actionOf(node) !== NAME_ACTION) return true
+        cells.push(node)
+        return false
+      },
+      MAX_ROW_NODES
+    )
+    if (cells.length === 0) cells.push(row)
+    for (var index = 0; index < cells.length; index += 1) {
+      var name = nameLeafIn(cells[index])
+      if (name !== null) return name
+    }
+    return null
+  }
+
+  /** The first text-only leaf of one cell that is neither a size nor a date. */
+  function nameLeafIn(cell) {
+    if (!cell) return null
+    var children = cell.children
+    if (!children || typeof children.length !== 'number' || children.length === 0) {
+      var own = cleanName(textOf(cell))
+      if (own === null) return null
+      if (parseSizeOnly(own) !== null) return null
+      if (DATE_TEXT.test(own)) return null
+      return own
+    }
+    var found = null
+    walk(
+      cell,
+      function (node) {
+        if (found !== null) return false
+        if (isControlAction(actionOf(node))) return false
+        var nested = node.children
+        if (nested && typeof nested.length === 'number' && nested.length > 0) return true
+        var text = cleanName(textOf(node))
+        if (text === null) return true
+        if (parseSizeOnly(text) !== null) return true
+        if (DATE_TEXT.test(text)) return true
+        found = text
+        return false
+      },
+      MAX_ROW_NODES
+    )
+    return found
+  }
+
+  /**
+   * The row of one download button, for a frontend that does not mark its rows:
+   * the nearest ancestor that holds exactly one download button and a name.
+   * Bounded, so a row-less button cannot walk the whole document.
    */
   function rowFor(node) {
     var current = node && node.parentNode ? node.parentNode : null
     for (var depth = 0; depth < MAX_ANCESTOR_DEPTH && current; depth += 1) {
-      if (nameInRow(current) !== null) return current
+      if (rowTypeOf(current) !== '') return current
+      if (countDownloadsIn(current) === 1 && nameInRow(current) !== null) return current
       current = current.parentNode
     }
     return node && node.parentNode ? node.parentNode : null
   }
 
+  /** Download controls inside one subtree, counted up to `limit`. */
+  function countDownloadsIn(node, limit) {
+    var maximum = typeof limit === 'number' && limit > 0 ? limit : 2
+    var count = 0
+    walk(
+      node,
+      function (child) {
+        if (count >= maximum) return false
+        if (actionOf(child) === 'download') count += 1
+        return count < maximum
+      },
+      MAX_ROW_NODES * 2
+    )
+    return count
+  }
+
+  /** The row's own download control, which is the click target. */
+  function downloadButtonIn(row) {
+    var found = null
+    walk(
+      row,
+      function (node) {
+        if (found !== null) return false
+        if (actionOf(node) === 'download') {
+          found = node
+          return false
+        }
+        return true
+      },
+      MAX_ROW_NODES
+    )
+    return found
+  }
+
+  /** The folder link inside a folder row, or null. */
+  function folderLinkIn(row) {
+    var found = null
+    walk(
+      row,
+      function (node) {
+        if (found !== null) return false
+        if (tagOf(node) !== 'a') return true
+        if (typeof node.getAttribute !== 'function') return true
+        if (node.getAttribute('href') === null) return true
+        found = node
+        return false
+      },
+      MAX_ROW_NODES
+    )
+    return found
+  }
+
   /**
-   * The name cell of a row. The real frontend puts it in a button with its own
-   * `data-action`, so that is read first; otherwise the first text-only leaf
-   * that is not the download control and not a size cell is used.
+   * Every rendered listing row, in document order. The real frontend marks them
+   * `.fm-row[data-type]`; a page that does not is read through the fallback in
+   * `rowFor`, one download button at a time.
    */
-  function nameInRow(row) {
-    if (!row) return null
-    var actionName = null
-    var leafName = null
-    var visited = 0
-    walk(row, function (node) {
-      if (actionName !== null || visited >= MAX_ROW_NODES) return
-      visited += 1
-      var action = actionOf(node)
-      if (action === 'download' || action === 'navigate') return
-      var text = cleanName(textOf(node))
-      if (text === null) return
-      if (action.length > 0 && actionName === null) {
-        actionName = text
-        return
-      }
-      if (leafName !== null) return
-      var children = node.children
-      if (children && typeof children.length === 'number' && children.length > 0) return
-      if (parseSizeOnly(text) !== null) return
-      leafName = text
-    })
-    return actionName !== null ? actionName : leafName
+  function rowElements(doc) {
+    var rows = []
+    var seen = []
+    var selected = queryAll(doc, ROW_SELECTOR)
+    for (var index = 0; index < selected.length; index += 1) {
+      var node = selected[index]
+      if (rowTypeOf(node) === '') continue
+      if (seen.indexOf(node) !== -1) continue
+      seen.push(node)
+      rows.push(node)
+      if (rows.length >= MAX_FILES) break
+    }
+    if (rows.length > 0) return rows
+    var buttons = queryAll(doc, '[data-action="download"]')
+    for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex += 1) {
+      var row = rowFor(buttons[buttonIndex])
+      if (!row || seen.indexOf(row) !== -1) continue
+      if (rowTypeOf(row) === 'folder') continue
+      seen.push(row)
+      rows.push(row)
+      if (rows.length >= MAX_FILES) break
+    }
+    return rows
   }
 
   /** The size the row shows, from a size-only cell first, then its text. */
@@ -293,16 +479,22 @@
   }
 
   /**
-   * Read every rendered row, in document order. A row is a download button (the
-   * real frontend) or, on a page that does render links, a Gofile download
-   * anchor. `url` is null for a button row: the page never exposes that URL, so
-   * the background fills it from the browser download the click produced.
+   * Read every rendered row, in document order.
+   *
+   * A row is one listing entry: `div.fm-row[data-type="file"]` with its name in
+   * `[data-action="open-file"]` and its download control in
+   * `[data-action="download"]`, or `div.fm-row[data-type="folder"]` with its
+   * link. `url` is null for a file row: the page never exposes a download URL,
+   * so the background fills it from the browser download the click produced.
+   *
+   * Rows are deduplicated by identity and by name+size, never by name alone: two
+   * different files may legitimately share a name.
    */
   function readRowElements(doc, shareId) {
     var files = []
     var folders = []
-    var seenFiles = {}
-    var seenFolders = {}
+    var seenFileKeys = {}
+    var seenFolderUrls = {}
     if (!doc || typeof doc.querySelectorAll !== 'function') {
       return { files: files, folders: folders }
     }
@@ -310,50 +502,72 @@
     var body = doc.body ? doc.body : null
     if (body === null) return { files: files, folders: folders }
 
-    walk(body, function (node) {
-      if (files.length >= MAX_FILES) return
-      if (typeof node.getAttribute !== 'function') return
-      var action = actionOf(node)
+    var rows = rowElements(doc)
+    for (var index = 0; index < rows.length; index += 1) {
+      if (files.length >= MAX_FILES) break
+      var row = rows[index]
+      var type = rowTypeOf(row)
 
-      if (action === 'download') {
-        var row = rowFor(node)
-        var name = nameInRow(row)
-        if (name === null) return
-        var key = name.toLowerCase()
-        if (seenFiles[key]) return
-        seenFiles[key] = true
-        files.push({ name: name, size: sizeInRow(row), url: null, node: node })
-        return
+      if (type === 'folder') {
+        if (folders.length >= MAX_FOLDERS) continue
+        var link = folderLinkIn(row)
+        if (link === null) continue
+        var folderHref = absoluteHref(link, base)
+        if (folderHref === null) continue
+        if (!isShareHost(hostOf(folderHref))) continue
+        var folderId = shareIdFromUrl(folderHref)
+        // Only a subfolder of this listing is followed. The current share id is
+        // the listing itself, and a breadcrumb or "go to parent folder" link
+        // points at an ancestor; neither is a subfolder.
+        if (folderId === null || folderId === shareId) continue
+        if (seenFolderUrls[folderHref]) continue
+        seenFolderUrls[folderHref] = true
+        var folderName = nameInRow(row)
+        if (folderName === null) folderName = cleanName(textOf(link))
+        folders.push({ url: folderHref, name: folderName, node: link })
+        continue
       }
 
-      if (tagOf(node) !== 'a') return
-      var href = absoluteHref(node, base)
-      if (href === null) return
-      if (isDownloadUrl(href)) {
-        if (seenFiles[href]) return
-        seenFiles[href] = true
+      var name = nameInRow(row)
+      if (name === null) continue
+      var size = sizeInRow(row)
+      // The row's own id is the identity the frontend itself uses; a row without
+      // one is identified by name+size, because two files may share a name.
+      var rowId = typeof row.getAttribute === 'function' ? row.getAttribute('data-id') : null
+      var key =
+        typeof rowId === 'string' && rowId.length > 0
+          ? 'row:' + rowId
+          : name.toLowerCase() + '\u0000' + (size === null ? '' : String(size))
+      if (seenFileKeys[key]) continue
+      seenFileKeys[key] = true
+      files.push({ name: name, size: size, url: null, node: downloadButtonIn(row) })
+    }
+
+    // A page that renders real download anchors instead of rows exposes those
+    // URLs directly. They are read here and never used to follow a folder.
+    if (rows.length === 0) {
+      walk(body, function (node) {
+        if (files.length >= MAX_FILES) return false
+        if (tagOf(node) !== 'a') return true
+        var href = absoluteHref(node, base)
+        if (href === null) return true
+        if (!isDownloadUrl(href)) return true
+        if (seenFileKeys[href]) return false
+        seenFileKeys[href] = true
+        var anchorRow = rowFor(node)
         var hrefName = fileNameFromUrl(href)
-        if (hrefName === null) hrefName = nameInRow(rowFor(node))
+        if (hrefName === null) hrefName = nameInRow(anchorRow)
         if (hrefName === null) hrefName = cleanName(textOf(node))
-        if (hrefName === null) return
+        if (hrefName === null) return true
         files.push({
           name: hrefName,
-          size: sizeInRow(rowFor(node)),
+          size: sizeInRow(anchorRow),
           url: href,
           node: node
         })
-        return
-      }
-      if (href === base) return
-      if (folders.length >= MAX_FOLDERS) return
-      // A folder link the frontend renders is `/d/<folder code>` with its own
-      // action; a plain anchor still has to name this same share.
-      var isFolderLink = action === 'navigate' && isShareHost(hostOf(href))
-      if (!isFolderLink && shareIdFromUrl(href) !== shareId) return
-      if (seenFolders[href]) return
-      seenFolders[href] = true
-      folders.push({ url: href, name: cleanName(textOf(node)), node: node })
-    })
+        return true
+      })
+    }
 
     return { files: files, folders: folders }
   }
@@ -405,9 +619,15 @@
     return 'empty'
   }
 
+  /**
+   * The identity of one row across listings. A URL is exact; otherwise the name
+   * is only unique together with the size, because two different files may
+   * legitimately share a name.
+   */
   function fileKey(file) {
     if (typeof file.url === 'string' && file.url.length > 0) return file.url
-    return 'name:' + file.name.toLowerCase()
+    var size = typeof file.size === 'number' && file.size > 0 ? String(file.size) : ''
+    return 'name:' + file.name.toLowerCase() + '\u0000' + size
   }
 
   function mergeFiles(target, incoming) {
@@ -530,27 +750,39 @@
   }
 
   /**
-   * Follow the rendered subfolder links inside the same share, depth-capped, so
-   * a nested share lists its files in one scan. Nothing is typed or fetched:
-   * the page's own rendered links are clicked.
+   * Follow the rendered subfolder links of the current listing, depth-capped, so
+   * a nested share lists its files in one scan. Nothing is typed or fetched: the
+   * page's own rendered links are clicked.
+   *
+   * Only a folder row of the listing is ever followed, and never one whose share
+   * id is the listing itself or an ancestor already entered, so a breadcrumb or
+   * a "go to parent folder" link can never navigate the tab away. Resolves with
+   * the number of folders entered, which the caller uses to return to the start.
    */
   function followFolders(doc, win, shareId, files, folders, options) {
     var queue = folders.slice(0, MAX_FOLDERS)
     var visited = {}
+    var ancestors = {}
     var depth = 0
+    var entered = 0
+    if (shareId !== null) ancestors[shareId] = true
 
     function step() {
-      if (files.length >= MAX_FILES) return Promise.resolve()
-      if (depth >= MAX_DEPTH || queue.length === 0) return Promise.resolve()
+      if (files.length >= MAX_FILES) return Promise.resolve(entered)
+      if (depth >= MAX_DEPTH || queue.length === 0) return Promise.resolve(entered)
       var folder = queue.shift()
       if (!folder || visited[folder.url]) return step()
       visited[folder.url] = true
+      var folderId = shareIdFromUrl(folder.url)
+      if (folderId === null || ancestors[folderId]) return step()
       var anchor = anchorForFolder(doc, folder.url)
       if (anchor === null) return step()
       depth += 1
+      entered += 1
+      ancestors[folderId] = true
       return clickFolder(anchor, options)
         .then(function () {
-          return waitForRows(doc, win, shareId, {
+          return waitForRows(doc, win, folderId, {
             waitMs: options && typeof options.folderWaitMs === 'number'
               ? options.folderWaitMs
               : FOLDER_WAIT_MS,
@@ -570,6 +802,60 @@
     }
 
     return step()
+  }
+
+  /** Poll the page URL until it is `url` again, or the bounded wait ends. */
+  function waitForUrl(doc, win, url, waitMs) {
+    return new Promise(function (resolve) {
+      var deadline = Date.now() + Math.max(0, waitMs)
+      function check() {
+        if (pageUrl(doc, win) === url) {
+          resolve(true)
+          return
+        }
+        if (Date.now() >= deadline || !win || typeof win.setTimeout !== 'function') {
+          resolve(false)
+          return
+        }
+        win.setTimeout(check, POLL_MS)
+      }
+      check()
+    })
+  }
+
+  /**
+   * Put the tab back on the share the scan started from. A subfolder is entered
+   * with the page's own client-side navigation, so the same history stack walks
+   * back; a browser without history gets an explicit replace. The scan never
+   * leaves the user's tab on a folder they did not open.
+   */
+  function restoreStartPage(doc, win, startUrl, entered, options) {
+    if (entered <= 0) return Promise.resolve(false)
+    if (typeof startUrl !== 'string' || startUrl.length === 0) return Promise.resolve(false)
+    if (pageUrl(doc, win) === startUrl) return Promise.resolve(false)
+    if (options && typeof options.restoreStart === 'function') {
+      return Promise.resolve(options.restoreStart(startUrl)).then(function () {
+        return true
+      })
+    }
+    var history = win && win.history
+    if (history && typeof history.go === 'function') {
+      try {
+        history.go(0 - entered)
+      } catch {
+        // A history the browser refuses leaves the explicit replace below.
+      }
+      return waitForUrl(doc, win, startUrl, FOLDER_WAIT_MS)
+    }
+    var location = win && win.location
+    if (location && typeof location.replace === 'function') {
+      try {
+        location.replace(startUrl)
+      } catch {
+        return Promise.resolve(false)
+      }
+    }
+    return Promise.resolve(false)
   }
 
   /**
@@ -621,10 +907,14 @@
    * (`empty`, `password`, `premium`, `not-found`, `timeout`). A file whose
    * download URL the page never exposed has `url: null`; the background fills
    * it from the browser download the click produced.
+   *
+   * The tab is put back on the share the scan started from before anything is
+   * clicked, so the scan never leaves the user on a folder they did not open.
    */
   function collectShare(doc, win, options) {
     var settings = options && typeof options === 'object' ? options : {}
-    var shareId = shareIdFromUrl(pageUrl(doc, win))
+    var startUrl = pageUrl(doc, win)
+    var shareId = shareIdFromUrl(startUrl)
     if (shareId === null) {
       return Promise.resolve({
         shareId: null,
@@ -653,13 +943,17 @@
         }
       }
       return followFolders(doc, win, shareId, files, rows.folders, settings).then(
-        function () {
-          return {
-            shareId: shareId,
-            status: 'ok',
-            files: files,
-            folders: rows.folders.length
-          }
+        function (entered) {
+          return restoreStartPage(doc, win, startUrl, entered, settings).then(
+            function () {
+              return {
+                shareId: shareId,
+                status: 'ok',
+                files: files,
+                folders: rows.folders.length
+              }
+            }
+          )
         }
       )
     }).then(function (result) {
