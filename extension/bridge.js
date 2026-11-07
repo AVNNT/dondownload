@@ -21,6 +21,11 @@ export const SHOW_DOWNLOAD_MESSAGE_TYPE = 'show-download'
 export const SCAN_PAGE_MESSAGE_TYPE = 'scan-page'
 export const SCAN_IMAGES_MESSAGE_TYPE = 'scan-images'
 export const SCAN_GOFILE_MESSAGE_TYPE = 'scan-gofile'
+export const SCAN_VIDEO_MESSAGE_TYPE = 'scan-video'
+export const MAX_SCAN_VIDEO_SOURCES = 24
+export const MAX_VIDEO_LABEL_LENGTH = 80
+export const MAX_VIDEO_TITLE_LENGTH = 300
+const VIDEO_SOURCE_KINDS = ['file', 'hls', 'dash']
 export const MAX_SCAN_GOFILE_FILES = 500
 export const MAX_GOFILE_NAME_LENGTH = 240
 const GOFILE_SHARE_ID = /^[A-Za-z0-9_-]{4,64}$/
@@ -1435,6 +1440,85 @@ export function sendScanImages(input) {
       }
     }
     return { ok: true }
+  })
+}
+
+/**
+ * Report the media URLs the user's own video tab rendered. A page yt-dlp cannot
+ * read (no extractor, a Cloudflare challenge, an age gate) still plays in that
+ * tab, so the collector reads the video/source elements and the player config
+ * it exposed and this sends only validated http(s) URLs. The optional Cookie is
+ * the same one-shot exact-origin value the other scans use.
+ */
+export function sendScanVideo(input) {
+  const raw = input === null || typeof input !== 'object' ? {} : input
+  const page = normalizeSupportedUrl(raw.pageUrl)
+  if (!page.ok) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: page.code, message: page.message }
+    })
+  }
+
+  const sources = []
+  const seen = new Set()
+  for (const entry of Array.isArray(raw.sources) ? raw.sources : []) {
+    if (sources.length >= MAX_SCAN_VIDEO_SOURCES) break
+    if (entry === null || typeof entry !== 'object') continue
+    const url = normalizeSupportedUrl(entry.url)
+    if (!url.ok || seen.has(url.url)) continue
+    if (!VIDEO_SOURCE_KINDS.includes(entry.kind)) continue
+    seen.add(url.url)
+    const source = { url: url.url, kind: entry.kind }
+    const label = normalizeHeaderText(entry.label, MAX_VIDEO_LABEL_LENGTH)
+    if (label !== null) source.label = label
+    for (const key of ['width', 'height', 'sizeBytes']) {
+      const value = entry[key]
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        source[key] = Math.round(value)
+      }
+    }
+    sources.push(source)
+  }
+
+  let cookie
+  if (raw.cookie !== undefined && raw.cookie !== null) {
+    cookie = normalizeHeaderText(raw.cookie, MAX_COOKIE_HEADER_LENGTH)
+    if (cookie === null || /[\r\n]/.test(cookie)) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message: 'The browser cookie header is not valid.'
+        }
+      })
+    }
+  }
+
+  const title = normalizeHeaderText(raw.title, MAX_VIDEO_TITLE_LENGTH)
+
+  return sendNativeRequest({
+    type: SCAN_VIDEO_MESSAGE_TYPE,
+    pageUrl: page.url,
+    ...(title === null ? {} : { title }),
+    sources,
+    ...(cookie === undefined ? {} : { cookie })
+  }).then((result) => {
+    if (result.ok === false) return result
+    const response = result.response
+    if (!response || response.ok !== true || response.accepted !== true) {
+      return {
+        ok: false,
+        error:
+          response && response.ok === false
+            ? describeResponseError(response)
+            : {
+                code: 'NATIVE_RESPONSE_INVALID',
+                message: 'The DonDownload helper returned an unexpected response.'
+              }
+      }
+    }
+    return { ok: true, sourceCount: sources.length }
   })
 }
 

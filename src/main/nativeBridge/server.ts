@@ -79,6 +79,13 @@ import {
   parseScanImagesRequest,
   type ScanImagesRequest
 } from '@shared/scanImages'
+import {
+  MAX_SCAN_VIDEO_BODY_BYTES,
+  SCAN_VIDEO_CHANNEL,
+  SCAN_VIDEO_ROUTE,
+  parseScanVideoRequest,
+  type ScanVideoRequest
+} from '@shared/scanVideo'
 import type { ScanSession } from '@shared/scanner'
 import { ValidationError } from '@shared/validation'
 import { AppError, toErrorInfo } from '../errors'
@@ -189,6 +196,12 @@ export interface NativeBridgeOptions {
      * reported files into cards.
      */
     startGofile?(input: ScanGofileRequest): ScanSession
+    /**
+     * Fill (or create) a video card from the media URLs the user's own browser
+     * tab rendered. Nothing is fetched: the desktop only validates the reported
+     * URLs and turns them into quality options.
+     */
+    startVideoMedia?(input: ScanVideoRequest): Promise<ScanSession>
   }
   /** Focus the desktop and open the scanner view after an extension request. */
   onScanRequested?: (session: ScanSession) => void
@@ -405,6 +418,7 @@ export async function startNativeBridge(
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
       route !== SCAN_GOFILE_ROUTE &&
+      route !== SCAN_VIDEO_ROUTE &&
       route !== DOWNLOAD_STATUS_ROUTE &&
       route !== SHOW_DOWNLOAD_ROUTE &&
       !isMediaRoute(route)
@@ -435,6 +449,7 @@ export async function startNativeBridge(
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
       route !== SCAN_GOFILE_ROUTE &&
+      route !== SCAN_VIDEO_ROUTE &&
       route !== DOWNLOAD_STATUS_ROUTE &&
       route !== SHOW_DOWNLOAD_ROUTE &&
       options.mediaBridge === undefined
@@ -453,16 +468,19 @@ export async function startNativeBridge(
       return
     }
 
-    // One route carries a whole page walk of images, and the Gofile route can
-    // carry up to 500 rendered rows, so both need a much larger body than every
-    // other (single URL or small status) request. The limit is chosen from the
-    // already validated route, before any byte is read.
+    // One route carries a whole page walk of images, the Gofile route can carry
+    // up to 500 rendered rows, and the video route up to 24 media URLs, so all
+    // three need a much larger body than every other (single URL or small
+    // status) request. The limit is chosen from the already validated route,
+    // before any byte is read.
     const bodyLimit =
       route === SCAN_IMAGES_ROUTE
         ? MAX_SCAN_IMAGES_BODY_BYTES
         : route === SCAN_GOFILE_ROUTE
           ? MAX_SCAN_GOFILE_BODY_BYTES
-          : MAX_BRIDGE_BODY_BYTES
+          : route === SCAN_VIDEO_ROUTE
+            ? MAX_SCAN_VIDEO_BODY_BYTES
+            : MAX_BRIDGE_BODY_BYTES
 
     const declaredLength = request.headers['content-length']
     if (declaredLength !== undefined) {
@@ -536,6 +554,11 @@ export async function startNativeBridge(
 
     if (route === SCAN_GOFILE_ROUTE) {
       await handleScanGofileRequest(parsed, response)
+      return
+    }
+
+    if (route === SCAN_VIDEO_ROUTE) {
+      await handleScanVideoRequest(parsed, response)
       return
     }
 
@@ -1260,6 +1283,61 @@ export async function startNativeBridge(
       ok: true,
       accepted: true,
       operation: SCAN_GOFILE_CHANNEL
+    })
+  }
+
+  /**
+   * Explicit "scan this video page" from the extension. The user's own tab
+   * rendered the media, so the desktop never fetches the page and never tries
+   * to solve a challenge or an age gate. Every URL is re-validated and checked
+   * against the public-target policy by the scanner, and the optional Cookie is
+   * the same one-shot exact-origin value the other browser scans use. Nothing
+   * is queued here.
+   */
+  async function handleScanVideoRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    if (options.scanner === undefined || options.scanner.startVideoMedia === undefined) {
+      sendError(
+        response,
+        503,
+        'SCAN_UNAVAILABLE',
+        'Video page scanning is not available in this DonDownload build.'
+      )
+      return
+    }
+    let input: ScanVideoRequest
+    try {
+      input = parseScanVideoRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    let session: ScanSession
+    try {
+      session = await options.scanner.startVideoMedia(input)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not start a video session (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
+      options.onScanRequested?.(session)
+    } catch {
+      // Focus is best effort; the session already holds the card.
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: SCAN_VIDEO_CHANNEL
     })
   }
 

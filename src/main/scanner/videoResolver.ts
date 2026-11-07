@@ -189,7 +189,7 @@ function cleanTitle(value: unknown, fallback: string): string {
   return bounded
 }
 
-function safeThumbnail(value: unknown): string | null {
+export function safeThumbnail(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0 || value.length > 2048) {
     return null
   }
