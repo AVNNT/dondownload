@@ -1,5 +1,10 @@
 import { AppError } from '../errors'
-import { buildRpcRequest, parseRpcResponse } from './rpc'
+import {
+  buildMulticallRequest,
+  buildRpcRequest,
+  parseRpcResponse,
+  parseRpcSubCalls
+} from './rpc'
 
 interface Aria2Version {
   version: string
@@ -19,7 +24,14 @@ export class Aria2Client {
   }
 
   async call<T>(method: string, params: unknown[] = []): Promise<T> {
-    const body = buildRpcRequest(this.nextRequestId++, method, this.secret, params)
+    const body =
+      method === 'system.multicall'
+        ? buildMulticallRequest(
+            this.nextRequestId++,
+            this.secret,
+            parseRpcSubCalls(params[0])
+          )
+        : buildRpcRequest(this.nextRequestId++, method, this.secret, params)
 
     let response: Response
     try {

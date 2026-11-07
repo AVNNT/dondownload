@@ -95,6 +95,11 @@ function isGidNotFound(error: unknown): boolean {
   )
 }
 
+/** One entry of a `system.multicall` result. */
+type Aria2BatchResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: AppError }
+
 /**
  * Narrow port used by the media-job manager so queued media starts are driven
  * by this manager's existing policy timer instead of a second scheduler.
@@ -232,7 +237,12 @@ export class DownloadManager {
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private polling = false
   private reconciling = false
-  private lastPublished: string | null = null
+  /**
+   * Snapshot revision. Every mutation that changes published data bumps it, so
+   * `publish()` never has to serialize the full history to detect a change.
+   */
+  private revision = 0
+  private publishedRevision = 0
   private persistenceErrorLogged = false
   private database: DownloadDatabase | null
 
@@ -281,13 +291,14 @@ export class DownloadManager {
   }
 
   publish(force = false): void {
-    const snapshot = this.getSnapshot()
-    const serialized = JSON.stringify(snapshot)
-    if (!force && serialized === this.lastPublished) {
-      return
-    }
-    this.lastPublished = serialized
-    this.onUpdate(snapshot)
+    if (!force && this.revision === this.publishedRevision) return
+    this.publishedRevision = this.revision
+    this.onUpdate(this.getSnapshot())
+  }
+
+  /** Mark the published snapshot stale; the next `publish()` sends it. */
+  private markSnapshotDirty(): void {
+    this.revision += 1
   }
 
   /**
@@ -428,7 +439,6 @@ export class DownloadManager {
       }
 
       await this.pumpPolicy(client)
-      this.lastPublished = null
       this.publish(true)
     } finally {
       this.reconciling = false
@@ -501,6 +511,15 @@ export class DownloadManager {
   }
 
   /**
+   * One public item by exact id, or null. A cheap alternative to building the
+   * whole snapshot when a caller only needs a single child record.
+   */
+  getItem(id: string): DownloadItem | null {
+    const record = this.records.get(id)
+    return record ? this.toPublicItem(record) : null
+  }
+
+  /**
    * Keep a completed child's record pointing at a script that was renamed in
    * place. The path must still be inside the download root.
    */
@@ -531,7 +550,6 @@ export class DownloadManager {
     record.filename = path.basename(filePath)
     record.updatedAt = this.now()
     this.persistNow(record)
-    this.lastPublished = null
     this.publish(true)
   }
 
@@ -696,7 +714,6 @@ export class DownloadManager {
       }
       this.persistDownloadControls(record)
       this.persistBlockReason(record)
-      this.lastPublished = null
       this.publish(true)
       this.ensurePolling()
       return record
@@ -744,7 +761,6 @@ export class DownloadManager {
         this.logPersistenceError('could not be rolled back', error)
       }
     }
-    this.lastPublished = null
     this.publish(true)
   }
 
@@ -1126,7 +1142,6 @@ export class DownloadManager {
    * this so a newly closed/opened allowed-hours window takes effect promptly.
    */
   async refreshPolicy(): Promise<void> {
-    this.lastPublished = null
     this.ensurePolling()
     await this.poll()
     this.publish(true)
@@ -1140,6 +1155,7 @@ export class DownloadManager {
     const current = this.blockReasons.get(record.id) ?? null
     if (current === reason) return
     this.blockReasons.set(record.id, reason)
+    this.markSnapshotDirty()
     if (persist) this.persistBlockReason(record)
   }
 
@@ -1740,7 +1756,7 @@ export class DownloadManager {
       clearTimeout(timer)
       this.autoRetryTimers.delete(id)
     }
-    this.autoRetryDeadlines.delete(id)
+    if (this.autoRetryDeadlines.delete(id)) this.markSnapshotDirty()
   }
 
   /**
@@ -1772,6 +1788,7 @@ export class DownloadManager {
 
     this.clearAutoRetry(record.id)
     this.autoRetryDeadlines.set(record.id, this.now() + delay)
+    this.markSnapshotDirty()
     const timer = setTimeout(() => {
       this.autoRetryTimers.delete(record.id)
       this.autoRetryDeadlines.delete(record.id)
@@ -1804,6 +1821,7 @@ export class DownloadManager {
     patch: Partial<DownloadItem>
   ): void {
     Object.assign(record, patch, { updatedAt: this.now() })
+    this.markSnapshotDirty()
   }
 
   private applyStatus(record: DownloadItem, rawStatus: unknown): void {
@@ -1987,7 +2005,11 @@ export class DownloadManager {
     }
   }
 
-  private hasPendingDownloads(): boolean {
+  /**
+   * True while any download is queued, waiting for the policy gate or actively
+   * transferring. Paused, completed and failed rows do not count.
+   */
+  hasPendingDownloads(): boolean {
     for (const record of this.records.values()) {
       if (
         record.status === 'queued' ||
@@ -2040,37 +2062,37 @@ export class DownloadManager {
       }
 
       if (client) {
-        for (const record of pending) {
-          if (!this.records.has(record.id)) continue
-          // Not yet submitted; the policy pass below owns it.
-          if (record.gid === '') continue
-          // Policy-paused rows stay waiting until the next window.
-          if (this.blockReasons.get(record.id) === 'allowed-hours') continue
-          try {
-            const status = await client.call<unknown>('aria2.tellStatus', [
-              record.gid
-            ])
-            if (!this.records.has(record.id)) continue
-            this.applyStatus(record, status)
-          } catch (error) {
-            if (
-              error instanceof AppError &&
-              error.code === 'ARIA2_RPC_ERROR' &&
-              /not found/i.test(error.message)
-            ) {
-              this.updateRecord(record, {
-                // A vanished aria2 GID is a stopped transfer, not a failed
-                // attempt. Keep the partial file/retry budget and expose the
-                // explicit interrupted recovery action to the user.
-                status: 'interrupted',
-                speedBps: 0,
-                etaSeconds: null,
-                errorMessage: INTERRUPTED_MESSAGE,
-                errorDetail: null
-              })
-              this.setBlockReason(record, null)
-              this.persistNow(record)
-            }
+        const observed = pending.filter(
+          (record) =>
+            this.records.has(record.id) &&
+            // Not yet submitted; the policy pass below owns it.
+            record.gid !== '' &&
+            // Policy-paused rows stay waiting until the next window.
+            this.blockReasons.get(record.id) !== 'allowed-hours'
+        )
+        const results = await this.tellStatusBatch(client, observed)
+        for (let index = 0; index < observed.length; index += 1) {
+          const record = observed[index]
+          if (record === undefined || !this.records.has(record.id)) continue
+          const result = results[index]
+          if (result === undefined) continue
+          if (result.ok) {
+            this.applyStatus(record, result.value)
+            continue
+          }
+          if (isGidNotFound(result.error)) {
+            this.updateRecord(record, {
+              // A vanished aria2 GID is a stopped transfer, not a failed
+              // attempt. Keep the partial file/retry budget and expose the
+              // explicit interrupted recovery action to the user.
+              status: 'interrupted',
+              speedBps: 0,
+              etaSeconds: null,
+              errorMessage: INTERRUPTED_MESSAGE,
+              errorDetail: null
+            })
+            this.setBlockReason(record, null)
+            this.persistNow(record)
           }
         }
       }
@@ -2084,5 +2106,53 @@ export class DownloadManager {
     } finally {
       this.polling = false
     }
+  }
+
+  /**
+   * One `system.multicall` for every observed GID instead of one round trip
+   * each. Per-entry faults come back in place so the caller keeps the same
+   * per-record handling as a single `aria2.tellStatus` failure; a failed batch
+   * reports a non-fatal fault for every entry.
+   */
+  private async tellStatusBatch(
+    client: Aria2Client,
+    records: readonly DownloadItem[]
+  ): Promise<Aria2BatchResult[]> {
+    if (records.length === 0) return []
+
+    const calls = records.map((record) => ({
+      methodName: 'aria2.tellStatus',
+      params: [record.gid]
+    }))
+
+    let raw: unknown
+    try {
+      raw = await client.call<unknown>('system.multicall', [calls])
+    } catch (error) {
+      const fault =
+        error instanceof AppError
+          ? error
+          : new AppError('ARIA2_RPC_ERROR', 'The aria2 status batch failed.')
+      return records.map(() => ({ ok: false, error: fault }))
+    }
+
+    const entries = Array.isArray(raw) ? raw : []
+    return records.map((_record, index) => {
+      const entry = entries[index]
+      // aria2 wraps a successful sub-call result in a one-element array and
+      // reports a fault as { code, message } in the same slot.
+      if (Array.isArray(entry)) {
+        return { ok: true, value: entry[0] }
+      }
+      const fault =
+        typeof entry === 'object' && entry !== null
+          ? (entry as Record<string, unknown>)
+          : {}
+      const message =
+        typeof fault.message === 'string' && fault.message.length > 0
+          ? fault.message
+          : 'aria2 returned no status for this transfer.'
+      return { ok: false, error: new AppError('ARIA2_RPC_ERROR', message) }
+    })
   }
 }

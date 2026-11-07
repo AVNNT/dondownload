@@ -53,6 +53,16 @@ function createManager(
     call: async (method: string, params: unknown[]): Promise<unknown> => {
       calls.push(method)
       if (options.failure) throw options.failure
+      if (method === 'system.multicall') {
+        const entries = Array.isArray(params[0]) ? params[0] : []
+        return entries.map((entry) => {
+          const sub = entry as { methodName?: string; params?: unknown[] }
+          const found = tracked.get(String(sub.params?.[0]))
+          return found === undefined
+            ? { code: 1, message: 'GID is not found.' }
+            : [found]
+        })
+      }
       if (method !== 'aria2.tellStatus') {
         throw new AppError('ARIA2_RPC_ERROR', `Unexpected method ${method}`)
       }

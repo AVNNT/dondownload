@@ -94,6 +94,7 @@ async function setup() {
     }),
     pause: vi.fn(async () => undefined),
     getSnapshot: vi.fn(() => snapshot()),
+    getItem: (id: string) => downloads.get(id) ?? null,
     getFilePath: (id: string) => downloads.get(id)?.filePath ?? null,
     adoptRenamedFileInFolder: (id: string, filePath: string) => {
       const item = downloads.get(id)
@@ -118,6 +119,7 @@ async function setup() {
       throw new Error('not used')
     }),
     getMediaSnapshot: vi.fn(() => mediaSnapshot()),
+    getJob: vi.fn(() => null),
     getFilePath: vi.fn(() => null)
   }
 
@@ -303,12 +305,18 @@ describe('manual match batch', () => {
   it('rejects a token that does not resolve in main', async () => {
     const root = await tempRoot()
     const batches = new BatchManager({
-      downloads: { add: vi.fn(), pause: vi.fn(), getSnapshot: vi.fn() },
+      downloads: {
+        add: vi.fn(),
+        pause: vi.fn(),
+        getSnapshot: vi.fn(),
+        getItem: vi.fn(() => null)
+      },
       mediaJobs: {
         analyzeMedia: vi.fn(),
         queueMedia: vi.fn(),
         cancelMedia: vi.fn(),
-        getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] }))
+        getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] })),
+        getJob: vi.fn(() => null)
       },
       collectionEngine: {
         analyzeCollection: vi.fn(),

@@ -81,6 +81,7 @@ function createBatchManager() {
       }
     }),
     pause: vi.fn(async () => undefined),
+    getItem: vi.fn(() => null),
     getSnapshot: vi.fn(() => ({
       aria2: {
         status: 'ready' as const,
@@ -98,7 +99,8 @@ function createBatchManager() {
       analyzeMedia: vi.fn(),
       queueMedia: vi.fn(),
       cancelMedia: vi.fn(),
-      getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] }))
+      getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] })),
+      getJob: vi.fn(() => null)
     },
     collectionEngine: {
       analyzeCollection: vi.fn(),

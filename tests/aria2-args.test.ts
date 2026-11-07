@@ -47,6 +47,9 @@ describe('buildAria2Args', () => {
     expect(args).toContain(
       `--max-overall-download-limit=${DEFAULT_GLOBAL_SPEED_LIMIT_BPS}`
     )
+    // aria2 may raise the live concurrency itself; per-host stays polite.
+    expect(args).toContain('--optimize-concurrent-downloads=true')
+    expect(args).toContain('--max-connection-per-server=4')
   })
 
   it('keeps the split ceiling above every configurable per-host limit', () => {

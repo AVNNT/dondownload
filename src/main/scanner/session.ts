@@ -81,7 +81,7 @@ import {
  */
 
 export const SCAN_SESSION_TTL_MS = 10 * 60_000
-export const SCAN_UPDATE_THROTTLE_MS = 150
+export const SCAN_UPDATE_THROTTLE_MS = 300
 export const MAX_ACTIVE_SCANS = 2
 const MAX_STORED_SCANS = 16
 

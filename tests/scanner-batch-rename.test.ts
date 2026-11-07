@@ -87,6 +87,7 @@ describe('batch post-download pairing', () => {
       }),
       pause: vi.fn(async () => undefined),
       getSnapshot: vi.fn(() => snapshot()),
+      getItem: (id: string) => downloads.get(id) ?? null,
       getFilePath: (id: string) => downloads.get(id)?.filePath ?? null,
       adoptRenamedFile: (id: string, filePath: string) => {
         const item = downloads.get(id)
@@ -135,6 +136,7 @@ describe('batch post-download pairing', () => {
         throw new Error('not used')
       }),
       getMediaSnapshot: vi.fn(() => mediaSnapshot()),
+      getJob: (id: string) => mediaJobs.get(id) ?? null,
       getFilePath: (id: string) => mediaPaths.get(id) ?? null
     }
 

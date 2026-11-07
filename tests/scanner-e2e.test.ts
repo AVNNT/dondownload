@@ -265,6 +265,7 @@ function createDownloadPorts(downloadsDir: string) {
     ),
     pause: vi.fn(async () => undefined),
     getSnapshot: vi.fn(() => snapshot()),
+    getItem: (id: string) => items.get(id) ?? null,
     getFilePath: (id: string) => items.get(id)?.filePath ?? null,
     adoptRenamedFile: (id: string, filePath: string) => {
       const item = items.get(id)
@@ -331,6 +332,7 @@ function createMediaPorts(mediaDir: string) {
       throw new Error('not used')
     }),
     getMediaSnapshot: vi.fn(() => snapshot()),
+    getJob: (id: string) => jobs.get(id) ?? null,
     getFilePath: (id: string) => finalPaths.get(id) ?? null
   }
 }

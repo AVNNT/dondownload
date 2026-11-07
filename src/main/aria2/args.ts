@@ -27,6 +27,9 @@ export function buildAria2Args(config: Aria2LaunchConfig): string[] {
     '--dir=' + config.downloadDir,
     '--continue=true',
     '--max-concurrent-downloads=' + DEFAULT_MAX_CONCURRENT_DOWNLOADS,
+    // Let aria2 raise the live concurrency while bandwidth allows; the launch
+    // value above stays the ceiling it may not exceed.
+    '--optimize-concurrent-downloads=true',
     '--max-connection-per-server=' + DEFAULT_PER_HOST_CONNECTIONS,
     '--max-overall-download-limit=' + DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
     // aria2 caps the requested split at the live --max-connection-per-server

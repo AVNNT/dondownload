@@ -29,6 +29,11 @@ export type RpcParseResult =
   | { ok: true; result: unknown }
   | { ok: false; code: number; message: string }
 
+export interface RpcSubCall {
+  methodName: string
+  params: unknown[]
+}
+
 export function buildRpcRequest(
   id: number,
   method: string,
@@ -41,6 +46,47 @@ export function buildRpcRequest(
     method,
     params: [`token:${secret}`, ...params]
   }
+}
+
+/**
+ * `system.multicall` takes the call list as its only parameter, so the token
+ * cannot go at the front of the outer parameter list. aria2 checks the secret
+ * inside every sub-call instead.
+ */
+export function buildMulticallRequest(
+  id: number,
+  secret: string,
+  calls: readonly RpcSubCall[]
+): RpcRequest {
+  return {
+    jsonrpc: '2.0',
+    id: String(id),
+    method: 'system.multicall',
+    params: [
+      calls.map((call) => ({
+        methodName: call.methodName,
+        params: [`token:${secret}`, ...call.params]
+      }))
+    ]
+  }
+}
+
+/** Read the sub-call list of a `system.multicall` request back into shape. */
+export function parseRpcSubCalls(raw: unknown): RpcSubCall[] {
+  if (!Array.isArray(raw)) return []
+  const calls: RpcSubCall[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as Record<string, unknown>
+    if (typeof record.methodName !== 'string' || record.methodName.length === 0) {
+      continue
+    }
+    calls.push({
+      methodName: record.methodName,
+      params: Array.isArray(record.params) ? record.params : []
+    })
+  }
+  return calls
 }
 
 /**
