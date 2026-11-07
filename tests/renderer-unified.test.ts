@@ -470,6 +470,154 @@ describe('selection behaviour', () => {
   })
 })
 
+describe('unified row identity cache', () => {
+  it('returns the same array and row objects when the inputs are unchanged', () => {
+    const downloads = Array.from({ length: 4 }, (_, index) =>
+      download({
+        id: `cache-${index}`,
+        filename: `cache-${index}.zip`,
+        url: `https://cache.example.com/${index}.zip`
+      })
+    )
+    const media = [mediaJob({ id: 'cache-media', updatedAt: NOW })]
+    const first = buildUnifiedRows(downloads, media)
+
+    const second = buildUnifiedRows(downloads, media)
+    expect(second).toBe(first)
+    expect(second).toHaveLength(first.length)
+    for (let index = 0; index < first.length; index += 1) {
+      expect(second[index]).toBe(first[index])
+    }
+  })
+
+  it('rebuilds exactly one row object when one item changes', () => {
+    const downloads = Array.from({ length: 5 }, (_, index) =>
+      download({
+        id: `cache-change-${index}`,
+        filename: `cache-change-${index}.zip`
+      })
+    )
+    const before = buildUnifiedRows(downloads, [])
+
+    const changed = downloads.slice()
+    changed[2] = {
+      ...changed[2]!,
+      completedBytes: changed[2]!.completedBytes + 10,
+      updatedAt: changed[2]!.updatedAt + 1
+    }
+    const after = buildUnifiedRows(changed, [])
+
+    expect(after).not.toBe(before)
+    const replaced = after.filter((row, index) => row !== before[index])
+    expect(replaced).toHaveLength(1)
+    expect(replaced[0]?.id).toBe('cache-change-2')
+  })
+
+  it('reuses rows across fresh IPC-style item objects with identical data', () => {
+    const downloads = Array.from({ length: 3 }, (_, index) =>
+      download({ id: `cache-clone-${index}` })
+    )
+    const first = buildUnifiedRows(downloads, [])
+    const cloned = downloads.map((item) => ({ ...item }))
+    const second = buildUnifiedRows(cloned, [])
+
+    expect(second).toBe(first)
+    for (let index = 0; index < first.length; index += 1) {
+      expect(second[index]).toBe(first[index])
+    }
+  })
+
+  it('parses the URL once per new item and never for a cached row', () => {
+    const realUrl = globalThis.URL
+    const parsed: string[] = []
+    class CountingUrl extends realUrl {
+      constructor(url: string | URL, base?: string | URL) {
+        if (base === undefined) super(url)
+        else super(url, base)
+        parsed.push(String(url))
+      }
+    }
+    vi.stubGlobal('URL', CountingUrl)
+    try {
+      const downloads = [
+        download({
+          id: 'url-once-1',
+          url: 'https://one.example.com/file.zip',
+          updatedAt: NOW + 11
+        }),
+        download({
+          id: 'url-once-2',
+          url: 'https://two.example.com/file.zip',
+          updatedAt: NOW + 12
+        })
+      ]
+      const first = buildUnifiedRows(downloads, [])
+      expect(parsed).toHaveLength(2)
+      expect(first.map((row) => row.host)).toEqual([
+        'one.example.com',
+        'two.example.com'
+      ])
+
+      parsed.length = 0
+      expect(buildUnifiedRows(downloads, [])).toBe(first)
+      expect(parsed).toHaveLength(0)
+
+      // A new snapshot with fresh objects and identical data stays cached.
+      parsed.length = 0
+      expect(buildUnifiedRows(downloads.map((item) => ({ ...item })), [])).toBe(
+        first
+      )
+      expect(parsed).toHaveLength(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rebuilds a row when a field changes without bumping updatedAt', () => {
+    const base = download({
+      id: 'cache-no-updated-at',
+      status: 'complete',
+      filePath: 'Downloads/DonDownload/cache.zip',
+      updatedAt: NOW
+    })
+    const before = buildUnifiedRows([base], [])
+
+    // The checksum result is published without touching the record's updatedAt.
+    const withChecksum = buildUnifiedRows(
+      [
+        {
+          ...base,
+          checksum: {
+            algorithm: 'sha256',
+            ok: true,
+            computed: 'a'.repeat(64),
+            checkedAt: NOW + 5
+          }
+        }
+      ],
+      []
+    )
+    expect(withChecksum).not.toBe(before)
+    expect(withChecksum[0]).not.toBe(before[0])
+    expect(withChecksum[0]?.download?.checksum?.ok).toBe(true)
+
+    // Block reason and retry deadline are also owned outside the record.
+    const withBlock = buildUnifiedRows(
+      [{ ...base, blockReason: 'scheduled' }],
+      []
+    )
+    expect(withBlock).not.toBe(withChecksum)
+    expect(withBlock[0]?.statusLabel).toBe('Scheduled')
+
+    const withRetry = buildUnifiedRows(
+      [{ ...base, status: 'error', retryAt: NOW + 8_000 }],
+      []
+    )
+    expect(withRetry[0]?.retryAt).toBe(NOW + 8_000)
+    expect(rowStatusGroup(withRetry[0]!)).toBe('queued')
+  })
+})
+
 describe('context menu and action plans', () => {
   const active = rowFor({ id: 'active', status: 'active' })
   const paused = rowFor({ id: 'paused', status: 'paused' })
