@@ -18,6 +18,7 @@ import {
   retryCountdownText,
   type UnifiedRow
 } from '../lib/unified'
+import { mergingRowView } from '../lib/mergeRow'
 import { useNowUntil } from '../lib/useNow'
 import {
   isSelected,
@@ -305,7 +306,15 @@ type RowVisual =
       eta: string | null
       paused: boolean
     }
-  | { kind: 'merging'; sublabel: string }
+  | {
+      kind: 'merging'
+      /** Determinate percent, or null for the indeterminate shimmer. */
+      percent: number | null
+      /** Text after the bold "Merging" prefix; null renders "Merging…". */
+      suffix: string | null
+      /** Right-aligned percent when the merge size is known. */
+      detail: string | null
+    }
   | { kind: 'queued' }
   | { kind: 'done'; when: string }
   | { kind: 'scheduled'; text: string }
@@ -380,10 +389,7 @@ function describeRow(row: UnifiedRow, now: number): RowVisual {
         }
       }
       case 'merging':
-        return {
-          kind: 'merging',
-          sublabel: media.kind === 'audio' ? 'audio' : 'video and audio'
-        }
+        return { kind: 'merging', ...mergingRowView(media) }
       case 'paused':
         return {
           kind: 'progress',
@@ -690,16 +696,30 @@ function MiddleCell({
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex items-baseline justify-between gap-2 text-[12px] text-zinc-400">
           <span className="truncate">
-            <span className="font-semibold text-zinc-100">Merging</span> ·{' '}
-            {visual.sublabel}
+            <span className="font-semibold text-zinc-100">Merging</span>
+            {visual.suffix !== null ? (
+              <span className="text-zinc-400"> · {visual.suffix}</span>
+            ) : (
+              <span className="text-zinc-400">…</span>
+            )}
           </span>
-          <span className="shrink-0 text-zinc-500">almost done</span>
+          {visual.detail !== null ? (
+            <span className="shrink-0 tabular-nums text-zinc-400">
+              {visual.detail}
+            </span>
+          ) : null}
         </div>
-        <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
-          <div
-            className="h-full w-[35%] rounded-full bg-accent-400"
-            style={{ marginLeft: '30%' }}
-          />
+        <div
+          className={`relative h-1 overflow-hidden rounded-full bg-zinc-700/50${
+            visual.percent === null ? ' media-progress-shimmer' : ''
+          }`}
+        >
+          {visual.percent === null ? null : (
+            <div
+              className="h-full rounded-full bg-amber-400 transition-[width] duration-500"
+              style={{ width: `${visual.percent}%` }}
+            />
+          )}
         </div>
       </div>
     )

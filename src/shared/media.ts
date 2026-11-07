@@ -145,6 +145,18 @@ export interface MediaAnalysis {
   expiresAt: number
 }
 
+/**
+ * Byte progress of the ffmpeg merge phase. yt-dlp merges with stream copy, so
+ * the growing output file is compared against the downloaded input parts.
+ * Present only while the merge output can actually be measured.
+ */
+export interface MediaMergeProgress {
+  /** Bytes already written to the merge output file. */
+  completedBytes: number
+  /** Sum of the downloaded input parts; the merge output's expected size. */
+  totalBytes: number
+}
+
 export interface MediaJob {
   id: string
   analysisId: string
@@ -161,6 +173,11 @@ export interface MediaJob {
   createdAt: number
   updatedAt: number
   completedAt: number | null
+  /**
+   * Optional merge-phase byte progress; absent whenever the merge output size
+   * cannot be measured, in which case the row stays indeterminate.
+   */
+  mergeProgress?: MediaMergeProgress
   /**
    * Optional renderer hint only. The current backend does not persist a job
    * thumbnail, so live rows normally fall back to a category icon. Preview
@@ -700,7 +717,7 @@ export function parseMediaJob(value: unknown): MediaJob {
       'updatedAt',
       'completedAt'
     ],
-    ['thumbnailUrl']
+    ['thumbnailUrl', 'mergeProgress']
   )
 
   const kind = record.kind
@@ -732,7 +749,21 @@ export function parseMediaJob(value: unknown): MediaJob {
     completedAt: nullableIntegerValue(record, 'completedAt', 1),
     ...(record.thumbnailUrl === undefined
       ? {}
-      : { thumbnailUrl: nullableHttpsUrl(record.thumbnailUrl) })
+      : { thumbnailUrl: nullableHttpsUrl(record.thumbnailUrl) }),
+    ...(record.mergeProgress === undefined
+      ? {}
+      : { mergeProgress: parseMediaMergeProgress(record.mergeProgress) })
+  }
+}
+
+function parseMediaMergeProgress(value: unknown): MediaMergeProgress {
+  const record = asPlainObject(value)
+  exactKeys(record, ['completedBytes', 'totalBytes'])
+  const totalBytes = integerValue(record, 'totalBytes', 1)
+  return {
+    // The merge output can briefly overshoot the parts it was built from.
+    completedBytes: Math.min(integerValue(record, 'completedBytes', 0), totalBytes),
+    totalBytes
   }
 }
 

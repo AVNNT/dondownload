@@ -222,6 +222,42 @@ describe('media public schema', () => {
     expect(() => parseMediaJob(job({ headers: { Cookie: 'x' } }))).toThrow()
   })
 
+  it('parses optional merge progress and clamps it to the total', () => {
+    const parsed = parseMediaJob(
+      job({ mergeProgress: { completedBytes: 400, totalBytes: 1_000 } })
+    )
+    expect(parsed.mergeProgress).toEqual({
+      completedBytes: 400,
+      totalBytes: 1_000
+    })
+
+    // A merge output can briefly overshoot the parts it was built from.
+    expect(
+      parseMediaJob(
+        job({ mergeProgress: { completedBytes: 1_200, totalBytes: 1_000 } })
+      ).mergeProgress
+    ).toEqual({ completedBytes: 1_000, totalBytes: 1_000 })
+
+    // Absent stays absent: the row then renders as indeterminate.
+    expect(parseMediaJob(job()).mergeProgress).toBeUndefined()
+
+    expect(() =>
+      parseMediaJob(
+        job({ mergeProgress: { completedBytes: 1, totalBytes: 0 } })
+      )
+    ).toThrow()
+    expect(() =>
+      parseMediaJob(
+        job({ mergeProgress: { completedBytes: -1, totalBytes: 10 } })
+      )
+    ).toThrow()
+    expect(() =>
+      parseMediaJob(
+        job({ mergeProgress: { completedBytes: 1, totalBytes: 10, speed: 2 } })
+      )
+    ).toThrow()
+  })
+
   it('parses tool state and a media snapshot', () => {
     const tool = parseMediaToolState({
       status: 'ready',

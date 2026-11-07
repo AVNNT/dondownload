@@ -310,3 +310,37 @@
     opacity: 0.35;
   }
 }
+
+/*
+ * Unknown-length phases (the ffmpeg merge) sweep a soft highlight across the
+ * whole track. A short block parked mid-track read as stuck partial progress.
+ */
+@keyframes media-progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.media-progress-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(251 191 36 / 0.55) 50%,
+    transparent 100%
+  );
+  animation: media-progress-shimmer 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-progress-shimmer::after {
+    animation: none;
+    background: rgb(251 191 36 / 0.35);
+  }
+}
