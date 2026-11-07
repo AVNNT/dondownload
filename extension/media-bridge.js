@@ -12,7 +12,11 @@ import {
 } from './bridge.js'
 import { readOptInCookieHeader } from './capture-settings.js'
 import { isMediaOutputFormat, isOpaqueMediaId } from './media-contract.js'
-import { isOverlayTabTracked } from './overlay-controller.js'
+import {
+  allSitesOverlayActive,
+  isOverlayOriginExcluded,
+  isOverlayTabTracked
+} from './overlay-controller.js'
 import {
   originToMatchPattern,
   overlayOriginFromRegistration,
@@ -52,6 +56,39 @@ function invalidSender() {
 }
 
 /**
+ * True when the saved per-origin content-script registration for this exact
+ * origin is stored with the canonical shape.
+ */
+async function perOriginRegistrationStored(chromeApi, origin) {
+  const registration = overlayRegistrationForOrigin(origin)
+  if (registration === null) return false
+  try {
+    const stored = await chromeApi.scripting.getRegisteredContentScripts({
+      ids: [registration.id]
+    })
+    return (
+      Array.isArray(stored) &&
+      stored.length === 1 &&
+      overlayOriginFromRegistration(stored[0]) === origin
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when the single broad all-sites registration covers this origin: the
+ * broad host grant is present, the registration is stored, and the user has not
+ * turned the overlay off for this exact origin. The exclusion list is a user
+ * setting rather than a match pattern, so the broad registration still matches
+ * an excluded page at the browser level.
+ */
+async function allSitesCoversOrigin(chromeApi, origin) {
+  if (!(await allSitesOverlayActive(chromeApi))) return false
+  return !(await isOverlayOriginExcluded(chromeApi, origin))
+}
+
+/**
  * Authorize one content-script media message. The final grant check is the last
  * asynchronous step, so it is the immediate predecessor of the native call.
  */
@@ -77,22 +114,18 @@ export async function authorizeMediaSender(chromeApi, sender) {
 
   const origin = tabPage.origin
   const pattern = originToMatchPattern(origin)
-  const registration = overlayRegistrationForOrigin(origin)
-  if (pattern === null || registration === null) {
+  if (pattern === null) {
     return failure('INVALID_ORIGIN', 'The page origin is not supported.')
   }
 
-  let registered = false
-  try {
-    const stored = await chromeApi.scripting.getRegisteredContentScripts({
-      ids: [registration.id]
-    })
-    registered =
-      Array.isArray(stored) &&
-      stored.length === 1 &&
-      overlayOriginFromRegistration(stored[0]) === origin
-  } catch {
-    registered = false
+  // Either registration authorizes the page: the exact-origin one the popup
+  // creates, or the single broad all-sites one, which is what an always-on
+  // install uses unless the user turned the overlay off for this origin.
+  let allSites = false
+  let registered = await perOriginRegistrationStored(chromeApi, origin)
+  if (!registered) {
+    allSites = await allSitesCoversOrigin(chromeApi, origin)
+    registered = allSites
   }
   if (!registered) {
     return failure(
@@ -114,12 +147,15 @@ export async function authorizeMediaSender(chromeApi, sender) {
     )
   }
 
+  // The broad all-sites grant already covers this origin, so only a per-origin
+  // page needs the exact pattern checked here.
   let granted = false
   try {
     granted =
+      allSites ||
       (await chromeApi.permissions.contains({ origins: [pattern] })) === true
   } catch {
-    granted = false
+    granted = allSites
   }
   if (!granted) {
     return failure(

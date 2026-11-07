@@ -2,6 +2,7 @@ import { sendQueueDownload, sendQueueSniffedMedia, sendScanImages } from './brid
 import {
   OVERLAY_MESSAGE_TYPES,
   OVERLAY_SCRIPT_PREFIX,
+  isAllSitesRegistration,
   originFromUrl,
   originToMatchPattern,
   overlayOriginFromRegistration
@@ -542,7 +543,11 @@ async function handleContentDisable(message, sender) {
   return disableOverlayForOrigin(chrome, message.origin, sender.tab.id)
 }
 
-/** Drop per-origin registrations whose exact origin grant is gone. */
+/**
+ * Drop per-origin registrations whose exact origin grant is gone. The one
+ * broad all-sites registration has no exact origin grant and is kept: it is
+ * owned by `reconcileOverlayMode`, which removes it when all-sites mode is off.
+ */
 async function pruneOrphanOverlayRegistrations() {
   try {
     const registrations = await chrome.scripting.getRegisteredContentScripts()
@@ -550,7 +555,8 @@ async function pruneOrphanOverlayRegistrations() {
       if (
         !registration ||
         typeof registration.id !== 'string' ||
-        !registration.id.startsWith(OVERLAY_SCRIPT_PREFIX)
+        !registration.id.startsWith(OVERLAY_SCRIPT_PREFIX) ||
+        isAllSitesRegistration(registration)
       ) {
         continue
       }
