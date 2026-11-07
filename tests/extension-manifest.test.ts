@@ -33,6 +33,7 @@ describe('browser extension manifest', () => {
     expect([...(manifest.permissions ?? [])].sort()).toEqual([
       'activeTab',
       'contextMenus',
+      'downloads',
       'nativeMessaging',
       'scripting',
       'storage'
@@ -58,11 +59,10 @@ describe('browser extension manifest', () => {
     expect(raw).not.toContain('"optional_host_permissions"')
   })
 
-  it('does not require downloads, webRequest, notifications or tab interception', async () => {
+  it('does not require webRequest, notifications or tab interception', async () => {
     const manifest = await readManifest()
     const requested = new Set(manifest.permissions ?? [])
     for (const forbidden of [
-      'downloads',
       'webRequest',
       'webRequestBlocking',
       'notifications',
@@ -75,14 +75,20 @@ describe('browser extension manifest', () => {
     }
   })
 
-  it('declares downloads, webRequest and cookies only as optional permissions', async () => {
+  it('requires downloads so hand-off works right after install', async () => {
+    const manifest = await readManifest()
+    // Browser hand-off is the feature the user installs for, so the permission
+    // is granted with the extension instead of behind a button.
+    expect(manifest.permissions ?? []).toContain('downloads')
+    expect(manifest.optional_permissions ?? []).not.toContain('downloads')
+  })
+
+  it('declares webRequest and cookies only as optional permissions', async () => {
     const manifest = await readManifest()
     expect([...(manifest.optional_permissions ?? [])].sort()).toEqual([
       'cookies',
-      'downloads',
       'webRequest'
     ])
-    expect(manifest.permissions ?? []).not.toContain('downloads')
     expect(manifest.permissions ?? []).not.toContain('webRequest')
     expect(manifest.permissions ?? []).not.toContain('cookies')
     expect(manifest.permissions ?? []).not.toContain('notifications')

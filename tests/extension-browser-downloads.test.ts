@@ -2,10 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
-  browserDownloadPermissions,
   browserDownloadStateCopy,
-  ensureAllSitesActive,
-  requestBrowserDownloadAccess
+  ensureAllSitesActive
 } from '../extension/browser-downloads.js'
 import {
   DEFAULT_CAPTURE_SETTINGS,
@@ -34,7 +32,7 @@ function createFake(options: FakeOptions = {}) {
     runtime: {
       lastError: undefined,
       getManifest() {
-        return { optional_permissions: ['downloads', 'webRequest', 'cookies'] }
+        return { optional_permissions: ['webRequest', 'cookies'] }
       },
       sendMessage(message: any, callback: (value: unknown) => void) {
         messages.push(message)
@@ -87,12 +85,6 @@ function createFake(options: FakeOptions = {}) {
   return { chrome, permissionRequests, messages, local, granted }
 }
 
-function request(chrome: any): Promise<{ ok: boolean; error?: string; listener?: boolean }> {
-  return new Promise((resolve) => {
-    requestBrowserDownloadAccess(chrome, resolve)
-  })
-}
-
 describe('always-on DonDownload switch', () => {
   it('defaults the switch to on and ignores a stored off value', async () => {
     expect(DEFAULT_CAPTURE_SETTINGS.automaticFileHandoff).toBe(true)
@@ -113,13 +105,13 @@ describe('always-on DonDownload switch', () => {
 
     const result = await ensureAllSitesActive(fake.chrome)
 
-    expect(result).toMatchObject({ ok: true, listener: true, overlay: true })
+    expect(result).toMatchObject({ ok: true, overlay: true })
     const stored = fake.local.get('dondownloadCaptureSettings') as any
     expect(stored.automaticFileHandoff).toBe(true)
     expect(stored.detectAllSites).toBe(true)
-    // The downloads listener and the all-sites registration are both re-asserted.
+    // The all-sites registration is re-asserted; the downloads listener is
+    // installed by the worker itself because `downloads` is required.
     expect(fake.messages).toEqual([
-      { type: 'dondownload:downloads-support' },
       { type: 'dondownload:overlay-all-sites', injectOpenTabs: false }
     ])
   })
@@ -149,9 +141,8 @@ describe('always-on DonDownload switch', () => {
 
     expect(calls).toEqual([true])
     expect(result).toMatchObject({ ok: true, overlay: true, injected: 3 })
-    // No overlay message is sent when the worker reconciles itself; only the
-    // downloads-support fast path remains.
-    expect(fake.messages).toEqual([{ type: 'dondownload:downloads-support' }])
+    // No overlay message is sent when the worker reconciles itself.
+    expect(fake.messages).toEqual([])
   })
 
   it('injects open tabs only when the lifecycle asks for it', async () => {
@@ -166,51 +157,22 @@ describe('always-on DonDownload switch', () => {
     })
   })
 
-  it('requests only the optional hand-off permissions, never site access', async () => {
+  it('asks for no permission at all: hand-off needs no grant', async () => {
     const fake = createFake()
-    expect(browserDownloadPermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'cookies', 'webRequest']
-    })
-
-    const result = await request(fake.chrome)
-
-    expect(result).toMatchObject({ ok: true, overlay: true, injected: 1 })
-    expect(fake.permissionRequests).toEqual([
-      { permissions: ['downloads', 'cookies', 'webRequest'] }
-    ])
-    // The user gesture request happens synchronously, before any await.
-    expect(fake.permissionRequests).toHaveLength(1)
-    expect(fake.messages).toEqual([
-      { type: 'dondownload:downloads-support' },
-      { type: 'dondownload:overlay-all-sites', injectOpenTabs: false }
-    ])
-    expect(result.listener).toBe(true)
-    // The switch stays on whether or not the optional grant is accepted.
-    const settings = await readCaptureSettings(fake.chrome)
-    expect(settings.automaticFileHandoff).toBe(true)
-    expect(settings.detectAllSites).toBe(true)
-  })
-
-  it('leaves the switch on when the user denies the optional prompt', async () => {
-    const fake = createFake({ grant: false })
     await writeCaptureSettings(fake.chrome, { handoffMinBytes: 10_000_000 })
 
-    const result = await request(fake.chrome)
+    const result = await ensureAllSitesActive(fake.chrome)
 
-    expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/not granted/i)
-    expect(fake.messages).toEqual([])
+    expect(result).toMatchObject({ ok: true, overlay: true, injected: 1 })
+    expect(fake.permissionRequests).toEqual([])
+    expect(fake.messages).toEqual([
+      { type: 'dondownload:overlay-all-sites', injectOpenTabs: false }
+    ])
+    // The switch and the size threshold survive a wake untouched.
     const settings = await readCaptureSettings(fake.chrome)
     expect(settings.automaticFileHandoff).toBe(true)
     expect(settings.detectAllSites).toBe(true)
     expect(settings.handoffMinBytes).toBe(10_000_000)
-  })
-
-  it('reports a runtime error without saving anything', async () => {
-    const fake = createFake({ runtimeError: 'permission denied' })
-    const result = await request(fake.chrome)
-    expect(result.ok).toBe(false)
-    expect(fake.local.size).toBe(0)
   })
 
   it('always describes the switch as active on all sites', () => {

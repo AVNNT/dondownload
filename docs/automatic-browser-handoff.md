@@ -32,19 +32,20 @@ only side that may cancel, and only after the receipt above.
 
 ## Browser-side behavior
 
-The extension declares `downloads` in `optional_permissions`, never in the
-required `permissions` list. It is requested only from a direct user click on
-the options page. Required host permissions are unchanged and still absent;
-site access remains exact-origin and opt-in.
+The extension declares `downloads` in the required `permissions` list, so the
+browser download listener is installed unconditionally on every service-worker
+start and hand-off works from the first download after install. No button, no
+prompt and no stored grant is involved. `webRequest` and `cookies` stay in
+`optional_permissions`.
 
-`AutomaticFileHandoff` is off by default. Granting the downloads permission from
-the options page enables it once; revoking the permission makes it ineffective
-and turns the stored preference off on the next options-page load.
+`AutomaticFileHandoff` is always on for every normal http/https site, like Neat
+Download Manager. A stored `false` from an older version is migrated to `true`
+on the next service-worker wake.
 
 When a browser download is created, all of the following must be true before a
 native call is made:
 
-- automatic hand-off is on and the downloads grant is still present;
+- automatic hand-off is on, which it always is;
 - the item is `in_progress`, not paused, marked safe by the browser, HTTP(S),
   and not created by an extension;
 - an exact positive browser total is available; if it is initially unknown, the
@@ -73,9 +74,9 @@ notification only.
 ## Options, popup and commands
 
 - `options.html` is a normal options tab with: floating-icon preference (on by
-  default), automatic hand-off permission request, notification preference,
-  exact-origin exclusions, existing exact-origin site access enable/disable,
-  and shortcut guidance.
+  default), the hand-off size threshold, notification preference, exact-origin
+  exclusions, existing exact-origin site access enable/disable, and shortcut
+  guidance. There is no download-permission button: the permission is required.
 - The toolbar popup lists only sources observed on the active tab by that tab's
   own content script. It queries through `tabs.sendMessage`; it does not accept a
   page-supplied tab id and does not read page-provided URLs from the popup DOM.

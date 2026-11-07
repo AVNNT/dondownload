@@ -129,11 +129,14 @@ export function requestExactOriginAccess(chromeApi, site, onResult) {
 }
 
 /**
- * Optional permissions the recommended welcome action asks for. `downloads`
- * and `cookies` are included only when the loaded manifest actually declares
- * them as optional, so the request stays valid if the manifest is tightened
- * later. `cookies` is what lets an automatic browser download carry the
- * browser's own sign-in for exactly that URL.
+ * Optional permissions the recommended welcome action asks for. `cookies` is
+ * included only when the loaded manifest actually declares it as optional, so
+ * the request stays valid if the manifest is tightened later. `cookies` is what
+ * lets an automatic browser download carry the browser's own sign-in for
+ * exactly that URL.
+ *
+ * `downloads` is not requested here: it is a required manifest permission, so
+ * browser hand-off already works and no grant can be asked for or removed.
  */
 export function recommendedCapturePermissions(chromeApi) {
   const permissions = ['webRequest']
@@ -146,9 +149,6 @@ export function recommendedCapturePermissions(chromeApi) {
   } catch {
     optional = null
   }
-  if (optional === null || optional.has('downloads')) {
-    permissions.unshift('downloads')
-  }
   if (optional === null || optional.has('cookies')) {
     permissions.push('cookies')
   }
@@ -159,9 +159,9 @@ export function recommendedCapturePermissions(chromeApi) {
 
 /**
  * Welcome-page recommended setup: one user gesture requests the optional
- * `downloads`, `webRequest` and `cookies` permissions. Detection on all sites
- * and automatic browser hand-off are already on; the grant only makes them
- * usable.
+ * `webRequest` and `cookies` permissions. Detection on all sites and automatic
+ * browser hand-off are already on; the grant only adds response evidence and
+ * the browser sign-in for a handed-off download.
  */
 export function enableRecommendedCapture(chromeApi, onResult) {
   let details

@@ -5,7 +5,6 @@ import {
   readOptionsTarget,
   writeCaptureSettings
 } from './capture-settings.js'
-import { requestBrowserDownloadAccess } from './browser-downloads.js'
 import {
   overlayRemovalConfirmed
 } from './overlay-controller.js'
@@ -16,9 +15,6 @@ const floatingTrigger = document.getElementById('floating-trigger')
 const handoffNotifications = document.getElementById('handoff-notifications')
 const allSitesState = document.getElementById('all-sites-state')
 const handoffMinBytes = document.getElementById('handoff-min-bytes')
-const requestDownloads = document.getElementById('request-downloads')
-const removeDownloads = document.getElementById('remove-downloads')
-const permissionState = document.getElementById('permission-state')
 const handoffStatus = document.getElementById('handoff-status')
 const networkObservation = document.getElementById('network-observation')
 const requestNetwork = document.getElementById('request-network')
@@ -45,7 +41,6 @@ const disableSite = document.getElementById('disable-site')
 const siteStatus = document.getElementById('site-status')
 
 let settings = normalizeCaptureSettings(null)
-let downloadsGranted = false
 let networkGranted = false
 let cookiesGranted = false
 let site = null
@@ -74,27 +69,16 @@ function saveSettings(message) {
   })
 }
 
-function renderPermissionState() {
-  handoffMinBytes.disabled = !downloadsGranted
+function renderHandoffState() {
+  // `downloads` is a required manifest permission, so browser downloads are
+  // taken over from the moment the extension is installed and the size
+  // threshold is always usable. Nothing here has to be granted.
+  handoffMinBytes.disabled = false
   const minBytes = String(settings.handoffMinBytes)
   handoffMinBytes.value = ['0', '1000000', '10000000'].includes(minBytes)
     ? minBytes
     : '1000000'
-  // The all-sites switch itself is always on; only the optional download
-  // permissions can still be missing, and they never turn the switch off.
   allSitesState.textContent = 'Active on all sites.'
-  if (!downloadsGranted) {
-    permissionState.textContent =
-      'Browser download access is not granted yet, so downloads stay in the browser. The video overlay and media detection on all sites are already active.'
-    requestDownloads.hidden = false
-    removeDownloads.hidden = true
-    return
-  }
-  permissionState.textContent = cookiesGranted
-    ? 'Browser download access is granted. Browser downloads can be taken over with your browser sign-in.'
-    : 'Browser download access is granted, but the cookies permission is not, so login-protected files are left in the browser.'
-  requestDownloads.hidden = true
-  removeDownloads.hidden = false
 }
 
 function renderNetworkState() {
@@ -238,7 +222,7 @@ function renderExclusions() {
 function renderSettings() {
   floatingTrigger.checked = settings.floatingTriggerEnabled !== false
   handoffNotifications.checked = settings.handoffNotifications !== false
-  renderPermissionState()
+  renderHandoffState()
   renderNetworkState()
   renderSniffingState()
   renderExclusions()
@@ -246,12 +230,6 @@ function renderSettings() {
 
 async function loadSettings() {
   settings = await readCaptureSettings(chrome)
-  try {
-    downloadsGranted =
-      (await chrome.permissions.contains({ permissions: ['downloads'] })) === true
-  } catch {
-    downloadsGranted = false
-  }
   try {
     networkGranted =
       (await chrome.permissions.contains({ permissions: ['webRequest'] })) === true
@@ -455,7 +433,7 @@ handoffNotifications.addEventListener('change', () => {
 handoffMinBytes.addEventListener('change', () => {
   settings.handoffMinBytes = Number(handoffMinBytes.value)
   settings.handoffMinBytes = normalizeCaptureSettings(settings).handoffMinBytes
-  renderPermissionState()
+  renderHandoffState()
   saveSettings(
     settings.handoffMinBytes === 0
       ? 'Every browser download size is handed off.'
@@ -584,49 +562,6 @@ siteCookies.addEventListener('change', () => {
   renderSniffingState()
   setStatus(cookieStatus, 'success', `Cookies are no longer sent for ${origin}.`)
   void maybeRemoveCookiesPermission()
-})
-
-requestDownloads.addEventListener('click', () => {
-  // This must remain a direct user-gesture request with no preceding await.
-  // Site access is already granted at install, so only the optional downloads,
-  // cookies and webRequest permissions are asked for here.
-  requestDownloads.disabled = true
-  setStatus(handoffStatus, '', '')
-  requestBrowserDownloadAccess(chrome, (result) => {
-    requestDownloads.disabled = false
-    if (!result.ok) {
-      downloadsGranted = false
-      renderPermissionState()
-      setStatus(handoffStatus, 'error', result.error || 'Downloads stay in the browser.')
-      return
-    }
-    downloadsGranted = true
-    cookiesGranted = true
-    renderPermissionState()
-    renderSniffingState()
-    setStatus(
-      handoffStatus,
-      'success',
-      'Browser download access is granted. New downloads go to DonDownload.'
-    )
-  })
-})
-
-removeDownloads.addEventListener('click', () => {
-  try {
-    chrome.permissions.remove({ permissions: ['downloads'] }, (removed) => {
-      const runtimeError = chrome.runtime.lastError
-      if (runtimeError || removed !== true) {
-        setStatus(handoffStatus, 'error', 'The downloads permission could not be removed.')
-        return
-      }
-      downloadsGranted = false
-      renderPermissionState()
-      saveSettings('Downloads permission removed. Browser downloads stay in the browser.')
-    })
-  } catch {
-    setStatus(handoffStatus, 'error', 'The downloads permission could not be removed.')
-  }
 })
 
 exclusionForm.addEventListener('submit', (event) => {

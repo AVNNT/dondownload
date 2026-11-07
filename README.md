@@ -120,10 +120,11 @@ chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
   overlay adds `scripting`, `storage` (session-only pending state) and the
   required `host_permissions` for `http://*/*` and `https://*/*`, so
   "Use DonDownload on all sites" is always on and there is no static
-  `content_scripts` entry. `downloads`, `webRequest` and `cookies` are optional
-  permissions requested only from the options or welcome page on a user
-  gesture; there are no required `downloads`, `webRequest`, `notifications`,
-  `cookies`, history or `tabs` permissions.
+  `content_scripts` entry. `downloads` is required, so browser hand-off works
+  from the first download after install. `webRequest` and `cookies` stay
+  optional permissions requested only from the options or welcome page on a
+  user gesture; there are no required `webRequest`, `notifications`, `cookies`,
+  history or `tabs` permissions.
 - The popup has an explicit **Download with DonDownload** action for the active
   page, lists progressive sources reported by that tab's own content script,
   and links to the separate settings page.
@@ -132,9 +133,9 @@ chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
   per site. An optional, off-by-default `webRequest` grant lets the worker
   observe response status and only four headers for exact opted-in media
   responses; it never reads cookies, credentials, request headers, bodies or
-  DRM data and makes no extra requests. Automatic browser hand-off is off until
-  the optional downloads permission is approved, and the browser's download is
-  cancelled only after a durable desktop receipt and a bounded anonymous
+  DRM data and makes no extra requests. Automatic browser hand-off is always on,
+  and the browser's download is cancelled only after a durable desktop receipt
+  and a bounded anonymous
   preflight confirms matching size/type metadata; this is not byte-for-byte
   identity proof and real-browser interception still needs verification.
 - The video overlay is off by default for every site. It queues verified
@@ -450,10 +451,10 @@ capture paths. Earlier Helium-only checks remain historical evidence.
   the content script's own ready announcement. This is best effort: a tab that
   was never tracked loses the overlay on its next reload, because the
   registration is already gone.
-- The required permissions contain **no** `downloads`, `webRequest`,
+- The required permissions contain `downloads` and **no** `webRequest`,
   `webRequestBlocking`, `cookies`, history, `tabs` or notifications permission.
-  `downloads`, `webRequest` and `cookies` are optional and requested only from
-  the options page or the welcome page on a direct user gesture. Media detection
+  `webRequest` and `cookies` are optional and requested only from the options
+  page or the welcome page on a direct user gesture. Media detection
   runs on every normal http/https site, because that host access is granted at
   install. It observes response metadata
   (URL, status, Content-Type/Length/Range), never request headers, bodies,
@@ -704,10 +705,9 @@ Key properties:
   window, then validates URL, file name and download IDs in the main process.
 - Only `http:` and `https:` URLs are accepted. Embedded URL credentials and
   control characters are rejected.
-- The browser extension's capture path is manual by default. It never requires
-  the `downloads` permission; optional automatic hand-off is off until the user
-  approves it and only handles supported non-media files after a durable desktop
-  receipt.
+- The browser extension's page capture path is manual. It requires the
+  `downloads` permission so automatic hand-off works right after install, and it
+  only handles supported non-media files after a durable desktop receipt.
 - The overlay is opt-in per exact origin and captures supported progressive sources.
   It has no required host permissions and no always-on content script.
 - The native messaging host validates framing, size, schema and URL before

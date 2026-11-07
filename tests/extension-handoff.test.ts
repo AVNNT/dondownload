@@ -1049,17 +1049,28 @@ describe('downloads are intercepted before the Save As dialog', () => {
     expect(fake.erased).toEqual([])
   })
 
-  it('releases the download when the master switch is off', async () => {
+  it('releases a download the size policy declines', async () => {
     const fake = createFake()
-    await writeCaptureSettings(fake.chrome, { automaticFileHandoff: false })
+    await seedSettings(fake)
     useFake(fake)
     const held = installHeld(fake)
     const suggests: number[] = []
-    held.held()(fileItem(), () => suggests.push(1))
+    // Below the 1 MB default threshold and not an always-hand-off type, so the
+    // policy declines it and the browser keeps the download untouched.
+    held.held()(
+      fileItem({
+        url: 'https://example.com/files/notes.txt',
+        filename: 'C:\\Downloads\\notes.txt',
+        mime: 'text/plain',
+        totalBytes: 500_000
+      }),
+      () => suggests.push(1)
+    )
     await flush()
     expect(suggests).toEqual([1])
     expect(fake.nativeMessages).toEqual([])
     expect(fake.cancelled).toEqual([])
+    expect(fake.erased).toEqual([])
   })
 
   it('releases the download when the hand-off is not confirmed', async () => {

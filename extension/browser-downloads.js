@@ -4,14 +4,14 @@
 // requested and no UI can turn it off.
 //
 // What is left here is the one place that
-// - migrates a stored "off" value from an older version to on,
-// - asks the service worker to install the downloads listener, and
-// - asks it to register the one all-sites overlay (and optionally inject it
-//   into already-open tabs).
+// - migrates a stored "off" value from an older version to on, and
+// - asks the service worker to register the one all-sites overlay (and
+//   optionally inject it into already-open tabs).
 //
-// The optional `downloads`, `cookies` and `webRequest` permissions stay
-// optional, so the hand-off itself only runs once they are granted. The options
-// page asks for them from a button; the switch never depends on them.
+// The `downloads` permission is required, so the hand-off works as soon as the
+// extension is installed and no button has to be pressed for it. Only
+// `webRequest` and `cookies` stay optional, and the switch never depends on
+// them.
 
 import {
   CAPTURE_SETTINGS_KEY,
@@ -21,91 +21,6 @@ import {
 
 /** The message the popup/options page sends to (re)register the overlay. */
 export const ALL_SITES_OVERLAY_MESSAGE = 'dondownload:overlay-all-sites'
-
-/**
- * The optional permission set the hand-off still needs. A permission the loaded
- * manifest does not declare as optional is left out so the request stays valid
- * if the manifest is tightened later.
- */
-export function browserDownloadPermissions(chromeApi) {
-  const wanted = ['downloads', 'cookies', 'webRequest']
-  let optional = null
-  try {
-    const manifest = chromeApi.runtime.getManifest()
-    if (manifest && Array.isArray(manifest.optional_permissions)) {
-      optional = new Set(manifest.optional_permissions)
-    }
-  } catch {
-    optional = null
-  }
-  return {
-    permissions:
-      optional === null ? wanted : wanted.filter((name) => optional.has(name))
-  }
-}
-
-/**
- * Ask for the optional hand-off permissions. Must be called directly from a
- * user gesture: `permissions.request` runs before any await. Site access is not
- * requested because it is granted at install.
- */
-export function requestBrowserDownloadAccess(chromeApi, onResult) {
-  let details
-  try {
-    details = browserDownloadPermissions(chromeApi)
-  } catch {
-    onResult({ ok: false, error: 'The permissions could not be requested.' })
-    return
-  }
-  try {
-    chromeApi.permissions.request(details, (granted) => {
-      const runtimeError = chromeApi.runtime.lastError
-      if (runtimeError || granted !== true) {
-        onResult({
-          ok: false,
-          error:
-            'The permissions were not granted. Browser downloads stay in the browser.'
-        })
-        return
-      }
-      void (async () => {
-        const [support, overlay] = await Promise.all([
-          notifyDownloadsSupport(chromeApi),
-          requestOverlayReconcile(chromeApi)
-        ])
-        onResult({
-          ok: true,
-          listener: support.listener,
-          overlay: overlay.overlay,
-          injected: overlay.injected
-        })
-      })()
-    })
-  } catch {
-    onResult({ ok: false, error: 'The permissions could not be requested.' })
-  }
-}
-
-/**
- * Ask the service worker to install the downloads listener. The worker also
- * reacts to permissions.onAdded, so this is a fast path for the case where the
- * API became visible only after the options page requested it.
- */
-export function notifyDownloadsSupport(chromeApi) {
-  return new Promise((resolve) => {
-    try {
-      chromeApi.runtime.sendMessage(
-        { type: 'dondownload:downloads-support' },
-        (response) => {
-          void chromeApi.runtime.lastError
-          resolve({ listener: Boolean(response && response.listener === true) })
-        }
-      )
-    } catch {
-      resolve({ listener: false })
-    }
-  })
-}
 
 /**
  * Ask the service worker to register the all-sites overlay and, when asked,
@@ -140,9 +55,10 @@ export function requestOverlayReconcile(chromeApi, options = {}) {
 
 /**
  * Re-assert the always-on mode. Called on install, on startup and on every
- * service-worker wake: it rewrites a stored "off" from an older version, makes
- * sure the downloads listener is installed and that the one all-sites content
- * script registration exists.
+ * service-worker wake: it rewrites a stored "off" from an older version and
+ * makes sure the one all-sites content script registration exists. The
+ * downloads listener is installed by the worker itself, because `downloads` is
+ * a required permission.
  *
  * `options.reconcile` lets the service worker reconcile in-process instead of
  * messaging itself; UI pages leave it out and go through the worker message.
@@ -153,13 +69,9 @@ export async function ensureAllSitesActive(chromeApi, options = {}) {
     typeof options.reconcile === 'function'
       ? options.reconcile
       : () => requestOverlayReconcile(chromeApi, options)
-  const [support, overlay] = await Promise.all([
-    notifyDownloadsSupport(chromeApi),
-    reconcile()
-  ])
+  const overlay = await reconcile()
   return {
     ok: true,
-    listener: support.listener,
     overlay: overlay.overlay,
     injected: overlay.injected
   }

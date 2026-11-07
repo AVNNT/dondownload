@@ -11,7 +11,6 @@ export type HandoffOutcome =
   | 'needs-login'
   | 'disabled'
   | 'downloads-unavailable'
-  | 'permission-required'
   | 'settings-unavailable'
   | `ignored:${string}`
   | `not-claimed:${string}`
