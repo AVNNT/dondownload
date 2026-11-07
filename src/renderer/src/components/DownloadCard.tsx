@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { memo, useState, type JSX } from 'react'
 import type { DownloadItem, DownloadStatus } from '@shared/types'
 import { formatBytes, formatEta, formatPercent, formatSpeed } from '@shared/format'
 
@@ -66,7 +66,11 @@ function formatLocalTime(epochMs: number | null | undefined): string | null {
   }
 }
 
-export function DownloadCard({
+/**
+ * Cards are one-per-item and only change when their own item, busy flag or
+ * callbacks change, so a snapshot elsewhere in the list must not re-render them.
+ */
+export const DownloadCard = memo(function DownloadCard({
   item,
   busy,
   onPause,
@@ -281,7 +285,7 @@ export function DownloadCard({
       ) : null}
     </article>
   )
-}
+})
 
 function CardAction({
   label,

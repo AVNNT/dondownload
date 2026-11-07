@@ -509,6 +509,15 @@ export function retrySecondsLeft(
   return Math.max(0, Math.ceil((retryAt - now) / 1_000))
 }
 
+/**
+ * Whether a row's rendered text depends on the ticking clock. Only a pending
+ * automatic retry counts down, so every other row can be rendered without the
+ * once-per-second value and stays memoised.
+ */
+export function needsRetryClock(row: UnifiedRow): boolean {
+  return row.retryAt !== null && Number.isFinite(row.retryAt)
+}
+
 /** "Retrying in Ns…" text, or "Retrying now…" once the deadline has passed. */
 export function retryCountdownText(
   retryAt: number | null,
