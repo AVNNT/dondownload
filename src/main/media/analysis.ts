@@ -11,7 +11,13 @@ import type { MediaAnalysis, MediaToolState } from '@shared/media'
 import { ValidationError } from '@shared/validation'
 import { AppError } from '../errors'
 import { buildAnalyzeArgs } from './args'
-import { MediaInfoError, buildMediaAnalysis, applyProbedHeights, resolutionProbeTargets } from './formats'
+import {
+  MediaInfoError,
+  buildMediaAnalysis,
+  applyProbedHeights,
+  parseFfmpegStreamHeight,
+  resolutionProbeTargets
+} from './formats'
 import type { InternalMediaOption } from './formats'
 import {
   ProcessAbortedError,
@@ -24,7 +30,7 @@ import type { Toolchain } from './toolchain'
 import { looksLikeExtractorFailure } from './updater'
 
 export const MAX_ANALYSIS_OUTPUT_BYTES = 32 * 1024 * 1024
-/** Bounded header-only ffprobe read for a format without a usable label. */
+/** Bounded header-only FFmpeg read for a format without a usable label. */
 export const RESOLUTION_PROBE_TIMEOUT_MS = 2_500
 export const RESOLUTION_PROBE_CONCURRENCY = 2
 const MAX_RAW_COLLECTION_TITLE_LENGTH = 4096
@@ -560,7 +566,7 @@ export async function filterPublicThumbnail(
   }
 
 async function probeFormatHeights(
-  ffprobePath: string,
+  ffmpegPath: string,
   targets: readonly { formatId: string; url: string }[],
   signal: AbortSignal | undefined,
   runCaptured: MediaAnalyzerOptions['runCaptured']
@@ -577,18 +583,14 @@ async function probeFormatHeights(
         cursor += 1
         if (target === undefined) return
         try {
+          // FFmpeg, not FFprobe: the input is opened with a bounded header read
+          // and no output file, so FFmpeg prints the stream table on stderr and
+          // exits non-zero without writing anything. Only the table is parsed.
           const result = await runCaptured(
-            ffprobePath,
+            ffmpegPath,
             [
-              '-v',
-              'error',
               '-hide_banner',
-              '-select_streams',
-              'v:0',
-              '-show_entries',
-              'stream=height',
-              '-of',
-              'csv=p=0',
+              '-nostdin',
               '-rw_timeout',
               String(RESOLUTION_PROBE_TIMEOUT_MS * 1_000),
               '-analyzeduration',
@@ -602,18 +604,14 @@ async function probeFormatHeights(
             ],
             {
               timeoutMs: RESOLUTION_PROBE_TIMEOUT_MS,
-              maxOutputBytes: 4 * 1024,
+              // The stream table is a few kilobytes; the cap only bounds a
+              // runaway header dump.
+              maxOutputBytes: 32 * 1024,
               ...(signal === undefined ? {} : { signal })
             }
           )
-          const value = Number(result.stdout.trim().split(/[,\s]+/)[0])
-          if (
-            Number.isSafeInteger(value) &&
-            value >= 144 &&
-            value <= 65_535
-          ) {
-            heights.set(target.formatId, value)
-          }
+          const height = parseFfmpegStreamHeight(result.stderr)
+          if (height !== null) heights.set(target.formatId, height)
         } catch {
           // A stream that refuses a header read simply keeps its friendly label.
         }
@@ -631,6 +629,12 @@ export interface MediaAnalyzerOptions {
   isClosing: () => boolean
   newOpaqueId: (prefix: 'analysis' | 'option') => string
   resolveToolchain: () => Promise<Toolchain>
+  /**
+   * Downloads the optional Deno runtime on demand for a page that needs one.
+   * Resolves to null when no runtime is available; the analysis then runs
+   * exactly as it would on a machine without Deno.
+   */
+  ensureJsRuntime?: (targetUrl: string) => Promise<string | null>
   runCaptured: (
     command: string,
     args: readonly string[],
@@ -669,6 +673,7 @@ export function createMediaAnalyzer(
     isClosing,
     newOpaqueId,
     resolveToolchain,
+    ensureJsRuntime,
     runCaptured,
     assertPublicTarget,
     writeCookieFile,
@@ -715,13 +720,22 @@ export function createMediaAnalyzer(
       }
     }
 
+    // A YouTube page needs a JavaScript runtime for yt-dlp's JS challenges.
+    // Without one the same arguments are used and yt-dlp simply reports the
+    // formats it can still extract.
+    const denoPath =
+      toolchain.denoPath ??
+      (ensureJsRuntime === undefined
+        ? null
+        : await ensureJsRuntime(targetUrl).catch(() => null))
+
     let result
     try {
       result = await runCaptured(
         toolchain.ytdlpPath,
         buildAnalyzeArgs(
           targetUrl,
-          toolchain.denoPath,
+          denoPath,
           toolchain.impersonate,
           cookieFile
         ),
@@ -817,13 +831,13 @@ export function createMediaAnalyzer(
       })
 
       // A format with no reported dimensions but a real stream URL can still
-      // be labelled from its headers. This is a bounded ffprobe read (never a
-      // download), only when ffprobe was already located, and only for the few
-      // formats actually exposed in the picker.
-      if (toolchain.ffprobePath !== null) {
+      // be labelled from its headers. This is a bounded FFmpeg header read
+      // (never a download), only when FFmpeg was already located, and only for
+      // the few formats actually exposed in the picker.
+      if (toolchain.ffmpegPath !== null) {
         const targets = resolutionProbeTargets(built, verifiedInfo)
         const heights = await probeFormatHeights(
-          toolchain.ffprobePath,
+          toolchain.ffmpegPath,
           targets,
           analyzeOptions.signal,
           runCaptured

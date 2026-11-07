@@ -38,13 +38,17 @@ documented in [media-tools.md](media-tools.md):
 | aria2 | 1.37.0 | `resources/vendor/aria2/aria2c.exe` |
 | yt-dlp | 2026.10.26 | `resources/vendor/yt-dlp/yt-dlp.exe` |
 | FFmpeg | 9.0.2 Gyan essentials build | `resources/vendor/ffmpeg/ffmpeg.exe` |
-| ffprobe | 9.0.2 Gyan essentials build | `resources/vendor/ffmpeg/ffprobe.exe` |
-| Deno | 2.9.8 | `resources/vendor/deno/deno.exe` |
 
-Deno is bundled because current yt-dlp YouTube extraction requires a
-JavaScript runtime. DonDownload locates the packaged `resources/vendor/deno/`
-binary and passes its path to yt-dlp for analysis, playlist preview and media
-downloads; see the verification/gap record below.
+FFprobe is no longer staged: the bounded header read that labels a stream
+without reported dimensions runs `ffmpeg -i <url>` and parses the stream table
+FFmpeg prints on stderr.
+
+Deno is not bundled either. Current yt-dlp YouTube extraction needs a JavaScript
+runtime, so the app downloads the pinned, SHA-256 verified
+`deno-x86_64-pc-windows-msvc` release archive into
+`<userData>/tools/deno/<version>/deno.exe` the first time a YouTube job needs it
+and passes that path to yt-dlp. Without a runtime, yt-dlp runs with exactly the
+arguments a machine without Deno would use.
 
 ## Prerequisites
 
@@ -52,8 +56,8 @@ downloads; see the verification/gap record below.
 - Node.js 24+ and npm 10+.
 - The .NET Framework C# compiler (`csc.exe`) for the native messaging host. It
   ships with Windows; no .NET SDK, Visual Studio or NuGet package is required.
-- Locally installed, pinned versions of the five tools. They are not installed
-  or downloaded by this repository.
+- Locally installed, pinned versions of aria2, yt-dlp and FFmpeg. They are not
+  installed or downloaded by this repository.
 
 The staging script never runs `winget`, an installer, a package manager or a
 network download. It only executes each candidate executable with a read-only
@@ -174,8 +178,6 @@ resources/
     aria2/aria2c.exe
     yt-dlp/yt-dlp.exe
     ffmpeg/ffmpeg.exe
-    ffmpeg/ffprobe.exe
-    deno/deno.exe
   native/dondownload-native-host.exe
   extension/                 # unpacked Manifest V3 extension
   registration/register-native-host.ps1
@@ -225,10 +227,12 @@ with separate terms:
 - aria2: GPL-2.0-or-later.
 - yt-dlp: Unlicense plus bundled third-party licenses in the standalone
   executable.
-- Gyan FFmpeg/ffprobe essentials build: GPL-3.0-or-later. The essentials build
-  is the staged default; a locally installed full build is only a fallback
-  source for the same executables.
-- Deno: MIT.
+- Gyan FFmpeg essentials build: GPL-3.0-or-later. The essentials build is the
+  staged default; a locally installed full build is only a fallback source for
+  the same executable.
+- Deno: MIT. It is not redistributed in the installer, but its MIT text ships in
+  `resources/licenses/third-party/` because the app can download the runtime on
+  demand.
 
 Read [../third-party/NOTICE.md](../third-party/NOTICE.md) for the per-tool
 inventory, license files, source versions and the source-offer strategy. This
@@ -389,12 +393,17 @@ testing as a manual step.
 
 ## Known gaps
 
-- Deno is located from the explicit `DONDOWNLOAD_DENO_PATH` override, packaged
-  `resources/vendor/deno/`, app-local `vendor/deno/`, or `PATH`. The resolved
-  path is passed as a fixed `--js-runtimes deno:<path>` argument to yt-dlp
-  analysis, playlist preview and media-download operations. Unit tests cover
-  the wiring. Rebuild the artifact after any source change before release.
-- ffprobe is staged but not invoked by the current application.
+- Deno is optional and not bundled. It is located from the explicit
+  `DONDOWNLOAD_DENO_PATH` override, app-local `vendor/deno/`, a previously
+  downloaded copy under `<userData>/tools/deno/<version>/`, or `PATH`. For a
+  YouTube page that needs a runtime and has none, the pinned release archive is
+  downloaded once, SHA-256 verified against the checksum published in the same
+  release, and installed atomically. The resolved path is passed as a fixed
+  `--js-runtimes deno:<path>` argument; without one the arguments are identical
+  to a machine without Deno. Unit tests cover the download, verification,
+  single-flight and no-runtime paths with a mocked network. Rebuild the artifact
+  after any source change before release.
+- FFprobe is not staged and not invoked; the header read uses FFmpeg.
 - The installer is not code-signed. Public distribution requires signing.
 - No auto-update, publish provider or telemetry is configured. The application
   updater exists but stays inert while `UPDATE_REPO` is `null`.

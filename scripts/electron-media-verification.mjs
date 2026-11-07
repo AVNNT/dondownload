@@ -358,7 +358,8 @@ async function run() {
   const output = await readFile(outputPath)
   if (output.length > maxTransferBytes) throw new Error(`Output file is ${output.length} bytes, over the ${maxTransferBytes} byte limit.`)
 
-  const ffprobe = path.join(root, 'dist', 'win-unpacked', 'resources', 'vendor', 'ffmpeg', 'ffprobe.exe')
+  // FFprobe is not shipped in the packaged resources; use the developer copy.
+  const ffprobe = 'ffprobe'
   const probe = spawnSync(ffprobe, [
     '-v', 'error', '-show_streams', '-show_format', '-of', 'json', outputPath
   ], { encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })

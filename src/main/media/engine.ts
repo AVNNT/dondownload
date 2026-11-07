@@ -74,6 +74,8 @@ import {
   prepareOutputDir,
   stagingDirName
 } from './staging'
+import { createJsRuntime, needsJsRuntime } from './jsRuntime'
+import type { JsRuntime } from './jsRuntime'
 import { createToolchainResolver } from './toolchain'
 
 export type { MediaDirectDownload } from './analysis'
@@ -175,6 +177,8 @@ export interface MediaEngineOptions {
   managedToolsDir?: string | null
   /** Per-user app data dir for short-lived analysis cookie files. */
   userDataPath?: string | null
+  /** Optional Deno runtime manager; defaults to the verified on-demand one. */
+  jsRuntime?: JsRuntime
   spawn?: MediaSpawn
   lookup?: MediaLookup
   now?: () => number
@@ -210,6 +214,26 @@ export function createMediaEngine(
   const platform = options.platform ?? process.platform
   const cwd = options.cwd ?? process.cwd()
   const managedToolsDir = options.managedToolsDir ?? null
+  const userDataPath = options.userDataPath ?? null
+  // Deno is not bundled: it is located when installed and downloaded on demand
+  // the first time a YouTube job needs a JavaScript runtime.
+  const jsRuntime =
+    options.jsRuntime ??
+    createJsRuntime({
+      env,
+      platform,
+      cwd,
+      userDataPath
+    })
+
+  async function ensureJsRuntime(targetUrl: string): Promise<string | null> {
+    if (!needsJsRuntime(targetUrl)) return null
+    try {
+      return await jsRuntime.ensure()
+    } catch {
+      return null
+    }
+  }
   const spawn = options.spawn ?? defaultMediaSpawn
   const lookup = options.lookup ?? defaultPublicTargetLookup
   const now = options.now ?? Date.now
@@ -388,6 +412,7 @@ export function createMediaEngine(
     platform,
     cwd,
     managedToolsDir,
+    jsRuntime,
     runCaptured: runTrackedCapturedProcess
   })
 
@@ -407,6 +432,7 @@ export function createMediaEngine(
     isClosing: () => closing,
     newOpaqueId,
     resolveToolchain,
+    ensureJsRuntime,
     runCaptured: runTrackedCapturedProcess,
     assertPublicTarget,
     writeCookieFile,
@@ -423,6 +449,7 @@ export function createMediaEngine(
     isClosing: () => closing,
     newOpaqueId,
     resolveToolchain,
+    ensureJsRuntime,
     runCaptured: runTrackedCapturedProcess,
     assertPublicTarget
   })
@@ -727,7 +754,8 @@ export function createMediaEngine(
       mergeOutputFormat: outputChoice.mergeOutputFormat,
       remuxOutputFormat: outputChoice.remuxOutputFormat,
       ffmpegLocation: needsFfmpeg ? toolchain.ffmpegPath : null,
-      denoPath: toolchain.denoPath,
+      denoPath:
+        toolchain.denoPath ?? (await ensureJsRuntime(downloadTargetUrl)),
       impersonate: toolchain.impersonate,
       maxBytes,
       cookiesPath: downloadCookieFile,

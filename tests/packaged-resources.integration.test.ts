@@ -54,12 +54,20 @@ runPackagedResources('extracted packaged resource discovery', () => {
     const expected = {
       aria2: path.join(resources, 'vendor', 'aria2', 'aria2c.exe'),
       ytdlp: path.join(resources, 'vendor', 'yt-dlp', 'yt-dlp.exe'),
-      ffmpeg: path.join(resources, 'vendor', 'ffmpeg', 'ffmpeg.exe'),
-      deno: path.join(resources, 'vendor', 'deno', 'deno.exe')
+      ffmpeg: path.join(resources, 'vendor', 'ffmpeg', 'ffmpeg.exe')
     }
 
     await expect(locateAria2c()).resolves.toBe(expected.aria2)
-    for (const tool of ['ytdlp', 'ffmpeg', 'deno'] as const) {
+    // FFprobe and Deno are not bundled: the app reads headers with FFmpeg and
+    // downloads Deno on demand for YouTube JS challenges.
+    await expect(
+      locateMediaTool('ffmpeg', {
+        env: { PATH: '' },
+        platform: 'win32',
+        cwd: process.cwd()
+      })
+    ).resolves.toMatchObject({ path: expected.ffmpeg })
+    for (const tool of ['ytdlp', 'ffmpeg'] as const) {
       await expect(
         locateMediaTool(tool, {
           env: { PATH: '' },

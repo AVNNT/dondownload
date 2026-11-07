@@ -7,9 +7,11 @@ compliant. DonDownload's own source is licensed under MIT (see `LICENSE`); that
 license does not replace or override the terms of any bundled third-party
 binary.
 
-The application does not download these tools at runtime (the managed yt-dlp
-updater is a separate, opt-in update path that writes below the user data
-directory). The staging script copies locally installed, version-checked
+The application does not download these tools at runtime, with two documented
+exceptions that write only below the user data directory: the managed yt-dlp
+updater, and the on-demand Deno runtime for YouTube JS challenges. FFprobe is no
+longer staged or invoked at all; the bounded header read that labels an
+unlabeled stream uses FFmpeg itself. The staging script copies locally installed, version-checked
 executables into the git-ignored `build/vendor/` directory; for yt-dlp it stages
 the official one-folder release archive (`yt-dlp.exe` plus `_internal/`). The
 installer then includes that directory as `resources/vendor/`.
@@ -21,8 +23,7 @@ installer then includes that directory as `resources/vendor/`.
 | aria2 (`aria2c.exe`) | 1.37.0 | `vendor/aria2/aria2c.exe` | GPL-2.0-or-later | <https://aria2.github.io/> | <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2> |
 | yt-dlp (`yt-dlp.exe` plus `_internal/`) | 2026.10.26 | `vendor/yt-dlp/` (official one-folder build) | Unlicense, plus bundled third-party licenses | <https://github.com/yt-dlp/yt-dlp> | <https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz> |
 | FFmpeg (`ffmpeg.exe`) | 9.0.2 Gyan essentials build | `vendor/ffmpeg/ffmpeg.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
-| ffprobe (`ffprobe.exe`) | 9.0.2 Gyan essentials build | `vendor/ffmpeg/ffprobe.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
-| Deno (`deno.exe`) | 2.9.8 | `vendor/deno/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
+| Deno (`deno.exe`) | 2.9.8 | not bundled; downloaded on demand into `<userData>/tools/deno/2.9.8/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
 
 The exact staged hashes, sizes, local source paths and license-file hashes are
 recorded in `build/vendor/manifest.json` by `scripts/stage-vendor.ps1`. This
@@ -56,7 +57,7 @@ authenticate the upstream origin or prove a reproducible build.
   archive the build recipe used to produce the standalone executable, or provide
   a written offer that covers it.
 
-## FFmpeg and ffprobe (Gyan essentials build)
+## FFmpeg (Gyan essentials build)
 
 - License: GPL-3.0-or-later. The GPLv3 text and the Gyan build README are
   included in `third-party/licenses/ffmpeg-GPLv3.txt` and
@@ -68,23 +69,30 @@ authenticate the upstream origin or prove a reproducible build.
   binary, including the build scripts and configuration needed to reproduce it,
   plus the GPLv3 notice. Verify whether any external assets listed in the Gyan
   README are actually bundled before making a distribution claim.
-- `ffprobe.exe` is staged for completeness and diagnostics. The current
-  application does not invoke it at runtime.
+- `ffprobe.exe` is not staged and not invoked. The bounded header read that
+  labels a stream without reported dimensions runs `ffmpeg -i <url>` and parses
+  the stream table FFmpeg prints on stderr, so the probe executable and its
+  ~100 MB of installer payload are gone.
 
 ## Deno
 
 - License: MIT. The upstream license text is included in
   `third-party/licenses/deno-LICENSE.txt`; retain the copyright and permission
   notice when redistributing the executable.
-- Deno is staged because current yt-dlp YouTube extraction requires a
-  JavaScript runtime. The application locates the packaged Deno path and passes
-  it to yt-dlp. The MIT text is included, but release review should confirm
-  whether the standalone executable's embedded dependencies need other notices.
+- Deno is not bundled. Current yt-dlp YouTube extraction needs a JavaScript
+  runtime, so the application downloads the pinned `deno-x86_64-pc-windows-msvc`
+  release archive into `<userData>/tools/deno/<version>/` the first time a
+  YouTube job needs it, verifies its SHA-256 against the checksum published in
+  the same pinned release, and passes the path to yt-dlp. The MIT text is
+  included in `third-party/licenses/deno-LICENSE.txt` and ships in the installer
+  so the notice travels with the downloaded runtime; release review should
+  confirm whether the standalone executable's embedded dependencies need other
+  notices.
 - Source archive: the upstream source tarball above.
 
 ## Source-offer strategy for GPL binaries
 
-Redistributing the GPL-covered aria2 and FFmpeg/ffprobe binaries requires more
+Redistributing the GPL-covered aria2 and FFmpeg binaries requires more
 than shipping a license text. Before any public or customer distribution, the
 release owner must complete all of the following:
 

@@ -9,6 +9,10 @@ override or a verified local installation path into the ignored build\vendor
 staging directory. It never installs, upgrades or modifies a tool, the registry,
 the firewall or an existing DonDownload installation.
 
+Only aria2, yt-dlp and FFmpeg are staged. FFprobe and Deno are not: the app
+reads stream headers with FFmpeg itself and downloads Deno on demand for YouTube
+JS challenges.
+
 yt-dlp is staged as the official Windows one-folder build (`yt-dlp.exe` plus
 `_internal\`) because it starts much faster than the PyInstaller one-file
 executable. A verified local `yt-dlp_win.zip` may be supplied with
@@ -60,6 +64,17 @@ if (-not $OutputDirectory.StartsWith($buildPrefix, [System.StringComparison]::Or
 # Pinned versions are the versions verified on the development machine and
 # documented in docs/media-tools.md. Change them only together with the
 # third-party notice review in third-party/NOTICE.md.
+#
+# Only these executables are staged. Two tools that earlier releases shipped are
+# deliberately absent:
+# - ffprobe: the application no longer calls it. The bounded header read that
+#   labels an unlabeled stream now runs `ffmpeg -i <url>` and parses the stream
+#   table FFmpeg prints on stderr, so the 100 MB probe executable is not needed.
+# - deno: yt-dlp only needs a JavaScript runtime for YouTube JS challenges. The
+#   app downloads the pinned, SHA-256 verified build into
+#   <userData>/tools/deno/<version>/deno.exe the first time a YouTube job needs
+#   it (src/main/media/jsRuntime.ts). Shipping it in every installer cost about
+#   94 MB for a feature most downloads never use.
 $tools = @(
     [pscustomobject]@{
         Name                 = 'aria2'
@@ -128,6 +143,15 @@ $tools = @(
             # mp3/m4a/opus extraction, HLS over https). Extracted from
             # https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip
             # (SHA-256 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba).
+            #
+            # This stays the smallest build that can be verified here. The
+            # "essentials" variant is already Gyan's reduced build: the shared
+            # and full variants are larger once their DLLs are counted, and no
+            # other reputable publisher offers a pinned Windows build with a
+            # published SHA-256 that still carries the mp3/m4a/opus encoders,
+            # the mp4/mkv/webm muxers and HTTPS HLS input. A smaller build would
+            # have to drop codecs the download pipeline actually invokes, so the
+            # 100 MB static executable is kept.
             (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'),
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe'
         )
@@ -140,50 +164,6 @@ $tools = @(
         SourceVersion        = '9.0.2 / FFmpeg commit 946fcce07b'
         SourceArchive        = 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz'
         Notice               = 'FFmpeg Gyan essentials build is GPLv3. See third-party/NOTICE.md for source-offer obligations.'
-    }
-    [pscustomobject]@{
-        Name                 = 'ffprobe'
-        Executable           = 'ffprobe.exe'
-        EnvOverride          = 'DONDOWNLOAD_FFPROBE_PATH'
-        ExpectedVersion      = '9.0.2'
-        VersionArguments     = @('-version')
-        VersionPattern       = '(?m)^ffprobe version\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)'
-        TargetRelativePath   = 'ffmpeg\ffprobe.exe'
-        PathCommand          = 'ffprobe'
-        KnownPaths           = @(
-            (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffprobe.exe'),
-            'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffprobe.exe'
-        )
-        License              = 'GPL-3.0-or-later (Gyan essentials build)'
-        LicenseFiles         = @(
-            'third-party\licenses\ffmpeg-GPLv3.txt',
-            'third-party\licenses\ffmpeg-GYAN-ESSENTIALS-BUILD-README.txt'
-        )
-        Upstream             = 'https://ffmpeg.org/'
-        SourceVersion        = '9.0.2 / FFmpeg commit 946fcce07b'
-        SourceArchive        = 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz'
-        Notice               = 'ffprobe from the FFmpeg Gyan essentials build is GPLv3. See third-party/NOTICE.md.'
-    }
-    [pscustomobject]@{
-        Name                 = 'deno'
-        Executable           = 'deno.exe'
-        EnvOverride          = 'DONDOWNLOAD_DENO_PATH'
-        ExpectedVersion      = '2.9.8'
-        VersionArguments     = @('--version')
-        VersionPattern       = '(?m)^deno\s+([0-9]+\.[0-9]+\.[0-9]+)'
-        TargetRelativePath   = 'deno\deno.exe'
-        PathCommand          = 'deno'
-        KnownPaths           = @(
-            'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe'
-        )
-        License              = 'MIT'
-        LicenseFiles         = @(
-            'third-party\licenses\deno-LICENSE.txt'
-        )
-        Upstream             = 'https://github.com/denoland/deno'
-        SourceVersion        = '2.9.8'
-        SourceArchive        = 'https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz'
-        Notice               = 'Deno is MIT. Bundled because current yt-dlp YouTube extraction requires a JavaScript runtime.'
     }
 )
 
