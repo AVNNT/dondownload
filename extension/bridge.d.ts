@@ -3,6 +3,8 @@ export const QUEUE_MESSAGE_TYPE: string
 export const PROBE_MESSAGE_TYPE: string
 export const CAPTURED_SOURCE_MESSAGE_TYPE: string
 export const DURABLE_HANDOFF_MESSAGE_TYPE: string
+export const DOWNLOAD_STATUS_MESSAGE_TYPE: string
+export const SHOW_DOWNLOAD_MESSAGE_TYPE: string
 export const SCAN_PAGE_MESSAGE_TYPE: string
 export const SCAN_IMAGES_MESSAGE_TYPE: string
 export const MAX_SCAN_IMAGES: number
@@ -96,6 +98,32 @@ export interface DurableHandoffReceiptDto {
 export type DurableHandoffResult =
   | { ok: true; durable: true; receipt: DurableHandoffReceiptDto }
   | BridgeFailure
+
+export type HandoffDownloadStatusName =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'done'
+  | 'error'
+
+export interface HandoffDownloadStatusDto {
+  status: HandoffDownloadStatusName
+  completedBytes: number
+  totalBytes: number
+  filename: string
+  errorMessage?: string
+}
+
+export type DownloadStatusResult =
+  | ({ ok: true } & HandoffDownloadStatusDto)
+  | BridgeFailure
+
+export function sendDownloadStatus(
+  rawDownloadId: unknown
+): Promise<DownloadStatusResult>
+export function sendShowDownload(
+  rawDownloadId: unknown
+): Promise<{ ok: true } | BridgeFailure>
 
 export function normalizeSupportedUrl(value: unknown): UrlResult
 export function normalizeCapturedSource(

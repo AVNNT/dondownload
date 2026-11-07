@@ -15,6 +15,10 @@ import {
 } from '../extension/capture-settings.js'
 import { automaticHandoffCandidate } from '../extension/handoff-policy.js'
 import { sendDurableHandoff } from '../extension/bridge.js'
+import {
+  forgetHandedOffDownloadsForTests,
+  hasHandedOffDownload
+} from '../extension/handoff-card.js'
 const DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
 
 interface FakeOptions {
@@ -28,6 +32,7 @@ interface FakeOptions {
   cookies?: Array<{ name: string; value: string }>
   cookiesGranted?: boolean
   searchItem?: Record<string, unknown>
+  scriptingFails?: boolean
 }
 
 function createFake(options: FakeOptions = {}) {
@@ -37,6 +42,7 @@ function createFake(options: FakeOptions = {}) {
   const cancelled: number[] = []
   const searched: number[] = []
   const cookieUrls: string[] = []
+  const injected: Array<{ tabId: number; args: unknown[] }> = []
   let activeResponse: unknown = options.nativeResponse ?? {
     ok: true,
     accepted: true,
@@ -118,6 +124,23 @@ function createFake(options: FakeOptions = {}) {
         return Promise.resolve(value)
       }
     },
+    tabs: {
+      async query() {
+        return [{ id: 5 }]
+      }
+    },
+    scripting: {
+      async executeScript(request: {
+        target: { tabId: number }
+        args: unknown[]
+      }) {
+        if (options.scriptingFails === true) {
+          throw new Error('Cannot access contents of the page')
+        }
+        injected.push({ tabId: request.target.tabId, args: request.args })
+        return []
+      }
+    },
     downloads: {
       search(query: { id: number }, callback: (items: unknown[]) => void) {
         searched.push(query.id)
@@ -162,6 +185,7 @@ function createFake(options: FakeOptions = {}) {
     cancelled,
     searched,
     cookieUrls,
+    injected,
     setResponse(next: unknown) {
       activeResponse = next
     },
@@ -171,11 +195,14 @@ function createFake(options: FakeOptions = {}) {
   }
 }
 
-async function seedSettings(fake: ReturnType<typeof createFake>) {
+async function seedSettings(
+  fake: ReturnType<typeof createFake>,
+  notifications = false
+) {
   await writeCaptureSettings(fake.chrome, {
     floatingTriggerEnabled: true,
     automaticFileHandoff: true,
-    handoffNotifications: false,
+    handoffNotifications: notifications,
     excludedOrigins: []
   })
 }
@@ -183,6 +210,7 @@ async function seedSettings(fake: ReturnType<typeof createFake>) {
 afterEach(() => {
   delete (globalThis as any).chrome
   resetDownloadsListenerForTests()
+  forgetHandedOffDownloadsForTests()
 })
 
 function useFake(fake: ReturnType<typeof createFake>) {
@@ -845,5 +873,67 @@ describe('handoffMinBytes setting', () => {
         normalizeCaptureSettings({ handoffMinBytes: value }).handoffMinBytes
       ).toBe(1_000_000)
     }
+  })
+})
+
+describe('in-page hand-off card', () => {
+  it('shows the card with the receipt download id after a confirmed hand-off', async () => {
+    const fake = createFake()
+    await seedSettings(fake, true)
+    useFake(fake)
+    expect(await handleCreatedDownload(fake.chrome, fileItem())).toBe('cancelled')
+    expect(fake.cancelled).toEqual([42])
+    expect(fake.injected).toEqual([
+      {
+        tabId: 5,
+        args: [{ downloadId: DOWNLOAD_ID, filename: 'report.zip' }]
+      }
+    ])
+    // The service worker may now answer progress questions for this id only.
+    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
+  })
+
+  it('never shows a card when hand-off notifications are off', async () => {
+    const fake = createFake()
+    await seedSettings(fake, false)
+    useFake(fake)
+    expect(await handleCreatedDownload(fake.chrome, fileItem())).toBe('cancelled')
+    expect(fake.injected).toEqual([])
+    expect(fake.cancelled).toEqual([42])
+  })
+
+  it('never shows a card when the hand-off failed', async () => {
+    const fake = createFake({
+      nativeResponse: {
+        ok: false,
+        error: { code: 'APP_NOT_RUNNING', message: 'DonDownload is not running.' }
+      }
+    })
+    await seedSettings(fake, true)
+    useFake(fake)
+    expect(await handleCreatedDownload(fake.chrome, fileItem())).toBe(
+      'left-running'
+    )
+    expect(fake.injected).toEqual([])
+    expect(fake.cancelled).toEqual([])
+    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(false)
+  })
+
+  it('keeps the hand-off result when the card cannot be injected', async () => {
+    const fake = createFake({ scriptingFails: true })
+    await seedSettings(fake, true)
+    useFake(fake)
+    expect(await handleCreatedDownload(fake.chrome, fileItem())).toBe('cancelled')
+    expect(fake.cancelled).toEqual([42])
+    expect(fake.injected).toEqual([])
+
+    // A tab query that throws is equally harmless.
+    fake.chrome.tabs.query = async () => {
+      throw new Error('no window')
+    }
+    expect(await handleCreatedDownload(fake.chrome, fileItem({ id: 43 }))).toBe(
+      'cancelled'
+    )
+    expect(fake.cancelled).toEqual([42, 43])
   })
 })

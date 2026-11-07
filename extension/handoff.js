@@ -7,6 +7,10 @@
 
 import { sendDurableHandoff } from './bridge.js'
 import {
+  rememberHandedOffDownload,
+  showHandoffCard
+} from './handoff-card.js'
+import {
   claimHandoffDownload,
   clearNeedsLoginState,
   finishHandoffDownload,
@@ -265,6 +269,15 @@ export async function handleCreatedDownload(chromeApi, item) {
     return 'left-running-cancel-failed'
   }
   notifyHandoff(chromeApi, settings, 'DD', 'Sent to DonDownload')
+  // The download is taken over at this point, so the in-page card is purely
+  // additive feedback: it is remembered for the service worker and injected
+  // best effort. Neither step can change the outcome above.
+  try {
+    rememberHandedOffDownload(handoff.receipt.downloadId)
+  } catch {
+    // Session memory is best effort; the badge still reports the hand-off.
+  }
+  await showHandoffCard(chromeApi, settings, item, handoff.receipt)
   return 'cancelled'
 }
 
