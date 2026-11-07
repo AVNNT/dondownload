@@ -3,6 +3,7 @@ import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
 import { rememberPendingScan, rememberPendingScans, scanCookiesReady } from './scan-pending.js'
 import { GOFILE_SCAN_MESSAGE_TYPE, isGofileShareUrl } from './gofile-scan.js'
+import { VIDEO_SCAN_MESSAGE_TYPE } from './video-scan.js'
 import { buildScanSends, groupScanUrlsByOrigin, parseScanUrlList } from './scan-urls.js'
 import {
   appendScanTabUrl,
@@ -1076,6 +1077,38 @@ async function scanGofilePage() {
   )
 }
 
+/**
+ * "Scan this page" on a video page. The collector reads the media URLs this tab
+ * already rendered, which is exactly what a Cloudflare challenge or an age gate
+ * denies the desktop. Returns true when the desktop accepted the report, so the
+ * caller does not start a second, redundant page scan.
+ */
+async function scanVideoPage() {
+  if (activeTabId === null || pageUrl === null) return false
+  setStatus('', 'Reading the video this tab is playing…')
+  let result
+  try {
+    result = await chrome.runtime.sendMessage({
+      type: VIDEO_SCAN_MESSAGE_TYPE,
+      tabId: activeTabId,
+      pageUrl
+    })
+  } catch {
+    return false
+  }
+  if (!result || result.ok !== true) return false
+  if (result.sent !== true) return false
+  setStatus(
+    'success',
+    `${result.sourceCount} video source${result.sourceCount === 1 ? '' : 's'} found in this tab and sent to DonDownload.${
+      result.cookieAttached === true
+        ? ''
+        : ' Downloads may need your sign-in: allow DonDownload to use your login on this site (asked once) and scan again.'
+    }`
+  )
+  return true
+}
+
 async function scanPage() {
   if (scanning || pageUrl === null) return
   if (isGofileShareUrl(pageUrl)) {
@@ -1093,6 +1126,11 @@ async function scanPage() {
   setSending(false)
   setStatus('', 'Scanning this page in DonDownload…')
   try {
+    // A video page the desktop cannot read (no yt-dlp extractor, a Cloudflare
+    // challenge, an age gate) still plays here. When this tab rendered a media
+    // URL, report it so the card in the originating scan becomes downloadable.
+    // A page with no media at all falls through to the normal page scan.
+    if (activeTabId !== null && (await scanVideoPage())) return
     // Scans always use the browser sign-in for this exact page origin. The
     // first scan on a site needs Chrome's one-time cookies grant; that prompt
     // would close this popup, so it opens in a tab and the scan starts there

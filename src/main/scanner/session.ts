@@ -48,6 +48,7 @@ import {
   type ScanMegaTarget
 } from './mega'
 import { classifyScanCandidate } from './classify'
+import { isVideoHostVideoUrl } from './videoHosts'
 import {
   extractCandidates,
   type ExtractedCandidate
@@ -59,6 +60,13 @@ import {
   type DiscoursePageLink,
   type TaggedCandidate
 } from './extract/discourse'
+import { extractVideoMedia } from './extract/videoMedia'
+import {
+  MAX_SCAN_VIDEO_MEDIA_SOURCES,
+  type ScanVideoMediaKind,
+  type ScanVideoMediaSource,
+  type ScanVideoRequest
+} from '@shared/scanVideo'
 import type { ScanImagesRequest } from '@shared/scanImages'
 import type { ScanGofileRequest } from '@shared/scanBridge'
 import {
@@ -96,7 +104,9 @@ import {
   type ScanPixeldrainTarget
 } from './pixeldrain'
 import {
+  BROWSER_ONLY_REASON,
   resolveVideoCandidates,
+  safeThumbnail,
   videoIdentityForUrl,
   type ScanMediaAnalyzer,
   type VideoResolution
@@ -175,6 +185,27 @@ export interface ResolvedVideoTarget {
   bestOptionId: string | null
 }
 
+/**
+ * One direct media source found by the page fallback or reported by the user's
+ * own browser tab. The URL and the referer are internal: only the opaque
+ * `optionId` and the display metadata reach the renderer.
+ */
+export interface ScanVideoMediaTargetSource {
+  optionId: string
+  url: string
+  kind: ScanVideoMediaKind
+  label: string
+  width: number | null
+  height: number | null
+  sizeBytes: number | null
+}
+
+export interface ScanVideoMediaTarget {
+  /** Page URL sent as Referer; the media itself is served from another host. */
+  referer: string
+  sources: ScanVideoMediaTargetSource[]
+}
+
 export interface ResolvedScanTarget {
   itemId: string
   url: string
@@ -188,6 +219,11 @@ export interface ResolvedScanTarget {
   author: string | null
   /** Present only for a resolved video page link. */
   video?: ResolvedVideoTarget
+  /**
+   * Present instead of `video` when the page fallback (or the user's browser
+   * tab) produced direct media for a video yt-dlp could not read.
+   */
+  media?: ScanVideoMediaTarget
 }
 
 /** Internal funscript pairing after session membership and set checks. */
@@ -254,6 +290,11 @@ interface StoredScanItem extends ScanItem {
   videoIdentity: string | null
   /** Analysis association used by the explicit queue path. */
   videoAnalysis: ResolvedVideoTarget | null
+  /**
+   * Direct media the page (or the user's own browser tab) exposed when yt-dlp
+   * could not resolve it. Memory-only: the URLs never leave this module.
+   */
+  videoMedia: ScanVideoMediaTarget | null
   /** True while a browser-only card has an armed hand-off pairing. */
   browserMatchPending: boolean
 }
@@ -567,6 +608,7 @@ export class ScanSessionManager {
         fallbackUrl,
         videoIdentity: null,
         videoAnalysis: null,
+        videoMedia: null,
         browserMatchPending: false,
         ...(image.width === undefined ? {} : { width: image.width }),
         ...(image.height === undefined ? {} : { height: image.height }),
@@ -657,6 +699,7 @@ export class ScanSessionManager {
         fallbackUrl: null,
         videoIdentity: null,
         videoAnalysis: null,
+        videoMedia: null,
         browserMatchPending: false,
         unavailableReason: reason ?? GOFILE_BROWSER_ONLY_REASON
       })
@@ -801,6 +844,129 @@ export class ScanSessionManager {
     item.unavailableReason = null
   }
 
+  /**
+   * Fill a video card from the media the user's own browser tab rendered.
+   *
+   * The extension reported the URLs of a video page it could read in the live
+   * DOM, which is exactly what a Cloudflare challenge or an age gate denies the
+   * app. When the page is already a browser-only card in a live session, that
+   * card is upgraded in place so the rest of the scan (post numbers, funscript
+   * sets, the batch the user is building) stays together. Otherwise the page
+   * becomes its own one-card session. Nothing is fetched here and nothing is
+   * queued.
+   */
+  async startVideoMedia(input: ScanVideoRequest): Promise<ScanSession> {
+    this.assertOpen()
+    let pageUrl: string
+    try {
+      pageUrl = normalizeScanUrl(input.pageUrl)
+    } catch {
+      throw new ValidationError('That video page link is not valid.')
+    }
+    this.pruneExpired()
+
+    const existing = this.sessionForVideoPage(pageUrl)
+    if (existing === null && !isVideoHostVideoUrl(pageUrl)) {
+      // Not a single video page and no card is waiting for it: the extension
+      // falls back to the normal page scan instead of creating a stray session.
+      throw new AppError(
+        'SCAN_VIDEO_NOT_A_VIDEO_PAGE',
+        'This page is not a single video page.'
+      )
+    }
+    if (existing !== null) {
+      let upgraded = false
+      for (const item of existing.items.values()) {
+        if (item.url !== pageUrl) continue
+        if (item.kind !== 'page-link' || item.category !== 'video') continue
+        const applied = await this.applyVideoMediaSources(existing, item, {
+          sources: input.sources,
+          title: input.title ?? null,
+          thumbnailUrl: null,
+          durationSeconds: null,
+          referer: pageUrl
+        })
+        upgraded = upgraded || applied
+      }
+      if (!upgraded && input.sources.length === 0) {
+        for (const item of existing.items.values()) {
+          if (item.url !== pageUrl) continue
+          item.unavailableReason ??= BROWSER_ONLY_REASON
+        }
+      }
+      this.touch(existing)
+      this.publish(existing, true)
+      return this.fullSnapshot(existing)
+    }
+
+    const session = this.createSession(pageUrl, {
+      origin: 'extension',
+      ...(input.cookie === undefined ? {} : { cookie: input.cookie })
+    })
+    session.status = 'done'
+    session.started = true
+    session.settled = true
+    session.message = null
+    if (input.title !== undefined) {
+      session.title = cleanText(input.title, MAX_SCAN_NAME_LENGTH)
+    }
+
+    const id = this.newOpaqueId('item')
+    const item: StoredScanItem = {
+      id,
+      category: 'video',
+      kind: 'page-link',
+      name: cleanText(input.title ?? hostnameOf(pageUrl), MAX_SCAN_NAME_LENGTH),
+      hostname: hostnameOf(pageUrl),
+      sizeBytes: null,
+      verified: false,
+      status: 'browser-only',
+      postNumber: null,
+      author: null,
+      url: pageUrl,
+      fallbackUrl: null,
+      videoIdentity: videoIdentityForUrl(pageUrl),
+      videoAnalysis: null,
+      videoMedia: null,
+      browserMatchPending: false,
+      unavailableReason: BROWSER_ONLY_REASON
+    }
+    session.items.set(id, item)
+    session.order.push(id)
+
+    await this.applyVideoMediaSources(session, item, {
+      sources: input.sources,
+      title: input.title ?? null,
+      thumbnailUrl: null,
+      durationSeconds: null,
+      referer: pageUrl
+    })
+
+    this.touch(session)
+    const initial = this.fullSnapshot(session)
+    for (const entry of initial.items) {
+      session.emitted.set(entry.id, JSON.stringify(entry))
+    }
+    return initial
+  }
+
+  /** The live session that already shows a video card for this exact page. */
+  private sessionForVideoPage(pageUrl: string): StoredScanSession | null {
+    for (const session of this.sessions.values()) {
+      if (session.expiresAt <= this.now()) continue
+      for (const item of session.items.values()) {
+        if (
+          item.url === pageUrl &&
+          item.kind === 'page-link' &&
+          item.category === 'video'
+        ) {
+          return session
+        }
+      }
+    }
+    return null
+  }
+
   private createSession(
     url: string,
     options: StartScanOptions
@@ -941,7 +1107,7 @@ export class ScanSessionManager {
         item.category === 'video' &&
         item.kind === 'page-link' &&
         item.status === 'ready' &&
-        item.videoAnalysis !== null
+        (item.videoAnalysis !== null || item.videoMedia !== null)
       if (item.category === 'page' || (item.kind === 'page-link' && !readyVideo)) {
         throw new AppError(
           'SCAN_PAGE_NOT_QUEUEABLE',
@@ -979,6 +1145,9 @@ export class ScanSessionManager {
                 bestOptionId: item.videoAnalysis.bestOptionId
               }
             }
+          : {}),
+        ...(readyVideo && item.videoMedia !== null
+          ? { media: item.videoMedia }
           : {})
       })
     }
@@ -1022,7 +1191,7 @@ export class ScanSessionManager {
         video.category === 'video' &&
         video.kind === 'page-link' &&
         video.status === 'ready' &&
-        video.videoAnalysis !== null
+        (video.videoAnalysis !== null || video.videoMedia !== null)
       const browserOnlyVideo =
         video !== undefined &&
         options.allowBrowserOnly === true &&
@@ -1291,6 +1460,7 @@ export class ScanSessionManager {
       current.bestOptionId = null
       current.unavailableReason = null
       current.videoAnalysis = null
+      current.videoMedia = null
       current.videoIdentity ??= videoIdentityForUrl(current.url)
       session.videoAnalyses += 1
       this.touch(session)
@@ -1322,6 +1492,13 @@ export class ScanSessionManager {
           }
         }
       )
+
+      // The explicit "check as video" path gets the same page fallback as a
+      // scan, so a page yt-dlp cannot read still becomes a real download.
+      const live = session.items.get(current.id)
+      if (live && live.status === 'browser-only') {
+        await this.applyPageFallback(session, live)
+      }
 
       this.touch(session)
       this.publish(session, true)
@@ -1940,6 +2117,7 @@ export class ScanSessionManager {
       fallbackUrl: null,
       videoIdentity: identity,
       videoAnalysis: null,
+      videoMedia: null,
       browserMatchPending: false,
       ...(gofileShare === null
         ? {}
@@ -2437,6 +2615,7 @@ export class ScanSessionManager {
       fallbackUrl: null,
       videoIdentity: videoIdentityForUrl(normalized),
       videoAnalysis: null,
+      videoMedia: null,
       browserMatchPending: false
     }
     session.items.set(id, item)
@@ -2696,8 +2875,214 @@ export class ScanSessionManager {
             bestOptionId: resolution.bestOptionId
           }
         : null
+    // The engine's answer replaces any direct media a fallback found earlier.
+    item.videoMedia = null
     this.touch(session)
     this.scheduleEmit(session)
+  }
+
+  /**
+   * Fill browser-only video cards from the pages themselves.
+   *
+   * yt-dlp has no extractor for some video sites and is answered with a
+   * Cloudflare challenge, an age gate or a geo block on others. Those pages
+   * still name their media, so a bounded fetch (with the exact-host Cookie when
+   * the user allowed it) gives real quality options instead of a dead card.
+   */
+  private async applyPageFallbacks(
+    session: StoredScanSession,
+    items: readonly StoredScanItem[]
+  ): Promise<void> {
+    const targets = items.filter((item) => item.status === 'browser-only')
+    if (targets.length === 0) return
+    let cursor = 0
+    const runners = Array.from(
+      { length: Math.min(2, targets.length) },
+      async () => {
+        for (;;) {
+          const index = cursor
+          cursor += 1
+          if (index >= targets.length) return
+          if (session.controller.signal.aborted) return
+          if (this.now() >= session.deadline) return
+          const target = targets[index]!
+          const current = session.items.get(target.id)
+          if (!current || current.status !== 'browser-only') continue
+          try {
+            await this.applyPageFallback(session, current)
+          } catch (error) {
+            if (isCancelled(error) || session.controller.signal.aborted) return
+            // A fallback failure leaves the card exactly as it was.
+          }
+          if (session.controller.signal.aborted) return
+          this.touch(session)
+          this.scheduleEmit(session)
+        }
+      }
+    )
+    await Promise.all(runners)
+  }
+
+  /** One bounded page fetch plus direct-media extraction for one card. */
+  private async applyPageFallback(
+    session: StoredScanSession,
+    item: StoredScanItem
+  ): Promise<boolean> {
+    const cookie = this.cookieFor(session, item.url)
+    let page: ScanFetchResult
+    try {
+      page = await this.fetchPage(
+        {
+          url: item.url,
+          ...(cookie === null ? {} : { cookie }),
+          accept: 'html',
+          signal: session.controller.signal
+        },
+        this.lookup === undefined ? {} : { lookup: this.lookup }
+      )
+    } catch {
+      // A challenge, login wall or non-HTML answer keeps the card browser-only;
+      // the user's own browser tab is the remaining path.
+      return false
+    }
+    if (session.controller.signal.aborted) return false
+    session.fetchedPages += 1
+    this.touch(session)
+
+    const extracted = extractVideoMedia(page.body, page.finalUrl)
+    if (extracted.sources.length === 0) {
+      if (extracted.blocked !== null) {
+        item.unavailableReason = BROWSER_ONLY_REASON
+      }
+      return false
+    }
+    return this.applyVideoMediaSources(session, item, {
+      sources: extracted.sources,
+      title: extracted.title,
+      thumbnailUrl: extracted.thumbnailUrl,
+      durationSeconds: extracted.durationSeconds,
+      referer: page.finalUrl
+    })
+  }
+
+  /**
+   * Turn validated direct media into renderer-safe formats for one card.
+   *
+   * Every URL is re-normalized and its host checked against the public-target
+   * policy before it can reach a downloader; a private or unresolvable host is
+   * dropped silently. The card only becomes `ready` when at least one source
+   * survived, and only opaque option IDs are published.
+   */
+  private async applyVideoMediaSources(
+    session: StoredScanSession,
+    item: StoredScanItem,
+    input: {
+      sources: readonly ScanVideoMediaSource[]
+      title: string | null
+      thumbnailUrl: string | null
+      durationSeconds: number | null
+      referer: string
+    }
+  ): Promise<boolean> {
+    if (input.sources.length === 0) return false
+
+    // One lookup per distinct host: a page normally serves every rendition from
+    // the same CDN, so this stays cheap and still fails closed.
+    const hosts = new Map<string, string>()
+    for (const source of input.sources) {
+      if (hosts.size >= MAX_SCAN_VIDEO_MEDIA_SOURCES) break
+      let hostname: string
+      try {
+        hostname = new URL(source.url).hostname
+      } catch {
+        continue
+      }
+      if (!hosts.has(hostname)) hosts.set(hostname, source.url)
+    }
+    const publicHosts = new Set<string>()
+    for (const [hostname, sample] of hosts) {
+      try {
+        await assertPublicTarget(sample, this.lookup)
+        publicHosts.add(hostname)
+      } catch {
+        // Private, loopback or unresolvable: never handed to a downloader.
+      }
+    }
+    if (publicHosts.size === 0) return false
+
+    const referer = (() => {
+      try {
+        return normalizeScanUrl(input.referer)
+      } catch {
+        return item.url
+      }
+    })()
+
+    const formats: ScanVideoFormat[] = []
+    const sources: ScanVideoMediaTargetSource[] = []
+    for (const source of input.sources) {
+      if (sources.length >= MAX_SCAN_VIDEO_MEDIA_SOURCES) break
+      let hostname: string
+      try {
+        hostname = new URL(source.url).hostname
+      } catch {
+        continue
+      }
+      if (!publicHosts.has(hostname)) continue
+      let url: string
+      try {
+        url = normalizeScanUrl(source.url)
+      } catch {
+        continue
+      }
+      const height = source.height ?? null
+      const label = videoMediaLabel(source, height)
+      const optionId = randomUUID().replace(/-/g, '')
+      formats.push({
+        optionId,
+        kind: 'video',
+        label,
+        container: videoMediaContainer(source.kind),
+        width: source.width ?? null,
+        height,
+        sizeBytes: source.sizeBytes ?? null,
+        sizeIsEstimate: false,
+        outputFormats: ['auto']
+      })
+      sources.push({
+        optionId,
+        url,
+        kind: source.kind,
+        label,
+        width: source.width ?? null,
+        height,
+        sizeBytes: source.sizeBytes ?? null
+      })
+    }
+    if (formats.length === 0) return false
+
+    const bestFormat = formats[0]!
+    const best = sources[0]!
+    item.status = 'ready'
+    item.verified = true
+    item.unavailableReason = null
+    item.videoAnalysis = null
+    item.videoMedia = { referer, sources }
+    item.formats = formats
+    item.bestOptionId = bestFormat.optionId
+    item.width = best.width
+    item.height = best.height
+    item.bestResolution = best.height === null ? null : `${best.height}p`
+    item.sizeBytes = best.sizeBytes
+    item.sizeIsEstimate = false
+    item.durationSeconds = input.durationSeconds
+    item.thumbnailUrl = safeThumbnail(input.thumbnailUrl)
+    if (input.title !== null) {
+      item.name = cleanText(input.title, MAX_SCAN_NAME_LENGTH)
+    }
+    this.touch(session)
+    this.scheduleEmit(session)
+    return true
   }
 
   /**
@@ -2802,6 +3187,12 @@ export class ScanSessionManager {
           'yt-dlp is not available. Install or update it, then scan the page again.'
       }
     }
+
+    // A page yt-dlp could not read (no extractor, Cloudflare, an age gate) is
+    // still worth one bounded app-side fetch: the page itself usually names its
+    // media, which turns the card into a real download with quality options.
+    await this.applyPageFallbacks(session, selected)
+    if (session.controller.signal.aborted) return
 
     this.touch(session)
     this.publish(session, true)
@@ -3078,4 +3469,35 @@ function safeFailureMessage(error: unknown): string {
     return 'The signed-in page redirected to a different host, so it was not scanned with cookies.'
   }
   return 'The page could not be scanned. It may be unavailable or require a sign-in.'
+}
+
+/** Container shown for a direct media source; the downloader keeps it as-is. */
+const VIDEO_MEDIA_CONTAINER: Record<ScanVideoMediaKind, string> = {
+  file: 'mp4',
+  hls: 'm3u8',
+  dash: 'mpd'
+}
+
+const VIDEO_MEDIA_KIND_LABEL: Record<ScanVideoMediaKind, string> = {
+  file: 'MP4',
+  hls: 'HLS',
+  dash: 'DASH'
+}
+
+function videoMediaContainer(kind: ScanVideoMediaKind): string {
+  return VIDEO_MEDIA_CONTAINER[kind]
+}
+
+/**
+ * Renderer-safe quality label, for example `1080p · MP4`. The player's own
+ * label is only used when the page exposed no resolution.
+ */
+function videoMediaLabel(
+  source: ScanVideoMediaSource,
+  height: number | null
+): string {
+  const quality =
+    height !== null ? `${height}p` : (source.label ?? null)
+  const kind = VIDEO_MEDIA_KIND_LABEL[source.kind]
+  return quality === null ? kind : `${quality} · ${kind}`
 }

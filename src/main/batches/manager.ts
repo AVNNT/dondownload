@@ -53,7 +53,7 @@ import type {
   SmartBatchSubmitInput,
   SmartBatchSubmitResult
 } from '@shared/types'
-import { ValidationError, sanitizeFilename } from '@shared/validation'
+import { ValidationError, parseDownloadRequestHeaders, sanitizeFilename } from '@shared/validation'
 import { parseFunscriptName } from '@shared/funscriptPairing'
 import type {
   PixeldrainFileResolution,
@@ -1296,6 +1296,22 @@ export class BatchManager {
   /* ---------------------- scanner direct queue path ---------------------- */
 
   /**
+   * One-job request headers for a scan target, kept in memory only.
+   *
+   * A Cookie is the exact-host value the browser extension reported; a Referer
+   * is the page a direct media file was found on, which most media hosts
+   * require. Both are validated here again, and a restart never resumes a job
+   * with stale headers.
+   */
+  private readScanRequestHeaders(value: unknown): DownloadRequestHeaders {
+    const headers = parseDownloadRequestHeaders(value)
+    if (headers.cookie === undefined && headers.referer === undefined) {
+      throw new ValidationError('The scan batch header is empty.')
+    }
+    return headers
+  }
+
+  /**
    * Create one persisted direct-file batch from the scanner's explicit
    * selection. This is not reachable from the renderer: the scanner resolves
    * opaque item IDs, re-probes the URLs and passes normalized internal targets.
@@ -1366,25 +1382,7 @@ export class BatchManager {
       }
       let requestHeaders: DownloadRequestHeaders | undefined
       if (target.requestHeaders !== undefined) {
-        const headers = asRecord(target.requestHeaders)
-        for (const key of Object.keys(headers)) {
-          if (key !== 'cookie') {
-            throw new ValidationError(
-              'A scan batch header contains unsupported fields.'
-            )
-          }
-        }
-        const cookie = headers.cookie
-        if (
-          typeof cookie !== 'string' ||
-          cookie.length === 0 ||
-          cookie.length > 8192 ||
-          // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
-          /[\u0000-\u001f\u007f]/.test(cookie)
-        ) {
-          throw new ValidationError('The scan batch cookie header is invalid.')
-        }
-        requestHeaders = { cookie }
+        requestHeaders = this.readScanRequestHeaders(target.requestHeaders)
       }
       let fallbackUrl: string | undefined
       if (target.fallbackUrl !== undefined) {
@@ -1477,6 +1475,7 @@ export class BatchManager {
         key !== 'title' &&
         key !== 'files' &&
         key !== 'videos' &&
+        key !== 'streams' &&
         key !== 'pairings'
       ) {
         throw new ValidationError(
@@ -1496,12 +1495,6 @@ export class BatchManager {
     if (!Array.isArray(rawFiles) || !Array.isArray(rawVideos)) {
       throw new ValidationError('The scan media batch selection is invalid.')
     }
-    if (
-      rawFiles.length + rawVideos.length === 0 ||
-      rawFiles.length + rawVideos.length > MAX_COLLECTION_SELECTION
-    ) {
-      throw new ValidationError('The scan media batch selection is invalid.')
-    }
 
     const readCookie = (value: unknown): string => {
       if (
@@ -1514,6 +1507,28 @@ export class BatchManager {
         throw new ValidationError('The scan batch cookie header is invalid.')
       }
       return value
+    }
+
+    const rawStreams = record.streams
+    if (rawStreams !== undefined && !Array.isArray(rawStreams)) {
+      throw new ValidationError('The scan media batch stream list is invalid.')
+    }
+    const streams: Array<{
+      input: SniffedMediaInput
+      scanItemId: string | undefined
+    }> = (rawStreams ?? []).map((rawStream) => {
+      const stream = asRecord(rawStream)
+      const scanItemId =
+        stream.scanItemId === undefined ? undefined : opaqueId(stream.scanItemId)
+      const { scanItemId: _scanItemId, ...rest } = stream
+      return { input: parseSniffedMediaInput(rest), scanItemId }
+    })
+    if (
+      rawFiles.length + rawVideos.length + streams.length === 0 ||
+      rawFiles.length + rawVideos.length + streams.length >
+        MAX_COLLECTION_SELECTION
+    ) {
+      throw new ValidationError('The scan media batch selection is invalid.')
     }
 
     const files: BatchScanTarget[] = rawFiles.map((rawTarget) => {
@@ -1549,15 +1564,7 @@ export class BatchManager {
           : normalizeBatchSourceUrl(target.resolvedUrl)
       let requestHeaders: DownloadRequestHeaders | undefined
       if (target.requestHeaders !== undefined) {
-        const headers = asRecord(target.requestHeaders)
-        for (const key of Object.keys(headers)) {
-          if (key !== 'cookie') {
-            throw new ValidationError(
-              'A scan batch header contains unsupported fields.'
-            )
-          }
-        }
-        requestHeaders = { cookie: readCookie(headers.cookie) }
+        requestHeaders = this.readScanRequestHeaders(target.requestHeaders)
       }
       return {
         url,
@@ -1695,6 +1702,34 @@ export class BatchManager {
           : { outputFormat: target.outputFormat }),
         ...(target.cookie === undefined ? {} : { cookie: target.cookie })
       })
+    }
+
+    // A direct HLS/DASH manifest found by the video page fallback. It is
+    // downloaded by the media engine exactly like a stream the browser overlay
+    // detected, so progress, pause and cancel stay in the normal media list.
+    for (const stream of streams) {
+      const itemId = newOpaqueId('bitem')
+      items.set(itemId, {
+        id: itemId,
+        batchId,
+        position: items.size,
+        kind: 'media',
+        status: 'queued',
+        title: stream.input.title,
+        label: stream.input.kind === 'hls' ? 'HLS stream' : 'DASH stream',
+        childId: null,
+        completedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+        sourceUrl: stream.input.url,
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null
+      })
+      if (stream.scanItemId !== undefined) {
+        scanItemIdToBatch.set(stream.scanItemId, itemId)
+      }
+      this.scanSniffedMediaSelections.set(itemId, stream.input)
     }
 
     const parsedPairings = this.parseScanPairings(

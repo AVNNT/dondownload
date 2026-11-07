@@ -30,6 +30,7 @@ using System.Web.Script.Serialization;
 //   { "type": "show-download", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "scan-page", "url": "https://discuss.example/t/topic/123", "cookie": "..." }
 //   { "type": "scan-gofile", "shareId": "AbCd1234", "status": "ok", "files": [ { "name": "a.mp4", "size": 123, "url": "https://store3.gofile.io/download/web/id/a.mp4" } ], "cookie": "..." }
+//   { "type": "scan-video", "pageUrl": "https://example.com/watch?v=1", "title": "Demo", "sources": [ { "url": "https://cdn.example/1080.mp4", "kind": "file", "height": 1080 } ], "cookie": "..." }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
 //   { "type": "media-status", "jobId": "..." }
@@ -64,10 +65,18 @@ internal static class NativeHost
     private const string ScanPageOperation = "scan-page";
     private const string ScanImagesOperation = "scan-images";
     private const string ScanGofileOperation = "scan-gofile";
+    private const string ScanVideoOperation = "scan-video";
     // One page may report up to 1000 images, each with an optional fallback URL.
     private const int MaxScanImages = 1000;
     // One Gofile share reports at most 500 rendered rows.
     private const int MaxScanGofileFiles = 500;
+    // One video page reports at most 24 direct media URLs.
+    private const int MaxScanVideoSources = 24;
+    private const int MaxScanVideoLabelLength = 80;
+    private const int MaxScanVideoTitleLength = 300;
+    private const long MaxScanVideoDimension = 100000;
+    // 10 TB is far above any real video and keeps the size a sane long.
+    private const long MaxScanVideoBytes = 10000000000000L;
     private const int MaxGofileNameLength = 240;
     // 10 TB is far above any real Gofile file and keeps the size a sane long.
     private const long MaxGofileSizeBytes = 10000000000000L;
@@ -332,6 +341,10 @@ internal static class NativeHost
         if (type == ScanGofileOperation)
         {
             return HandleScanGofileMessage(message);
+        }
+        if (type == ScanVideoOperation)
+        {
+            return HandleScanVideoMessage(message);
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
@@ -1017,6 +1030,124 @@ internal static class NativeHost
             body.Add("cookie", cookie);
         }
         return ForwardScanGofile(body);
+    }
+
+    /// <summary>
+    /// "Scan this video page". The extension read the media URLs from the user's
+    /// own rendered tab, which is what a Cloudflare challenge or an age gate
+    /// denies the desktop. This only validates the shape and forwards the list;
+    /// the desktop re-validates every URL and never solves a challenge itself.
+    /// </summary>
+    private static Dictionary<string, object> HandleScanVideoMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "pageUrl", "sources" },
+            new string[] { "title", "cookie" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only scan-video messages containing type, pageUrl, sources and an optional title or cookie are accepted.");
+        }
+
+        string pageUrl;
+        string urlError;
+        if (!TryNormalizeUrl(message["pageUrl"] as string, out pageUrl, out urlError))
+        {
+            return Error("INVALID_URL", urlError);
+        }
+
+        object[] rawSources = message["sources"] as object[];
+        if (rawSources == null || rawSources.Length > MaxScanVideoSources)
+        {
+            return Error("INVALID_MESSAGE", "The video source list is invalid.");
+        }
+
+        List<object> sources = new List<object>();
+        for (int index = 0; index < rawSources.Length; index++)
+        {
+            Dictionary<string, object> raw = rawSources[index] as Dictionary<string, object>;
+            if (raw == null ||
+                !HasExactKeys(
+                    raw,
+                    new string[] { "url", "kind" },
+                    new string[] { "label", "width", "height", "sizeBytes" }))
+            {
+                return Error("INVALID_MESSAGE", "A video source is invalid.");
+            }
+
+            string sourceUrl;
+            if (!TryNormalizeUrl(raw["url"] as string, out sourceUrl, out urlError))
+            {
+                return Error("INVALID_URL", urlError);
+            }
+
+            string kind = raw["kind"] as string;
+            if (kind != "file" && kind != "hls" && kind != "dash")
+            {
+                return Error("INVALID_MESSAGE", "A video source kind is unsupported.");
+            }
+
+            Dictionary<string, object> entry = new Dictionary<string, object>();
+            entry.Add("url", sourceUrl);
+            entry.Add("kind", kind);
+            if (raw.ContainsKey("label"))
+            {
+                if (!IsSafeText(raw["label"], MaxScanVideoLabelLength))
+                {
+                    return Error("INVALID_MESSAGE", "A video source label is invalid.");
+                }
+                entry.Add("label", raw["label"] as string);
+            }
+            foreach (string key in new string[] { "width", "height" })
+            {
+                if (!raw.ContainsKey(key))
+                {
+                    continue;
+                }
+                long dimension;
+                if (!TryReadPositiveLong(raw[key], out dimension) ||
+                    dimension > MaxScanVideoDimension)
+                {
+                    return Error("INVALID_MESSAGE", "A video source size is invalid.");
+                }
+                entry.Add(key, dimension);
+            }
+            if (raw.ContainsKey("sizeBytes"))
+            {
+                long bytes;
+                if (!TryReadPositiveLong(raw["sizeBytes"], out bytes) ||
+                    bytes > MaxScanVideoBytes)
+                {
+                    return Error("INVALID_MESSAGE", "A video source size is invalid.");
+                }
+                entry.Add("sizeBytes", bytes);
+            }
+            sources.Add(entry);
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("pageUrl", pageUrl);
+        body.Add("sources", sources.ToArray());
+        if (message.ContainsKey("title"))
+        {
+            if (!IsSafeText(message["title"], MaxScanVideoTitleLength))
+            {
+                return Error("INVALID_MESSAGE", "The video page title is invalid.");
+            }
+            body.Add("title", message["title"] as string);
+        }
+        if (message.ContainsKey("cookie"))
+        {
+            string cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+            body.Add("cookie", cookie);
+        }
+        return ForwardScanVideo(body);
     }
 
     /// <summary>Gofile share ids are short URL-safe tokens, never a path.</summary>
@@ -1853,6 +1984,17 @@ internal static class NativeHost
         Dictionary<string, object> body)
     {
         return ForwardScanRoute(body, "/scan-gofile");
+    }
+
+    /// <summary>
+    /// POST one validated video page to the desktop /scan-video route. The
+    /// media URLs came from the user's own rendered tab, so the desktop never
+    /// fetches the page and nothing is queued from here.
+    /// </summary>
+    private static Dictionary<string, object> ForwardScanVideo(
+        Dictionary<string, object> body)
+    {
+        return ForwardScanRoute(body, "/scan-video");
     }
 
     /// <summary>

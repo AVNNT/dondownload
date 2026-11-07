@@ -13,6 +13,7 @@ import type {
   ScanVideoFormat
 } from '@shared/scanner'
 import { ValidationError } from '@shared/validation'
+import type { SniffedMediaInput } from '@shared/sniffedMedia'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
@@ -22,7 +23,8 @@ import { isGofileDownloadUrl } from '@shared/gofile'
 import type {
   ResolvedScriptPairing,
   ResolvedScanTarget,
-  ScanSessionManager
+  ScanSessionManager,
+  ScanVideoMediaTarget
 } from './session'
 
 /**
@@ -43,7 +45,12 @@ export interface ScanBatchTarget {
    */
   resolvedUrl?: string
   requestHeaders?: {
-    cookie: string
+    cookie?: string
+    /**
+     * Page URL of a direct media file found by the video page fallback. The
+     * media host usually refuses a request without it.
+     */
+    referer?: string
   }
   /** Internal scan item ID used only to wire funscript pairings. */
   scanItemId?: string
@@ -91,11 +98,16 @@ export interface ScanBatchPort {
    * Mixed scanner batch: verified direct files and resolved videos share one
    * parent batch so the renderer sees one result. Optional so simple phase-1
    * test doubles and alternative hosts remain valid.
+   *
+   * `streams` carries direct HLS/DASH manifests that the page fallback found.
+   * They go through the media engine, exactly like a detected stream from the
+   * browser overlay.
    */
   createScanMediaBatch?(input: {
     title: string
     files: readonly ScanBatchTarget[]
     videos: readonly ScanVideoBatchTarget[]
+    streams?: readonly SniffedMediaInput[]
     pairings?: readonly ScanPairingBatchTarget[]
   }): Promise<Batch>
 }
@@ -119,6 +131,7 @@ interface QueuedEntry {
   itemId: string
   file?: ScanBatchTarget
   video?: ScanVideoBatchTarget
+  stream?: SniffedMediaInput
 }
 
 function cleanTitle(value: string): string {
@@ -195,6 +208,23 @@ function isProviderFileTarget(target: ResolvedScanTarget): boolean {
  */
 function isGofileTarget(target: ResolvedScanTarget): boolean {
   return target.kind === 'file' && isGofileDownloadUrl(target.url)
+}
+
+/**
+ * The app's own product token, like the bounded page fetch. A direct stream is
+ * downloaded by the media engine, which adds its own defaults on top.
+ */
+const SCAN_MEDIA_USER_AGENT = 'DonDownload/0.1.0'
+
+const MEDIA_EXTENSION = /\.(?:mp4|webm|mkv|mov|m4v|m3u8|mpd|ts)$/i
+
+/**
+ * Filename for a direct media file. The page title is what funscript pairing
+ * matches on, so the URL's own basename is never used.
+ */
+function videoFilename(name: string, extension: string): string {
+  const base = name.trim().replace(MEDIA_EXTENSION, '').trim()
+  return `${base.length > 0 ? base : 'Video'}.${extension}`
 }
 
 function errorCode(error: unknown): string {
@@ -329,14 +359,19 @@ export class ScanQueueService {
       requested.set(option.itemId, option)
     }
     for (const target of targets) {
-      if (target.video === undefined) continue
       const wanted = requested.get(target.itemId)
-      if (
-        wanted?.optionId !== undefined &&
-        !target.video.formats.some(
-          (format) => format.optionId === wanted.optionId
-        )
-      ) {
+      if (wanted?.optionId === undefined) continue
+      const known =
+        target.video !== undefined
+          ? target.video.formats.some(
+              (format) => format.optionId === wanted.optionId
+            )
+          : target.media !== undefined
+            ? target.media.sources.some(
+                (source) => source.optionId === wanted.optionId
+              )
+            : true
+      if (!known) {
         throw new AppError(
           'SCAN_OPTION_INVALID',
           'That video format does not belong to this scan. Scan the page again.'
@@ -349,6 +384,11 @@ export class ScanQueueService {
       this.concurrency,
       async (target: ResolvedScanTarget) => {
         if (target.video !== undefined) {
+          return { target, probe: null }
+        }
+        // Direct media from the page fallback was already validated (public
+        // host, http(s)) when the card was built, so there is nothing to probe.
+        if (target.media !== undefined) {
           return { target, probe: null }
         }
         // An image was observed in the live DOM by the extension, so there is
@@ -379,6 +419,26 @@ export class ScanQueueService {
 
     for (const entry of resolved) {
       const { target, probe } = entry
+      if (target.media !== undefined) {
+        try {
+          const direct = this.resolveMediaTarget(
+            target,
+            target.media,
+            requested.get(target.itemId)
+          )
+          queued.push({ itemId: target.itemId, ...direct })
+        } catch (error) {
+          skipped.push({
+            itemId: target.itemId,
+            reason:
+              error instanceof AppError
+                ? error.message
+                : 'This video could not be revalidated for download.'
+          })
+        }
+        continue
+      }
+
       if (target.video !== undefined) {
         try {
           const video = await this.resolveVideoTarget(
@@ -495,7 +555,10 @@ export class ScanQueueService {
     const videos = queued.flatMap((entry) =>
       entry.video === undefined ? [] : [entry.video]
     )
-    if (files.length === 0 && videos.length === 0) {
+    const streams = queued.flatMap((entry) =>
+      entry.stream === undefined ? [] : [entry.stream]
+    )
+    if (files.length === 0 && videos.length === 0 && streams.length === 0) {
       throw new AppError(
         'SCAN_NOTHING_TO_QUEUE',
         skipped[0]?.reason ??
@@ -507,7 +570,7 @@ export class ScanQueueService {
     const imageSession = session.mode === 'images'
     const title = `${imageSession ? 'Images' : 'Scan'}: ${pageTitle}`
     let batch: Batch
-    if (videos.length > 0) {
+    if (videos.length > 0 || streams.length > 0) {
       if (typeof this.batches.createScanMediaBatch !== 'function') {
         throw new AppError(
           'SCAN_MEDIA_UNAVAILABLE',
@@ -526,6 +589,7 @@ export class ScanQueueService {
         title,
         files,
         videos,
+        ...(streams.length === 0 ? {} : { streams }),
         ...(pairings.length === 0 ? {} : { pairings })
       })
     } else {
@@ -542,6 +606,84 @@ export class ScanQueueService {
       batch,
       queuedItemIds: queued.map((entry) => entry.itemId),
       skipped
+    }
+  }
+
+  /**
+   * Turn one direct media selection into a download target.
+   *
+   * A progressive file goes through the normal downloader with the page as
+   * Referer; an HLS/DASH manifest goes through the media engine, which is the
+   * path the browser overlay already uses for detected streams. The Cookie is
+   * only ever attached when the media host is the page host that issued it.
+   */
+  private resolveMediaTarget(
+    target: ResolvedScanTarget,
+    media: ScanVideoMediaTarget,
+    wanted: ScanQueueVideoOption | undefined
+  ): { file?: ScanBatchTarget; stream?: SniffedMediaInput } {
+    const source =
+      media.sources.find((entry) => entry.optionId === wanted?.optionId) ??
+      media.sources[0]
+    if (source === undefined) {
+      throw new AppError(
+        'SCAN_OPTION_INVALID',
+        'This video has no downloadable format. Scan the page again.'
+      )
+    }
+    const outputFormat: MediaOutputFormat = wanted?.outputFormat ?? 'auto'
+    if (outputFormat !== 'auto') {
+      throw new AppError(
+        'SCAN_OUTPUT_FORMAT_UNSUPPORTED',
+        'This video format cannot produce the selected output container.'
+      )
+    }
+
+    const title = cleanTitle(target.name)
+    const cookie = this.mediaCookie(target, media, source.url)
+    if (source.kind === 'file') {
+      return {
+        file: {
+          url: source.url,
+          title,
+          filename: videoFilename(target.name, 'mp4'),
+          scanItemId: target.itemId,
+          requestHeaders: {
+            referer: media.referer,
+            ...(cookie === undefined ? {} : { cookie })
+          }
+        }
+      }
+    }
+    return {
+      stream: {
+        url: source.url,
+        pageUrl: media.referer,
+        referer: media.referer,
+        userAgent: SCAN_MEDIA_USER_AGENT,
+        kind: source.kind === 'hls' ? 'hls' : 'dash',
+        title,
+        ...(cookie === undefined ? {} : { cookie })
+      }
+    }
+  }
+
+  /**
+   * The page Cookie for a direct media URL, or undefined. A Cookie read for the
+   * page origin is never sent to another host.
+   */
+  private mediaCookie(
+    target: ResolvedScanTarget,
+    media: ScanVideoMediaTarget,
+    mediaUrl: string
+  ): string | undefined {
+    if (target.cookie === undefined) return undefined
+    try {
+      return new URL(mediaUrl).host === new URL(media.referer).host
+        ? target.cookie
+        : undefined
+    } catch {
+      return undefined
     }
   }
 

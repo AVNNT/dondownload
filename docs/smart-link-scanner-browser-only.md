@@ -130,8 +130,11 @@ bypassing a site's access controls.
 
 ## Limits
 
-- A browser-only card cannot be downloaded directly and is not queueable. It
-  can only be opened, or paired with a local file / browser hand-off.
+- A browser-only card is not queueable until a fallback finds its media. The app
+  fetches the page itself and, when that is refused, the user's own browser tab
+  can report the media it rendered; see `smart-link-scanner-video-fallback.md`.
+  A page that exposes no media URL at all can still only be opened, or paired
+  with a local file / browser hand-off.
 - Automatic hand-off requires the extension to report the same normalized page
   URL. Redirected pages that change the query/host, or a replay after 30
   minutes, will not match and behave like a normal hand-off.

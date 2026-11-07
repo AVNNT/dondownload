@@ -33,6 +33,7 @@ import {
 import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
 import { ensureAllSitesActive } from './browser-downloads.js'
 import { GOFILE_SCAN_MESSAGE_TYPE, runGofileScan } from './gofile-scan.js'
+import { VIDEO_SCAN_MESSAGE_TYPE, runVideoScan } from './video-scan.js'
 import {
   CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
@@ -853,6 +854,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           overlayFailure(
             'GOFILE_SCAN_FAILED',
             'The Gofile share could not be read from that tab.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === VIDEO_SCAN_MESSAGE_TYPE) {
+    // A video page yt-dlp cannot read (no extractor, a Cloudflare challenge, an
+    // age gate) still plays in the user's own tab, so the popup asks this worker
+    // to read the media that tab rendered. The collector never touches the
+    // page's main world, never solves a challenge and never reads a cookie (the
+    // extension does that separately, once, for the exact origin).
+    void runVideoScan(chrome, {
+      tabId: message.tabId,
+      pageUrl: message.pageUrl
+    })
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'VIDEO_SCAN_FAILED',
+            'The video page could not be read from that tab.'
           )
         )
       )
