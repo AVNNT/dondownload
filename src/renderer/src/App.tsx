@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -62,6 +63,7 @@ import {
   type SelectionMode,
   type SelectionState
 } from './lib/selection'
+import { useDebouncedValue } from './lib/useDebouncedValue'
 import {
   buildContextActions,
   canCopyLink,
@@ -210,6 +212,11 @@ export default function App(): JSX.Element {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  /**
+   * The input value stays immediate; filtering/sorting follows the debounced
+   * copy so a fast typist never blocks on a 10,000-row pass per keystroke.
+   */
+  const debouncedQuery = useDebouncedValue(query, 120)
   const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
   const [focusedKey, setFocusedKey] = useState<string | null>(null)
   const [detailsClosedFor, setDetailsClosedFor] = useState<string | null>(null)
@@ -450,12 +457,17 @@ export default function App(): JSX.Element {
   }, [snapshotKeys])
   /* eslint-enable react-hooks/set-state-in-effect */
   const statusCounts = useMemo(
-    () => buildStatusCounts(listedRows, 'all', query),
-    [listedRows, query]
+    () => buildStatusCounts(listedRows, 'all', debouncedQuery),
+    [listedRows, debouncedQuery]
   )
   const filteredRows = useMemo(
-    () => filterRows(listedRows, { category: 'all', status: statusFilter, query }),
-    [listedRows, statusFilter, query]
+    () =>
+      filterRows(listedRows, {
+        category: 'all',
+        status: statusFilter,
+        query: debouncedQuery
+      }),
+    [listedRows, statusFilter, debouncedQuery]
   )
   const visibleRows = useMemo(
     () => sortRows(filteredRows, sortKey, sortDirection),
@@ -472,6 +484,16 @@ export default function App(): JSX.Element {
     if (selection.selected.length !== 1) return null
     return visibleRows.find((row) => row.key === selection.selected[0]) ?? null
   }, [visibleRows, selection])
+
+  /**
+   * Row handlers must stay referentially stable so memoised rows are not
+   * re-rendered by a new snapshot or selection. They read the latest lists
+   * through this ref instead of closing over them.
+   */
+  const latestLists = useRef({ rows: visibleRows, selection, visibleSelection })
+  useLayoutEffect(() => {
+    latestLists.current = { rows: visibleRows, selection, visibleSelection }
+  })
 
   /* eslint-disable react-hooks/set-state-in-effect -- focus and selection are derived from the filtered rows and must be reconciled after a filter change */
   useEffect(() => {
@@ -950,22 +972,19 @@ export default function App(): JSX.Element {
     (row: UnifiedRow, mode: SelectionMode): void => {
       setMenu(null)
       setSelection((current) =>
-        updateSelection(visibleRows, current, row.key, mode)
+        updateSelection(latestLists.current.rows, current, row.key, mode)
       )
       setFocusedKey(row.key)
     },
-    [visibleRows]
+    []
   )
 
-  const handleToggleRow = useCallback(
-    (row: UnifiedRow): void => {
-      setSelection((current) =>
-        updateSelection(visibleRows, current, row.key, 'toggle')
-      )
-      setFocusedKey(row.key)
-    },
-    [visibleRows]
-  )
+  const handleToggleRow = useCallback((row: UnifiedRow): void => {
+    setSelection((current) =>
+      updateSelection(latestLists.current.rows, current, row.key, 'toggle')
+    )
+    setFocusedKey(row.key)
+  }, [])
 
   /** Stable handler so a memoised row is not re-rendered by a new closure. */
   const handleFocusRow = useCallback((row: UnifiedRow): void => {
@@ -984,10 +1003,12 @@ export default function App(): JSX.Element {
   const handleContextMenu = useCallback(
     (row: UnifiedRow, event: MouseEvent): void => {
       event.preventDefault()
-      const alreadySelected = selection.selected.includes(row.key)
+      const currentSelection = latestLists.current.selection
+      const currentSelectedRows = latestLists.current.visibleSelection
+      const alreadySelected = currentSelection.selected.includes(row.key)
       const rows = alreadySelected
-        ? visibleSelection.length > 0
-          ? visibleSelection
+        ? currentSelectedRows.length > 0
+          ? currentSelectedRows
           : [row]
         : [row]
       if (!alreadySelected) {
@@ -997,7 +1018,7 @@ export default function App(): JSX.Element {
       setFocusedKey(row.key)
       setMenu({ x: event.clientX, y: event.clientY, rows })
     },
-    [selection.selected, visibleSelection]
+    []
   )
 
   const handleContextAction = useCallback(
@@ -1257,7 +1278,7 @@ export default function App(): JSX.Element {
   )
 
   const filtersActive =
-    query.trim().length > 0 || statusFilter !== 'all'
+    debouncedQuery.trim().length > 0 || statusFilter !== 'all'
   const activeDownloadCount = runningCount(listedRows)
   const aggregateSpeed = totalSpeed(listedRows)
   const totalOnDisk = listedRows.reduce((sum, row) => sum + row.completedBytes, 0)
