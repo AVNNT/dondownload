@@ -18,7 +18,7 @@ import {
  * ever sent and a provider failure only marks the affected card.
  */
 
-export const SCAN_PIXELDRAIN_CONCURRENCY = 2
+export const SCAN_PIXELDRAIN_CONCURRENCY = 4
 export const MAX_SCAN_PIXELDRAIN_REQUESTS = 60
 
 /** The public adapter surface the scanner needs; injected for hermetic tests. */

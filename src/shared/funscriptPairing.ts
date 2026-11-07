@@ -194,6 +194,23 @@ const VARIANT_WORDS = new Set([
 const VARIANT_PATTERN =
   /^(?:v\d+|ver(?:sion)?\d*|rev\d+|take\d+|part\d+|alt\d*|edit\d*)$/u
 
+// Parsing helpers are called once per file name during grouping, which can be
+// hundreds of items on one page. Hoisting the patterns keeps them compiled
+// once for the whole scan instead of once per call site invocation.
+const PARENTHESIZED_VARIANT =
+  /^(?<head>.*?)\s*\(\s*(?<inner>[\p{L}][\p{L}\p{N}]*)\s*\)\s*$/u
+const SEPARATED_VARIANT =
+  /^(?<head>.*\S)\s*[_-]\s*(?<inner>[\p{L}][\p{L}\p{N}]*)\s*$/u
+const SPACED_VARIANT = /^(?<head>.*\S)\s+(?<inner>v\d+)\s*$/iu
+const PARENTHESES = /^\((.*)\)$/u
+const TRAILING_SEPARATORS = /[.\s_-]+$/u
+const WORD_BOUNDARY = /([\p{Ll}])([\p{Lu}])/gu
+const ACRONYM_BOUNDARY = /([\p{Lu}]+)([\p{Lu}][\p{Ll}])/gu
+const COMBINING_MARKS = /\p{M}+/gu
+const APOSTROPHES = /['\u2019`\u00b4]/gu
+const NON_WORD = /[^\p{L}\p{N}]+/gu
+const WHITESPACE = /\s+/u
+
 function leafName(value: string): string {
   const slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
   return slash >= 0 ? value.slice(slash + 1) : value
@@ -232,10 +249,10 @@ function parseAxisToken(token: string): Axis | null | undefined {
 function normalizeVariantToken(token: string): string {
   return token
     .trim()
-    .replace(/^\((.*)\)$/u, '$1')
+    .replace(PARENTHESES, '$1')
     .trim()
     .toLowerCase()
-    .replace(/\s+/gu, '-')
+    .replace(WHITESPACE, '-')
 }
 
 function isVariantToken(token: string): boolean {
@@ -248,7 +265,7 @@ function isVariantToken(token: string): boolean {
 }
 
 function trimBase(value: string): string {
-  return value.trim().replace(/[.\s_-]+$/u, '').trim()
+  return value.trim().replace(TRAILING_SEPARATORS, '').trim()
 }
 
 /**
@@ -259,8 +276,7 @@ function trimBase(value: string): string {
 function extractSuffixVariant(
   base: string
 ): { base: string; variant: string } | null {
-  const parenthesized =
-    /^(?<head>.*?)\s*\(\s*(?<inner>[\p{L}][\p{L}\p{N}]*)\s*\)\s*$/u.exec(base)
+  const parenthesized = PARENTHESIZED_VARIANT.exec(base)
   if (parenthesized) {
     const head = trimBase(parenthesized.groups?.head ?? '')
     const inner = parenthesized.groups?.inner ?? ''
@@ -269,8 +285,7 @@ function extractSuffixVariant(
     }
   }
 
-  const separated =
-    /^(?<head>.*\S)\s*[_-]\s*(?<inner>[\p{L}][\p{L}\p{N}]*)\s*$/u.exec(base)
+  const separated = SEPARATED_VARIANT.exec(base)
   if (separated) {
     const head = trimBase(separated.groups?.head ?? '')
     const inner = separated.groups?.inner ?? ''
@@ -279,7 +294,7 @@ function extractSuffixVariant(
     }
   }
 
-  const spaced = /^(?<head>.*\S)\s+(?<inner>v\d+)\s*$/iu.exec(base)
+  const spaced = SPACED_VARIANT.exec(base)
   if (spaced) {
     const head = trimBase(spaced.groups?.head ?? '')
     const inner = spaced.groups?.inner ?? ''
@@ -403,14 +418,14 @@ const STOP_WORDS = new Set([
 
 function rawTokens(value: string): string[] {
   let text = value.normalize('NFKC')
-  text = text.replace(/([\p{Ll}])([\p{Lu}])/gu, '$1 $2')
-  text = text.replace(/([\p{Lu}]+)([\p{Lu}][\p{Ll}])/gu, '$1 $2')
-  text = text.normalize('NFKD').replace(/\p{M}+/gu, '')
+  text = text.replace(WORD_BOUNDARY, '$1 $2')
+  text = text.replace(ACRONYM_BOUNDARY, '$1 $2')
+  text = text.normalize('NFKD').replace(COMBINING_MARKS, '')
   text = text.toLowerCase()
-  text = text.replace(/['\u2019`\u00b4]/gu, '')
+  text = text.replace(APOSTROPHES, '')
   text = text.replace(/&/gu, ' and ')
-  text = text.replace(/[^\p{L}\p{N}]+/gu, ' ')
-  return text.split(/\s+/u).filter((token) => token.length > 0)
+  text = text.replace(NON_WORD, ' ')
+  return text.split(WHITESPACE).filter((token) => token.length > 0)
 }
 
 function tokenizeName(value: string): string[] {
@@ -442,46 +457,64 @@ export function normalizeScriptBase(base: string): string {
     .trim()
 }
 
-function bigramDice(a: string, b: string): number {
-  if (a.length === 0 || b.length === 0) return 0
-  if (a === b) return 1
-  if (a.length < 2 || b.length < 2) return 0
-
-  const counts = new Map<string, number>()
-  for (let index = 0; index < a.length - 1; index += 1) {
-    const gram = a.slice(index, index + 2)
-    counts.set(gram, (counts.get(gram) ?? 0) + 1)
-  }
-
-  let common = 0
-  for (let index = 0; index < b.length - 1; index += 1) {
-    const gram = b.slice(index, index + 2)
-    const remaining = counts.get(gram) ?? 0
-    if (remaining > 0) {
-      common += 1
-      counts.set(gram, remaining - 1)
-    }
-  }
-
-  return (2 * common) / (a.length - 1 + (b.length - 1))
+/**
+ * Token data prepared once per set or video. A page scan can compare hundreds
+ * of sets against dozens of videos, so re-tokenizing and rebuilding the bigram
+ * map inside the inner loop dominates the cost. Preparing both sides first
+ * keeps the matcher close to linear in the number of real overlaps.
+ */
+interface PreparedTokens {
+  tokens: readonly string[]
+  tokenSet: ReadonlySet<string>
+  joined: string
+  bigrams: ReadonlyMap<string, number>
+  bigramTotal: number
 }
 
-function similarity(aTokens: readonly string[], bTokens: readonly string[]): number {
-  const a = uniqueTokens(aTokens)
-  const b = uniqueTokens(bTokens)
-  if (a.length === 0 || b.length === 0) return 0
+function prepareTokens(value: string): PreparedTokens {
+  const tokens = uniqueTokens(tokenizeName(value))
+  const joined = tokens.join('')
+  const bigrams = new Map<string, number>()
+  for (let index = 0; index < joined.length - 1; index += 1) {
+    const gram = joined.slice(index, index + 2)
+    bigrams.set(gram, (bigrams.get(gram) ?? 0) + 1)
+  }
+  return {
+    tokens,
+    tokenSet: new Set(tokens),
+    joined,
+    bigrams,
+    bigramTotal: Math.max(0, joined.length - 1)
+  }
+}
 
-  const bSet = new Set(b)
+/** Dice coefficient over two precomputed bigram histograms. */
+function dicePrepared(a: PreparedTokens, b: PreparedTokens): number {
+  if (a.joined.length === 0 || b.joined.length === 0) return 0
+  if (a.joined === b.joined) return 1
+  if (a.bigramTotal === 0 || b.bigramTotal === 0) return 0
+  const smaller = a.bigrams.size <= b.bigrams.size ? a : b
+  const larger = smaller === a ? b : a
+  let common = 0
+  for (const [gram, count] of smaller.bigrams) {
+    const other = larger.bigrams.get(gram)
+    if (other !== undefined) common += Math.min(count, other)
+  }
+  return (2 * common) / (a.bigramTotal + b.bigramTotal)
+}
+
+function similarityPrepared(a: PreparedTokens, b: PreparedTokens): number {
+  if (a.tokens.length === 0 || b.tokens.length === 0) return 0
+
   let intersection = 0
-  for (const token of new Set(a)) {
-    if (bSet.has(token)) intersection += 1
+  for (const token of a.tokens) {
+    if (b.tokenSet.has(token)) intersection += 1
   }
 
-  const containment = intersection / Math.min(a.length, b.length)
-  const union = a.length + b.length - intersection
+  const containment = intersection / Math.min(a.tokens.length, b.tokens.length)
+  const union = a.tokens.length + b.tokens.length - intersection
   const jaccard = union === 0 ? 0 : intersection / union
-  const dice = bigramDice(a.join(''), b.join(''))
-  return 0.5 * containment + 0.3 * jaccard + 0.2 * dice
+  return 0.5 * containment + 0.3 * jaccard + 0.2 * dicePrepared(a, b)
 }
 
 // ---------------------------------------------------------------------------
@@ -651,30 +684,86 @@ function stripLastExtension(filename: string): string {
   return value.slice(0, lastDot).trim()
 }
 
-function scoreVideo(
-  set: ScriptSet,
-  video: VideoCandidate,
-  setTokens: readonly string[]
+interface PreparedVideo {
+  video: VideoCandidate
+  index: number
+  post: number | null
+  names: readonly PreparedTokens[]
+}
+
+interface ScoredVideo {
+  video: PreparedVideo
+  score: number
+}
+
+/**
+ * A video that shares no token can still score through the bigram part of the
+ * similarity, but that part is capped at 0.2. Above that bound only a real
+ * token-shared candidate can win, so the inverted token index is safe.
+ */
+const MAX_TOKEN_FREE_SCORE = 0.2
+
+function prepareVideo(video: VideoCandidate, index: number): PreparedVideo {
+  const names: PreparedTokens[] = []
+  const title = video.title
+  if (typeof title === 'string' && title.trim().length > 0) {
+    names.push(prepareTokens(title))
+  }
+  if (typeof video.filename === 'string') {
+    const filename = stripLastExtension(video.filename)
+    if (filename.trim().length > 0) names.push(prepareTokens(filename))
+  }
+  return {
+    video,
+    index,
+    post: normalizePost(video.postNumber),
+    names
+  }
+}
+
+/** Keeps the exact ordering of the former full sort: score desc, index asc. */
+function isBetter(candidate: ScoredVideo, current: ScoredVideo | null): boolean {
+  if (current === null) return true
+  if (candidate.score > current.score) return true
+  return candidate.score === current.score && candidate.video.index < current.video.index
+}
+
+function scorePreparedVideo(
+  setTokens: PreparedTokens,
+  setPost: number | null,
+  video: PreparedVideo
 ): number {
   let score = 0
-  const names = [video.title]
-  if (video.filename !== undefined) names.push(stripLastExtension(video.filename))
-
-  for (const name of names) {
-    if (typeof name !== 'string' || name.trim().length === 0) continue
-    score = Math.max(
-      score,
-      similarity(setTokens, tokenizeName(name))
-    )
+  for (const name of video.names) {
+    const value = similarityPrepared(setTokens, name)
+    if (value > score) score = value
   }
-
-  const setPost = normalizePost(set.postNumber ?? undefined)
-  const videoPost = normalizePost(video.postNumber)
-  if (setPost !== null && videoPost !== null && setPost === videoPost) {
+  if (setPost !== null && video.post !== null && setPost === video.post) {
     score = Math.min(1, score + SAME_POST_BONUS)
   }
-
   return score
+}
+
+function rankTopTwo(
+  candidates: Iterable<PreparedVideo>,
+  setTokens: PreparedTokens,
+  setPost: number | null
+): { top: ScoredVideo | null; second: ScoredVideo | null } {
+  let top: ScoredVideo | null = null
+  let second: ScoredVideo | null = null
+  for (const video of candidates) {
+    const scored: ScoredVideo = {
+      video,
+      score: scorePreparedVideo(setTokens, setPost, video)
+    }
+    if (isBetter(scored, top)) {
+      second = top
+      top = scored
+    } else if (isBetter(scored, second)) {
+      second = scored
+    }
+  }
+  return { top, second }
 }
 
 function roundScore(value: number): number {
@@ -690,34 +779,67 @@ function roundScore(value: number): number {
  * `VIDEO_MATCH_THRESHOLD` yields `videoId: null`; if the top two candidates are
  * within `VIDEO_MATCH_AMBIGUITY_MARGIN` the result is marked ambiguous and no
  * video is forced.
+ *
+ * Videos are tokenized once and indexed by token, so a typical page compares
+ * each set only against videos that share a word with it. A set with no shared
+ * token can only reach 0.2, so in that rare case the full list is scored to
+ * keep the exact former result (including its stable tie-break order).
  */
 export function matchSetsToVideos(
   sets: readonly ScriptSet[],
   videos: readonly VideoCandidate[]
 ): SetVideoMatch[] {
-  return sets.map((set) => {
-    const setTokens = tokenizeName(set.base)
-    const ranked = videos
-      .map((video, index) => ({
-        video,
-        index,
-        score: scoreVideo(set, video, setTokens)
-      }))
-      .sort((left, right) => right.score - left.score || left.index - right.index)
+  const preparedVideos = videos.map((video, index) => prepareVideo(video, index))
+  const byToken = new Map<string, number[]>()
+  for (const video of preparedVideos) {
+    for (const name of video.names) {
+      for (const token of name.tokens) {
+        const bucket = byToken.get(token)
+        if (bucket === undefined) {
+          byToken.set(token, [video.index])
+        } else if (bucket[bucket.length - 1] !== video.index) {
+          bucket.push(video.index)
+        }
+      }
+    }
+  }
 
-    const top = ranked[0]
-    if (top === undefined || top.score < VIDEO_MATCH_THRESHOLD) {
+  return sets.map((set) => {
+    const setTokens = prepareTokens(set.base)
+    const setPost = normalizePost(set.postNumber ?? undefined)
+
+    const candidateIndices = new Set<number>()
+    for (const token of setTokens.tokens) {
+      const bucket = byToken.get(token)
+      if (bucket === undefined) continue
+      for (const index of bucket) candidateIndices.add(index)
+    }
+    const candidates: PreparedVideo[] = []
+    for (const index of candidateIndices) {
+      const video = preparedVideos[index]
+      if (video !== undefined) candidates.push(video)
+    }
+
+    let { top, second } = rankTopTwo(candidates, setTokens, setPost)
+    if (top === null || top.score <= MAX_TOKEN_FREE_SCORE) {
+      // No candidate shares a token (or it is too weak to dominate the
+      // token-free bound), so score every video to preserve the exact score.
+      const full = rankTopTwo(preparedVideos, setTokens, setPost)
+      top = full.top
+      second = full.second
+    }
+
+    if (top === null || top.score < VIDEO_MATCH_THRESHOLD) {
       return {
         setId: set.id,
         videoId: null,
-        score: top === undefined ? 0 : roundScore(top.score),
+        score: top === null ? 0 : roundScore(top.score),
         ambiguous: false
       }
     }
 
-    const second = ranked[1]
     if (
-      second !== undefined &&
+      second !== null &&
       top.score - second.score < VIDEO_MATCH_AMBIGUITY_MARGIN
     ) {
       return {
@@ -730,7 +852,7 @@ export function matchSetsToVideos(
 
     return {
       setId: set.id,
-      videoId: top.video.id,
+      videoId: top.video.video.id,
       score: roundScore(top.score),
       ambiguous: false
     }

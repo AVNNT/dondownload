@@ -45,6 +45,18 @@ export function isReadyVideoCard(item: ScanItem): boolean {
   return isVideoCard(item) && item.status === 'ready'
 }
 
+function setKey(
+  set: ScanScriptSet
+): [number, number, number, number, string] {
+  return [
+    BUCKET_RANK[set.matchBucket],
+    set.missingMain ? 0 : 1,
+    set.conflicts.length === 0 ? 1 : 0,
+    set.files.length,
+    set.id
+  ]
+}
+
 /**
  * Rank the sets that already matched one video. The match bucket is derived in
  * main from the existing funscript pairing score; ties are broken by a complete
@@ -58,18 +70,35 @@ export function bestScriptSetForVideo(
   let bestKey: [number, number, number, number, string] | null = null
   for (const set of sets) {
     if (set.matchedVideoItemId !== videoItemId || set.ambiguous) continue
-    const rank = BUCKET_RANK[set.matchBucket]
-    if (rank <= 0) continue
-    const key: [number, number, number, number, string] = [
-      rank,
-      set.missingMain ? 0 : 1,
-      set.conflicts.length === 0 ? 1 : 0,
-      set.files.length,
-      set.id
-    ]
+    if (BUCKET_RANK[set.matchBucket] <= 0) continue
+    const key = setKey(set)
     if (bestKey === null || compareSetKeys(key, bestKey) > 0) {
       best = set
       bestKey = key
+    }
+  }
+  return best
+}
+
+/**
+ * Build the same ranking once per session. Selection helpers run after every
+ * streamed scan update, so looking up every set for every video would make a
+ * page with hundreds of scripts quadratic.
+ */
+function bestScriptSetsByVideo(
+  sets: readonly ScanScriptSet[]
+): Map<string, ScanScriptSet> {
+  const best = new Map<string, ScanScriptSet>()
+  const keys = new Map<string, [number, number, number, number, string]>()
+  for (const set of sets) {
+    const videoId = set.matchedVideoItemId
+    if (videoId === null || set.ambiguous) continue
+    if (BUCKET_RANK[set.matchBucket] <= 0) continue
+    const key = setKey(set)
+    const current = keys.get(videoId)
+    if (current === undefined || compareSetKeys(key, current) > 0) {
+      keys.set(videoId, key)
+      best.set(videoId, set)
     }
   }
   return best
@@ -112,6 +141,8 @@ export function buildScanPreSelection(
   const queueable = new Set(
     items.filter((item) => isQueueableScanItem(item)).map((item) => item.id)
   )
+  const itemById = new Map(items.map((item) => [item.id, item]))
+  const bestByVideo = bestScriptSetsByVideo(sets)
   const maximum = Math.max(1, Math.min(limit, MAX_SCAN_SELECTION))
 
   const ids: string[] = []
@@ -120,7 +151,7 @@ export function buildScanPreSelection(
 
   for (const item of items) {
     if (!isReadyVideoCard(item) || !queueable.has(item.id)) continue
-    const set = bestScriptSetForVideo(item.id, sets)
+    const set = bestByVideo.get(item.id) ?? null
     if (set === null) continue
     const scriptIds = queueableIdsOf(set.files, queueable)
     if (scriptIds.length === 0) continue
@@ -145,7 +176,10 @@ export function buildScanPreSelection(
     ) {
       continue
     }
-    const matched = items.find((item) => item.id === set.matchedVideoItemId)
+    const matched =
+      set.matchedVideoItemId === null
+        ? undefined
+        : itemById.get(set.matchedVideoItemId)
     if (matched !== undefined && isReadyVideoCard(matched)) continue
     const scriptIds = queueableIdsOf(set.files, queueable)
     ids.push(...scriptIds)
@@ -228,6 +262,8 @@ export function buildScanBulkSelection(
     const selected = new Set(itemIds)
     if (selected.size === 0) continue
 
+    const bestByVideo = bestScriptSetsByVideo(sets)
+    const setById = new Map(sets.map((set) => [set.id, set]))
     const videoOptions: ScanQueueVideoOption[] = []
     const pairings: ScanScriptPairingInput[] = []
     for (const item of items) {
@@ -244,8 +280,8 @@ export function buildScanBulkSelection(
       const explicitSetId = options.setChoiceByVideo?.[item.id]
       const set =
         explicitSetId === undefined
-          ? bestScriptSetForVideo(item.id, sets)
-          : sets.find((candidate) => candidate.id === explicitSetId) ?? null
+          ? bestByVideo.get(item.id) ?? null
+          : setById.get(explicitSetId) ?? null
       if (set === null) continue
       const scriptIds = (
         options.scriptFileIdsBySet?.[set.id] ?? set.files.map((file) => file.id)
