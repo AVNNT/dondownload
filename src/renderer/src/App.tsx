@@ -68,11 +68,13 @@ import {
   canPauseRow,
   canResumeRow,
   canShowRow,
+  clearCompletedConfirmation,
+  clearListConfirmation,
   deleteFileConfirmation,
   executeActionPlan,
+  executeBulkRemoval,
   planBulkAction,
   planRowAction,
-  clearCompletedConfirmation,
   type ActionPlanEntry,
   type RowActionId
 } from './lib/actions'
@@ -630,21 +632,23 @@ export default function App(): JSX.Element {
   )
 
   /**
-   * Commits a deferred removal: runs the stored plan, then drops the keys from
+   * Commits a deferred removal: runs the stored plan through the bulk removal
+   * channels (one call per source, never one per row), then drops the keys from
    * the hidden set. On failure the rows come back and the error banner shows.
    */
   const commitRemoval = useCallback(
     async (keys: readonly string[], plan: readonly ActionPlanEntry[]): Promise<void> => {
       setPendingRemoval((current) => expirePendingRemoval(current))
-      try {
-        await runPlan(plan)
-      } catch {
+      const result = await executeBulkRemoval(plan, window.donDownload)
+      await refreshAll()
+      if (result.errors.length > 0) {
+        setBanner(result.errors[0] ?? null)
         setPendingRemoval((current) => failPendingRemoval(current, keys))
         return
       }
       setPendingRemoval((current) => settlePendingRemoval(current, keys))
     },
-    [runPlan]
+    [refreshAll]
   )
 
   const requestRemove = useCallback(
@@ -710,11 +714,30 @@ export default function App(): JSX.Element {
     const onBeforeUnload = (): void => {
       const pending = pendingRemovalRef.current.pending
       if (pending === null) return
-      void runPlan(planRowAction('remove', pending.rows as UnifiedRow[]))
+      void executeBulkRemoval(
+        planRowAction('remove', pending.rows as UnifiedRow[]),
+        window.donDownload
+      )
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [runPlan])
+  }, [])
+
+  /**
+   * "Clear list": every entry that is not still in flight. The rows are hidden
+   * with the same undo toast as a normal removal, then committed through the
+   * bulk removal channels. Files on disk are never touched.
+   */
+  const requestClearList = useCallback((): void => {
+    const plan = planBulkAction('clear-list', allRows)
+    if (plan.length === 0) return
+    setConfirm({
+      ...clearListConfirmation(plan.length),
+      onConfirm: () => {
+        requestRemove(plan.map((entry) => entry.row))
+      }
+    })
+  }, [allRows, requestRemove])
 
   const openAddDialog = useCallback((tab: AddDialogTab, url = ''): void => {
     setAddRequest({ tab, url, nonce: ++addSequence.current })
@@ -778,12 +801,17 @@ export default function App(): JSX.Element {
           // Only acts while a removal can still be undone.
           undoRemoval()
           return
+        case 'clear-list':
+          setMenu(null)
+          setPage('library')
+          requestClearList()
+          return
         case 'escape':
           setPage('library')
           return
       }
     },
-    [openAddDialog, openAddFromClipboardText, undoRemoval]
+    [openAddDialog, openAddFromClipboardText, requestClearList, undoRemoval]
   )
 
   // The window-level shortcut listener. It reads the latest UI state through
@@ -1460,6 +1488,8 @@ export default function App(): JSX.Element {
                   planBulkAction('clear-completed', allRows).length > 0
                 }
                 onClearCompleted={requestClearCompleted}
+                canClearList={planBulkAction('clear-list', allRows).length > 0}
+                onClearList={requestClearList}
               />
             )}
 

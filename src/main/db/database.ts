@@ -1118,6 +1118,30 @@ export class DownloadDatabase {
     }
   }
 
+  /**
+   * Remove many download history rows in one transaction. Only the list
+   * entries go; downloaded files on disk are never touched here.
+   */
+  deleteMany(ids: readonly string[]): void {
+    if (ids.length === 0) return
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of ids) {
+        this.deleteStatement.run(id)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not remove download history', error)
+    }
+  }
+
   /** Persist optional scheduling and speed controls for one download row. */
   saveDownloadControls(id: string, controls: DownloadControls): void {
     this.assertOpen()
@@ -1373,6 +1397,27 @@ export class DownloadDatabase {
     try {
       this.mediaDeleteStatement.run(id)
     } catch (error) {
+      throw databaseError('Could not remove media job history', error)
+    }
+  }
+
+  /** Remove many media history rows in one transaction; media files are kept. */
+  deleteMediaJobs(ids: readonly string[]): void {
+    if (ids.length === 0) return
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of ids) {
+        this.mediaDeleteStatement.run(id)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
       throw databaseError('Could not remove media job history', error)
     }
   }

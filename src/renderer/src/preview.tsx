@@ -35,7 +35,7 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * details|images|shortcuts|undo, optional ?theme=light|dark|oled, and
+ * clear-list|details|images|shortcuts|undo, optional ?theme=light|dark|oled, and
  * ?overflow=1 renders a badge with the horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
@@ -136,6 +136,10 @@ function runPreviewAutomation(): void {
     }
     if (state === 'done-chip') {
       await clickByText('Done')
+    }
+    if (state === 'clear-list') {
+      // Opens the "Clear list" confirmation so the copy can be reviewed.
+      await clickByText('Clear list')
     }
     if (state === 'dup') {
       if (!(await clickByText('Add'))) return

@@ -25,6 +25,7 @@ import {
   parseAddDownloadInput,
   parseAria2Gid,
   parseDownloadId,
+  parseDownloadIds,
   sanitizeFilename
 } from '@shared/validation'
 import type { Aria2Client } from '../aria2/client'
@@ -984,20 +985,40 @@ export class DownloadManager {
       await this.removeFromAria2(client, record.gid)
     }
 
-    this.clearAutoRetry(record.id)
-    this.autoRetriesUsed.delete(record.id)
-    this.records.delete(record.id)
-    this.explicitFilenames.delete(record.id)
-    this.requestHeaders.delete(record.id)
-    this.resolvedUrls.delete(record.id)
-    this.cookieHosts.delete(record.id)
-    this.needsLoginIds.delete(record.id)
-    this.controls.delete(record.id)
-    this.blockReasons.delete(record.id)
-    this.startNowIds.delete(record.id)
-    this.pairingFileIds.delete(record.id)
-    this.dirtyIds.delete(record.id)
+    this.forgetRecord(record.id)
     this.removePersisted(record.id)
+    this.stopPollingIfIdle()
+    this.publish(true)
+    return this.getSnapshot()
+  }
+
+  /**
+   * Remove many list entries at once — the "Clear list" path.
+   *
+   * Downloaded files are never touched: only the history rows go. Ids the
+   * backend no longer knows are skipped so a stale snapshot cannot fail the
+   * whole clear, and the rows are deleted in one database transaction followed
+   * by a single publish.
+   */
+  async removeMany(rawIds: unknown): Promise<AppSnapshot> {
+    const ids = parseDownloadIds(rawIds)
+    if (ids.length === 0) return this.getSnapshot()
+
+    const client =
+      this.aria2.getState().status === 'ready' ? await this.aria2.getClient() : null
+    const removed: string[] = []
+    for (const id of ids) {
+      const record = this.records.get(id)
+      if (!record) continue
+      if (client) {
+        await this.removeFromAria2(client, record.gid)
+      }
+      this.forgetRecord(record.id)
+      removed.push(record.id)
+    }
+    if (removed.length === 0) return this.getSnapshot()
+
+    this.removePersistedMany(removed)
     this.stopPollingIfIdle()
     this.publish(true)
     return this.getSnapshot()
@@ -1929,6 +1950,32 @@ export class DownloadManager {
     } catch (error) {
       this.logPersistenceError('could not be removed', error)
     }
+  }
+
+  private removePersistedMany(ids: readonly string[]): void {
+    if (!this.database || ids.length === 0) return
+    try {
+      this.database.deleteMany(ids)
+    } catch (error) {
+      this.logPersistenceError('could not be removed', error)
+    }
+  }
+
+  /** Drop every in-memory trace of one record. Files on disk are untouched. */
+  private forgetRecord(id: string): void {
+    this.clearAutoRetry(id)
+    this.autoRetriesUsed.delete(id)
+    this.records.delete(id)
+    this.explicitFilenames.delete(id)
+    this.requestHeaders.delete(id)
+    this.resolvedUrls.delete(id)
+    this.cookieHosts.delete(id)
+    this.needsLoginIds.delete(id)
+    this.controls.delete(id)
+    this.blockReasons.delete(id)
+    this.startNowIds.delete(id)
+    this.pairingFileIds.delete(id)
+    this.dirtyIds.delete(id)
   }
 
   private markDirty(record: DownloadItem): void {

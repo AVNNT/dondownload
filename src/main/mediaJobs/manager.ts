@@ -8,6 +8,7 @@ import {
   parseAnalyzeMediaInput,
   parseMediaAnalysis,
   parseMediaJobId,
+  parseMediaJobIds,
   parseMediaQueueInput,
   parseMediaToolState,
   type MediaAnalysis,
@@ -113,6 +114,8 @@ export interface MediaJobsPersistence {
   saveMediaJob(record: MediaJobRecord): void
   saveManyMediaJobs(records: readonly MediaJobRecord[]): void
   deleteMediaJob(id: string): void
+  /** One transaction for a bulk removal; files on disk are never touched. */
+  deleteMediaJobs(ids: readonly string[]): void
 }
 
 export interface MediaJobsManagerOptions {
@@ -840,12 +843,53 @@ export class MediaJobsManager {
   }
 
   private removeJobRow(job: ManagedMediaJob): MediaSnapshot {
-    this.jobs.delete(job.record.id)
-    this.dirtyIds.delete(job.record.id)
-    this.stopFlushIfIdle()
+    this.forgetJob(job.record.id)
     this.removePersisted(job.record.id)
+    this.stopFlushIfIdle()
     this.publish(true)
     return this.getMediaSnapshot()
+  }
+
+  /**
+   * Remove many media list entries at once — the "Clear list" path.
+   *
+   * Media files are never touched: only the history rows go. Unknown ids are
+   * skipped, and the rows are deleted in one database transaction followed by a
+   * single publish.
+   */
+  removeMany(rawIds: unknown): MediaSnapshot {
+    const ids = parseMediaJobIds(rawIds)
+    if (ids.length === 0) return this.getMediaSnapshot()
+
+    const removed: string[] = []
+    for (const id of ids) {
+      const job = this.jobs.get(id)
+      if (!job) continue
+      if (
+        isActiveMediaJobStatus(job.record.status) ||
+        job.record.status === 'paused'
+      ) {
+        try {
+          this.engine.cancel(job.record.id)
+        } catch {
+          // Best effort; the row still disappears from this app.
+        }
+      }
+      this.forgetJob(job.record.id)
+      removed.push(job.record.id)
+    }
+    if (removed.length === 0) return this.getMediaSnapshot()
+
+    this.removePersistedMany(removed)
+    this.stopFlushIfIdle()
+    this.publish(true)
+    return this.getMediaSnapshot()
+  }
+
+  /** Drop every in-memory trace of one job. Media files are untouched. */
+  private forgetJob(id: string): void {
+    this.jobs.delete(id)
+    this.dirtyIds.delete(id)
   }
 
   /** True when the pinned selection can still be used without a new analysis. */
@@ -1431,6 +1475,15 @@ export class MediaJobsManager {
     if (!this.database) return
     try {
       this.database.deleteMediaJob(id)
+    } catch {
+      this.logPersistenceError('could not be removed')
+    }
+  }
+
+  private removePersistedMany(ids: readonly string[]): void {
+    if (!this.database || ids.length === 0) return
+    try {
+      this.database.deleteMediaJobs(ids)
     } catch {
       this.logPersistenceError('could not be removed')
     }

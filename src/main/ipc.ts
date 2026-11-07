@@ -155,6 +155,9 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.removeDownload, (_event, id) =>
     context.manager.remove(id)
   )
+  invoke<AppSnapshot>(IPC.removeDownloads, (_event, ids) =>
+    context.manager.removeMany(ids)
+  )
   invoke<null>(IPC.showInFolder, (_event, id) =>
     context.manager.showInFolder(id)
   )
@@ -215,6 +218,10 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<MediaSnapshot>(IPC.removeMedia, (_event, jobId) =>
     media().removeMedia(jobId)
+  )
+
+  invoke<MediaSnapshot>(IPC.removeMediaJobs, (_event, ids) =>
+    media().removeMany(ids)
   )
 
   invoke<MediaSnapshot>(IPC.deleteMediaFile, (_event, jobId) =>

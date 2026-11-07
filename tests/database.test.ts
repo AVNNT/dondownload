@@ -548,6 +548,47 @@ describe('media job persistence', () => {
     close(database)
   })
 
+  it('removes many history rows in one transaction and keeps the rest', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const keep = sample({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      gid: 'aaaaaaaaaaaaaaaa',
+      filename: 'keep.bin'
+    })
+    const first = sample()
+    const second = sample({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      gid: 'bbbbbbbbbbbbbbbb',
+      filename: 'gone.bin'
+    })
+    for (const record of [keep, first, second]) {
+      database.save({ record, explicitFilename: null })
+    }
+
+    database.deleteMany([first.id, second.id, 'not-a-stored-id'])
+
+    expect(database.loadAll().map((entry) => entry.record.id)).toEqual([keep.id])
+    // An empty list is a no-op, not an empty transaction.
+    database.deleteMany([])
+    expect(database.loadAll()).toHaveLength(1)
+    close(database)
+  })
+
+  it('removes many media job rows in one transaction and keeps the rest', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    const keep = mediaRecord({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+    const first = mediaRecord({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' })
+    const second = mediaRecord({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' })
+    for (const record of [keep, first, second]) database.saveMediaJob(record)
+
+    database.deleteMediaJobs([first.id, second.id])
+
+    expect(database.loadMediaJobs().map((record) => record.id)).toEqual([keep.id])
+    close(database)
+  })
+
   it('rolls back a media batch when one entry violates the schema', async () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)

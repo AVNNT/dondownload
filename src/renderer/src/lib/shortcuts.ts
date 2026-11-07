@@ -14,6 +14,7 @@ export type ShortcutId =
   | 'focus-search'
   | 'shortcuts-help'
   | 'undo'
+  | 'clear-list'
   | 'escape'
 
 export interface ShortcutEvent {
@@ -60,6 +61,7 @@ export function isTypingTarget(
  * - Ctrl+N / Ctrl+, / Ctrl+B / Ctrl+F use Ctrl or Cmd.
  * - Ctrl+V only counts as paste-add when no dialog is open.
  * - Ctrl+Z maps to undo; the caller only acts while an undo toast is open.
+ * - Ctrl+Shift+L clears the list of finished and failed entries.
  * - `?` (Shift+/) opens the shortcut help; plain `/` focuses search.
  * - Escape leaves Settings/Batches back to the library.
  */
@@ -108,6 +110,10 @@ export function matchShortcut(
       default:
         return null
     }
+  }
+
+  if (mod && event.shiftKey && key.toLowerCase() === 'l') {
+    return 'clear-list'
   }
 
   if (mod) return null
@@ -166,6 +172,7 @@ export const SHORTCUT_HELP: readonly ShortcutHelpSection[] = [
       { keys: ['Enter'], label: 'Open the selected download' },
       { keys: ['Space'], label: 'Pause or resume the focused download' },
       { keys: ['Delete'], label: 'Remove the selected downloads' },
+      { keys: ['Ctrl', 'Shift', 'L'], label: 'Clear the list (files are kept)' },
       { keys: ['Ctrl', 'Z'], label: 'Undo remove' },
       { keys: ['Shift', 'F10'], label: 'Open the context menu' },
       { keys: ['Esc'], label: 'Clear the selection or go back' }

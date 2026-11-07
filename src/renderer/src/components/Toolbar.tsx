@@ -32,6 +32,9 @@ interface ToolbarProps {
   /** Shown as a ghost button when the "Done" chip is active. */
   canClearCompleted: boolean
   onClearCompleted: () => void
+  /** Removes every finished or failed entry; files on disk are kept. */
+  canClearList: boolean
+  onClearList: () => void
 }
 
 export function Toolbar({
@@ -49,7 +52,9 @@ export function Toolbar({
   onPauseAll,
   onResumeAll,
   canClearCompleted,
-  onClearCompleted
+  onClearCompleted,
+  canClearList,
+  onClearList
 }: ToolbarProps): JSX.Element {
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -167,16 +172,45 @@ export function Toolbar({
         onClick={onResumeAll}
       />
       {statusFilter === 'completed' ? (
-        <button
-          type="button"
-          onClick={onClearCompleted}
+        <ToolbarTextAction
+          label="Clear finished"
+          title="Remove the completed entries from the list. Files on disk are kept."
           disabled={!canClearCompleted}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
-        >
-          Clear finished
-        </button>
+          onClick={onClearCompleted}
+        />
       ) : null}
+      <ToolbarTextAction
+        label="Clear list"
+        title="Remove finished and failed entries from the list. Files on disk are kept."
+        disabled={!canClearList}
+        onClick={onClearList}
+      />
     </div>
+  )
+}
+
+/** Ghost text button used by the list-clearing actions on the right. */
+function ToolbarTextAction({
+  label,
+  title,
+  disabled,
+  onClick
+}: {
+  label: string
+  title: string
+  disabled: boolean
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 text-[12px] font-semibold text-zinc-400 transition hover:bg-white/5 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35"
+    >
+      {label}
+    </button>
   )
 }
 

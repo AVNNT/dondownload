@@ -425,6 +425,22 @@ export function parseMediaJobId(value: unknown): string {
   return value
 }
 
+/** Upper bound for one bulk removal so a hostile payload cannot stall main. */
+const MAX_BULK_MEDIA_JOB_IDS = 10_000
+
+/** Many media job ids from one bulk call, with duplicates collapsed. */
+export function parseMediaJobIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError('Invalid media job identifiers.')
+  }
+  if (value.length > MAX_BULK_MEDIA_JOB_IDS) {
+    throw new ValidationError('Too many media jobs in one request.')
+  }
+  const ids = new Set<string>()
+  for (const entry of value) ids.add(parseMediaJobId(entry))
+  return [...ids]
+}
+
 /** Accept ordinary web page URLs; credential-bearing URLs are rejected. */
 export function normalizeMediaSourceUrl(value: unknown): string {
   if (typeof value !== 'string') {

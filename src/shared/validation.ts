@@ -256,6 +256,25 @@ export function parseDownloadId(value: unknown): string {
   return value
 }
 
+/** Upper bound for one bulk removal so a hostile payload cannot stall main. */
+const MAX_BULK_DOWNLOAD_IDS = 10_000
+
+/**
+ * Many download ids from one bulk call. Duplicates collapse so a repeated id
+ * cannot make the caller report more removals than it performed.
+ */
+export function parseDownloadIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError('Invalid download identifiers.')
+  }
+  if (value.length > MAX_BULK_DOWNLOAD_IDS) {
+    throw new ValidationError('Too many downloads in one request.')
+  }
+  const ids = new Set<string>()
+  for (const entry of value) ids.add(parseDownloadId(entry))
+  return [...ids]
+}
+
 export function isAria2Gid(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{16}$/i.test(value)
 }
