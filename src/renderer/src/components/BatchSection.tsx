@@ -17,7 +17,17 @@ import {
 } from '@shared/batches'
 import { formatBytes, formatPercent } from '@shared/format'
 import type { ApiResult, AppErrorInfo, BatchSnapshot } from '@shared/types'
+import {
+  batchRowVersion,
+  batchSnapshotFromState,
+  batchSnapshotPayload,
+  type BatchSnapshotFields
+} from '@shared/snapshotDelta'
 import type { UnifiedRow } from '../lib/unified'
+import {
+  createSnapshotDeltaStore,
+  type SnapshotDeltaStore
+} from '../lib/snapshotDeltaStore'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Icon, type IconName } from './Icon'
 
@@ -111,16 +121,39 @@ export function BatchSection({
   const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({})
   /** Batch awaiting "cancel remaining" confirmation via ConfirmDialog. */
   const [cancelBatch, setCancelBatch] = useState<Batch | null>(null)
+  const storeRef = useRef<SnapshotDeltaStore<
+    Batch,
+    BatchSnapshotFields
+  > | null>(null)
+
+  const applySnapshot = useCallback((next: BatchSnapshot): void => {
+    if (storeRef.current) {
+      storeRef.current.replacePayload(batchSnapshotPayload(next))
+    } else {
+      setSnapshot(next)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+
+    const store = createSnapshotDeltaStore<Batch, BatchSnapshotFields>({
+      rowVersion: batchRowVersion,
+      onChange: (state) => {
+        if (!cancelled) setSnapshot(batchSnapshotFromState(state))
+      },
+      requestResync: () => {
+        void window.donDownload.requestSnapshotResync()
+      }
+    })
+    storeRef.current = store
 
     const load = async (): Promise<void> => {
       try {
         const result = await window.donDownload.getBatchSnapshot()
         if (cancelled) return
         if (result.ok) {
-          setSnapshot(result.value)
+          store.replacePayload(batchSnapshotPayload(result.value))
           setSnapshotError(null)
         } else {
           setSnapshotError(result.error)
@@ -133,9 +166,9 @@ export function BatchSection({
     }
 
     void load()
-    const unsubscribe = window.donDownload.onBatchSnapshotChanged((next) => {
+    const unsubscribe = window.donDownload.onBatchSnapshotChanged((delta) => {
       if (cancelled) return
-      setSnapshot(next)
+      store.applyDelta(delta)
       setSnapshotError(null)
       setLoading(false)
     })
@@ -143,6 +176,8 @@ export function BatchSection({
     return () => {
       cancelled = true
       unsubscribe()
+      store.dispose()
+      if (storeRef.current === store) storeRef.current = null
     }
   }, [])
 
@@ -155,7 +190,7 @@ export function BatchSection({
       try {
         const result = await action()
         if (result.ok) {
-          setSnapshot(result.value)
+          applySnapshot(result.value)
           setSnapshotError(null)
         } else {
           setActionError(result.error)
@@ -166,7 +201,7 @@ export function BatchSection({
         setActionPending(false)
       }
     },
-    []
+    [applySnapshot]
   )
 
   const handleOpenSource = useCallback(
@@ -315,7 +350,7 @@ export function BatchSection({
                 try {
                   const result = await window.donDownload.getBatchSnapshot()
                   if (result.ok) {
-                    setSnapshot(result.value)
+                    applySnapshot(result.value)
                     setSnapshotError(null)
                   } else {
                     setSnapshotError(result.error)
@@ -341,7 +376,7 @@ export function BatchSection({
                 try {
                   const result = await window.donDownload.getBatchSnapshot()
                   if (result.ok) {
-                    setSnapshot(result.value)
+                    applySnapshot(result.value)
                     setSnapshotError(null)
                   } else {
                     setSnapshotError(result.error)

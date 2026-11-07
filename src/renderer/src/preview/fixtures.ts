@@ -58,6 +58,14 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import {
+  appSnapshotPayload,
+  batchSnapshotPayload,
+  mediaSnapshotPayload,
+  type AppSnapshotDelta,
+  type BatchSnapshotDelta,
+  type MediaSnapshotDelta
+} from '@shared/snapshotDelta'
+import {
   isQueueableScanItem,
   type ScanBrowserScriptSelection,
   type ScanItem,
@@ -184,9 +192,12 @@ export function createPreviewApi(
 
   let sequence = 0
 
-  const downloadListeners = new Set<Listener<AppSnapshot>>()
-  const mediaListeners = new Set<Listener<MediaSnapshot>>()
-  const batchListeners = new Set<Listener<{ batches: Batch[] }>>()
+  const downloadListeners = new Set<Listener<AppSnapshotDelta>>()
+  const mediaListeners = new Set<Listener<MediaSnapshotDelta>>()
+  const batchListeners = new Set<Listener<BatchSnapshotDelta>>()
+  let downloadRevision = 0
+  let mediaRevision = 0
+  let batchRevision = 0
   const appUpdateListeners = new Set<Listener<AppUpdateState>>()
   const settingsListeners = new Set<Listener<DownloadSettings>>()
   const scanListeners = new Set<Listener<ScanSession>>()
@@ -213,19 +224,34 @@ export function createPreviewApi(
 
   function emitDownloads(): AppSnapshot {
     const snapshot = downloadSnapshot()
-    for (const listener of downloadListeners) listener(snapshot)
+    const delta: AppSnapshotDelta = {
+      kind: 'full',
+      revision: ++downloadRevision,
+      ...appSnapshotPayload(snapshot)
+    }
+    for (const listener of downloadListeners) listener(delta)
     return snapshot
   }
 
   function emitMedia(): MediaSnapshot {
     const snapshot = mediaSnapshot()
-    for (const listener of mediaListeners) listener(snapshot)
+    const delta: MediaSnapshotDelta = {
+      kind: 'full',
+      revision: ++mediaRevision,
+      ...mediaSnapshotPayload(snapshot)
+    }
+    for (const listener of mediaListeners) listener(delta)
     return snapshot
   }
 
   function emitBatches(): { batches: Batch[] } {
     const snapshot = batchSnapshot()
-    for (const listener of batchListeners) listener(snapshot)
+    const delta: BatchSnapshotDelta = {
+      kind: 'full',
+      revision: ++batchRevision,
+      ...batchSnapshotPayload(snapshot)
+    }
+    for (const listener of batchListeners) listener(delta)
     return snapshot
   }
 
@@ -1325,6 +1351,13 @@ export function createPreviewApi(
       return () => downloadListeners.delete(listener)
     },
 
+    requestSnapshotResync: async () => {
+      emitDownloads()
+      emitMedia()
+      emitBatches()
+      return ok(null)
+    },
+
     analyzeMedia: async (input) => analyzeMedia(input),
 
     queueMedia: async (input: MediaQueueInput) => {
@@ -1902,7 +1935,7 @@ export function createPreviewApi(
         items
       })
       batches.unshift(batch)
-      for (const listener of batchListeners) listener(batchSnapshot())
+      emitBatches()
       return ok({
         batchId,
         filename: `${session.items.find((item) => item.id === input.videoItemId)?.name ?? 'Hanime1 Watch Video'}.mp4`

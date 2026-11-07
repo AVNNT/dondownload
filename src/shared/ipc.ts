@@ -1,6 +1,8 @@
 export const IPC = {
   getSnapshot: 'app:get-snapshot',
   snapshotChanged: 'app:snapshot-changed',
+  // Renderer asks for fresh full deltas after detecting a revision gap.
+  snapshotResync: 'app:snapshot-resync',
   restartAria2: 'app:restart-aria2',
   addDownload: 'download:add',
   pauseDownload: 'download:pause',

@@ -27,6 +27,11 @@ import type {
   SmartBatchSubmitResult,
   UrlSizeProbe
 } from '../shared/types'
+import type {
+  AppSnapshotDelta,
+  BatchSnapshotDelta,
+  MediaSnapshotDelta
+} from '../shared/snapshotDelta'
 import type { DownloadSettings } from '../shared/settings'
 import type {
   ChecksumProgress,
@@ -111,15 +116,17 @@ const api: DonDownloadApi = {
       ipcRenderer.removeListener(IPC.checksumProgress, handler)
     }
   },
-  onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot): void => {
-      listener(snapshot)
+  onSnapshotChanged: (listener: (delta: AppSnapshotDelta) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, delta: AppSnapshotDelta): void => {
+      listener(delta)
     }
     ipcRenderer.on(IPC.snapshotChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC.snapshotChanged, handler)
     }
   },
+  requestSnapshotResync: () =>
+    ipcRenderer.invoke(IPC.snapshotResync) as Promise<ApiResult<null>>,
   analyzeMedia: (input: AnalyzeMediaInput) =>
     ipcRenderer.invoke(IPC.analyzeMedia, input) as Promise<ApiResult<MediaAnalysis>>,
   queueMedia: (input: MediaQueueInput) =>
@@ -154,12 +161,12 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.showMediaInFolder, jobId) as Promise<ApiResult<null>>,
   openMediaFile: (jobId: string) =>
     ipcRenderer.invoke(IPC.openMediaFile, jobId) as Promise<ApiResult<null>>,
-  onMediaSnapshotChanged: (listener: (snapshot: MediaSnapshot) => void) => {
+  onMediaSnapshotChanged: (listener: (delta: MediaSnapshotDelta) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
-      snapshot: MediaSnapshot
+      delta: MediaSnapshotDelta
     ): void => {
-      listener(snapshot)
+      listener(delta)
     }
     ipcRenderer.on(IPC.mediaSnapshotChanged, handler)
     return () => {
@@ -206,12 +213,12 @@ const api: DonDownloadApi = {
     >,
   openBatchSource: (input: BatchItemTargetInput) =>
     ipcRenderer.invoke(IPC.openBatchSource, input) as Promise<ApiResult<null>>,
-  onBatchSnapshotChanged: (listener: (snapshot: BatchSnapshot) => void) => {
+  onBatchSnapshotChanged: (listener: (delta: BatchSnapshotDelta) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
-      snapshot: BatchSnapshot
+      delta: BatchSnapshotDelta
     ): void => {
-      listener(snapshot)
+      listener(delta)
     }
     ipcRenderer.on(IPC.batchSnapshotChanged, handler)
     return () => {

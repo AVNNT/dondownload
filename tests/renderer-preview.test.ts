@@ -116,8 +116,8 @@ describe('browser preview fixture adapter', () => {
   it('notifies subscribers and unsubscribes cleanly', async () => {
     const preview = api()
     const seen: Array<{ id: string; status: string }> = []
-    const unsubscribe = preview.onSnapshotChanged((snapshot) => {
-      const item = snapshot.downloads[0]
+    const unsubscribe = preview.onSnapshotChanged((delta) => {
+      const item = delta.kind === 'full' ? delta.rows[0] : undefined
       seen.push({
         id: item?.id ?? 'missing',
         status: item?.status ?? 'missing'

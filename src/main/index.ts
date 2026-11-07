@@ -12,7 +12,14 @@ import {
   type DesktopSettings,
   type InterfaceSize
 } from '@shared/desktopSettings'
-import type { AppSnapshot } from '@shared/types'
+import type { AppSnapshot, Aria2State, DownloadItem } from '@shared/types'
+import type { MediaJob, MediaToolState } from '@shared/media'
+import type { Batch } from '@shared/batches'
+import {
+  batchRowVersion,
+  downloadRowVersion,
+  mediaRowVersion
+} from '@shared/snapshotDelta'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
 import { ChecksumService } from './checksum/service'
@@ -64,6 +71,7 @@ import {
   type TaskbarProgressController
 } from './taskbar/progress'
 import { createMainWindow } from './window'
+import { SnapshotDeltaPublisher } from './snapshotDeltaPublisher'
 import { startupNow, traceStartup } from './startupTrace'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
 import {
@@ -100,6 +108,41 @@ let nativeHostRegistrar: NativeHostRegistrar | null = null
 let scanner: ScanSessionManager | null = null
 let scanQueue: ScanQueueService | null = null
 let taskbarProgress: TaskbarProgressController | null = null
+let downloadPublisher: SnapshotDeltaPublisher<
+  DownloadItem,
+  { aria2: Aria2State }
+> | null = null
+let mediaPublisher: SnapshotDeltaPublisher<
+  MediaJob,
+  { tool: MediaToolState }
+> | null = null
+let batchPublisher: SnapshotDeltaPublisher<Batch, Record<string, never>> | null =
+  null
+
+/** True only when the renderer can actually show a progress update. */
+function snapshotWindowVisible(): boolean {
+  const window = mainWindow
+  return (
+    window !== null &&
+    !window.isDestroyed() &&
+    window.isVisible() &&
+    !window.isMinimized()
+  )
+}
+
+function refreshSnapshotDelivery(): void {
+  const visible = snapshotWindowVisible()
+  downloadPublisher?.setVisible(visible)
+  mediaPublisher?.setVisible(visible)
+  batchPublisher?.setVisible(visible)
+}
+
+function requestSnapshotResync(): void {
+  downloadPublisher?.requestFull()
+  mediaPublisher?.requestFull()
+  batchPublisher?.requestFull()
+}
+
 /** A user or OS quit request has been accepted; windows may now close. */
 let quitRequested = false
 /** The orderly flush/stop/close sequence is running; never run it twice. */
@@ -302,8 +345,22 @@ function openMainWindow(
       refreshTray()
     }
   })
-  window.on('show', refreshTray)
-  window.on('hide', refreshTray)
+  window.on('show', () => {
+    refreshTray()
+    refreshSnapshotDelivery()
+  })
+  window.on('hide', () => {
+    refreshTray()
+    refreshSnapshotDelivery()
+  })
+  window.on('minimize', refreshSnapshotDelivery)
+  window.on('restore', refreshSnapshotDelivery)
+  window.webContents.on('did-finish-load', () => {
+    // A freshly loaded renderer has no revision baseline. One full delta gives
+    // it a clean starting point and reclaims any hidden-window catch-up.
+    refreshSnapshotDelivery()
+    requestSnapshotResync()
+  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
     refreshTray()
@@ -489,14 +546,52 @@ if (unregisterRequested) {
       taskbarProgress?.refresh()
     }
 
+    // Snapshot streams are revisioned deltas: one full snapshot when the
+    // renderer loads, then patches. Suppressed while the window is hidden and
+    // caught up with one delta when it is shown again.
+    downloadPublisher = new SnapshotDeltaPublisher<
+      DownloadItem,
+      { aria2: Aria2State }
+    >({
+      send: (delta) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.snapshotChanged, delta)
+        }
+      },
+      isVisible: snapshotWindowVisible,
+      rowVersion: downloadRowVersion
+    })
+    mediaPublisher = new SnapshotDeltaPublisher<
+      MediaJob,
+      { tool: MediaToolState }
+    >({
+      send: (delta) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.mediaSnapshotChanged, delta)
+        }
+      },
+      isVisible: snapshotWindowVisible,
+      rowVersion: mediaRowVersion
+    })
+    batchPublisher = new SnapshotDeltaPublisher<Batch, Record<string, never>>({
+      send: (delta) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.batchSnapshotChanged, delta)
+        }
+      },
+      isVisible: snapshotWindowVisible,
+      rowVersion: batchRowVersion
+    })
+
     manager = new DownloadManager(
       aria2,
       downloadDir,
       (snapshot: AppSnapshot) => {
         notifications?.observeDownloads(snapshot)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.snapshotChanged, snapshot)
-        }
+        downloadPublisher?.publish({
+          fields: { aria2: snapshot.aria2 },
+          rows: snapshot.downloads
+        })
         updateTaskbarProgress()
       },
       database,
@@ -599,9 +694,10 @@ if (unregisterRequested) {
         // media job has settled; no executable is swapped mid-run.
         mediaUpdater?.onJobsChanged()
         notifications?.observeMedia(snapshot)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.mediaSnapshotChanged, snapshot)
-        }
+        mediaPublisher?.publish({
+          fields: { tool: snapshot.tool },
+          rows: snapshot.jobs
+        })
         updateTaskbarProgress()
       }
     })
@@ -629,9 +725,10 @@ if (unregisterRequested) {
       scanRootDir: downloadDir,
       resolvePairingFolder: (token) => manualMatchStore.resolveFolder(token),
       onUpdate: (snapshot) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.batchSnapshotChanged, snapshot)
-        }
+        batchPublisher?.publish({
+          fields: {},
+          rows: snapshot.batches
+        })
       }
     })
 
@@ -787,6 +884,7 @@ if (unregisterRequested) {
       ...(scanner === null ? {} : { scanner }),
       ...(scanQueue === null ? {} : { scanQueue }),
       ...(manualMatchService === null ? {} : { manualMatch: manualMatchService }),
+      requestSnapshotResync,
       getWindow: () => mainWindow
     })
     traceStartup('IPC registered; managers ready')

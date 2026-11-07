@@ -88,6 +88,8 @@ export interface IpcContext {
   scanQueue?: ScanQueueService
   /** Manual "Match to video file…" support. */
   manualMatch?: ManualMatchService
+  /** Send fresh full deltas for every snapshot stream after a renderer gap. */
+  requestSnapshotResync?: () => void
   getWindow: () => BrowserWindow | null
 }
 
@@ -126,6 +128,11 @@ export function registerIpc(context: IpcContext): void {
   }
 
   invoke<AppSnapshot>(IPC.getSnapshot, () => context.manager.getSnapshot())
+
+  invoke<null>(IPC.snapshotResync, () => {
+    context.requestSnapshotResync?.()
+    return null
+  })
 
   invoke<UrlSizeProbe>(IPC.probeUrlSize, (_event, url) => {
     if (typeof url !== 'string') return Promise.resolve({ size: null })
