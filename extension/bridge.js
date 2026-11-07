@@ -16,6 +16,8 @@ export const PROBE_MESSAGE_TYPE = 'probe'
 export const CAPTURED_SOURCE_MESSAGE_TYPE = 'queue-captured-source'
 export const SNIFFED_MEDIA_MESSAGE_TYPE = 'queue-sniffed-media'
 export const DURABLE_HANDOFF_MESSAGE_TYPE = 'handoff-download'
+export const DOWNLOAD_STATUS_MESSAGE_TYPE = 'download-status'
+export const SHOW_DOWNLOAD_MESSAGE_TYPE = 'show-download'
 export const SCAN_PAGE_MESSAGE_TYPE = 'scan-page'
 export const SCAN_IMAGES_MESSAGE_TYPE = 'scan-images'
 export const MAX_SCAN_IMAGES = 1000
@@ -28,6 +30,11 @@ export const MAX_USER_AGENT_LENGTH = 512
 export const MAX_REFERER_LENGTH = 4096
 export const MAX_COOKIE_HEADER_LENGTH = 8192
 export const HANDOFF_TIMEOUT_MS = 25_000
+const DOWNLOAD_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const HANDOFF_STATUS_VALUES = ['queued', 'running', 'paused', 'done', 'error']
+const MAX_HANDOFF_STATUS_FILENAME_LENGTH = 180
+const MAX_HANDOFF_STATUS_MESSAGE_LENGTH = 200
 
 const PROGRESSIVE_EXTENSIONS = ['mp4', 'webm', 'm4v', 'mov', 'ogv', 'mkv']
 const COMPLETE_MEDIA_TYPES = ['video/mp4', 'video/webm']
@@ -632,9 +639,7 @@ function validReceipt(receipt) {
   }
   if (
     typeof receipt.downloadId !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      receipt.downloadId
-    )
+    !DOWNLOAD_ID_PATTERN.test(receipt.downloadId)
   ) {
     return null
   }
@@ -797,6 +802,202 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
         }
       })
     }
+  })
+}
+
+/**
+ * Send one small native envelope and resolve with either the raw response or a
+ * transport error. Both new hand-off card operations are read-only, so they
+ * share this one transport.
+ */
+function sendNativeEnvelope(message) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, message, (response) => {
+        const runtimeError = chrome.runtime.lastError
+        if (runtimeError) {
+          finish({ ok: false, error: describeNativeError(runtimeError.message) })
+          return
+        }
+        finish({ ok: true, response })
+      })
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+function invalidDownloadStatusResponse() {
+  return {
+    ok: false,
+    error: {
+      code: 'DOWNLOAD_STATUS_INVALID',
+      message: 'DonDownload returned an unexpected download status.'
+    }
+  }
+}
+
+function safeStatusFilename(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > MAX_HANDOFF_STATUS_FILENAME_LENGTH ||
+    hasControlCharacters(trimmed) ||
+    /[\\/]/.test(trimmed)
+  ) {
+    return null
+  }
+  return trimmed
+}
+
+function safeStatusMessage(value) {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (
+    text.length === 0 ||
+    text.length > MAX_HANDOFF_STATUS_MESSAGE_LENGTH ||
+    hasControlCharacters(text) ||
+    /(?:https?|file):\/\//i.test(text) ||
+    /[A-Za-z]:\\/.test(text)
+  ) {
+    return undefined
+  }
+  return text
+}
+
+/**
+ * Strict progress for the one download the extension took over. Only a
+ * validated id is sent, and only the five browser-facing fields are accepted
+ * back, so no URL, path or header can reach the page.
+ */
+export function sendDownloadStatus(rawDownloadId) {
+  if (
+    typeof rawDownloadId !== 'string' ||
+    !DOWNLOAD_ID_PATTERN.test(rawDownloadId)
+  ) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_DOWNLOAD_ID',
+        message: 'The download identifier is not valid.'
+      }
+    })
+  }
+
+  return sendNativeEnvelope({
+    type: DOWNLOAD_STATUS_MESSAGE_TYPE,
+    downloadId: rawDownloadId
+  }).then((result) => {
+    if (result.ok !== true) return result
+    const response = result.response
+    if (!response || typeof response !== 'object' || Array.isArray(response)) {
+      return invalidDownloadStatusResponse()
+    }
+    if (response.ok === false) {
+      return { ok: false, error: describeResponseError(response) }
+    }
+    if (response.ok !== true) return invalidDownloadStatusResponse()
+
+    const keys = Object.keys(response)
+    for (const key of keys) {
+      if (
+        key !== 'ok' &&
+        key !== 'status' &&
+        key !== 'completedBytes' &&
+        key !== 'totalBytes' &&
+        key !== 'filename' &&
+        key !== 'errorMessage'
+      ) {
+        return invalidDownloadStatusResponse()
+      }
+    }
+    if (
+      HANDOFF_STATUS_VALUES.indexOf(response.status) === -1 ||
+      !Number.isSafeInteger(response.completedBytes) ||
+      response.completedBytes < 0 ||
+      !Number.isSafeInteger(response.totalBytes) ||
+      response.totalBytes < 0
+    ) {
+      return invalidDownloadStatusResponse()
+    }
+    const filename = safeStatusFilename(response.filename)
+    if (filename === null) return invalidDownloadStatusResponse()
+    const errorMessage = safeStatusMessage(response.errorMessage)
+
+    return {
+      ok: true,
+      status: response.status,
+      completedBytes: response.completedBytes,
+      totalBytes: response.totalBytes,
+      filename,
+      ...(errorMessage === undefined ? {} : { errorMessage })
+    }
+  })
+}
+
+/**
+ * Focus the desktop and reveal that download row. The response carries no
+ * data, so only an explicit confirmation is accepted.
+ */
+export function sendShowDownload(rawDownloadId) {
+  if (
+    typeof rawDownloadId !== 'string' ||
+    !DOWNLOAD_ID_PATTERN.test(rawDownloadId)
+  ) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_DOWNLOAD_ID',
+        message: 'The download identifier is not valid.'
+      }
+    })
+  }
+
+  return sendNativeEnvelope({
+    type: SHOW_DOWNLOAD_MESSAGE_TYPE,
+    downloadId: rawDownloadId
+  }).then((result) => {
+    if (result.ok !== true) return result
+    const response = result.response
+    if (!response || typeof response !== 'object' || Array.isArray(response)) {
+      return {
+        ok: false,
+        error: {
+          code: 'NATIVE_RESPONSE_INVALID',
+          message: 'The DonDownload helper returned an unexpected response.'
+        }
+      }
+    }
+    if (response.ok === false) {
+      return { ok: false, error: describeResponseError(response) }
+    }
+    if (response.ok !== true || response.shown !== true) {
+      return {
+        ok: false,
+        error: {
+          code: 'NATIVE_RESPONSE_INVALID',
+          message: 'The DonDownload helper returned an unexpected response.'
+        }
+      }
+    }
+    return { ok: true }
   })
 }
 

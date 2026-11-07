@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog } from 'electron'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
+import { mapDownloadStatus } from '@shared/downloadStatus'
 import { isAllowedAt } from '@shared/schedule'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import {
@@ -761,6 +762,28 @@ if (unregisterRequested) {
           ...(browserMatchService === null
             ? {}
             : { browserMatch: (input) => browserMatchService.handleSniffed(input) }),
+          // The in-page card polls the progress of the one download the
+          // extension took over. Only the mapped status, two byte counts and a
+          // display-only file name leave the desktop.
+          downloadStatus: (downloadId) => {
+            const record = manager
+              ?.getSnapshot()
+              .downloads.find((download) => download.id === downloadId)
+            if (!record) return null
+            return {
+              status: mapDownloadStatus(record.status),
+              completedBytes: record.completedBytes,
+              totalBytes: record.totalBytes,
+              filename: record.filename,
+              ...(record.errorMessage === null
+                ? {}
+                : { errorMessage: record.errorMessage })
+            }
+          },
+          onShowDownload: (downloadId) => {
+            showMainWindow()
+            mainWindow?.webContents.send(IPC.revealRow, `download:${downloadId}`)
+          },
           onScanRequested: (session) => {
             // Signed-in pages are scanned from the browser tab. Bringing the
             // window forward makes the progressive result visible immediately.

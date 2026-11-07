@@ -18,6 +18,8 @@ using System.Web.Script.Serialization;
 //   { "type": "probe" }
 //   { "type": "queue-captured-source", "url": "https://cdn.example/clip.mp4" }
 //   { "type": "handoff-download", "url": "https://example.com/files/report.zip" }
+//   { "type": "download-status", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
+//   { "type": "show-download", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "scan-page", "url": "https://discuss.example/t/topic/123", "cookie": "..." }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
@@ -48,6 +50,8 @@ internal static class NativeHost
     private const string QueueCapturedSourceOperation = "queue-captured-source";
     private const string QueueSniffedMediaOperation = "queue-sniffed-media";
     private const string HandoffDownloadOperation = "handoff-download";
+    private const string DownloadStatusOperation = "download-status";
+    private const string ShowDownloadOperation = "show-download";
     private const string ScanPageOperation = "scan-page";
     private const string ScanImagesOperation = "scan-images";
     // One page may report up to 1000 images, each with an optional fallback URL.
@@ -103,6 +107,17 @@ internal static class NativeHost
         "error",
         "cancelled",
         "interrupted"
+    };
+
+    // The five values the in-page card understands. The desktop maps its own
+    // statuses onto these before answering.
+    private static readonly string[] HandoffDownloadStatuses = new string[]
+    {
+        "queued",
+        "running",
+        "paused",
+        "done",
+        "error"
     };
 
     private static readonly JavaScriptSerializer Serializer =
@@ -251,6 +266,14 @@ internal static class NativeHost
         if (type == HandoffDownloadOperation)
         {
             return HandleHandoffDownloadMessage(message);
+        }
+        if (type == DownloadStatusOperation)
+        {
+            return HandleDownloadStatusMessage(message);
+        }
+        if (type == ShowDownloadOperation)
+        {
+            return HandleShowDownloadMessage(message);
         }
         if (type == ScanPageOperation)
         {
@@ -1000,6 +1023,55 @@ internal static class NativeHost
             body.Add("cookie", cookie);
         }
         return ForwardHandoff(body);
+    }
+
+    /// <summary>
+    /// Read-only progress for the one download the extension took over. The
+    /// message carries exactly the operation and the desktop download id; no
+    /// URL, path, cookie or header is accepted or returned.
+    /// </summary>
+    private static Dictionary<string, object> HandleDownloadStatusMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "downloadId" }, new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only download-status messages containing exactly type and downloadId are accepted.");
+        }
+        string downloadId = message["downloadId"] as string;
+        if (downloadId == null || !DownloadIdPattern.IsMatch(downloadId))
+        {
+            return Error("INVALID_MESSAGE", "The download identifier is invalid.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("downloadId", downloadId);
+        return ForwardDownloadStatus(body);
+    }
+
+    /// <summary>
+    /// Focus the desktop and reveal that download row. Only the validated
+    /// desktop download id crosses the bridge.
+    /// </summary>
+    private static Dictionary<string, object> HandleShowDownloadMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(message, new string[] { "type", "downloadId" }, new string[0]))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only show-download messages containing exactly type and downloadId are accepted.");
+        }
+        string downloadId = message["downloadId"] as string;
+        if (downloadId == null || !DownloadIdPattern.IsMatch(downloadId))
+        {
+            return Error("INVALID_MESSAGE", "The download identifier is invalid.");
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("downloadId", downloadId);
+        return ForwardShowDownload(body);
     }
 
     private static bool TryReadPositiveLong(object value, out long result)
@@ -1822,6 +1894,262 @@ internal static class NativeHost
         }
 
         return ParseAppResponse(responseText);
+    }
+
+    /// <summary>
+    /// POST one already validated body to the desktop bridge and return the raw
+    /// response text. A null return means success; otherwise the returned
+    /// dictionary is the error to answer with. Diagnostics never include the
+    /// body.
+    /// </summary>
+    private static Dictionary<string, object> PostToBridge(
+        string route,
+        Dictionary<string, object> body,
+        out string responseText)
+    {
+        responseText = null;
+        BridgeState state;
+        string stateError;
+        if (!TryLoadBridgeState(out state, out stateError))
+        {
+            return Error("APP_NOT_RUNNING", stateError);
+        }
+
+        HttpWebRequest request = null;
+        try
+        {
+            request = CreateBridgeRequest(state, route, BridgeTimeoutMilliseconds);
+            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
+            request.ContentLength = payload.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+        }
+        catch (WebException)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        HttpWebResponse response = null;
+        try
+        {
+            response = (HttpWebResponse)request.GetResponse();
+        }
+        catch (WebException error)
+        {
+            response = error.Response as HttpWebResponse;
+            if (response == null)
+            {
+                return Error(
+                    "APP_NOT_RUNNING",
+                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+            }
+        }
+        catch (Exception)
+        {
+            return Error(
+                "APP_NOT_RUNNING",
+                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
+        }
+
+        using (response)
+        {
+            try
+            {
+                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
+            }
+            catch (Exception)
+            {
+                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
+            }
+        }
+        return null;
+    }
+
+    private static Dictionary<string, object> ForwardDownloadStatus(
+        Dictionary<string, object> body)
+    {
+        string responseText;
+        Dictionary<string, object> failure = PostToBridge("/download-status", body, out responseText);
+        if (failure != null)
+        {
+            return failure;
+        }
+        return ParseDownloadStatusAppResponse(responseText);
+    }
+
+    private static Dictionary<string, object> ForwardShowDownload(
+        Dictionary<string, object> body)
+    {
+        string responseText;
+        Dictionary<string, object> failure = PostToBridge("/show-download", body, out responseText);
+        if (failure != null)
+        {
+            return failure;
+        }
+        return ParseShowDownloadAppResponse(responseText);
+    }
+
+    /// <summary>
+    /// Re-validate the desktop's progress answer and re-emit only the five
+    /// browser-facing fields. A URL, path or header can therefore never reach a
+    /// page even if the desktop one day returned one.
+    /// </summary>
+    private static Dictionary<string, object> ParseDownloadStatusAppResponse(
+        string responseText)
+    {
+        object parsed;
+        try
+        {
+            parsed = Serializer.DeserializeObject(responseText);
+        }
+        catch (Exception)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid response.");
+        }
+
+        Dictionary<string, object> response = parsed as Dictionary<string, object>;
+        if (response == null || !response.ContainsKey("ok"))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        object okValue = response["ok"];
+        if (!(okValue is bool) || !((bool)okValue))
+        {
+            return ParseAppResponse(responseText);
+        }
+
+        if (!HasExactKeys(
+            response,
+            new string[] { "ok", "operation", "status", "completedBytes", "totalBytes", "filename" },
+            new string[] { "errorMessage" }))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+        if ((response["operation"] as string) != DownloadStatusOperation)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned a mismatched response.");
+        }
+
+        string status = response["status"] as string;
+        if (status == null || Array.IndexOf(HandoffDownloadStatuses, status) < 0)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unknown download status.");
+        }
+
+        long completedBytes;
+        long totalBytes;
+        if (!TryReadNonNegativeLong(response["completedBytes"], out completedBytes) ||
+            !TryReadNonNegativeLong(response["totalBytes"], out totalBytes))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned invalid download byte counts.");
+        }
+
+        string filename = response["filename"] as string;
+        if (!IsSafeDownloadFilename(filename))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid file name.");
+        }
+
+        Dictionary<string, object> result = new Dictionary<string, object>();
+        result.Add("ok", true);
+        result.Add("status", status);
+        result.Add("completedBytes", completedBytes);
+        result.Add("totalBytes", totalBytes);
+        result.Add("filename", filename);
+        if (response.ContainsKey("errorMessage"))
+        {
+            string errorMessage = response["errorMessage"] as string;
+            if (errorMessage != null && IsSafeErrorMessage(errorMessage))
+            {
+                result.Add("errorMessage", errorMessage);
+            }
+        }
+        return result;
+    }
+
+    private static Dictionary<string, object> ParseShowDownloadAppResponse(
+        string responseText)
+    {
+        object parsed;
+        try
+        {
+            parsed = Serializer.DeserializeObject(responseText);
+        }
+        catch (Exception)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an invalid response.");
+        }
+
+        Dictionary<string, object> response = parsed as Dictionary<string, object>;
+        if (response == null || !response.ContainsKey("ok"))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+
+        object okValue = response["ok"];
+        if (!(okValue is bool) || !((bool)okValue))
+        {
+            return ParseAppResponse(responseText);
+        }
+
+        if (!HasExactKeys(
+            response,
+            new string[] { "ok", "operation", "shown" },
+            new string[0]))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned an unexpected response.");
+        }
+        if ((response["operation"] as string) != ShowDownloadOperation)
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload returned a mismatched response.");
+        }
+        if (!(response["shown"] is bool) || !((bool)response["shown"]))
+        {
+            return Error("APP_RESPONSE_INVALID", "DonDownload did not show the download.");
+        }
+
+        Dictionary<string, object> result = new Dictionary<string, object>();
+        result.Add("ok", true);
+        result.Add("shown", true);
+        return result;
+    }
+
+    private static bool TryReadNonNegativeLong(object value, out long result)
+    {
+        result = 0;
+        if (!TryGetLong(value, out result))
+        {
+            return false;
+        }
+        return result >= 0;
+    }
+
+    /// <summary>
+    /// A display-only file name: no directory part, no control characters and
+    /// a bounded length. The card only ever assigns it with textContent.
+    /// </summary>
+    private static bool IsSafeDownloadFilename(string filename)
+    {
+        if (!IsSafeText(filename, 180))
+        {
+            return false;
+        }
+        return filename.IndexOf('/') < 0 && filename.IndexOf('\\') < 0;
     }
 
     private static Dictionary<string, object> ParseMediaAppResponse(

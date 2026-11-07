@@ -15,6 +15,14 @@ import {
   parseCapturedSourceInput
 } from '@shared/capturedSource'
 import {
+  DOWNLOAD_STATUS_CHANNEL,
+  DOWNLOAD_STATUS_ROUTE,
+  SHOW_DOWNLOAD_CHANNEL,
+  SHOW_DOWNLOAD_ROUTE,
+  parseHandoffDownloadRequest,
+  parseHandoffDownloadStatus
+} from '@shared/downloadStatus'
+import {
   DURABLE_HANDOFF_CHANNEL,
   DURABLE_HANDOFF_ROUTE,
   parseDurableHandoffInput,
@@ -173,6 +181,20 @@ export interface NativeBridgeOptions {
   }
   /** Focus the desktop and open the scanner view after an extension request. */
   onScanRequested?: (session: ScanSession) => void
+  /**
+   * Additive read-only progress for one download the extension took over. It
+   * is called with an already validated id and must answer with the strict
+   * `HandoffDownloadStatus` shape, or null when that id is unknown. The bridge
+   * re-validates the answer, so no URL, path or header can reach the browser.
+   */
+  downloadStatus?: (
+    downloadId: string
+  ) => Promise<unknown> | unknown
+  /**
+   * Focus the desktop and reveal that download row. Wired like
+   * `onScanRequested` so smoke and focused tests can stub it.
+   */
+  onShowDownload?: (downloadId: string) => void
   /**
    * Additive media capability. Worker B wires this; when it is absent the
    * media routes stay authenticated but report a safe unavailable error.
@@ -371,6 +393,8 @@ export async function startNativeBridge(
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
+      route !== DOWNLOAD_STATUS_ROUTE &&
+      route !== SHOW_DOWNLOAD_ROUTE &&
       !isMediaRoute(route)
     ) {
       sendError(response, 404, 'NOT_FOUND', 'Unknown bridge endpoint.')
@@ -398,6 +422,8 @@ export async function startNativeBridge(
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
+      route !== DOWNLOAD_STATUS_ROUTE &&
+      route !== SHOW_DOWNLOAD_ROUTE &&
       options.mediaBridge === undefined
     ) {
       request.resume()
@@ -457,6 +483,16 @@ export async function startNativeBridge(
 
     if (route === DURABLE_HANDOFF_ROUTE) {
       await handleDurableHandoffRequest(parsed, response)
+      return
+    }
+
+    if (route === DOWNLOAD_STATUS_ROUTE) {
+      await handleDownloadStatusRequest(parsed, response)
+      return
+    }
+
+    if (route === SHOW_DOWNLOAD_ROUTE) {
+      await handleShowDownloadRequest(parsed, response)
       return
     }
 
@@ -873,6 +909,126 @@ export async function startNativeBridge(
       operation: DURABLE_HANDOFF_CHANNEL,
       durable: true,
       receipt: acceptance
+    })
+  }
+
+  /**
+   * Read-only progress for the one download the extension took over. The card
+   * in the page polls this every second while it is visible. Only the five
+   * browser-facing statuses, two byte counts, a display-only file name and an
+   * optional short safe message leave the desktop.
+   */
+  async function handleDownloadStatusRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    let input
+    try {
+      input = parseHandoffDownloadRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    const readStatus = options.downloadStatus
+    if (typeof readStatus !== 'function') {
+      sendError(
+        response,
+        503,
+        'DOWNLOAD_STATUS_UNAVAILABLE',
+        'Download progress is not available in this DonDownload build.'
+      )
+      return
+    }
+
+    let raw: unknown
+    try {
+      raw = await readStatus(input.downloadId)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not read a download status (${info.code}).`)
+      sendError(response, 503, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    if (raw === null || raw === undefined) {
+      sendError(
+        response,
+        404,
+        'NOT_FOUND',
+        'DonDownload does not have that download.'
+      )
+      return
+    }
+
+    let status
+    try {
+      status = parseHandoffDownloadStatus(raw)
+    } catch {
+      logger('Native bridge download status was invalid.')
+      sendError(
+        response,
+        500,
+        'DOWNLOAD_STATUS_INVALID',
+        'The download status could not be read.'
+      )
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      operation: DOWNLOAD_STATUS_CHANNEL,
+      ...status
+    })
+  }
+
+  /**
+   * Bring the desktop forward and reveal that download row. Focus is best
+   * effort: the extension has already taken the browser download over, so a
+   * window that cannot be focused is not an error for the card.
+   */
+  async function handleShowDownloadRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    let input
+    try {
+      input = parseHandoffDownloadRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    const show = options.onShowDownload
+    if (typeof show !== 'function') {
+      sendError(
+        response,
+        503,
+        'SHOW_DOWNLOAD_UNAVAILABLE',
+        'Showing a download is not available in this DonDownload build.'
+      )
+      return
+    }
+
+    try {
+      show(input.downloadId)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not show a download (${info.code}).`)
+      sendError(response, 503, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      operation: SHOW_DOWNLOAD_CHANNEL,
+      shown: true
     })
   }
 

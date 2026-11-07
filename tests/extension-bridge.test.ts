@@ -5,9 +5,11 @@ import {
   normalizeCapturedSource,
   sendAnalyzeMedia,
   sendQueueCapturedSource,
+  sendDownloadStatus,
   sendQueueDownload,
   sendQueueMedia,
-  sendScanPage
+  sendScanPage,
+  sendShowDownload
 } from '../extension/bridge'
 
 const ANALYSIS_ID = 'analysis_0123456789abcdef'
@@ -364,6 +366,133 @@ describe('scan this page message', () => {
     expect(rejected).toMatchObject({
       ok: false,
       error: { code: 'NATIVE_RESPONSE_INVALID' }
+    })
+  })
+})
+
+describe('hand-off card bridge operations', () => {
+  const DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+  it('asks only for the progress of one validated download id', async () => {
+    const fake = installFakeNative()
+    fake.response = {
+      ok: true,
+      status: 'running',
+      completedBytes: 1_200_000,
+      totalBytes: 2_600_000,
+      filename: 'report.zip'
+    }
+
+    await expect(sendDownloadStatus(DOWNLOAD_ID)).resolves.toEqual({
+      ok: true,
+      status: 'running',
+      completedBytes: 1_200_000,
+      totalBytes: 2_600_000,
+      filename: 'report.zip'
+    })
+    expect(fake.messages).toEqual([
+      {
+        host: NATIVE_HOST,
+        message: { type: 'download-status', downloadId: DOWNLOAD_ID }
+      }
+    ])
+  })
+
+  it('rejects a malformed id and any unexpected status field', async () => {
+    const fake = installFakeNative()
+    await expect(sendDownloadStatus('not-a-uuid')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_DOWNLOAD_ID' }
+    })
+    await expect(sendDownloadStatus(42)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_DOWNLOAD_ID' }
+    })
+    expect(fake.messages).toHaveLength(0)
+
+    for (const response of [
+      { ok: true, status: 'downloading', completedBytes: 1, totalBytes: 2, filename: 'a.zip' },
+      { ok: true, status: 'running', completedBytes: -1, totalBytes: 2, filename: 'a.zip' },
+      { ok: true, status: 'running', completedBytes: 1, totalBytes: 2, filename: 'C:\\a.zip' },
+      {
+        ok: true,
+        status: 'running',
+        completedBytes: 1,
+        totalBytes: 2,
+        filename: 'a.zip',
+        url: 'https://example.com/files/a.zip'
+      },
+      { ok: true, status: 'running', completedBytes: 1, totalBytes: 2 }
+    ]) {
+      fake.response = response
+      await expect(sendDownloadStatus(DOWNLOAD_ID)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'DOWNLOAD_STATUS_INVALID' }
+      })
+    }
+
+    // A safe error message is kept; a URL or a path is dropped.
+    fake.response = {
+      ok: true,
+      status: 'error',
+      completedBytes: 0,
+      totalBytes: 2,
+      filename: 'a.zip',
+      errorMessage: 'Disk full'
+    }
+    await expect(sendDownloadStatus(DOWNLOAD_ID)).resolves.toMatchObject({
+      ok: true,
+      status: 'error',
+      errorMessage: 'Disk full'
+    })
+    fake.response = {
+      ok: true,
+      status: 'error',
+      completedBytes: 0,
+      totalBytes: 2,
+      filename: 'a.zip',
+      errorMessage: 'Failed: https://example.com/files/a.zip'
+    }
+    const dropped = await sendDownloadStatus(DOWNLOAD_ID)
+    expect(dropped).toMatchObject({ ok: true, status: 'error' })
+    expect(dropped).not.toHaveProperty('errorMessage')
+
+    // An app-side rejection is reported as such.
+    fake.response = {
+      ok: false,
+      error: { code: 'NOT_FOUND', message: 'DonDownload does not have that download.' }
+    }
+    await expect(sendDownloadStatus(DOWNLOAD_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'NOT_FOUND' }
+    })
+  })
+
+  it('confirms a Show request only on an explicit answer', async () => {
+    const fake = installFakeNative()
+    fake.response = { ok: true, shown: true }
+    await expect(sendShowDownload(DOWNLOAD_ID)).resolves.toEqual({ ok: true })
+    expect(fake.messages).toEqual([
+      {
+        host: NATIVE_HOST,
+        message: { type: 'show-download', downloadId: DOWNLOAD_ID }
+      }
+    ])
+
+    for (const response of [
+      { ok: true },
+      { ok: true, shown: false },
+      { ok: false, error: { code: 'SHOW_DOWNLOAD_UNAVAILABLE', message: 'No.' } }
+    ]) {
+      fake.response = response
+      await expect(sendShowDownload(DOWNLOAD_ID)).resolves.toMatchObject({
+        ok: false
+      })
+    }
+
+    await expect(sendShowDownload('nope')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_DOWNLOAD_ID' }
     })
   })
 })

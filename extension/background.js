@@ -25,6 +25,10 @@ import {
   queueMediaForSender
 } from './media-bridge.js'
 import { handleCreatedDownload, installDownloadsListener, hasNeedsLoginBadge, clearNeedsLoginBadge } from './handoff.js'
+import {
+  HANDOFF_CARD_MESSAGE_TYPES,
+  handleHandoffCardMessage
+} from './handoff-card.js'
 import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
 import {
   CAPTURE_SETTINGS_KEY,
@@ -824,6 +828,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           overlayFailure(
             'IMAGE_SCAN_FAILED',
             'The image list could not be sent to DonDownload.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === HANDOFF_CARD_MESSAGE_TYPES.STATUS) {
+    // The in-page card polls the one download this worker handed off. The
+    // handler rejects a foreign sender and any id this session did not take
+    // over, so a page can never query an arbitrary download.
+    void handleHandoffCardMessage(chrome, message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'DOWNLOAD_STATUS_FAILED',
+            'The download progress could not be read.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === HANDOFF_CARD_MESSAGE_TYPES.SHOW) {
+    void handleHandoffCardMessage(chrome, message, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'SHOW_DOWNLOAD_FAILED',
+            'DonDownload could not be shown.'
           )
         )
       )

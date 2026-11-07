@@ -206,6 +206,12 @@ let token = ''
 let scanCalls: Array<{ url: string; cookie?: string }> = []
 let scanRequested: ScanSession | null = null
 let imageCalls: ScanImagesRequest[] = []
+let statusCalls: string[] = []
+let showCalls: string[] = []
+
+const HANDOFF_DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+const UNKNOWN_DOWNLOAD_ID = '0f8fad5b-d9cb-469f-a165-70867728950e'
+const INVALID_STATUS_DOWNLOAD_ID = '9b2f4c1e-3d5a-4e6b-8c7d-1a2b3c4d5e6f'
 
 const SCAN_SESSION: ScanSession = {
   sessionId: 'scan_0123456789abcdef',
@@ -231,7 +237,12 @@ const SCAN_SESSION: ScanSession = {
 }
 
 async function start(
-  options: { media?: boolean; scanner?: boolean; queueScanner?: boolean } = {}
+  options: {
+    media?: boolean
+    scanner?: boolean
+    queueScanner?: boolean
+    status?: boolean
+  } = {}
 ): Promise<void> {
   tempDir = await mkdtemp(path.join(os.tmpdir(), 'dondownload-bridge-'))
   manager = createManager()
@@ -239,12 +250,40 @@ async function start(
   scanCalls = []
   scanRequested = null
   imageCalls = []
+  statusCalls = []
+  showCalls = []
   bridge = await startNativeBridge({
     manager,
     userDataPath: tempDir,
     logger: () => undefined,
     publicTargetLookup: publicLookup,
     ...(media ? { mediaBridge: media } : {}),
+    ...(options.status
+      ? {
+          downloadStatus: (downloadId: string) => {
+            statusCalls.push(downloadId)
+            if (downloadId === UNKNOWN_DOWNLOAD_ID) return null
+            if (downloadId === INVALID_STATUS_DOWNLOAD_ID) {
+              return {
+                status: 'running',
+                completedBytes: 1_200_000,
+                totalBytes: 2_600_000,
+                filename: 'report.zip',
+                url: 'https://example.com/files/report.zip'
+              }
+            }
+            return {
+              status: 'running',
+              completedBytes: 1_200_000,
+              totalBytes: 2_600_000,
+              filename: 'C:\\Downloads\\report.zip'
+            }
+          },
+          onShowDownload: (downloadId: string) => {
+            showCalls.push(downloadId)
+          }
+        }
+      : {}),
     ...(options.scanner
       ? {
           scanner: options.queueScanner
@@ -1256,5 +1295,151 @@ describe('native bridge scan-page queueing', () => {
     // The queued session is still reported to the renderer, which groups it
     // with the rest of the batch.
     expect(scanRequested?.message).toMatch(/waiting/i)
+  })
+})
+
+describe('download status and show routes', () => {
+  beforeEach(() => start({ status: true }))
+
+  it('answers with the strict progress of exactly one download', async () => {
+    const response = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/download-status' }
+    )
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as Record<string, unknown>
+    expect(body).toEqual({
+      ok: true,
+      operation: 'download-status',
+      status: 'running',
+      completedBytes: 1_200_000,
+      totalBytes: 2_600_000,
+      filename: 'report.zip'
+    })
+    // No URL, path, cookie or header can reach the page.
+    const serialized = JSON.stringify(body)
+    expect(serialized).not.toContain('http')
+    expect(serialized).not.toContain('Downloads')
+    expect(statusCalls).toEqual([HANDOFF_DOWNLOAD_ID])
+  })
+
+  it('reports an unknown id as NOT_FOUND', async () => {
+    const response = await post(
+      JSON.stringify({ downloadId: UNKNOWN_DOWNLOAD_ID }),
+      { path: '/download-status' }
+    )
+    expect(response.status).toBe(404)
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'NOT_FOUND' }
+    })
+    expect(statusCalls).toEqual([UNKNOWN_DOWNLOAD_ID])
+  })
+
+  it('rejects a bad answer from the desktop instead of forwarding it', async () => {
+    const response = await post(
+      JSON.stringify({ downloadId: INVALID_STATUS_DOWNLOAD_ID }),
+      { path: '/download-status' }
+    )
+    expect(response.status).toBe(500)
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'DOWNLOAD_STATUS_INVALID' }
+    })
+  })
+
+  it('rejects bad input and unauthenticated requests', async () => {
+    for (const body of [
+      JSON.stringify({}),
+      JSON.stringify({ downloadId: 'not-a-uuid' }),
+      JSON.stringify({ downloadId: 42 }),
+      JSON.stringify({
+        downloadId: HANDOFF_DOWNLOAD_ID,
+        url: 'https://example.com/files/report.zip'
+      })
+    ]) {
+      const response = await post(body, { path: '/download-status' })
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toMatchObject({ ok: false })
+    }
+
+    const unauthenticated = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/download-status', authorization: null }
+    )
+    expect(unauthenticated.status).toBe(401)
+    await expect(unauthenticated.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'UNAUTHORIZED' }
+    })
+
+    const browserOrigin = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/download-status', origin: 'https://example.com' }
+    )
+    expect(browserOrigin.status).toBe(403)
+
+    // The new routes keep the existing 16 KiB bridge body limit.
+    const oversized = await post(
+      JSON.stringify({
+        downloadId: HANDOFF_DOWNLOAD_ID,
+        pad: 'x'.repeat(17 * 1024)
+      }),
+      { path: '/download-status' }
+    )
+    expect(oversized.status).toBe(413)
+    expect(statusCalls).toEqual([])
+  })
+
+  it('shows and focuses the desktop for one download', async () => {
+    const response = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/show-download' }
+    )
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      operation: 'show-download',
+      shown: true
+    })
+    expect(showCalls).toEqual([HANDOFF_DOWNLOAD_ID])
+
+    const bad = await post(JSON.stringify({ downloadId: 'nope' }), {
+      path: '/show-download'
+    })
+    expect(bad.status).toBe(400)
+
+    const unauthenticated = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/show-download', authorization: null }
+    )
+    expect(unauthenticated.status).toBe(401)
+    expect(showCalls).toEqual([HANDOFF_DOWNLOAD_ID])
+  })
+})
+
+describe('download status routes without the additive capabilities', () => {
+  beforeEach(start)
+
+  it('reports a safe unavailable error instead of failing the request', async () => {
+    const statusResponse = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/download-status' }
+    )
+    expect(statusResponse.status).toBe(503)
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'DOWNLOAD_STATUS_UNAVAILABLE' }
+    })
+
+    const showResponse = await post(
+      JSON.stringify({ downloadId: HANDOFF_DOWNLOAD_ID }),
+      { path: '/show-download' }
+    )
+    expect(showResponse.status).toBe(503)
+    await expect(showResponse.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'SHOW_DOWNLOAD_UNAVAILABLE' }
+    })
   })
 })

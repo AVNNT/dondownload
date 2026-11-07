@@ -1063,3 +1063,131 @@ describeWindows('Windows native messaging host', () => {
     expect(responses[0]?.error.message).toBe('Analyze the page again.')
   })
 })
+
+describeWindows('native messaging host hand-off card operations', () => {
+  const DOWNLOAD_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+  it('forwards only the validated id and re-emits only the five status fields', async () => {
+    const app = await startFakeApp(
+      jsonRespond({
+        ok: true,
+        operation: 'download-status',
+        status: 'running',
+        completedBytes: 1_200_000,
+        totalBytes: 2_600_000,
+        filename: 'report.zip'
+      })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'download-status', downloadId: DOWNLOAD_ID }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([
+      {
+        ok: true,
+        status: 'running',
+        completedBytes: 1_200_000,
+        totalBytes: 2_600_000,
+        filename: 'report.zip'
+      }
+    ])
+    expect(app.requests).toHaveLength(1)
+    expect(app.requests[0]?.url).toBe('/download-status')
+    expect(app.requests[0]?.body).toEqual({ downloadId: DOWNLOAD_ID })
+    expect(app.requests[0]?.authorization).toBe(`Bearer ${app.token}`)
+  })
+
+  it('rejects an unexpected status answer instead of forwarding it', async () => {
+    const app = await startFakeApp(
+      jsonRespond({
+        ok: true,
+        operation: 'download-status',
+        status: 'running',
+        completedBytes: 1,
+        totalBytes: 2,
+        filename: 'report.zip',
+        url: 'https://example.com/files/report.zip'
+      })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'download-status', downloadId: DOWNLOAD_ID }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(parseFrames(run.stdout)).toEqual([
+      {
+        ok: false,
+        error: {
+          code: 'APP_RESPONSE_INVALID',
+          message: 'DonDownload returned an unexpected response.'
+        }
+      }
+    ])
+  })
+
+  it('rejects a malformed id and extra fields without calling the app', async () => {
+    const app = await startFakeApp()
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [
+        frame(JSON.stringify({ type: 'download-status', downloadId: 'nope' })),
+        frame(
+          JSON.stringify({
+            type: 'download-status',
+            downloadId: DOWNLOAD_ID,
+            url: 'https://example.com/files/report.zip'
+          })
+        ),
+        frame(JSON.stringify({ type: 'show-download', downloadId: 'nope' }))
+      ],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(parseFrames(run.stdout)).toEqual([
+      {
+        ok: false,
+        error: { code: 'INVALID_MESSAGE', message: 'The download identifier is invalid.' }
+      },
+      {
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message:
+            'Only download-status messages containing exactly type and downloadId are accepted.'
+        }
+      },
+      {
+        ok: false,
+        error: { code: 'INVALID_MESSAGE', message: 'The download identifier is invalid.' }
+      }
+    ])
+    expect(app.requests).toHaveLength(0)
+  })
+
+  it('forwards a Show request and confirms it explicitly', async () => {
+    const app = await startFakeApp(
+      jsonRespond({ ok: true, operation: 'show-download', shown: true })
+    )
+    const dir = await makeTempDir()
+    const statePath = await writeState(dir, { port: app.port, token: app.token })
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'show-download', downloadId: DOWNLOAD_ID }))],
+      { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
+    )
+
+    expect(parseFrames(run.stdout)).toEqual([{ ok: true, shown: true }])
+    expect(app.requests[0]?.url).toBe('/show-download')
+    expect(app.requests[0]?.body).toEqual({ downloadId: DOWNLOAD_ID })
+  })
+})
