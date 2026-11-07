@@ -33,11 +33,8 @@ import { RuntimeNotice } from './components/RuntimeNotice'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
 import type { AddDialogTab } from './components/AddDialog'
-import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
-import { ShortcutsDialog } from './components/ShortcutsDialog'
+import type { ConfirmRequest } from './components/ConfirmDialog'
 import { UndoToast } from './components/UndoToast'
-import { ContextMenu } from './components/ContextMenu'
-import { DetailsPane } from './components/DetailsPane'
 import { Icon, type IconName } from './components/Icon'
 import {
   buildUnifiedRows,
@@ -142,6 +139,26 @@ const AddDialog = lazy(() =>
 const ScanSheet = lazy(() =>
   import('./components/ScanSheet').then((module) => ({
     default: module.ScanSheet
+  }))
+)
+const ConfirmDialog = lazy(() =>
+  import('./components/ConfirmDialog').then((module) => ({
+    default: module.ConfirmDialog
+  }))
+)
+const ShortcutsDialog = lazy(() =>
+  import('./components/ShortcutsDialog').then((module) => ({
+    default: module.ShortcutsDialog
+  }))
+)
+const ContextMenu = lazy(() =>
+  import('./components/ContextMenu').then((module) => ({
+    default: module.ContextMenu
+  }))
+)
+const DetailsPane = lazy(() =>
+  import('./components/DetailsPane').then((module) => ({
+    default: module.DetailsPane
   }))
 )
 
@@ -1587,15 +1604,17 @@ export default function App(): JSX.Element {
             />
 
             {showDetails && singleSelected !== null ? (
-              <DetailsPane
-                row={detailsPaneRow ?? singleSelected}
-                onClose={() => setDetailsClosedFor(singleSelected.key)}
-                onOpen={openRow}
-                onShowInFolder={showRowInFolder}
-                onCopyLink={(copyRow) => {
-                  if (copyRow.url !== null) void copyText(copyRow.url)
-                }}
-              />
+              <Suspense fallback={null}>
+                <DetailsPane
+                  row={detailsPaneRow ?? singleSelected}
+                  onClose={() => setDetailsClosedFor(singleSelected.key)}
+                  onOpen={openRow}
+                  onShowInFolder={showRowInFolder}
+                  onCopyLink={(copyRow) => {
+                    if (copyRow.url !== null) void copyText(copyRow.url)
+                  }}
+                />
+              </Suspense>
             ) : null}
 
             <footer className="flex shrink-0 items-center gap-4 border-t border-white/[0.07] px-4 py-1.5 text-[12px] text-zinc-500">
@@ -1691,21 +1710,27 @@ export default function App(): JSX.Element {
       ) : null}
 
       {menu ? (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          actions={menuActions}
-          onSelect={handleContextAction}
-          onClose={() => setMenu(null)}
-        />
+        <Suspense fallback={null}>
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            actions={menuActions}
+            onSelect={handleContextAction}
+            onClose={() => setMenu(null)}
+          />
+        </Suspense>
       ) : null}
 
       {confirm ? (
-        <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+        <Suspense fallback={null}>
+          <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+        </Suspense>
       ) : null}
 
       {shortcutsOpen ? (
-        <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        <Suspense fallback={null}>
+          <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        </Suspense>
       ) : null}
 
       {dragActive ? (

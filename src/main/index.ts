@@ -63,6 +63,7 @@ import {
   type TaskbarProgressController
 } from './taskbar/progress'
 import { createMainWindow } from './window'
+import { startupNow, traceStartup } from './startupTrace'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
 import {
   attachSmokeDiagnostics,
@@ -164,6 +165,8 @@ if (smokeConfig.enabled) {
     )
   }
 }
+
+traceStartup('main bundle evaluated; smoke configuration resolved')
 
 /**
  * Paths for zero-config native messaging registration. Evaluated only after
@@ -322,6 +325,33 @@ function hideMainWindow(): void {
   refreshTray()
 }
 
+/**
+ * Run startup work that is not needed for the first frame only after the
+ * renderer has produced its first paint. `ready-to-show` is Electron's
+ * first-frame signal; the bounded fallback keeps the work from being skipped
+ * entirely when the window never shows (for example, a failed renderer load).
+ * The task runs exactly once and never blocks the caller.
+ */
+function scheduleAfterFirstPaint(
+  window: BrowserWindow,
+  task: () => void
+): void {
+  let started = false
+  const run = (): void => {
+    if (started) return
+    started = true
+    const handle = setImmediate(() => task())
+    handle.unref?.()
+  }
+  if (window.isDestroyed()) {
+    run()
+    return
+  }
+  window.once('ready-to-show', run)
+  const fallback = setTimeout(run, 3_000)
+  fallback.unref?.()
+}
+
 if (unregisterRequested) {
   // Installer cleanup mode. This runs before any single-instance lock, window,
   // tray or bridge so it can never be swallowed by an already-running app.
@@ -350,6 +380,7 @@ if (unregisterRequested) {
     }
 
     app.whenReady().then(async () => {
+      traceStartup('app ready')
       if (smoke === null) app.setAppUserModelId('com.dondownload.app')
       const downloadDir =
         smoke !== null
@@ -361,6 +392,7 @@ if (unregisterRequested) {
     // History uses the SQLite runtime bundled with Electron's Node (node:sqlite),
     // in a dedicated file under Electron's userData directory.
     let database: ReturnType<typeof openDownloadDatabase> | null = null
+    const databaseStartedAt = startupNow()
     try {
       database = openDownloadDatabase(
         resolveDownloadDatabasePath(app.getPath('userData'))
@@ -371,6 +403,10 @@ if (unregisterRequested) {
       const detail = error instanceof Error ? error.message : 'unknown error'
       console.error(`Download history is unavailable: ${detail}`)
     }
+    traceStartup(
+      'history database opened and migrated',
+      startupNow() - databaseStartedAt
+    )
 
     // Runtime download settings are loaded once before aria2 starts. The
     // service applies the persisted limits after aria2 answers but before it
@@ -735,30 +771,111 @@ if (unregisterRequested) {
       ...(manualMatchService === null ? {} : { manualMatch: manualMatchService }),
       getWindow: () => mainWindow
     })
+    traceStartup('IPC registered; managers ready')
 
-    // Probe external media tools without delaying the first window. The media
-    // job manager publishes the verified state when the probe settles. Smoke
-    // verification awaits the same production probe below.
     const interactiveSmoke =
       smoke !== null && process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1'
-    const initialMediaProbe =
-      smoke === null || interactiveSmoke
-        ? mediaJobs.refreshToolState()
-        : null
-    if (initialMediaProbe !== null) void initialMediaProbe
+    const interactiveBridge =
+      interactiveSmoke && process.env.DONDOWNLOAD_INTERACTIVE_BRIDGE === '1'
 
-    // The browser bridge is intentionally started without touching the
-    // window. It keeps working while the app lives only in the tray and only
-    // forwards validated URLs to the same DownloadManager/aria2 instance.
+    // The login item passes --hidden so signing in does not focus the app; the
+    // tray remains available and a second launch focuses the same window.
+    const startHidden =
+      process.argv.includes(START_HIDDEN_ARG) && smoke === null
+
+    // Create (and start loading) the window before the tray, aria2, the browser
+    // bridge, tool probes and update checks. The renderer already renders a
+    // "starting" engine state from the first snapshot, so the first paint no
+    // longer waits for the download engine or browser integration to be ready.
+    const window = openMainWindow(smoke === null && !startHidden, interactiveSmoke)
+    mainWindow = window
+    applyInterfaceZoom(
+      desktopSettingsManager.getSettings().interfaceSizePercent
+    )
+
+    // Create the tray immediately after the window; this still happens long
+    // before the first frame, so closing the window always has a safe target.
+    // If tray creation fails, the policy falls back to close-and-quit.
+    // Smoke verification never creates a tray, so no desktop UI surface exists.
+    if (smoke === null) {
+      appTray = createAppTray({
+        showWindow: showMainWindow,
+        hideWindow: hideMainWindow,
+        quit: () => {
+          quitRequested = true
+          app.quit()
+        },
+        isWindowVisible: isMainWindowVisible,
+        getSpeedLimitBps: () =>
+          settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
+        setSpeedLimitBps: (bps) => {
+          void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
+            const detail =
+              error instanceof Error ? error.message : 'unknown error'
+            console.error(`Speed limit could not be changed: ${detail}`)
+          })
+        }
+      })
+      if (startHidden && appTray === null) {
+        // Hidden-start was requested but the tray is unavailable; showing the
+        // window is the only way to keep the app reachable.
+        window.once('ready-to-show', () => window.show())
+      }
+    }
+
+    // Diagnostics exist only in smoke mode. They observe the real hidden
+    // window before startup work continues, so early renderer failures are
+    // retained. Normal desktop startup attaches nothing.
+    const smokeDiagnostics =
+      smoke === null ? null : new SmokeDiagnosticsCollector()
+    const disposeSmokeDiagnostics =
+      smokeDiagnostics === null
+        ? null
+        : attachSmokeDiagnostics(window.webContents, smokeDiagnostics)
+
+    aria2.onStateChange = () => {
+      manager?.publish(true)
+    }
+
+    // Start eagerly so the top bar can explain a missing/broken aria2, then
+    // reconcile persisted records once we know whether aria2 is available.
+    // This runs in parallel with the renderer's first load and paint.
+    const startServices = async (): Promise<void> => {
+      const aria2StartedAt = startupNow()
+      try {
+        await aria2?.start()
+      } catch {
+        manager?.publish(true)
+      }
+      traceStartup('aria2 spawn + ready', startupNow() - aria2StartedAt)
+      const reconcileStartedAt = startupNow()
+      try {
+        await manager?.reconcileDownloads()
+      } catch {
+        // Recovery is best-effort; persisted rows are never deleted here.
+      }
+      traceStartup(
+        'download recovery reconcile',
+        startupNow() - reconcileStartedAt
+      )
+    }
+
+    // The browser bridge keeps working while the app lives only in the tray and
+    // only forwards validated URLs to the same DownloadManager/aria2 instance.
     // Ordinary smoke verification must not open a loopback port or write a
     // state file. An explicitly opted-in interactive smoke session may start
     // the bridge with the same isolated paths so a real browser can exercise
     // native messaging end to end.
-    const interactiveBridge =
-      interactiveSmoke && process.env.DONDOWNLOAD_INTERACTIVE_BRIDGE === '1'
-    if (smoke === null || interactiveBridge) {
+    const startBrowserBridge = async (): Promise<void> => {
+      const bridgeStartedAt = startupNow()
+      // Capture the managers once so the closures below keep their non-null
+      // types even though the module-level bindings are nullable.
+      const bridgeManager = manager
+      const bridgeMediaJobs = mediaJobs
+      if (bridgeManager === null || bridgeMediaJobs === null) return
       const fixtureHost = process.env.DONDOWNLOAD_SMOKE_FIXTURE_HOST?.trim()
-      const fixtureAddress = process.env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS?.trim()
+      const fixtureAddress =
+        process.env.DONDOWNLOAD_SMOKE_FIXTURE_ADDRESS?.trim()
       const fixturePublicAddress =
         process.env.DONDOWNLOAD_SMOKE_FIXTURE_PUBLIC_ADDRESS?.trim()
       const fixtureTargets =
@@ -792,9 +909,9 @@ if (unregisterRequested) {
         )
       }
       try {
-        nativeBridge = await startNativeBridge({
-          manager,
-          mediaBridge: mediaJobs,
+        const bridge = await startNativeBridge({
+          manager: bridgeManager,
+          mediaBridge: bridgeMediaJobs,
           userDataPath: app.getPath('userData'),
           logger: (message) => console.error(message),
           ...(scanner === null ? {} : { scanner }),
@@ -805,7 +922,7 @@ if (unregisterRequested) {
           // extension took over. Only the mapped status, two byte counts and a
           // display-only file name leave the desktop. One record lookup keeps
           // the 2 s poll independent of the download history size.
-          downloadStatus: createHandoffDownloadStatus(manager),
+          downloadStatus: createHandoffDownloadStatus(bridgeManager),
           onShowDownload: (downloadId) => {
             showMainWindow()
             mainWindow?.webContents.send(IPC.revealRow, `download:${downloadId}`)
@@ -814,15 +931,15 @@ if (unregisterRequested) {
             // Signed-in pages are scanned from the browser tab. Bringing the
             // window forward makes the progressive result visible immediately.
             showMainWindow()
-            const window = mainWindow
-            if (!window || window.isDestroyed()) return
+            const requestWindow = mainWindow
+            if (!requestWindow || requestWindow.isDestroyed()) return
             const send = (): void => {
               if (!mainWindow || mainWindow.isDestroyed()) return
               const current = scanner?.getSession(session.sessionId) ?? session
               mainWindow.webContents.send(IPC.scanUpdated, current)
             }
-            if (window.webContents.isLoading()) {
-              window.webContents.once('did-finish-load', () => {
+            if (requestWindow.webContents.isLoading()) {
+              requestWindow.webContents.once('did-finish-load', () => {
                 send()
                 // A freshly created renderer may not have subscribed to
                 // scan:updated at did-finish-load yet. The repeat is harmless
@@ -841,76 +958,22 @@ if (unregisterRequested) {
             ? {}
             : { publicResourcePreflight: fixturePreflight })
         })
+        // A quit may have completed while the bridge was starting; never leave
+        // a listening server or endpoint file behind.
+        if (quitRequested || cleanupStarted) {
+          await bridge.close()
+          return
+        }
+        nativeBridge = bridge
+        traceStartup('native bridge ready', startupNow() - bridgeStartedAt)
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'unknown error'
         console.error(`Browser bridge is unavailable: ${detail}`)
       }
     }
 
-    // Create the tray before the window so a close always has a safe target.
-    // If tray creation fails, the policy falls back to close-and-quit.
-    // Smoke verification never creates a tray, so no desktop UI surface exists.
-    if (smoke === null) {
-      appTray = createAppTray({
-        showWindow: showMainWindow,
-        hideWindow: hideMainWindow,
-        quit: () => {
-          quitRequested = true
-          app.quit()
-        },
-        isWindowVisible: isMainWindowVisible,
-        getSpeedLimitBps: () =>
-          settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
-        setSpeedLimitBps: (bps) => {
-          void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
-            const detail =
-              error instanceof Error ? error.message : 'unknown error'
-            console.error(`Speed limit could not be changed: ${detail}`)
-          })
-        }
-      })
-    }
-
-    // The login item passes --hidden so signing in does not focus the app; the
-    // tray remains available and a second launch focuses the same window.
-    const startHidden =
-      process.argv.includes(START_HIDDEN_ARG) && appTray !== null
-    const window = openMainWindow(smoke === null && !startHidden, interactiveSmoke)
-    mainWindow = window
-    applyInterfaceZoom(
-      desktopSettingsManager.getSettings().interfaceSizePercent
-    )
-
-    // Diagnostics exist only in smoke mode. They observe the real hidden
-    // window before startup work continues, so early renderer failures are
-    // retained. Normal desktop startup attaches nothing.
-    const smokeDiagnostics =
-      smoke === null ? null : new SmokeDiagnosticsCollector()
-    const disposeSmokeDiagnostics =
-      smokeDiagnostics === null
-        ? null
-        : attachSmokeDiagnostics(window.webContents, smokeDiagnostics)
-
-    aria2.onStateChange = () => {
-      manager?.publish(true)
-    }
-
-    // Start eagerly so the top bar can explain a missing/broken aria2, then
-    // reconcile persisted records once we know whether aria2 is available.
-    const startServices = async (): Promise<void> => {
-      try {
-        await aria2?.start()
-      } catch {
-        manager?.publish(true)
-      }
-      try {
-        await manager?.reconcileDownloads()
-      } catch {
-        // Recovery is best-effort; persisted rows are never deleted here.
-      }
-    }
-
     if (smoke !== null) {
+      if (interactiveBridge) await startBrowserBridge()
       await startServices()
       // An opt-in, isolated interactive smoke session keeps the actual
       // production renderer/preload/IPC alive for CDP-driven verification.
@@ -998,12 +1061,43 @@ if (unregisterRequested) {
       return
     }
 
+    // aria2 starts in parallel with the renderer load; never await it here.
     void startServices()
 
-    // At most one background check per 24 hours. Neither check delays the
-    // window; both are disabled in smoke mode by their updater options.
-    void mediaUpdater.autoCheck()
-    void appUpdate.autoCheck()
+    // Browser integration is not needed for the first frame. Starting it
+    // without awaiting keeps the loopback listener and endpoint-file write off
+    // the critical path; it still overlaps the renderer load, so extension
+    // hand-offs arriving a few milliseconds later succeed.
+    void startBrowserBridge()
+
+    // Everything below is useful but not needed for the first frame. Run it
+    // after the window has painted (with a bounded fallback if it never shows)
+    // so yt-dlp/ffmpeg probes, native-host registry checks and update checks
+    // never compete with the first paint. Results and side effects are exactly
+    // the same as when they ran during startup.
+    scheduleAfterFirstPaint(window, () => {
+      // A quit that began while the window was loading owns the shutdown; do
+      // not start background probes or registry work behind it.
+      if (quitRequested || cleanupStarted) return
+      traceStartup('deferred startup work started')
+      if (nativeHostRegistrar !== null) {
+        const registrationStartedAt = startupNow()
+        void nativeHostRegistrar.repair().finally(() => {
+          traceStartup(
+            'native host registration checked',
+            startupNow() - registrationStartedAt
+          )
+        })
+      }
+      const probeStartedAt = startupNow()
+      void mediaJobs?.refreshToolState().finally(() => {
+        traceStartup('media tool probe', startupNow() - probeStartedAt)
+      })
+      // At most one background check per 24 hours. Both are disabled in smoke
+      // mode by their updater options, and neither can delay the window now.
+      void mediaUpdater?.autoCheck()
+      void appUpdate?.autoCheck()
+    })
 
     app.on('activate', () => {
       // macOS Dock activation and Windows taskbar relaunches restore the same
