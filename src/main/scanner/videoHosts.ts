@@ -179,6 +179,23 @@ function isHanime1Video(parsed: URL): boolean {
   return /^\/watch$/i.test(pathOf(parsed)) && hasQueryValue(parsed, 'v')
 }
 
+/** `/<user>/status/<id>`, `/i/web/status/<id>`. */
+function isTwitterStatus(parsed: URL): boolean {
+  const segments = segmentsOf(parsed)
+  const first = segments[0]?.toLowerCase()
+  if (first === undefined) return false
+  if (first === 'i') {
+    return (
+      segments[1]?.toLowerCase() === 'web' &&
+      segments[2]?.toLowerCase() === 'status' &&
+      NUMERIC_ID.test(segments[3] ?? '')
+    )
+  }
+  return (
+    segments[1]?.toLowerCase() === 'status' && NUMERIC_ID.test(segments[2] ?? '')
+  )
+}
+
 /**
  * Hosts whose site mixes single videos with listings and hubs. A URL on one of
  * these domains is a video only when its rule matches.
@@ -196,7 +213,9 @@ const SINGLE_VIDEO_RULES: ReadonlyArray<
   ['spankbang.com', isSpankbangVideo],
   ['redtube.com', isRedtubeVideo],
   ['youporn.com', isYoupornVideo],
-  ['hanime1.me', isHanime1Video]
+  ['hanime1.me', isHanime1Video],
+  ['x.com', isTwitterStatus],
+  ['twitter.com', isTwitterStatus]
 ]
 
 function parseHttpUrl(raw: string): URL | null {
