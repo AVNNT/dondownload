@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DownloadItem } from '../src/shared/types'
 import { downloadToRow } from '../src/renderer/src/lib/unified'
-import { progressLine } from '../src/renderer/src/components/DetailsPane'
+import { progressLine } from '../src/renderer/src/lib/rowProgress'
 
 const NOW = Date.UTC(2026, 10, 5, 12, 0, 0)
 

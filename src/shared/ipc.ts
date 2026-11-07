@@ -26,6 +26,12 @@ export const IPC = {
   resumeMedia: 'media:resume',
   retryMedia: 'media:retry',
   deleteDownloadFile: 'download:delete-file',
+  // File checksum verification (additive). The renderer sends only the opaque
+  // download id plus an expected hash; main resolves and validates the path.
+  verifyChecksum: 'download:verify-checksum',
+  computeChecksum: 'download:compute-checksum',
+  cancelChecksum: 'download:cancel-checksum',
+  checksumProgress: 'download:checksum-progress',
   deleteMediaFile: 'media:delete-file',
   removeMedia: 'media:remove',
   removeMediaJobs: 'media:remove-many',

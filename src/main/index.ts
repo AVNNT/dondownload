@@ -15,6 +15,7 @@ import {
 import type { AppSnapshot } from '@shared/types'
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
+import { ChecksumService } from './checksum/service'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
@@ -30,6 +31,7 @@ import { registerIpc } from './ipc'
 import { SettingsManager } from './settings/manager'
 import { DesktopSettingsManager } from './settings/desktopManager'
 import { ClipboardWatcher } from './clipboard/watcher'
+import { AppError } from './errors'
 import { CompletionNotificationService } from './notifications/service'
 import { loginItemSettings, shouldManageLoginItem } from './desktop/loginItem'
 import {
@@ -457,6 +459,29 @@ if (unregisterRequested) {
       }
     )
 
+    // Streaming hash jobs read only the download's own recorded file. Progress
+    // is pushed about four times a second; the finished result is persisted by
+    // the download manager and published through the normal snapshot.
+    const checksums = new ChecksumService({
+      resolveTarget: (downloadId) => {
+        if (manager === null) {
+          throw new AppError(
+            'CHECKSUM_UNAVAILABLE',
+            'Checksum verification is not available.'
+          )
+        }
+        return manager.checksumTarget(downloadId)
+      },
+      saveResult: (downloadId, result) => {
+        manager?.saveChecksumResult(downloadId, result)
+      },
+      onProgress: (progress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.checksumProgress, progress)
+        }
+      }
+    })
+
     const mediaDir = path.join(downloadDir, 'Media')
     const managedToolsDir = path.join(
       app.getPath('userData'),
@@ -676,6 +701,7 @@ if (unregisterRequested) {
       aria2,
       mediaJobs,
       batches,
+      checksums,
       settings,
       desktopSettings: desktopSettingsManager,
       clipboardWriter: {

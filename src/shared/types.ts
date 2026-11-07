@@ -15,6 +15,10 @@ import type {
   MediaQueueInput,
   MediaSnapshot
 } from './media'
+import type {
+  ChecksumProgress,
+  ChecksumResult
+} from './checksum'
 import type { DownloadControls, DownloadSettings } from './settings'
 import type { DesktopSettings } from './desktopSettings'
 import type {
@@ -126,6 +130,11 @@ export interface DownloadItem {
   connections?: number | null
   /** Null when the job is not waiting on schedule/allowed-hours policy. */
   blockReason?: DownloadBlockReason | null
+  /**
+   * Last checksum verification/compute result for this download's recorded
+   * file. Null/absent means no checksum has been run yet.
+   */
+  checksum?: ChecksumResult | null
 }
 
 /** A progressive media file observed during real page playback. */
@@ -269,6 +278,24 @@ export interface DonDownloadApi {
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
   /** Bounded anonymous HEAD probe: total bytes of a direct file URL, or null. */
   probeUrlSize: (url: string) => Promise<ApiResult<UrlSizeProbe>>
+  /**
+   * Verify a completed download's own recorded file against an expected hash.
+   * The algorithm is detected from the trimmed hex length; no path is sent.
+   */
+  verifyChecksum: (
+    downloadId: string,
+    expectedHash: string
+  ) => Promise<ApiResult<ChecksumResult>>
+  /** Compute SHA-256 for a completed download's own recorded file. */
+  computeChecksum: (
+    downloadId: string
+  ) => Promise<ApiResult<ChecksumResult>>
+  /** Cancel the in-flight hash job for one download, if any. */
+  cancelChecksum: (downloadId: string) => Promise<ApiResult<null>>
+  /** Throttled progress for a running hash job. */
+  onChecksumProgress: (
+    listener: (progress: ChecksumProgress) => void
+  ) => () => void
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
 
   // Media (Milestone 3A). These are additive and do not change the download
