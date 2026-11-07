@@ -926,6 +926,8 @@
 
 
   function runMutationPass() {
+    if (state.disabled) return
+    state.mutationPasses = (state.mutationPasses || 0) + 1
     ns.maybeResetCaptureForNavigation()
     ns.pruneDisconnectedPlayers()
     ns.installSourceObservers()
@@ -960,6 +962,16 @@
     }
     state.mutationTimer = window.setTimeout(function () {
       state.mutationTimer = 0
+      // Run the full scan when the page is idle. The timeout keeps a busy page
+      // from postponing it forever, and browsers without the API run it now.
+      if (typeof window.requestIdleCallback === 'function') {
+        try {
+          window.requestIdleCallback(runMutationPass, { timeout: 250 })
+          return
+        } catch {
+          // Fall through to the direct run.
+        }
+      }
       runMutationPass()
     }, MUTATION_DEBOUNCE_MS)
   }
@@ -967,12 +979,17 @@
 
   function observeMutations() {
     if (typeof MutationObserver !== 'function' || !document.documentElement) return
-    state.mutationObserver = new MutationObserver(function () {
+    state.mutationObserver = new MutationObserver(function (records) {
+      // Most batches on a busy page only touch unrelated nodes. Do not even
+      // schedule a pass for those; the full scan only follows a player change.
+      if (!core.mutationRecordsAreRelevant(records)) return
       scheduleMutationPass()
     })
     state.mutationObserver.observe(document.documentElement, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: false,
+      characterData: false
     })
   }
 
@@ -1148,10 +1165,28 @@
     }
     // popstate/hashchange already cover back/forward and hash moves. The
     // history hook catches pushState/replaceState calls that reach this
-    // isolated world, and the slow fallback interval below still catches the
-    // page's own SPA moves, which a content script cannot observe directly.
+    // isolated world. The Navigation API reports the page's own SPA moves too,
+    // so modern Chromium builds need no polling interval at all. The slow
+    // fallback exists only for a browser without that API.
     hookHistoryNavigation()
-    if (typeof window.setInterval === 'function') {
+    var navigation = window.navigation
+    if (navigation && typeof navigation.addEventListener === 'function') {
+      var onNavigationChange = function () {
+        handleSpaNavigation()
+      }
+      try {
+        navigation.addEventListener('currententrychange', onNavigationChange)
+        state.cleanup.push(function () {
+          try {
+            navigation.removeEventListener('currententrychange', onNavigationChange)
+          } catch {
+            // Best effort.
+          }
+        })
+      } catch {
+        // Fall through to the bounded fallback below.
+      }
+    } else if (typeof window.setInterval === 'function') {
       state.navigationTimer = window.setInterval(function () {
         ns.maybeResetCaptureForNavigation()
       }, NAVIGATION_FALLBACK_MS)

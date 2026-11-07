@@ -20,6 +20,7 @@ interface CoreApi {
   isStreamingUnsupported: (unsupported: unknown) => boolean
   isOptionQueued: (queued: unknown, optionId: unknown) => boolean
   markOptionQueued: (queued: unknown, optionId: unknown) => string[]
+  mutationRecordsAreRelevant: (records?: unknown[]) => boolean
 }
 
 const coreSource = readFileSync(
@@ -166,6 +167,42 @@ describe('streaming detection and queue feedback helpers', () => {
     expect(core.isOptionQueued(queued, 'option_1')).toBe(true)
     expect(core.markOptionQueued(queued, 'option_1')).toEqual(['option_1'])
     expect(core.isOptionQueued(queued, 'option_2')).toBe(false)
+  })
+})
+
+describe('mutation batch filtering', () => {
+  function record(added: unknown[] = [], removed: unknown[] = [], type = 'childList') {
+    return { type, addedNodes: added, removedNodes: removed }
+  }
+  const span = { tagName: 'SPAN' }
+  const video = { tagName: 'VIDEO' }
+  const iframe = { tagName: 'IFRAME' }
+  const source = { tagName: 'SOURCE' }
+  const playerHost = {
+    tagName: 'DIV',
+    querySelector: (selector: string) =>
+      selector.includes('video') ? video : null
+  }
+
+  it('ignores batches that cannot change the overlay', () => {
+    expect(core.mutationRecordsAreRelevant([record([span], [])])).toBe(false)
+    expect(
+      core.mutationRecordsAreRelevant([
+        record([span], [], 'characterData')
+      ])
+    ).toBe(false)
+    expect(core.mutationRecordsAreRelevant([record([], [])])).toBe(false)
+  })
+
+  it('keeps a pass for a player appearing or leaving', () => {
+    expect(core.mutationRecordsAreRelevant([record([video], [])])).toBe(true)
+    expect(core.mutationRecordsAreRelevant([record([iframe], [])])).toBe(true)
+    expect(core.mutationRecordsAreRelevant([record([source], [])])).toBe(true)
+    expect(core.mutationRecordsAreRelevant([record([], [video])])).toBe(true)
+    expect(core.mutationRecordsAreRelevant([record([playerHost], [])])).toBe(true)
+    // Older test doubles omit records: run the pass rather than missing one.
+    expect(core.mutationRecordsAreRelevant(undefined)).toBe(true)
+    expect(core.mutationRecordsAreRelevant([])).toBe(true)
   })
 })
 

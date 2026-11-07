@@ -323,7 +323,7 @@ describe('desktop settings persistence and paused media migration', () => {
     const database = openDownloadDatabase(path.join(dir, 'downloads.sqlite3'))
     try {
       expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-      expect(SCHEMA_VERSION).toBe(16)
+      expect(SCHEMA_VERSION).toBe(18)
       expect(database.loadDesktopSettings()).toEqual(defaultDesktopSettings())
 
       const next = {

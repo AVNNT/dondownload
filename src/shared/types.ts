@@ -361,6 +361,10 @@ export interface DonDownloadApi {
   updateSettings: (
     settings: DownloadSettings
   ) => Promise<ApiResult<DownloadSettings>>
+  /** Any validated settings update, including a tray/toolbar quick change. */
+  onSettingsChanged: (
+    listener: (settings: DownloadSettings) => void
+  ) => () => void
 
   // Desktop-only preferences (notifications, clipboard, startup, zoom).
   getDesktopSettings: () => Promise<ApiResult<DesktopSettings>>

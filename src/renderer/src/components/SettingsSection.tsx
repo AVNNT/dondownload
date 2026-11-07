@@ -276,8 +276,32 @@ export function SettingsSection(): JSX.Element {
         setLoadError(result.error.message)
       }
     })
+    // The tray and toolbar share the same settings update path. Reflect a
+    // committed external change here too, unless the user has their own
+    // unsaved speed edit in the field.
+    const unsubscribe = window.donDownload.onSettingsChanged((next) => {
+      if (cancelled) return
+      applyRendererTheme(next.theme)
+      const previous = savedRef.current
+      savedRef.current = next
+      setSettings(next)
+      if (
+        draftRef.current !== null &&
+        (previous === null ||
+          draftRef.current.globalSpeedLimitBps ===
+            previous.globalSpeedLimitBps)
+      ) {
+        draftRef.current = {
+          ...draftRef.current,
+          globalSpeedLimitBps: next.globalSpeedLimitBps
+        }
+        setDraft(draftRef.current)
+        setSpeedInput(speedInputValue(next.globalSpeedLimitBps))
+      }
+    })
     return () => {
       cancelled = true
+      unsubscribe()
     }
   }, [])
 
@@ -782,6 +806,19 @@ export function SettingsSection(): JSX.Element {
                 max={MAX_PER_HOST_CONNECTIONS}
                 onChange={(value) =>
                   commitDownloads({ perHostConnections: value })
+                }
+              />
+            </SettingRow>
+
+            <SettingRow
+              title="Sort downloads into folders by type"
+              description="New downloads into the default folder are saved in Video, Audio, Images, Archives, Documents or Programs subfolders. Downloads with a folder you pick are unaffected."
+            >
+              <Switch
+                checked={draft.sortDownloadsByType}
+                label="Sort downloads into folders by type"
+                onChange={(checked) =>
+                  commitDownloads({ sortDownloadsByType: checked })
                 }
               />
             </SettingRow>

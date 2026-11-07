@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(16)
+    expect(SCHEMA_VERSION).toBe(18)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -542,7 +542,8 @@ describe('download settings persistence', () => {
       allowed_hours_enabled: 0,
       allowed_hours_start: '00:00',
       allowed_hours_end: '00:00',
-      theme: 'oled'
+      theme: 'oled',
+      sort_downloads_by_type: 0
     })
   })
 
@@ -558,7 +559,8 @@ describe('download settings persistence', () => {
         start: '22:00',
         end: '06:00'
       },
-      theme: 'light'
+      theme: 'light',
+      sortDownloadsByType: true
     }
     first.saveSettings(custom)
     expect(first.loadSettings()).toEqual(custom)
@@ -579,7 +581,8 @@ describe('download settings persistence', () => {
       perHostConnections: 1,
       globalSpeedLimitBps: MAX_SPEED_LIMIT_BPS,
       allowedHours: { enabled: true, start: '00:00', end: '00:00' },
-      theme: 'dark'
+      theme: 'dark',
+      sortDownloadsByType: true
     })
     close(second)
 
@@ -652,14 +655,16 @@ describe('download settings persistence', () => {
       "UPDATE download_settings SET allowed_hours_start = '9:05'",
       "UPDATE download_settings SET allowed_hours_end = '23:60'",
       "UPDATE download_settings SET theme = 'system'",
-      'UPDATE download_settings SET theme = NULL'
+      'UPDATE download_settings SET theme = NULL',
+      'UPDATE download_settings SET sort_downloads_by_type = 2',
+      'UPDATE download_settings SET sort_downloads_by_type = NULL'
     ]
     for (const sql of invalidUpdates) {
       expect(() => raw.exec(sql)).toThrow()
     }
 
     raw.exec(
-      "UPDATE download_settings SET max_concurrent_downloads = 1, per_host_connections = 16, global_speed_limit_bps = 1073741824, allowed_hours_enabled = 1, allowed_hours_start = '23:59', allowed_hours_end = '23:59', theme = 'light'"
+      "UPDATE download_settings SET max_concurrent_downloads = 1, per_host_connections = 16, global_speed_limit_bps = 1073741824, allowed_hours_enabled = 1, allowed_hours_start = '23:59', allowed_hours_end = '23:59', theme = 'light', sort_downloads_by_type = 1"
     )
     expect(rowsOf(raw, 'download_settings')[0]).toMatchObject({
       max_concurrent_downloads: 1,
@@ -668,7 +673,8 @@ describe('download settings persistence', () => {
       allowed_hours_enabled: 1,
       allowed_hours_start: '23:59',
       allowed_hours_end: '23:59',
-      theme: 'light'
+      theme: 'light',
+      sort_downloads_by_type: 1
     })
     raw.close()
   })
@@ -691,7 +697,8 @@ describe('download settings persistence', () => {
       'allowed_hours_start',
       'allowed_hours_end',
       'updated_at',
-      'theme'
+      'theme',
+      'sort_downloads_by_type'
     ])
     expect(columns.filter((name) => /url|path|token|secret|cookie|header/i.test(name))).toEqual(
       []
@@ -925,18 +932,26 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
-    expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
+    // v17 adds one composite history index per list table; the indexes that
+    // already existed before the migration are still present.
+    expect(indexNames(verify, 'downloads')).toEqual(
+      [...downloadIndexes, 'downloads_created_at_updated_at_idx'].sort()
+    )
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(fixture.downloads, DOWNLOAD_COLUMNS)
     )
     if (version >= 2) {
       expect(rowsOf(verify, 'media_jobs')).toMatchObject(fixture.media)
-      expect(indexNames(verify, 'media_jobs')).toEqual(mediaIndexes)
+      expect(indexNames(verify, 'media_jobs')).toEqual(
+        [...mediaIndexes, 'media_jobs_created_at_updated_at_idx'].sort()
+      )
     }
     if (version >= 3) {
       expect(rowsOf(verify, 'batches')).toMatchObject(fixture.batches)
       expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
-      expect(indexNames(verify, 'batches')).toEqual(batchParentIndexes)
+      expect(indexNames(verify, 'batches')).toEqual(
+        [...batchParentIndexes, 'batches_created_at_updated_at_idx'].sort()
+      )
       expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
       const foreignKeys = verify
         .prepare("PRAGMA foreign_key_list('batch_items')")
@@ -1001,7 +1016,8 @@ describe('v5 to v8 migration', () => {
       perHostConnections: 9,
       globalSpeedLimitBps: 2048,
       allowedHours: { enabled: true, start: '21:15', end: '05:45' },
-      theme: 'oled'
+      theme: 'oled',
+      sortDownloadsByType: false
     })
     const stored = database.loadAll()
     const original = stored.find(
@@ -1055,6 +1071,7 @@ describe('v7 to v8 theme migration', () => {
     const legacy = new DatabaseSync(filePath)
     legacy.exec(`
       ALTER TABLE download_settings DROP COLUMN theme;
+      ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       ALTER TABLE downloads DROP COLUMN needs_login;
       ALTER TABLE downloads DROP COLUMN error_detail;
       ALTER TABLE downloads DROP COLUMN checksum_algorithm;
@@ -1080,7 +1097,8 @@ describe('v7 to v8 theme migration', () => {
       perHostConnections: 7,
       globalSpeedLimitBps: 4096,
       allowedHours: { enabled: true, start: '20:00', end: '04:30' },
-      theme: 'oled'
+      theme: 'oled',
+      sortDownloadsByType: false
     })
     close(migrated)
 
@@ -1095,6 +1113,7 @@ describe('v7 to v8 theme migration', () => {
       allowed_hours_start: '20:00',
       allowed_hours_end: '04:30',
       theme: 'oled',
+      sort_downloads_by_type: 0,
       updated_at: 123
     })
     verify.close()
@@ -1117,6 +1136,7 @@ describe('v13 to v14 per-host connection migration', () => {
       ALTER TABLE downloads DROP COLUMN checksum_computed;
       ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       UPDATE download_settings SET per_host_connections = ${perHostConnections};
+      ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       PRAGMA user_version = 13;
     `)
     legacy.close()
@@ -1229,6 +1249,7 @@ describe('v14 to v15 MEGA folder migration', () => {
       ALTER TABLE downloads DROP COLUMN checksum_ok;
       ALTER TABLE downloads DROP COLUMN checksum_computed;
       ALTER TABLE downloads DROP COLUMN checksum_checked_at;
+      ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       PRAGMA user_version = 14;
     `)
     legacy.close()
@@ -1273,6 +1294,84 @@ describe('v14 to v15 MEGA folder migration', () => {
     )
     expect(tableExists(verify, 'batch_items_v15_backup')).toBe(false)
     verify.close()
+  })
+})
+
+describe('v15 to v16 sort-by-type migration', () => {
+  it('adds the setting defaulted off and preserves stored values', async () => {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    seed.saveSettings({
+      ...defaultDownloadSettings(),
+      maxConcurrentDownloads: 11,
+      perHostConnections: 5,
+      globalSpeedLimitBps: 4096,
+      allowedHours: { enabled: true, start: '21:15', end: '05:45' },
+      theme: 'dark',
+      sortDownloadsByType: true
+    })
+    close(seed)
+
+    // Simulate a database created before type sorting existed.
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      ALTER TABLE downloads DROP COLUMN checksum_algorithm;
+      ALTER TABLE downloads DROP COLUMN checksum_ok;
+      ALTER TABLE downloads DROP COLUMN checksum_computed;
+      ALTER TABLE downloads DROP COLUMN checksum_checked_at;
+      ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
+      PRAGMA user_version = 15;
+    `)
+    legacy.close()
+
+    const migrated = open(filePath)
+    expect(migrated.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(migrated.loadSettings()).toEqual({
+      maxConcurrentDownloads: 11,
+      perHostConnections: 5,
+      globalSpeedLimitBps: 4096,
+      allowedHours: { enabled: true, start: '21:15', end: '05:45' },
+      theme: 'dark',
+      sortDownloadsByType: false
+    })
+    close(migrated)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(columnNames(verify, 'download_settings')).toContain(
+      'sort_downloads_by_type'
+    )
+    expect(rowsOf(verify, 'download_settings')[0]).toMatchObject({
+      max_concurrent_downloads: 11,
+      per_host_connections: 5,
+      global_speed_limit_bps: 4096,
+      allowed_hours_enabled: 1,
+      allowed_hours_start: '21:15',
+      allowed_hours_end: '05:45',
+      theme: 'dark',
+      sort_downloads_by_type: 0
+    })
+    verify.close()
+  })
+
+  it('round-trips the enabled flag after the migration', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+    first.saveSettings({
+      ...defaultDownloadSettings(),
+      sortDownloadsByType: true
+    })
+    close(first)
+
+    const second = open(filePath)
+    expect(second.loadSettings().sortDownloadsByType).toBe(true)
+    close(second)
+
+    const raw = new DatabaseSync(filePath)
+    expect(rowsOf(raw, 'download_settings')[0]).toMatchObject({
+      sort_downloads_by_type: 1
+    })
+    raw.close()
   })
 })
 

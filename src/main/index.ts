@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
 import { mapDownloadStatus } from '@shared/downloadStatus'
 import { isAllowedAt } from '@shared/schedule'
+import { typeFolderDirectory } from '@shared/typeFolders'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import {
   START_HIDDEN_ARG,
@@ -378,9 +379,15 @@ if (unregisterRequested) {
       store: database,
       aria2,
       // Allowed-hours edits take effect on the existing policy timer; active
-      // aria2 transfers are never paused by a settings change.
-      onChanged: () => {
+      // aria2 transfers are never paused by a settings change. The tray menu
+      // and every renderer surface also refresh from the same committed
+      // snapshot, so a tray/toolbar preset never leaves another view stale.
+      onChanged: (next) => {
         void manager?.refreshPolicy()
+        refreshTray()
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.settingsChanged, next)
+        }
       }
     })
     settingsManager = settings
@@ -533,6 +540,13 @@ if (unregisterRequested) {
     mediaJobs = new MediaJobsManager({
       engine: mediaEngine,
       mediaDir,
+      // With sorting enabled, media output joins the same Video/Audio folders
+      // as ordinary downloads. Off keeps the existing Media folder.
+      outputDirFor: (kind) =>
+        settings.getSettings().sortDownloadsByType
+          ? typeFolderDirectory(downloadDir, kind === 'audio' ? 'Audio' : 'Video')
+          : mediaDir,
+      outputRootDir: downloadDir,
       database,
       startAllowed: (now) => isAllowedAt(settings.getSettings(), now),
       onExtractorFailure: () => mediaUpdater?.notifyExtractorFailure() ?? Promise.resolve(false),
@@ -854,7 +868,16 @@ if (unregisterRequested) {
           quitRequested = true
           app.quit()
         },
-        isWindowVisible: isMainWindowVisible
+        isWindowVisible: isMainWindowVisible,
+        getSpeedLimitBps: () =>
+          settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
+        setSpeedLimitBps: (bps) => {
+          void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
+            const detail =
+              error instanceof Error ? error.message : 'unknown error'
+            console.error(`Speed limit could not be changed: ${detail}`)
+          })
+        }
       })
     }
 

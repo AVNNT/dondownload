@@ -19,6 +19,7 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { evaluateStart, isAllowedAt } from '@shared/schedule'
+import { resolveDownloadDirectory } from '@shared/typeFolders'
 import {
   guessFilenameFromUrl,
   normalizeHttpUrl,
@@ -31,6 +32,12 @@ import {
 import type { Aria2Client } from '../aria2/client'
 import type { ChecksumTarget } from '../checksum/service'
 import type { ChecksumResult } from '@shared/checksum'
+import {
+  buildPollPlan,
+  buildTellStatusCalls,
+  readPollBatch,
+  type Aria2PollOutcome
+} from '../aria2/poll'
 import {
   aria2FailureDetail,
   describeAria2Failure,
@@ -65,8 +72,8 @@ import {
   planHostBackoff,
   refusalKind
 } from './perHostConnections'
+import { nextPollDelay } from './pollInterval'
 
-const POLL_INTERVAL_MS = 1_000
 /** Progress is flushed at most this often; critical transitions write at once. */
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
 
@@ -254,10 +261,20 @@ export class DownloadManager {
   })
   /** Refused/reset socket failures seen per host, for the storm threshold. */
   private readonly hostStormCounts = new Map<string, number>()
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * Last values written to SQLite per record. A poll tick can dirty a row
+   * without its persisted columns changing; comparing this signature skips
+   * those rows instead of rewriting identical data.
+   */
+  private readonly persistedSignatures = new Map<string, string>()
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
+  /** Delay of the pending poll timer, so a fast wake can shorten a slow one. */
+  private scheduledPollDelay: number | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private polling = false
   private reconciling = false
+  /** Last global active count seen, used only to pick the next poll interval. */
+  private lastGlobalActive = 0
   /**
    * Snapshot revision. Every mutation that changes published data bumps it, so
    * `publish()` never has to serialize the full history to detect a change.
@@ -599,11 +616,14 @@ export class DownloadManager {
     // policy exists in exactly one place.
     const input = parseAddDownloadInput(rawInput)
     const force = input.force === true
-    const outputDirectory =
+    // The default directory is sorted per file type only when the user opts in
+    // and did not pick a custom folder for this download. Custom folders are
+    // always honoured exactly as before.
+    const requestedDirectory =
       directory === undefined ? this.downloadDir : path.resolve(directory)
     if (
       options.allowOutsideRoot !== true &&
-      !this.isInsideDownloadRoot(outputDirectory)
+      !this.isInsideDownloadRoot(requestedDirectory)
     ) {
       throw new AppError(
         'DOWNLOAD_DIR_UNAVAILABLE',
@@ -641,6 +661,24 @@ export class DownloadManager {
       // scheme. This runs before the job is created so an unresolved or unsafe
       // target fails closed with no aria2 job and no partial record.
       const target = await this.resolveDownloadTarget(input)
+
+      const outputDirectory =
+        directory === undefined
+          ? resolveDownloadDirectory(
+              this.downloadDir,
+              input.filename ?? guessFilenameFromUrl(target.url),
+              this.settingsProvider().sortDownloadsByType
+            )
+          : requestedDirectory
+      if (
+        options.allowOutsideRoot !== true &&
+        !this.isInsideDownloadRoot(outputDirectory)
+      ) {
+        throw new AppError(
+          'DOWNLOAD_DIR_UNAVAILABLE',
+          'The download folder is invalid.'
+        )
+      }
 
       const controls = input.controls ?? defaultDownloadControls()
       const now = this.now()
@@ -717,11 +755,9 @@ export class DownloadManager {
 
       if (durable) {
         try {
-          this.database!.saveDurable({
-            record,
-            explicitFilename: this.explicitFilenames.get(id) ?? null,
-            needsLogin: this.needsLoginIds.has(id)
-          })
+          const entry = this.saveEntry(record)
+          this.database!.saveDurable(entry)
+          this.persistedSignatures.set(id, this.signatureOf(entry))
           this.dirtyIds.delete(id)
         } catch {
           throw new AppError(
@@ -775,6 +811,7 @@ export class DownloadManager {
     this.submittingIds.delete(id)
     this.pairingFileIds.delete(id)
     this.dirtyIds.delete(id)
+    this.persistedSignatures.delete(id)
     if (this.database) {
       try {
         this.database.delete(id)
@@ -1222,8 +1259,9 @@ export class DownloadManager {
 
   close(): void {
     if (this.pollTimer !== null) {
-      clearInterval(this.pollTimer)
+      clearTimeout(this.pollTimer)
       this.pollTimer = null
+      this.scheduledPollDelay = null
     }
     for (const id of [...this.autoRetryTimers.keys()]) {
       this.clearAutoRetry(id)
@@ -1508,6 +1546,16 @@ export class DownloadManager {
         })
         this.blockReasons.set(stored.record.id, stored.blockReason)
         if (stored.needsLogin) this.needsLoginIds.add(stored.record.id)
+        // The row already matches the loaded values, so the first flush does
+        // not rewrite it merely because the record exists in memory.
+        this.persistedSignatures.set(
+          stored.record.id,
+          this.signatureOf({
+            record: stored.record,
+            explicitFilename: stored.explicitFilename,
+            needsLogin: stored.needsLogin
+          })
+        )
       }
     } catch (error) {
       this.logPersistenceError('could not be loaded', error)
@@ -2071,14 +2119,60 @@ export class DownloadManager {
     }
   }
 
+  private saveEntry(record: DownloadItem): {
+    record: DownloadItem
+    explicitFilename: string | null
+    needsLogin: boolean
+  } {
+    return {
+      record,
+      explicitFilename: this.explicitFilenames.get(record.id) ?? null,
+      needsLogin: this.needsLoginIds.has(record.id)
+    }
+  }
+
+  /**
+   * Values that actually reach SQLite. `updatedAt` is intentionally excluded:
+   * a tick can touch it without changing persisted content, and rewriting an
+   * identical row only creates WAL churn.
+   */
+  private signatureOf(entry: {
+    record: DownloadItem
+    explicitFilename: string | null
+    needsLogin?: boolean
+  }): string {
+    const record = entry.record
+    return JSON.stringify([
+      record.gid,
+      record.url,
+      record.filename,
+      entry.explicitFilename,
+      record.dir,
+      record.filePath,
+      record.status,
+      record.totalBytes,
+      record.completedBytes,
+      record.errorMessage,
+      record.errorDetail ?? null,
+      record.attempts,
+      record.maxAttempts,
+      record.createdAt,
+      record.completedAt,
+      entry.needsLogin === true
+    ])
+  }
+
   private persistNow(record: DownloadItem): void {
     if (!this.database) return
+    const entry = this.saveEntry(record)
+    const signature = this.signatureOf(entry)
+    if (this.persistedSignatures.get(record.id) === signature) {
+      this.dirtyIds.delete(record.id)
+      return
+    }
     try {
-      this.database.save({
-        record,
-        explicitFilename: this.explicitFilenames.get(record.id) ?? null,
-        needsLogin: this.needsLoginIds.has(record.id)
-      })
+      this.database.save(entry)
+      this.persistedSignatures.set(record.id, signature)
       this.dirtyIds.delete(record.id)
     } catch (error) {
       this.logPersistenceError('could not be saved', error)
@@ -2119,6 +2213,7 @@ export class DownloadManager {
     this.startNowIds.delete(id)
     this.pairingFileIds.delete(id)
     this.dirtyIds.delete(id)
+    this.persistedSignatures.delete(id)
   }
 
   private markDirty(record: DownloadItem): void {
@@ -2145,19 +2240,32 @@ export class DownloadManager {
     for (const id of ids) {
       const record = this.records.get(id)
       if (record) {
-        entries.push({
-          record,
-          explicitFilename: this.explicitFilenames.get(id) ?? null,
-          needsLogin: this.needsLoginIds.has(id)
-        })
+        entries.push(this.saveEntry(record))
       } else {
         this.dirtyIds.delete(id)
       }
     }
-    if (entries.length === 0) return
+
+    // All rows whose persisted values changed go through ONE transaction per
+    // interval; rows touched by a tick but byte-identical are dropped here.
+    const changed = entries.filter(
+      (entry) =>
+        this.persistedSignatures.get(entry.record.id) !==
+        this.signatureOf(entry)
+    )
+    if (changed.length === 0) {
+      for (const id of ids) this.dirtyIds.delete(id)
+      return
+    }
 
     try {
-      this.database.saveMany(entries)
+      this.database.saveMany(changed)
+      for (const entry of changed) {
+        this.persistedSignatures.set(
+          entry.record.id,
+          this.signatureOf(entry)
+        )
+      }
       for (const id of ids) {
         this.dirtyIds.delete(id)
       }
@@ -2176,22 +2284,31 @@ export class DownloadManager {
   }
 
   private ensurePolling(): void {
-    if (
-      this.pollTimer !== null ||
-      this.reconciling ||
-      !this.hasPendingWork()
-    ) {
+    if (this.reconciling) return
+    const delay = this.nextPollDelay()
+    if (delay === null) {
+      this.stopPollingIfIdle()
       return
     }
-    this.pollTimer = setInterval(() => {
-      void this.poll()
-    }, POLL_INTERVAL_MS)
+    if (this.pollTimer === null) {
+      this.scheduleNextPoll()
+      return
+    }
+    // Add/resume/start-now must not wait out a slow idle timer: shorten the
+    // pending wait when faster observation is now warranted.
+    if (this.scheduledPollDelay !== null && delay < this.scheduledPollDelay) {
+      clearTimeout(this.pollTimer)
+      this.pollTimer = null
+      this.scheduledPollDelay = null
+      this.scheduleNextPoll()
+    }
   }
 
   private stopPollingIfIdle(): void {
-    if (this.pollTimer !== null && !this.hasPendingWork()) {
-      clearInterval(this.pollTimer)
+    if (this.pollTimer !== null && this.nextPollDelay() === null) {
+      clearTimeout(this.pollTimer)
       this.pollTimer = null
+      this.scheduledPollDelay = null
     }
   }
 
@@ -2219,6 +2336,53 @@ export class DownloadManager {
     )
   }
 
+  /**
+   * A transfer (or media work) is making progress, so poll at the fast cadence.
+   * aria2's global counters also count, because an orphaned aria2 job can still
+   * be running after its local record finished.
+   */
+  private hasActiveWork(): boolean {
+    for (const record of this.records.values()) {
+      if (record.status === 'queued' || record.status === 'active') return true
+    }
+    if (this.mediaPolicy?.hasPendingPolicyWork() ?? false) return true
+    // The global counter only matters while local work remains. Without this
+    // guard a stale "active" count would keep a one-second timer alive after
+    // the last row completed.
+    return this.hasPendingWork() && this.lastGlobalActive > 0
+  }
+
+  private nextPollDelay(): number | null {
+    return nextPollDelay({
+      hasActiveWork: this.hasActiveWork(),
+      hasPendingWork: this.hasPendingWork()
+    })
+  }
+
+  private scheduleNextPoll(): void {
+    if (this.pollTimer !== null) return
+    const delay = this.nextPollDelay()
+    if (delay === null) return
+    this.scheduledPollDelay = delay
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null
+      this.scheduledPollDelay = null
+      void this.poll()
+    }, delay)
+    // A poll timer must not be the reason the main process stays alive.
+    this.pollTimer.unref?.()
+  }
+
+  private reschedulePolling(): void {
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer)
+      this.pollTimer = null
+    }
+    this.scheduledPollDelay = null
+    if (this.reconciling) return
+    this.scheduleNextPoll()
+  }
+
   private async poll(): Promise<void> {
     if (this.polling || this.reconciling) return
     this.polling = true
@@ -2233,7 +2397,7 @@ export class DownloadManager {
       const mediaPending = this.mediaPolicy?.hasPendingPolicyWork() ?? false
 
       if (pending.length === 0 && !mediaPending) {
-        this.stopPollingIfIdle()
+        this.lastGlobalActive = 0
         return
       }
 
@@ -2260,31 +2424,7 @@ export class DownloadManager {
             // Policy-paused rows stay waiting until the next window.
             this.blockReasons.get(record.id) !== 'allowed-hours'
         )
-        const results = await this.tellStatusBatch(client, observed)
-        for (let index = 0; index < observed.length; index += 1) {
-          const record = observed[index]
-          if (record === undefined || !this.records.has(record.id)) continue
-          const result = results[index]
-          if (result === undefined) continue
-          if (result.ok) {
-            this.applyStatus(record, result.value)
-            continue
-          }
-          if (isGidNotFound(result.error)) {
-            this.updateRecord(record, {
-              // A vanished aria2 GID is a stopped transfer, not a failed
-              // attempt. Keep the partial file/retry budget and expose the
-              // explicit interrupted recovery action to the user.
-              status: 'interrupted',
-              speedBps: 0,
-              etaSeconds: null,
-              errorMessage: INTERRUPTED_MESSAGE,
-              errorDetail: null
-            })
-            this.setBlockReason(record, null)
-            this.persistNow(record)
-          }
-        }
+        await this.observeDownloads(client, observed)
       }
 
       // Run the single policy timer after observing current statuses so an
@@ -2292,14 +2432,96 @@ export class DownloadManager {
       await this.pumpPolicy(client)
 
       this.publish()
-      this.stopPollingIfIdle()
     } finally {
       this.polling = false
+      this.reschedulePolling()
     }
   }
 
   /**
-   * One `system.multicall` for every observed GID instead of one round trip
+   * Observe every pending GID with one `system.multicall` per tick.
+   *
+   * The batch asks aria2 for its active (and, while the local queue can still
+   * be waiting, waiting) lists with an explicit `keys` array instead of doing
+   * one `tellStatus` round trip per GID and transferring every field. Only the
+   * few GIDs that disappeared from both lists need a bounded `tellStatus`
+   * fallback, which is where completion and error are normally detected.
+   *
+   * aria2's WebSocket notifications are not used: this client is HTTP JSON-RPC
+   * only, so the poll remains the completion signal (fast while work is
+   * active, slow while idle).
+   */
+  private async observeDownloads(
+    client: Aria2Client,
+    observed: readonly DownloadItem[]
+  ): Promise<void> {
+    if (observed.length === 0) return
+
+    const plan = buildPollPlan({
+      // An active-only tick cannot move back into aria2's waiting queue, so
+      // skip that sub-call entirely.
+      includeWaiting: observed.some(
+        (record) => record.status !== 'active'
+      ),
+      includeGlobalStat: true
+    })
+
+    let outcome: Aria2PollOutcome
+    try {
+      const raw = await client.call<unknown>('system.multicall', [plan.calls])
+      outcome = readPollBatch(plan, raw)
+    } catch {
+      // A transport failure is ambiguous: keep every local record untouched
+      // and let the next tick retry, exactly like the old per-GID failure.
+      return
+    }
+
+    this.lastGlobalActive = outcome.globalActive ?? 0
+
+    const missing: DownloadItem[] = []
+    for (const record of observed) {
+      if (!this.records.has(record.id)) continue
+      const raw = outcome.statuses.get(record.gid)
+      if (raw !== undefined) {
+        this.applyStatus(record, raw)
+        continue
+      }
+      // Not in the active/waiting lists: it either stopped between ticks or
+      // aria2 no longer tracks the GID. Resolve it exactly, not by pulling the
+      // whole stopped history.
+      missing.push(record)
+    }
+
+    if (missing.length === 0) return
+    const results = await this.tellStatusBatch(client, missing)
+    for (let index = 0; index < missing.length; index += 1) {
+      const record = missing[index]
+      if (record === undefined || !this.records.has(record.id)) continue
+      const result = results[index]
+      if (result === undefined) continue
+      if (result.ok) {
+        this.applyStatus(record, result.value)
+        continue
+      }
+      if (isGidNotFound(result.error)) {
+        this.updateRecord(record, {
+          // A vanished aria2 GID is a stopped transfer, not a failed
+          // attempt. Keep the partial file/retry budget and expose the
+          // explicit interrupted recovery action to the user.
+          status: 'interrupted',
+          speedBps: 0,
+          etaSeconds: null,
+          errorMessage: INTERRUPTED_MESSAGE,
+          errorDetail: null
+        })
+        this.setBlockReason(record, null)
+        this.persistNow(record)
+      }
+    }
+  }
+
+  /**
+   * One `system.multicall` for every unresolved GID instead of one round trip
    * each. Per-entry faults come back in place so the caller keeps the same
    * per-record handling as a single `aria2.tellStatus` failure; a failed batch
    * reports a non-fatal fault for every entry.
@@ -2310,10 +2532,7 @@ export class DownloadManager {
   ): Promise<Aria2BatchResult[]> {
     if (records.length === 0) return []
 
-    const calls = records.map((record) => ({
-      methodName: 'aria2.tellStatus',
-      params: [record.gid]
-    }))
+    const calls = buildTellStatusCalls(records.map((record) => record.gid))
 
     let raw: unknown
     try {

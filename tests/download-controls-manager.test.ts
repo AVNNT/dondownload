@@ -13,6 +13,7 @@ import {
   type DownloadControls,
   type DownloadSettings
 } from '../src/shared/settings'
+import { ARIA2_STATUS_KEYS } from '../src/main/aria2/poll'
 import type { Aria2Service } from '../src/main/aria2/service'
 import {
   openDownloadDatabase,
@@ -108,12 +109,50 @@ class FakeAria2 {
           const entries = Array.isArray(params[0]) ? params[0] : []
           return entries.map((entry) => {
             const sub = entry as { methodName?: string; params?: unknown[] }
-            const subGid =
-              typeof sub.params?.[0] === 'string' ? sub.params[0] : ''
-            const tracked = this.tracked.get(subGid)
-            return tracked === undefined
-              ? { code: 1, message: 'GID is not found.' }
-              : [{ ...tracked }]
+            switch (sub.methodName) {
+              case 'aria2.tellActive':
+                return [
+                  [...this.tracked.values()]
+                    .filter((tracked) => tracked.status === 'active')
+                    .map((tracked) => ({ ...tracked }))
+                ]
+              case 'aria2.tellWaiting':
+                return [
+                  [...this.tracked.values()]
+                    .filter(
+                      (tracked) =>
+                        tracked.status === 'waiting' ||
+                        tracked.status === 'paused'
+                    )
+                    .map((tracked) => ({ ...tracked }))
+                ]
+              case 'aria2.getGlobalStat': {
+                const active = [...this.tracked.values()].filter(
+                  (tracked) => tracked.status === 'active'
+                ).length
+                const waiting = [...this.tracked.values()].filter(
+                  (tracked) =>
+                    tracked.status === 'waiting' || tracked.status === 'paused'
+                ).length
+                return [
+                  {
+                    numActive: String(active),
+                    numWaiting: String(waiting),
+                    numStopped: '0'
+                  }
+                ]
+              }
+              case 'aria2.tellStatus': {
+                const subGid =
+                  typeof sub.params?.[0] === 'string' ? sub.params[0] : ''
+                const tracked = this.tracked.get(subGid)
+                return tracked === undefined
+                  ? { code: 1, message: 'GID is not found.' }
+                  : [{ ...tracked }]
+              }
+              default:
+                return { code: 1, message: 'Unsupported method.' }
+            }
           })
         }
         case 'aria2.pause': {
@@ -1049,7 +1088,7 @@ describe('automatic retry after a transient failure', () => {
 })
 
 describe('poll batching and snapshot publishing', () => {
-  it('observes every pending GID in one system.multicall', async () => {
+  it('observes pending downloads with one list batch and a bounded fallback', async () => {
     const { database, downloadDir } = await makeWorkspace()
     const clock = { value: at(9, 30) }
     const settings = { value: settingsWithHours(false) }
@@ -1068,17 +1107,34 @@ describe('poll batching and snapshot publishing', () => {
     const multicalls = aria2.calls.filter(
       (call) => call.method === 'system.multicall'
     )
-    expect(multicalls).toHaveLength(1)
-    const batch = multicalls[0]?.params[0] as Array<{
+    // The list batch observes the active transfer. The completed GID is no
+    // longer in either list, so exactly that GID gets one bounded tellStatus.
+    expect(multicalls).toHaveLength(2)
+    const listBatch = multicalls[0]?.params[0] as Array<{
       methodName: string
-      params: string[]
+      params: unknown[]
     }>
-    expect(batch.map((entry) => entry.methodName)).toEqual([
-      'aria2.tellStatus',
+    expect(listBatch.map((entry) => entry.methodName)).toEqual([
+      'aria2.tellActive',
+      'aria2.tellWaiting',
+      'aria2.getGlobalStat'
+    ])
+    // Every status request asks only for the fields the app reads.
+    expect(listBatch[0]?.params[0]).toEqual([...ARIA2_STATUS_KEYS])
+    expect(listBatch[1]?.params).toEqual([0, -1, [...ARIA2_STATUS_KEYS]])
+    expect(listBatch[0]?.params[0]).not.toContain('dir')
+    expect(listBatch[0]?.params[0]).not.toContain('bitfield')
+
+    const fallback = multicalls[1]?.params[0] as Array<{
+      methodName: string
+      params: unknown[]
+    }>
+    expect(fallback.map((entry) => entry.methodName)).toEqual([
       'aria2.tellStatus'
     ])
-    expect(batch.map((entry) => entry.params[0])).toEqual([first.gid, second.gid])
-    // No per-GID round trip is left in the poll path.
+    expect(fallback[0]?.params[0]).toBe(second.gid)
+    expect(fallback[0]?.params[1]).toEqual([...ARIA2_STATUS_KEYS])
+    // No standalone per-GID round trip is left in the poll path.
     expect(
       aria2.methods.filter((method) => method === 'aria2.tellStatus')
     ).toEqual([])
@@ -1204,5 +1260,86 @@ describe('bulk list removal', () => {
     await expect(manager.removeMany(['not-a-uuid'])).rejects.toThrow()
     expect(manager.getSnapshot().downloads).toHaveLength(1)
     expect(database.loadAll()).toHaveLength(1)
+  })
+})
+
+describe('sort downloads into folders by type', () => {
+  it('keeps the default directory when the setting is off', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(database, downloadDir, clock, settings)
+
+    await manager.add({ url: 'https://example.com/movie.mkv' })
+
+    expect(itemByUrl(manager, 'https://example.com/movie.mkv').dir).toBe(
+      downloadDir
+    )
+  })
+
+  it('saves a new default-folder download in the type subfolder when on', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await manager.add({ url: 'https://example.com/movie.mkv' })
+    await manager.add({ url: 'https://example.com/song.flac' })
+    await manager.add({ url: 'https://example.com/scene.funscript' })
+    await manager.add({ url: 'https://example.com/payload.bin' })
+
+    expect(itemByUrl(manager, 'https://example.com/movie.mkv').dir).toBe(
+      path.join(downloadDir, 'Video')
+    )
+    expect(itemByUrl(manager, 'https://example.com/song.flac').dir).toBe(
+      path.join(downloadDir, 'Audio')
+    )
+    expect(itemByUrl(manager, 'https://example.com/scene.funscript').dir).toBe(
+      path.join(downloadDir, 'Video')
+    )
+    expect(itemByUrl(manager, 'https://example.com/payload.bin').dir).toBe(
+      downloadDir
+    )
+
+    const dirs = aria2.addUriCalls.map(
+      (call) => (call.params[1] as Record<string, string>).dir
+    )
+    expect(dirs).toEqual([
+      path.join(downloadDir, 'Video'),
+      path.join(downloadDir, 'Audio'),
+      path.join(downloadDir, 'Video'),
+      downloadDir
+    ])
+  })
+
+  it('never re-sorts a download that uses an explicitly picked folder', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const customDir = path.join(downloadDir, 'My Folder')
+
+    await manager.addScanFile(
+      { url: 'https://example.com/movie.mkv' },
+      customDir
+    )
+
+    const item = itemByUrl(manager, 'https://example.com/movie.mkv')
+    expect(item.dir).toBe(customDir)
+    expect(item.dir).not.toBe(path.join(downloadDir, 'Video'))
   })
 })

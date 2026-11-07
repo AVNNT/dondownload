@@ -171,8 +171,8 @@ export const DownloadCard = memo(function DownloadCard({
             className="mt-2 h-1 overflow-hidden rounded-full bg-white/10"
           >
             <div
-              className={`h-full rounded-full transition-[width] duration-500 ${BAR_STYLE[item.status]}`}
-              style={{ width: `${percent}%` }}
+              className={`h-full w-full origin-left rounded-full transition-transform duration-500 ${BAR_STYLE[item.status]}`}
+              style={{ transform: `scaleX(${percent / 100})` }}
             />
           </div>
         </div>

@@ -56,7 +56,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 18
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -576,11 +576,36 @@ export const MIGRATIONS: readonly Migration[] = [
     `
   },
   {
+    // Opt-in IDM-style sorting. The additive column defaults to off, so every
+    // existing database keeps downloading straight into the chosen directory.
+    version: 16,
+    sql: `
+      ALTER TABLE download_settings ADD COLUMN sort_downloads_by_type INTEGER
+        NOT NULL DEFAULT 0 CHECK (sort_downloads_by_type IN (0, 1));
+    `
+  },
+  {
+    // History/list reads all use `ORDER BY created_at DESC, updated_at DESC`.
+    // The v1 single-column index cannot satisfy the second sort key, so add
+    // the composite covering index for downloads and the same shape for the
+    // media/batch lists. `IF NOT EXISTS` keeps this migration self-contained
+    // and safe if a database already carries an identically named index.
+    version: 17,
+    sql: `
+      CREATE INDEX IF NOT EXISTS downloads_created_at_updated_at_idx
+        ON downloads (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS media_jobs_created_at_updated_at_idx
+        ON media_jobs (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS batches_created_at_updated_at_idx
+        ON batches (created_at DESC, updated_at DESC);
+    `
+  },
+  {
     // Additive only: persist the last checksum result for a download's own
     // recorded file. Existing rows keep nulls until a verification runs, and
     // the main download upsert never writes these columns, so ordinary
     // progress saves cannot clobber a stored result.
-    version: 16,
+    version: 18,
     sql: `
       ALTER TABLE downloads ADD COLUMN checksum_algorithm TEXT
         CHECK (
@@ -751,7 +776,8 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
     },
     // The migration default covers old rows; this fallback keeps a malformed
     // row from taking the app down before the shared parser can reject it.
-    theme: text(row, 'theme') ?? DEFAULT_THEME
+    theme: text(row, 'theme') ?? DEFAULT_THEME,
+    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1
   })
 }
 
@@ -949,6 +975,9 @@ export class DownloadDatabase {
       this.db.exec('PRAGMA journal_mode = WAL')
       this.db.exec('PRAGMA synchronous = NORMAL')
       this.db.exec('PRAGMA busy_timeout = 5000')
+      // Sort/compare scratch space stays in memory; no temp files for the
+      // small ORDER BY / index maintenance this database performs.
+      this.db.exec('PRAGMA temp_store = MEMORY')
       this.db.exec('PRAGMA foreign_keys = ON')
       migrate(this.db)
 
@@ -1007,8 +1036,9 @@ export class DownloadDatabase {
         INSERT INTO download_settings (
           id, max_concurrent_downloads, per_host_connections,
           global_speed_limit_bps, allowed_hours_enabled,
-          allowed_hours_start, allowed_hours_end, theme, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+          allowed_hours_start, allowed_hours_end, theme,
+          sort_downloads_by_type, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           max_concurrent_downloads = excluded.max_concurrent_downloads,
           per_host_connections = excluded.per_host_connections,
@@ -1017,6 +1047,7 @@ export class DownloadDatabase {
           allowed_hours_start = excluded.allowed_hours_start,
           allowed_hours_end = excluded.allowed_hours_end,
           theme = excluded.theme,
+          sort_downloads_by_type = excluded.sort_downloads_by_type,
           updated_at = excluded.updated_at
       `)
       this.mediaToolSettingsSelectStatement = this.db.prepare(
@@ -1398,6 +1429,7 @@ export class DownloadDatabase {
         parsed.allowedHours.start,
         parsed.allowedHours.end,
         parsed.theme,
+        parsed.sortDownloadsByType ? 1 : 0,
         Date.now()
       )
     } catch (error) {

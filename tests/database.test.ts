@@ -369,7 +369,7 @@ describe('schema migrations', () => {
   })
 })
 
-describe('v15 to v16 checksum migration', () => {
+describe('v17 to v18 checksum migration', () => {
   it('adds checksum columns in place and keeps existing downloads', async () => {
     const filePath = await makeDatabasePath()
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -377,7 +377,7 @@ describe('v15 to v16 checksum migration', () => {
     const record = sample({ status: 'complete', completedAt: Date.UTC(2026, 0, 3) })
     const raw = new DatabaseSync(filePath)
     for (const migration of MIGRATIONS) {
-      if (migration.version > 15) break
+      if (migration.version > 17) break
       raw.exec(migration.sql)
       raw.exec(`PRAGMA user_version = ${migration.version}`)
     }

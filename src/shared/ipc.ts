@@ -56,6 +56,9 @@ export const IPC = {
   // trusted-sender wrapper; values are the exact-key download-settings DTO.
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  // Main -> renderer after any validated settings update, including tray or
+  // toolbar quick actions, so every surface reflects the same snapshot.
+  settingsChanged: 'settings:changed',
   getDesktopSettings: 'desktop-settings:get',
   updateDesktopSettings: 'desktop-settings:update',
   desktopSettingsChanged: 'desktop-settings:changed',
