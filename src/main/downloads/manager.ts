@@ -19,7 +19,11 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { evaluateStart, isAllowedAt } from '@shared/schedule'
-import { resolveDownloadDirectory } from '@shared/typeFolders'
+import {
+  resolveDownloadDirectory,
+  typeFolderDirectory,
+  typeFolderForFilename
+} from '@shared/typeFolders'
 import {
   guessFilenameFromUrl,
   normalizeHttpUrl,
@@ -30,6 +34,14 @@ import {
   sanitizeFilename
 } from '@shared/validation'
 import type { Aria2Client } from '../aria2/client'
+import type { ChecksumTarget } from '../checksum/service'
+import type { ChecksumResult } from '@shared/checksum'
+import {
+  buildPollPlan,
+  buildTellStatusCalls,
+  readPollBatch,
+  type Aria2PollOutcome
+} from '../aria2/poll'
 import {
   aria2FailureDetail,
   describeAria2Failure,
@@ -64,8 +76,9 @@ import {
   planHostBackoff,
   refusalKind
 } from './perHostConnections'
+import { nextPollDelay } from './pollInterval'
+import type { TaskbarActiveProgress } from '../taskbar/progress'
 
-const POLL_INTERVAL_MS = 1_000
 /** Progress is flushed at most this often; critical transitions write at once. */
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
 
@@ -184,6 +197,8 @@ export interface DurableHandoffAcceptance {
 
 export class DownloadManager {
   private readonly records = new Map<string, DownloadItem>()
+  /** Only records currently `active`; keeps the taskbar aggregate O(active). */
+  private readonly activeIds = new Set<string>()
   private readonly explicitFilenames = new Map<string, string>()
   /**
    * One-job Referer/User-Agent/Cookie values. Deliberately memory-only: a
@@ -253,10 +268,20 @@ export class DownloadManager {
   })
   /** Refused/reset socket failures seen per host, for the storm threshold. */
   private readonly hostStormCounts = new Map<string, number>()
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * Last values written to SQLite per record. A poll tick can dirty a row
+   * without its persisted columns changing; comparing this signature skips
+   * those rows instead of rewriting identical data.
+   */
+  private readonly persistedSignatures = new Map<string, string>()
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
+  /** Delay of the pending poll timer, so a fast wake can shorten a slow one. */
+  private scheduledPollDelay: number | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private polling = false
   private reconciling = false
+  /** Last global active count seen, used only to pick the next poll interval. */
+  private lastGlobalActive = 0
   /**
    * Snapshot revision. Every mutation that changes published data bumps it, so
    * `publish()` never has to serialize the full history to detect a change.
@@ -264,6 +289,12 @@ export class DownloadManager {
   private revision = 0
   private publishedRevision = 0
   private persistenceErrorLogged = false
+  /**
+   * Downloads added into the plain default root while sorting is on, before
+   * aria2 could reveal the final Content-Disposition name. They may need one
+   * move into a type folder after completion.
+   */
+  private readonly pendingTypeSortIds = new Set<string>()
   private database: DownloadDatabase | null
 
   constructor(
@@ -540,6 +571,30 @@ export class DownloadManager {
   }
 
   /**
+   * Aggregate for the Windows taskbar, without building or sorting a snapshot.
+   * Only active rows are visited, so publication cost does not grow with the
+   * size of the download history.
+   */
+  getActiveProgress(): TaskbarActiveProgress {
+    let activeCount = 0
+    let sizedCount = 0
+    let completedBytes = 0
+    let totalBytes = 0
+    for (const id of this.activeIds) {
+      const record = this.records.get(id)
+      if (!record || record.status !== 'active') continue
+      activeCount += 1
+      if (!(record.totalBytes > 0)) continue
+      sizedCount += 1
+      totalBytes += record.totalBytes
+      completedBytes += Number.isFinite(record.completedBytes)
+        ? Math.max(0, record.completedBytes)
+        : 0
+    }
+    return { activeCount, sizedCount, completedBytes, totalBytes }
+  }
+
+  /**
    * Keep a completed child's record pointing at a script that was renamed in
    * place. The path must still be inside the download root.
    */
@@ -648,7 +703,9 @@ export class DownloadManager {
         directory === undefined
           ? resolveDownloadDirectory(
               this.downloadDir,
-              input.filename ?? guessFilenameFromUrl(target.url),
+              input.sortFilename ??
+                input.filename ??
+                guessFilenameFromUrl(target.url),
               this.settingsProvider().sortDownloadsByType
             )
           : requestedDirectory
@@ -671,6 +728,18 @@ export class DownloadManager {
       )
 
       id = randomUUID()
+      // Only a default-root job whose sort name was guessed from the URL can
+      // still turn out to belong to a type folder once aria2 reports the real
+      // Content-Disposition name. Explicit names/folders and the batch MEGA
+      // intermediate are deliberately left alone.
+      if (
+        directory === undefined &&
+        input.filename === undefined &&
+        this.settingsProvider().sortDownloadsByType &&
+        path.resolve(outputDirectory) === path.resolve(this.downloadDir)
+      ) {
+        this.pendingTypeSortIds.add(id)
+      }
       let finalFilename = input.filename
       if (decision.allowed) {
         // Only a job that may start now is handed to aria2. Blocked jobs stay
@@ -737,11 +806,9 @@ export class DownloadManager {
 
       if (durable) {
         try {
-          this.database!.saveDurable({
-            record,
-            explicitFilename: this.explicitFilenames.get(id) ?? null,
-            needsLogin: this.needsLoginIds.has(id)
-          })
+          const entry = this.saveEntry(record)
+          this.database!.saveDurable(entry)
+          this.persistedSignatures.set(id, this.signatureOf(entry))
           this.dirtyIds.delete(id)
         } catch {
           throw new AppError(
@@ -784,6 +851,7 @@ export class DownloadManager {
     this.clearAutoRetry(id)
     this.autoRetriesUsed.delete(id)
     this.records.delete(id)
+    this.activeIds.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
     this.resolvedUrls.delete(id)
@@ -794,7 +862,9 @@ export class DownloadManager {
     this.startNowIds.delete(id)
     this.submittingIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
+    this.persistedSignatures.delete(id)
     if (this.database) {
       try {
         this.database.delete(id)
@@ -1064,6 +1134,23 @@ export class DownloadManager {
     return this.getSnapshot()
   }
 
+  /**
+   * Drop rows that a shared history-cleanup transaction already deleted from
+   * SQLite. This is the same per-record cleanup as "Remove from list": every
+   * in-memory map is cleared and one snapshot is published. Files stay on disk.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      if (!this.records.has(id)) continue
+      this.forgetRecord(id)
+      changed = true
+    }
+    if (!changed) return
+    this.stopPollingIfIdle()
+    this.publish(true)
+  }
+
   async showInFolder(rawId: unknown): Promise<null> {
     const record = this.getRecord(rawId)
     if (record.status !== 'complete' || !record.filePath) {
@@ -1170,6 +1257,67 @@ export class DownloadManager {
     return this.remove(record.id)
   }
 
+  /**
+   * Resolve a renderer-supplied download id to that download's own completed
+   * file. This is the only path source for hashing: an arbitrary renderer path
+   * is never accepted, and the recorded path is re-validated against the
+   * configured download folder before a stream is opened.
+   */
+  async checksumTarget(rawId: unknown): Promise<ChecksumTarget> {
+    const record = this.getRecord(rawId)
+    if (record.status !== 'complete' || !record.filePath) {
+      throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
+    }
+    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+      throw new AppError(
+        'FILE_OUTSIDE_DOWNLOAD_DIR',
+        'The reported file is outside the configured download folder.'
+      )
+    }
+
+    let sizeBytes: number
+    try {
+      const stat = await fs.stat(record.filePath)
+      if (!stat.isFile()) {
+        throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
+      }
+      sizeBytes = stat.size
+    } catch (error) {
+      if (error instanceof AppError) throw error
+      throw new AppError(
+        'FILE_MISSING',
+        'The downloaded file is no longer on disk.',
+        'It may have been moved or deleted.'
+      )
+    }
+
+    return {
+      downloadId: record.id,
+      filePath: record.filePath,
+      filename: record.filename,
+      sizeBytes
+    }
+  }
+
+  /**
+   * Record the last checksum result in memory and SQLite. Published so the
+   * details pane and row status chip reflect it without a reload.
+   */
+  saveChecksumResult(id: string, result: ChecksumResult): void {
+    const record = this.records.get(id)
+    if (!record) return
+    record.checksum = result
+    if (this.database) {
+      try {
+        this.database.saveDownloadChecksum(id, result)
+      } catch (error) {
+        this.logPersistenceError('checksum result could not be saved', error)
+      }
+    }
+    this.markSnapshotDirty()
+    this.publish()
+  }
+
   /** Flush bounded progress snapshots. Call before closing the database. */
   flushPersistence(): void {
     if (this.flushTimer !== null) {
@@ -1181,8 +1329,9 @@ export class DownloadManager {
 
   close(): void {
     if (this.pollTimer !== null) {
-      clearInterval(this.pollTimer)
+      clearTimeout(this.pollTimer)
       this.pollTimer = null
+      this.scheduledPollDelay = null
     }
     for (const id of [...this.autoRetryTimers.keys()]) {
       this.clearAutoRetry(id)
@@ -1457,6 +1606,9 @@ export class DownloadManager {
     try {
       for (const stored of this.database.loadAll()) {
         this.records.set(stored.record.id, stored.record)
+        if (stored.record.status === 'active') {
+          this.activeIds.add(stored.record.id)
+        }
         if (stored.explicitFilename) {
           this.explicitFilenames.set(stored.record.id, stored.explicitFilename)
         }
@@ -1467,6 +1619,16 @@ export class DownloadManager {
         })
         this.blockReasons.set(stored.record.id, stored.blockReason)
         if (stored.needsLogin) this.needsLoginIds.add(stored.record.id)
+        // The row already matches the loaded values, so the first flush does
+        // not rewrite it merely because the record exists in memory.
+        this.persistedSignatures.set(
+          stored.record.id,
+          this.signatureOf({
+            record: stored.record,
+            explicitFilename: stored.explicitFilename,
+            needsLogin: stored.needsLogin
+          })
+        )
       }
     } catch (error) {
       this.logPersistenceError('could not be loaded', error)
@@ -1933,7 +2095,30 @@ export class DownloadManager {
     patch: Partial<DownloadItem>
   ): void {
     Object.assign(record, patch, { updatedAt: this.now() })
+    if (patch.status !== undefined) {
+      if (record.status === 'active') {
+        this.activeIds.add(record.id)
+      } else {
+        this.activeIds.delete(record.id)
+      }
+      this.releaseTerminalCredentials(record)
+    }
     this.markSnapshotDirty()
+  }
+
+  /**
+   * A job that can no longer be retried has no use for its one-job
+   * Referer/User-Agent/Cookie or cookie-host scope. Drop them as soon as the
+   * terminal state is final so history does not pin browser secrets in memory.
+   * A failed job that still has an attempt left keeps them for Retry.
+   */
+  private releaseTerminalCredentials(record: DownloadItem): void {
+    const finalFailure =
+      record.status === 'error' &&
+      !canRetry(record.attempts, record.maxAttempts)
+    if (record.status !== 'complete' && !finalFailure) return
+    this.requestHeaders.delete(record.id)
+    this.cookieHosts.delete(record.id)
   }
 
   private applyStatus(record: DownloadItem, rawStatus: unknown): void {
@@ -1997,6 +2182,11 @@ export class DownloadManager {
 
     if (Object.keys(patch).length > 0) {
       this.updateRecord(record, patch)
+      if (nextStatus === 'complete' && statusChanged) {
+        // aria2 only learns the Content-Disposition name when it finishes.
+        // A job added into the plain root may now belong in a type folder.
+        void this.moveCompletedIntoTypeFolder(record)
+      }
       // Any status observed here is not policy-blocked: policy-blocked waiting
       // rows are skipped by the caller or guarded above.
       if (this.blockReasons.get(record.id) !== null) {
@@ -2030,14 +2220,112 @@ export class DownloadManager {
     }
   }
 
+  /**
+   * One conservative post-completion sort pass for a default-root job whose
+   * folder could only be guessed from the URL before aria2 started. The move
+   * stays inside the download root, never overwrites an existing file, and on
+   * any failure the file is left exactly where aria2 wrote it.
+   */
+  private async moveCompletedIntoTypeFolder(record: DownloadItem): Promise<void> {
+    if (!this.pendingTypeSortIds.delete(record.id)) return
+    if (!this.settingsProvider().sortDownloadsByType) return
+    if (record.status !== 'complete' || record.filePath === null) return
+    if (path.resolve(record.dir) !== path.resolve(this.downloadDir)) return
+    const source = record.filePath
+    if (!this.isInsideDownloadRoot(source)) return
+    const name = path.basename(source)
+    // The encrypted MEGA intermediate must stay next to its decrypted output;
+    // a paired script was already placed in the video folder explicitly.
+    if (name.toLowerCase().endsWith('.megaenc')) return
+    const folder = typeFolderForFilename(name)
+    if (folder === null) return
+    const targetDirectory = typeFolderDirectory(this.downloadDir, folder)
+    if (
+      !this.isInsideDownloadRoot(targetDirectory) ||
+      path.resolve(targetDirectory) === path.resolve(record.dir)
+    ) {
+      return
+    }
+
+    try {
+      await this.ensureDownloadDirectory(targetDirectory)
+      const targetName = await this.uniqueDownloadFilename(
+        name,
+        targetDirectory
+      )
+      const targetPath = path.join(targetDirectory, targetName)
+      if (!this.isInsideDownloadRoot(targetPath)) return
+      await fs.rename(source, targetPath)
+      if (!this.records.has(record.id)) return
+      this.updateRecord(record, {
+        dir: targetDirectory,
+        filename: targetName,
+        filePath: targetPath
+      })
+      this.persistNow(record)
+      this.publish()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      console.error(
+        `A completed download could not be sorted into its type folder: ${detail}`
+      )
+    }
+  }
+
+  private saveEntry(record: DownloadItem): {
+    record: DownloadItem
+    explicitFilename: string | null
+    needsLogin: boolean
+  } {
+    return {
+      record,
+      explicitFilename: this.explicitFilenames.get(record.id) ?? null,
+      needsLogin: this.needsLoginIds.has(record.id)
+    }
+  }
+
+  /**
+   * Values that actually reach SQLite. `updatedAt` is intentionally excluded:
+   * a tick can touch it without changing persisted content, and rewriting an
+   * identical row only creates WAL churn.
+   */
+  private signatureOf(entry: {
+    record: DownloadItem
+    explicitFilename: string | null
+    needsLogin?: boolean
+  }): string {
+    const record = entry.record
+    return JSON.stringify([
+      record.gid,
+      record.url,
+      record.filename,
+      entry.explicitFilename,
+      record.dir,
+      record.filePath,
+      record.status,
+      record.totalBytes,
+      record.completedBytes,
+      record.errorMessage,
+      record.errorDetail ?? null,
+      record.attempts,
+      record.maxAttempts,
+      record.createdAt,
+      record.completedAt,
+      entry.needsLogin === true
+    ])
+  }
+
   private persistNow(record: DownloadItem): void {
     if (!this.database) return
+    const entry = this.saveEntry(record)
+    const signature = this.signatureOf(entry)
+    if (this.persistedSignatures.get(record.id) === signature) {
+      this.dirtyIds.delete(record.id)
+      return
+    }
     try {
-      this.database.save({
-        record,
-        explicitFilename: this.explicitFilenames.get(record.id) ?? null,
-        needsLogin: this.needsLoginIds.has(record.id)
-      })
+      this.database.save(entry)
+      this.persistedSignatures.set(record.id, signature)
       this.dirtyIds.delete(record.id)
     } catch (error) {
       this.logPersistenceError('could not be saved', error)
@@ -2068,6 +2356,7 @@ export class DownloadManager {
     this.clearAutoRetry(id)
     this.autoRetriesUsed.delete(id)
     this.records.delete(id)
+    this.activeIds.delete(id)
     this.explicitFilenames.delete(id)
     this.requestHeaders.delete(id)
     this.resolvedUrls.delete(id)
@@ -2077,7 +2366,9 @@ export class DownloadManager {
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
+    this.persistedSignatures.delete(id)
   }
 
   private markDirty(record: DownloadItem): void {
@@ -2104,19 +2395,32 @@ export class DownloadManager {
     for (const id of ids) {
       const record = this.records.get(id)
       if (record) {
-        entries.push({
-          record,
-          explicitFilename: this.explicitFilenames.get(id) ?? null,
-          needsLogin: this.needsLoginIds.has(id)
-        })
+        entries.push(this.saveEntry(record))
       } else {
         this.dirtyIds.delete(id)
       }
     }
-    if (entries.length === 0) return
+
+    // All rows whose persisted values changed go through ONE transaction per
+    // interval; rows touched by a tick but byte-identical are dropped here.
+    const changed = entries.filter(
+      (entry) =>
+        this.persistedSignatures.get(entry.record.id) !==
+        this.signatureOf(entry)
+    )
+    if (changed.length === 0) {
+      for (const id of ids) this.dirtyIds.delete(id)
+      return
+    }
 
     try {
-      this.database.saveMany(entries)
+      this.database.saveMany(changed)
+      for (const entry of changed) {
+        this.persistedSignatures.set(
+          entry.record.id,
+          this.signatureOf(entry)
+        )
+      }
       for (const id of ids) {
         this.dirtyIds.delete(id)
       }
@@ -2135,22 +2439,31 @@ export class DownloadManager {
   }
 
   private ensurePolling(): void {
-    if (
-      this.pollTimer !== null ||
-      this.reconciling ||
-      !this.hasPendingWork()
-    ) {
+    if (this.reconciling) return
+    const delay = this.nextPollDelay()
+    if (delay === null) {
+      this.stopPollingIfIdle()
       return
     }
-    this.pollTimer = setInterval(() => {
-      void this.poll()
-    }, POLL_INTERVAL_MS)
+    if (this.pollTimer === null) {
+      this.scheduleNextPoll()
+      return
+    }
+    // Add/resume/start-now must not wait out a slow idle timer: shorten the
+    // pending wait when faster observation is now warranted.
+    if (this.scheduledPollDelay !== null && delay < this.scheduledPollDelay) {
+      clearTimeout(this.pollTimer)
+      this.pollTimer = null
+      this.scheduledPollDelay = null
+      this.scheduleNextPoll()
+    }
   }
 
   private stopPollingIfIdle(): void {
-    if (this.pollTimer !== null && !this.hasPendingWork()) {
-      clearInterval(this.pollTimer)
+    if (this.pollTimer !== null && this.nextPollDelay() === null) {
+      clearTimeout(this.pollTimer)
       this.pollTimer = null
+      this.scheduledPollDelay = null
     }
   }
 
@@ -2178,6 +2491,53 @@ export class DownloadManager {
     )
   }
 
+  /**
+   * A transfer (or media work) is making progress, so poll at the fast cadence.
+   * aria2's global counters also count, because an orphaned aria2 job can still
+   * be running after its local record finished.
+   */
+  private hasActiveWork(): boolean {
+    for (const record of this.records.values()) {
+      if (record.status === 'queued' || record.status === 'active') return true
+    }
+    if (this.mediaPolicy?.hasPendingPolicyWork() ?? false) return true
+    // The global counter only matters while local work remains. Without this
+    // guard a stale "active" count would keep a one-second timer alive after
+    // the last row completed.
+    return this.hasPendingWork() && this.lastGlobalActive > 0
+  }
+
+  private nextPollDelay(): number | null {
+    return nextPollDelay({
+      hasActiveWork: this.hasActiveWork(),
+      hasPendingWork: this.hasPendingWork()
+    })
+  }
+
+  private scheduleNextPoll(): void {
+    if (this.pollTimer !== null) return
+    const delay = this.nextPollDelay()
+    if (delay === null) return
+    this.scheduledPollDelay = delay
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null
+      this.scheduledPollDelay = null
+      void this.poll()
+    }, delay)
+    // A poll timer must not be the reason the main process stays alive.
+    this.pollTimer.unref?.()
+  }
+
+  private reschedulePolling(): void {
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer)
+      this.pollTimer = null
+    }
+    this.scheduledPollDelay = null
+    if (this.reconciling) return
+    this.scheduleNextPoll()
+  }
+
   private async poll(): Promise<void> {
     if (this.polling || this.reconciling) return
     this.polling = true
@@ -2192,7 +2552,7 @@ export class DownloadManager {
       const mediaPending = this.mediaPolicy?.hasPendingPolicyWork() ?? false
 
       if (pending.length === 0 && !mediaPending) {
-        this.stopPollingIfIdle()
+        this.lastGlobalActive = 0
         return
       }
 
@@ -2219,31 +2579,7 @@ export class DownloadManager {
             // Policy-paused rows stay waiting until the next window.
             this.blockReasons.get(record.id) !== 'allowed-hours'
         )
-        const results = await this.tellStatusBatch(client, observed)
-        for (let index = 0; index < observed.length; index += 1) {
-          const record = observed[index]
-          if (record === undefined || !this.records.has(record.id)) continue
-          const result = results[index]
-          if (result === undefined) continue
-          if (result.ok) {
-            this.applyStatus(record, result.value)
-            continue
-          }
-          if (isGidNotFound(result.error)) {
-            this.updateRecord(record, {
-              // A vanished aria2 GID is a stopped transfer, not a failed
-              // attempt. Keep the partial file/retry budget and expose the
-              // explicit interrupted recovery action to the user.
-              status: 'interrupted',
-              speedBps: 0,
-              etaSeconds: null,
-              errorMessage: INTERRUPTED_MESSAGE,
-              errorDetail: null
-            })
-            this.setBlockReason(record, null)
-            this.persistNow(record)
-          }
-        }
+        await this.observeDownloads(client, observed)
       }
 
       // Run the single policy timer after observing current statuses so an
@@ -2251,14 +2587,96 @@ export class DownloadManager {
       await this.pumpPolicy(client)
 
       this.publish()
-      this.stopPollingIfIdle()
     } finally {
       this.polling = false
+      this.reschedulePolling()
     }
   }
 
   /**
-   * One `system.multicall` for every observed GID instead of one round trip
+   * Observe every pending GID with one `system.multicall` per tick.
+   *
+   * The batch asks aria2 for its active (and, while the local queue can still
+   * be waiting, waiting) lists with an explicit `keys` array instead of doing
+   * one `tellStatus` round trip per GID and transferring every field. Only the
+   * few GIDs that disappeared from both lists need a bounded `tellStatus`
+   * fallback, which is where completion and error are normally detected.
+   *
+   * aria2's WebSocket notifications are not used: this client is HTTP JSON-RPC
+   * only, so the poll remains the completion signal (fast while work is
+   * active, slow while idle).
+   */
+  private async observeDownloads(
+    client: Aria2Client,
+    observed: readonly DownloadItem[]
+  ): Promise<void> {
+    if (observed.length === 0) return
+
+    const plan = buildPollPlan({
+      // An active-only tick cannot move back into aria2's waiting queue, so
+      // skip that sub-call entirely.
+      includeWaiting: observed.some(
+        (record) => record.status !== 'active'
+      ),
+      includeGlobalStat: true
+    })
+
+    let outcome: Aria2PollOutcome
+    try {
+      const raw = await client.call<unknown>('system.multicall', [plan.calls])
+      outcome = readPollBatch(plan, raw)
+    } catch {
+      // A transport failure is ambiguous: keep every local record untouched
+      // and let the next tick retry, exactly like the old per-GID failure.
+      return
+    }
+
+    this.lastGlobalActive = outcome.globalActive ?? 0
+
+    const missing: DownloadItem[] = []
+    for (const record of observed) {
+      if (!this.records.has(record.id)) continue
+      const raw = outcome.statuses.get(record.gid)
+      if (raw !== undefined) {
+        this.applyStatus(record, raw)
+        continue
+      }
+      // Not in the active/waiting lists: it either stopped between ticks or
+      // aria2 no longer tracks the GID. Resolve it exactly, not by pulling the
+      // whole stopped history.
+      missing.push(record)
+    }
+
+    if (missing.length === 0) return
+    const results = await this.tellStatusBatch(client, missing)
+    for (let index = 0; index < missing.length; index += 1) {
+      const record = missing[index]
+      if (record === undefined || !this.records.has(record.id)) continue
+      const result = results[index]
+      if (result === undefined) continue
+      if (result.ok) {
+        this.applyStatus(record, result.value)
+        continue
+      }
+      if (isGidNotFound(result.error)) {
+        this.updateRecord(record, {
+          // A vanished aria2 GID is a stopped transfer, not a failed
+          // attempt. Keep the partial file/retry budget and expose the
+          // explicit interrupted recovery action to the user.
+          status: 'interrupted',
+          speedBps: 0,
+          etaSeconds: null,
+          errorMessage: INTERRUPTED_MESSAGE,
+          errorDetail: null
+        })
+        this.setBlockReason(record, null)
+        this.persistNow(record)
+      }
+    }
+  }
+
+  /**
+   * One `system.multicall` for every unresolved GID instead of one round trip
    * each. Per-entry faults come back in place so the caller keeps the same
    * per-record handling as a single `aria2.tellStatus` failure; a failed batch
    * reports a non-fatal fault for every entry.
@@ -2269,10 +2687,7 @@ export class DownloadManager {
   ): Promise<Aria2BatchResult[]> {
     if (records.length === 0) return []
 
-    const calls = records.map((record) => ({
-      methodName: 'aria2.tellStatus',
-      params: [record.gid]
-    }))
+    const calls = buildTellStatusCalls(records.map((record) => record.gid))
 
     let raw: unknown
     try {

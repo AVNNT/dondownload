@@ -18,6 +18,8 @@ import {
   hoursConflict,
   parseSpeedLimitMb,
   settingsPayload,
+  shouldApplyExternalSpeed,
+  speedInputDirty,
   speedInputValue,
   speedLimitHelper,
   toggleAllowedHours
@@ -143,6 +145,30 @@ describe('settings auto-save rules', () => {
       false
     )
     expect(HOURS_EQUAL_HINT).toBe("Start and end can't be the same")
+  })
+
+  it('detects an unsaved speed edit from the input text, not the debounced draft', () => {
+    const saved = defaultDownloadSettings()
+    expect(speedInputDirty('', saved)).toBe(false)
+    expect(speedInputDirty('2.5', saved)).toBe(true)
+    expect(
+      speedInputDirty('5', { ...saved, globalSpeedLimitBps: 5_000_000 })
+    ).toBe(false)
+  })
+
+  it('lets an explicit external speed change win over a pending edit', () => {
+    const saved = defaultDownloadSettings()
+    const trayChoice = { ...saved, globalSpeedLimitBps: 5_000_000 }
+
+    // Typed 2.5 MB/s is still waiting for its debounce when the tray picks 5.
+    expect(shouldApplyExternalSpeed('2.5', saved, trayChoice)).toBe(true)
+    // A non-speed external change must not clobber the text being edited.
+    expect(
+      shouldApplyExternalSpeed('2.5', saved, {
+        ...saved,
+        maxConcurrentDownloads: 7
+      })
+    ).toBe(false)
   })
 
   it('always sends the last saved theme with a draft payload', () => {

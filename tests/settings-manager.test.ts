@@ -252,6 +252,51 @@ describe('SettingsManager', () => {
     ])
   })
 
+  it('serializes concurrent updates and merges a speed-only change with the latest row', async () => {
+    const store = createStore()
+    let release!: () => void
+    const firstApply = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const calls: string[] = []
+    const client = {
+      call: vi.fn(
+        async (_method: string, _params?: unknown[]): Promise<unknown> => {
+          calls.push('apply')
+          if (calls.length === 1) await firstApply
+          return 'OK'
+        }
+      )
+    }
+    const manager = new SettingsManager({
+      store,
+      aria2: createAria2(client) as SettingsAria2Gateway
+    })
+
+    const concurrency = manager.update(
+      settings({ maxConcurrentDownloads: 4 })
+    )
+    // Built from the pre-update row if it is not merged inside the queue.
+    const speed = manager.setGlobalSpeedLimit(2_500_000)
+    release()
+    await Promise.all([concurrency, speed])
+
+    expect(manager.getSettings()).toMatchObject({
+      maxConcurrentDownloads: 4,
+      globalSpeedLimitBps: 2_500_000
+    })
+    expect(calls).toHaveLength(2)
+    expect(client.call.mock.calls[1]?.[1]).toEqual([
+      {
+        'max-concurrent-downloads': '4',
+        'max-connection-per-server': String(
+          defaultDownloadSettings().perHostConnections
+        ),
+        'max-overall-download-limit': '2500000'
+      }
+    ])
+  })
+
   it('notifies the policy listener only after a successful update', async () => {
     const store = createStore()
     const onChanged = vi.fn()

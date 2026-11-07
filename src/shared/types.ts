@@ -15,6 +15,10 @@ import type {
   MediaQueueInput,
   MediaSnapshot
 } from './media'
+import type {
+  ChecksumProgress,
+  ChecksumResult
+} from './checksum'
 import type { DownloadControls, DownloadSettings } from './settings'
 import type { DesktopSettings } from './desktopSettings'
 import type {
@@ -131,6 +135,11 @@ export interface DownloadItem {
   connections?: number | null
   /** Null when the job is not waiting on schedule/allowed-hours policy. */
   blockReason?: DownloadBlockReason | null
+  /**
+   * Last checksum verification/compute result for this download's recorded
+   * file. Null/absent means no checksum has been run yet.
+   */
+  checksum?: ChecksumResult | null
 }
 
 /** A progressive media file observed during real page playback. */
@@ -166,6 +175,13 @@ export interface DownloadRequestHeaders {
 export interface AddDownloadInput {
   url: string
   filename?: string
+  /**
+   * Internal: the name used only to pick the type folder. It lets a batch pass
+   * the real name for a still-encrypted MEGA transfer (`movie.mp4.megaenc`
+   * writes under `Video` but keeps the temporary suffix) without changing the
+   * final aria2 output name.
+   */
+  sortFilename?: string
   requestHeaders?: DownloadRequestHeaders
   /**
    * Internal: a redirect chain that a trusted caller (the scanner probe or the
@@ -275,6 +291,24 @@ export interface DonDownloadApi {
   /** Bounded anonymous HEAD probe: total bytes of a direct file URL, or null. */
   probeUrlSize: (url: string) => Promise<ApiResult<UrlSizeProbe>>
   /**
+   * Verify a completed download's own recorded file against an expected hash.
+   * The algorithm is detected from the trimmed hex length; no path is sent.
+   */
+  verifyChecksum: (
+    downloadId: string,
+    expectedHash: string
+  ) => Promise<ApiResult<ChecksumResult>>
+  /** Compute SHA-256 for a completed download's own recorded file. */
+  computeChecksum: (
+    downloadId: string
+  ) => Promise<ApiResult<ChecksumResult>>
+  /** Cancel the in-flight hash job for one download, if any. */
+  cancelChecksum: (downloadId: string) => Promise<ApiResult<null>>
+  /** Throttled progress for a running hash job. */
+  onChecksumProgress: (
+    listener: (progress: ChecksumProgress) => void
+  ) => () => void
+  /**
    * Revisioned snapshot stream. The first message is a full snapshot, later
    * messages are patches. On a revision gap the renderer calls
    * `requestSnapshotResync`.
@@ -346,6 +380,12 @@ export interface DonDownloadApi {
   updateSettings: (
     settings: DownloadSettings
   ) => Promise<ApiResult<DownloadSettings>>
+  /**
+   * Change only the global speed limit. Main merges this partial value with
+   * the current settings inside its serialized update, so a concurrent edit to
+   * another field is never reverted by a stale snapshot.
+   */
+  setSpeedLimit: (bps: number) => Promise<ApiResult<DownloadSettings>>
   /** Any validated settings update, including a tray/toolbar quick change. */
   onSettingsChanged: (
     listener: (settings: DownloadSettings) => void

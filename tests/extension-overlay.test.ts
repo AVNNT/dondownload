@@ -794,11 +794,11 @@ class FakeShadowRoot {
 }
 
 class FakeMutationObserver {
-  callback: () => void
+  callback: (records?: unknown[]) => void
   observed: { target: unknown; options: unknown } | null = null
   disconnected = false
 
-  constructor(callback: () => void) {
+  constructor(callback: (records?: unknown[]) => void) {
     this.callback = callback
   }
 
@@ -810,8 +810,8 @@ class FakeMutationObserver {
     this.disconnected = true
   }
 
-  trigger(): void {
-    this.callback()
+  trigger(records?: unknown[]): void {
+    this.callback(records)
   }
 }
 
@@ -861,6 +861,7 @@ interface Harness {
   status: FakeNode
   video: FakeNode
   sentMessages: any[]
+  state: any
   mutationObserver: FakeMutationObserver
   resizeObserver: FakeResizeObserver
   timers: Array<() => void>
@@ -940,8 +941,12 @@ function createHarness(options: HarnessOptions = {}): Harness {
       timers.push(callback)
       return timers.length
     },
-    clearTimeout() {
-      // Timers are flushed explicitly by the test; nothing to cancel here.
+    clearTimeout(id?: number) {
+      // Content scripts cancel by the id returned above. Tests still flush
+      // whatever is left explicitly.
+      if (typeof id === 'number' && id >= 1 && id <= timers.length) {
+        timers[id - 1] = null as unknown as () => void
+      }
     }
   }
 
@@ -1143,6 +1148,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     status,
     video,
     sentMessages,
+    state: sandbox.DonDownloadOverlay.state,
     mutationObserver,
     get resizeObserver() {
       return resizeObservers[0] as FakeResizeObserver
@@ -1160,7 +1166,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
       }
     },
     runTimers() {
-      const pending = timers.splice(0, timers.length)
+      const pending = timers.splice(0, timers.length).filter(Boolean)
       for (const timer of pending) timer()
     },
     flushMediaResponses() {
@@ -2395,6 +2401,47 @@ describe('overlay media flow', () => {
 
     const rendered = JSON.stringify(collectText(harness.mediaResults))
     expect(rendered).toContain('1080p')
+  })
+})
+
+describe('overlay mutation scheduling', () => {
+  it('coalesces 1,000 observer callbacks into one debounced pass', () => {
+    const local = createHarness()
+    const before = local.state.mutationPasses || 0
+    for (let index = 0; index < 1_000; index += 1) {
+      local.mutationObserver.trigger()
+    }
+    // Only one trailing timer is pending; no pass ran per callback.
+    expect(local.state.mutationPasses || 0).toBe(before)
+    local.runTimers()
+    expect((local.state.mutationPasses || 0) - before).toBe(1)
+  })
+
+  it('schedules no pass for 1,000 unrelated childList mutations', () => {
+    const local = createHarness()
+    const before = local.state.mutationPasses || 0
+    const unrelated = [
+      {
+        type: 'childList',
+        addedNodes: [{ tagName: 'SPAN' }],
+        removedNodes: []
+      }
+    ]
+    for (let index = 0; index < 1_000; index += 1) {
+      local.mutationObserver.trigger(unrelated)
+    }
+    local.runTimers()
+    expect(local.state.mutationPasses || 0).toBe(before)
+  })
+
+  it('observes childList only, with no attribute or text records', () => {
+    const local = createHarness()
+    expect(local.mutationObserver.observed?.options).toMatchObject({
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false
+    })
   })
 })
 

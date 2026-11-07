@@ -1,0 +1,367 @@
+{
+  "generatedAt": "2026-11-07T18:07:15.764Z",
+  "environment": {
+    "node": "v24.19.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor          ",
+    "cores": 32,
+    "totalMemoryGiB": 31.1
+  },
+  "results": {
+    "db": {
+      "id": "db",
+      "title": "Database",
+      "historyRows": 10000,
+      "insert": {
+        "rows": 10000,
+        "batches": 20,
+        "totalMs": 64.01,
+        "perRowMs": 0.0064,
+        "rowsPerSecond": 156226.81
+      },
+      "progress": {
+        "activeDownloads": 50,
+        "simulatedSeconds": 60,
+        "tickRateMs": 1000,
+        "persistIntervalMs": 2500,
+        "ticks": 60,
+        "rowUpdates": 3000,
+        "flushes": 24,
+        "sqliteRowWrites": 1200,
+        "tickMs": {
+          "count": 60,
+          "min": 0.002,
+          "p50": 0.004,
+          "p95": 0.395,
+          "max": 0.537,
+          "sum": 8.62
+        }
+      },
+      "queries": {
+        "loadAll": {
+          "p50": 30.6,
+          "min": 24.49,
+          "iterations": 5
+        },
+        "loadSettings": {
+          "p50": 0.02,
+          "min": 0.01,
+          "iterations": 5
+        },
+        "loadMediaJobs": {
+          "p50": 0,
+          "min": 0,
+          "iterations": 5
+        },
+        "loadBatches": {
+          "p50": 0.01,
+          "min": 0.01,
+          "iterations": 5
+        }
+      }
+    },
+    "progress": {
+      "id": "progress",
+      "title": "Progress pipeline",
+      "tickRateMs": 1000,
+      "measuredTicks": 60,
+      "results": [
+        {
+          "activeDownloads": 50,
+          "ticks": 60,
+          "tickMs": {
+            "count": 60,
+            "min": 0.03,
+            "p50": 0.06,
+            "p95": 0.12,
+            "max": 0.33,
+            "sum": 4.15
+          },
+          "ipcEncodeMs": {
+            "count": 60,
+            "min": 0.03,
+            "p50": 0.04,
+            "p95": 0.06,
+            "max": 0.13,
+            "sum": 2.35
+          },
+          "ipcBytes": {
+            "count": 60,
+            "min": 23378,
+            "p50": 23428,
+            "p95": 23428,
+            "max": 23428,
+            "sum": 1404280
+          },
+          "jsonBytes": {
+            "count": 60,
+            "min": 27791,
+            "p50": 27841,
+            "p95": 27841,
+            "max": 27841,
+            "sum": 1669460
+          },
+          "snapshotItems": 50
+        },
+        {
+          "activeDownloads": 200,
+          "ticks": 60,
+          "tickMs": {
+            "count": 60,
+            "min": 0.12,
+            "p50": 0.15,
+            "p95": 0.25,
+            "max": 0.94,
+            "sum": 10.63
+          },
+          "ipcEncodeMs": {
+            "count": 60,
+            "min": 0.1,
+            "p50": 0.12,
+            "p95": 0.16,
+            "max": 0.16,
+            "sum": 7.78
+          },
+          "ipcBytes": {
+            "count": 60,
+            "min": 93480,
+            "p50": 93680,
+            "p95": 93680,
+            "max": 93680,
+            "sum": 5615200
+          },
+          "jsonBytes": {
+            "count": 60,
+            "min": 111091,
+            "p50": 111291,
+            "p95": 111291,
+            "max": 111291,
+            "sum": 6673460
+          },
+          "snapshotItems": 200
+        }
+      ],
+      "note": "CPU is DownloadManager.poll() only; IPC bytes are v8.serialize(snapshot) after the real status mapping."
+    },
+    "renderer": {
+      "id": "renderer",
+      "title": "Renderer",
+      "environment": "jsdom",
+      "viewportHeight": 720,
+      "updateCount": 100,
+      "updatedRows": 50,
+      "cases": [
+        {
+          "rows": 1000,
+          "mount": {
+            "commits": 2,
+            "wallMs": 8.936099999999897,
+            "profilerMs": 7.9539000000027045,
+            "rowRenders": 20
+          },
+          "updates": {
+            "updates": 100,
+            "rowsTouched": 50,
+            "commits": 100,
+            "wallMs": 182.68309999999997,
+            "totalRenderMs": 99.0142000000169,
+            "renderMsPerUpdate": {
+              "count": 100,
+              "min": 0.93,
+              "p50": 0.98,
+              "p95": 1.07,
+              "max": 1.48,
+              "sum": 99.01
+            },
+            "rowRendersPerUpdate": {
+              "count": 100,
+              "min": 20,
+              "p50": 20,
+              "p95": 20,
+              "max": 20,
+              "sum": 2000
+            }
+          }
+        },
+        {
+          "rows": 5000,
+          "mount": {
+            "commits": 2,
+            "wallMs": 8.395899999999983,
+            "profilerMs": 7.657500000001164,
+            "rowRenders": 20
+          },
+          "updates": {
+            "updates": 100,
+            "rowsTouched": 50,
+            "commits": 100,
+            "wallMs": 205.80169999999998,
+            "totalRenderMs": 109.02479999998945,
+            "renderMsPerUpdate": {
+              "count": 100,
+              "min": 0.98,
+              "p50": 1.08,
+              "p95": 1.3,
+              "max": 1.46,
+              "sum": 109.02
+            },
+            "rowRendersPerUpdate": {
+              "count": 100,
+              "min": 20,
+              "p50": 20,
+              "p95": 20,
+              "max": 20,
+              "sum": 2000
+            }
+          }
+        }
+      ]
+    },
+    "startup": {
+      "id": "startup",
+      "title": "Startup bundles",
+      "main": {
+        "files": [
+          {
+            "file": "out/main/index.js",
+            "rawBytes": 1097945,
+            "gzipBytes": 276455
+          }
+        ],
+        "rawBytes": 1097945,
+        "gzipBytes": 276455
+      },
+      "preload": {
+        "files": [
+          {
+            "file": "out/preload/index.js",
+            "rawBytes": 10947,
+            "gzipBytes": 2016
+          }
+        ],
+        "rawBytes": 10947,
+        "gzipBytes": 2016
+      },
+      "rendererJs": {
+        "files": [
+          {
+            "file": "out/renderer/assets/index-BUMnDjdb.js",
+            "rawBytes": 723486,
+            "gzipBytes": 144061
+          },
+          {
+            "file": "out/renderer/assets/ScanSheet-wGQjwqbR.js",
+            "rawBytes": 111516,
+            "gzipBytes": 22881
+          },
+          {
+            "file": "out/renderer/assets/AddDialog-C05tMvoD.js",
+            "rawBytes": 86226,
+            "gzipBytes": 18504
+          },
+          {
+            "file": "out/renderer/assets/SettingsSection-D1Ed9c6K.js",
+            "rawBytes": 49588,
+            "gzipBytes": 10845
+          },
+          {
+            "file": "out/renderer/assets/BatchSection-Cc2nvR8M.js",
+            "rawBytes": 34248,
+            "gzipBytes": 7728
+          },
+          {
+            "file": "out/renderer/assets/Icon-DATDyKVb.js",
+            "rawBytes": 28965,
+            "gzipBytes": 6430
+          },
+          {
+            "file": "out/renderer/assets/BrowserExtensionSection-D58UMxqt.js",
+            "rawBytes": 10298,
+            "gzipBytes": 2383
+          },
+          {
+            "file": "out/renderer/assets/scanner-ClrLKDIe.js",
+            "rawBytes": 7172,
+            "gzipBytes": 2903
+          },
+          {
+            "file": "out/renderer/assets/errors-CyqKbdEX.js",
+            "rawBytes": 456,
+            "gzipBytes": 297
+          }
+        ],
+        "rawBytes": 1051955,
+        "gzipBytes": 216032
+      },
+      "rendererCss": {
+        "files": [
+          {
+            "file": "out/renderer/assets/index-CE-7ivpJ.css",
+            "rawBytes": 79571,
+            "gzipBytes": 11923
+          }
+        ],
+        "rawBytes": 79571,
+        "gzipBytes": 11923
+      },
+      "rendererTotal": {
+        "rawBytes": 1131526,
+        "gzipBytes": 227955
+      },
+      "largestChunks": [
+        {
+          "file": "out/main/index.js",
+          "rawBytes": 1097945,
+          "gzipBytes": 276455
+        },
+        {
+          "file": "out/renderer/assets/index-BUMnDjdb.js",
+          "rawBytes": 723486,
+          "gzipBytes": 144061
+        },
+        {
+          "file": "out/renderer/assets/ScanSheet-wGQjwqbR.js",
+          "rawBytes": 111516,
+          "gzipBytes": 22881
+        },
+        {
+          "file": "out/renderer/assets/AddDialog-C05tMvoD.js",
+          "rawBytes": 86226,
+          "gzipBytes": 18504
+        },
+        {
+          "file": "out/renderer/assets/index-CE-7ivpJ.css",
+          "rawBytes": 79571,
+          "gzipBytes": 11923
+        },
+        {
+          "file": "out/renderer/assets/SettingsSection-D1Ed9c6K.js",
+          "rawBytes": 49588,
+          "gzipBytes": 10845
+        },
+        {
+          "file": "out/renderer/assets/BatchSection-Cc2nvR8M.js",
+          "rawBytes": 34248,
+          "gzipBytes": 7728
+        },
+        {
+          "file": "out/renderer/assets/Icon-DATDyKVb.js",
+          "rawBytes": 28965,
+          "gzipBytes": 6430
+        },
+        {
+          "file": "out/preload/index.js",
+          "rawBytes": 10947,
+          "gzipBytes": 2016
+        },
+        {
+          "file": "out/renderer/assets/BrowserExtensionSection-D58UMxqt.js",
+          "rawBytes": 10298,
+          "gzipBytes": 2383
+        }
+      ],
+      "statsFile": null
+    }
+  }
+}

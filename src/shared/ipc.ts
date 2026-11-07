@@ -28,6 +28,12 @@ export const IPC = {
   resumeMedia: 'media:resume',
   retryMedia: 'media:retry',
   deleteDownloadFile: 'download:delete-file',
+  // File checksum verification (additive). The renderer sends only the opaque
+  // download id plus an expected hash; main resolves and validates the path.
+  verifyChecksum: 'download:verify-checksum',
+  computeChecksum: 'download:compute-checksum',
+  cancelChecksum: 'download:cancel-checksum',
+  checksumProgress: 'download:checksum-progress',
   deleteMediaFile: 'media:delete-file',
   removeMedia: 'media:remove',
   removeMediaJobs: 'media:remove-many',
@@ -52,6 +58,9 @@ export const IPC = {
   // trusted-sender wrapper; values are the exact-key download-settings DTO.
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  // Quick actions change one value only; main merges it with the current row
+  // inside its serialized update so a stale full snapshot cannot revert it.
+  setSpeedLimit: 'settings:set-speed-limit',
   // Main -> renderer after any validated settings update, including tray or
   // toolbar quick actions, so every surface reflects the same snapshot.
   settingsChanged: 'settings:changed',

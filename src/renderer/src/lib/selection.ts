@@ -11,6 +11,24 @@ export type SelectionMode = 'single' | 'toggle' | 'range'
 
 export const EMPTY_SELECTION: SelectionState = { selected: [], anchor: null }
 
+/**
+ * One Set per selection state object, built on first use.
+ *
+ * A selection state is replaced (never mutated) whenever it changes, so the
+ * Set can be cached for the lifetime of the object. Every render-path lookup
+ * then costs O(1) per row instead of O(selected) per `includes()` call; with
+ * 10,000 rows selected the old `every(... includes ...)` scans were quadratic.
+ */
+const SELECTION_KEYS = new WeakMap<SelectionState, Set<string>>()
+
+export function selectionKeys(current: SelectionState): ReadonlySet<string> {
+  const cached = SELECTION_KEYS.get(current)
+  if (cached !== undefined) return cached
+  const keys = new Set(current.selected)
+  SELECTION_KEYS.set(current, keys)
+  return keys
+}
+
 function orderSelection(rows: readonly UnifiedRow[], ids: Iterable<string>): string[] {
   const wanted = new Set(ids)
   return rows.filter((row) => wanted.has(row.key)).map((row) => row.key)
@@ -90,15 +108,37 @@ export function pruneSelection(
 }
 
 export function isSelected(current: SelectionState, key: string): boolean {
-  return current.selected.includes(key)
+  return selectionKeys(current).has(key)
+}
+
+/**
+ * Rows that are selected, in display order. `rows` is already filtered and
+ * sorted, so this preserves the visible order without re-sorting the keys.
+ */
+export function rowsForSelectedKeys(
+  rows: readonly UnifiedRow[],
+  keys: ReadonlySet<string>
+): UnifiedRow[] {
+  return rows.filter((row) => keys.has(row.key))
+}
+
+/** Whether every visible row is selected; O(rows) with O(1) per row. */
+export function areAllRowsSelected(
+  rows: readonly UnifiedRow[],
+  keys: ReadonlySet<string>
+): boolean {
+  if (rows.length === 0) return false
+  for (const row of rows) {
+    if (!keys.has(row.key)) return false
+  }
+  return true
 }
 
 export function selectedRows(
   rows: readonly UnifiedRow[],
   current: SelectionState
 ): UnifiedRow[] {
-  const wanted = new Set(current.selected)
-  return rows.filter((row) => wanted.has(row.key))
+  return rowsForSelectedKeys(rows, selectionKeys(current))
 }
 
 /**

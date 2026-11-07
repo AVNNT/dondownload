@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   computeTaskbarProgress,
+  computeTaskbarProgressFromTotals,
   createTaskbarProgress,
   taskbarProgressValue,
+  TASKBAR_ACTIVE_PROGRESS_EMPTY,
   TASKBAR_PROGRESS_IDLE,
+  type TaskbarActiveProgress,
+  type TaskbarProgressReader,
   type TaskbarMediaJob,
   type TaskbarDownload
 } from '../src/main/taskbar/progress'
@@ -112,6 +116,62 @@ describe('computeTaskbarProgress', () => {
   })
 })
 
+describe('computeTaskbarProgressFromTotals', () => {
+  function totals(
+    overrides: Partial<TaskbarActiveProgress> = {}
+  ): TaskbarActiveProgress {
+    return {
+      activeCount: 1,
+      sizedCount: 1,
+      completedBytes: 250,
+      totalBytes: 1_000,
+      ...overrides
+    }
+  }
+
+  it('matches the row-based aggregate for downloads and media jobs', () => {
+    const downloads: TaskbarDownload[] = [
+      download({ completedBytes: 100, totalBytes: 200 }),
+      download({ totalBytes: 0 }),
+      download({ status: 'complete' })
+    ]
+    const jobs: TaskbarMediaJob[] = [
+      mediaJob({ completedBytes: 300, totalBytes: 800 }),
+      mediaJob({ status: 'merging' })
+    ]
+    const rows = computeTaskbarProgress({ downloads, mediaJobs: jobs })
+    const sums = computeTaskbarProgressFromTotals(
+      { activeCount: 2, sizedCount: 1, completedBytes: 100, totalBytes: 200 },
+      { activeCount: 1, sizedCount: 1, completedBytes: 300, totalBytes: 800 }
+    )
+    expect(sums).toEqual(rows)
+    expect(sums.fraction).toBeCloseTo(0.4)
+  })
+
+  it('reports none without active rows and indeterminate without sizes', () => {
+    expect(
+      computeTaskbarProgressFromTotals(TASKBAR_ACTIVE_PROGRESS_EMPTY)
+    ).toEqual(TASKBAR_PROGRESS_IDLE)
+    expect(
+      computeTaskbarProgressFromTotals(
+        totals({ sizedCount: 0, totalBytes: 0 })
+      ).mode
+    ).toBe('indeterminate')
+  })
+
+  it('clamps hostile byte counts', () => {
+    const progress = computeTaskbarProgressFromTotals(
+      totals({ completedBytes: 5_000, totalBytes: 1_000 })
+    )
+    expect(progress.fraction).toBe(1)
+    expect(
+      computeTaskbarProgressFromTotals(
+        totals({ completedBytes: -100, totalBytes: 1_000 })
+      ).fraction
+    ).toBe(0)
+  })
+})
+
 describe('taskbarProgressValue', () => {
   it('maps modes to BrowserWindow.setProgressBar values', () => {
     expect(taskbarProgressValue(TASKBAR_PROGRESS_IDLE)).toBe(-1)
@@ -125,7 +185,9 @@ describe('taskbarProgressValue', () => {
 })
 
 describe('createTaskbarProgress', () => {
-  function harness(options: { enabled?: boolean } = {}) {
+  function harness(
+    options: { enabled?: boolean; read?: TaskbarProgressReader } = {}
+  ) {
     const calls: number[] = []
     const window = {
       isDestroyed: () => false,
@@ -138,6 +200,7 @@ describe('createTaskbarProgress', () => {
     const controller = createTaskbarProgress({
       enabled: options.enabled ?? true,
       getWindow: () => window,
+      ...(options.read === undefined ? {} : { read: options.read }),
       now: () => clock,
       setTimer: (callback, delay) => {
         const timer = { at: clock + delay, callback }
@@ -194,6 +257,50 @@ describe('createTaskbarProgress', () => {
     advance(500)
     controller.update({ downloads: [download({ completedBytes: 100 })] })
     expect(calls).toEqual([0.1])
+  })
+
+  it('refreshes from aggregate readers and coalesces rapid publishes', () => {
+    let reads = 0
+    const read: TaskbarProgressReader = {
+      downloads: () => {
+        reads += 1
+        return {
+          activeCount: 1,
+          sizedCount: 1,
+          completedBytes: reads * 100,
+          totalBytes: 1_000
+        }
+      }
+    }
+    const { calls, controller, advance } = harness({ read })
+
+    controller.refresh()
+    expect(calls).toEqual([0.1])
+    controller.refresh()
+    controller.refresh()
+    controller.refresh()
+    controller.refresh()
+    // Five publishes in one throttle window still apply at most twice per
+    // second: the first immediately and the newest once the window opens.
+    expect(calls).toEqual([0.1])
+    advance(500)
+    expect(calls).toEqual([0.1, 0.5])
+    expect(reads).toBe(5)
+  })
+
+  it('refresh is a no-op without readers or when disabled', () => {
+    const disabledRead = vi.fn(() => TASKBAR_ACTIVE_PROGRESS_EMPTY)
+    const disabled = harness({
+      enabled: false,
+      read: { downloads: disabledRead }
+    })
+    disabled.controller.refresh()
+    expect(disabledRead).not.toHaveBeenCalled()
+    expect(disabled.calls).toEqual([])
+
+    const noReader = harness()
+    expect(() => noReader.controller.refresh()).not.toThrow()
+    expect(noReader.calls).toEqual([])
   })
 
   it('is a no-op when disabled', () => {

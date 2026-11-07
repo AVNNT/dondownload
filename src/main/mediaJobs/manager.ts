@@ -34,6 +34,7 @@ import {
   type DeleteTargetEntry
 } from '../downloads/deleteFile'
 import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
+import type { TaskbarActiveProgress } from '../taskbar/progress'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -311,6 +312,8 @@ export class MediaJobsManager {
     | null
 
   private readonly jobs = new Map<string, ManagedMediaJob>()
+  /** Only jobs currently `downloading`; taskbar aggregation is O(active). */
+  private readonly taskbarActiveIds = new Set<string>()
   private readonly analyses = new Map<string, CachedMediaAnalysis>()
   private readonly dirtyIds = new Set<string>()
   /** One merge-output size poller per job, active only while merging. */
@@ -382,12 +385,58 @@ export class MediaJobsManager {
   }
 
   /**
+   * Output directory of a job as soon as it exists. Paired funscripts use this
+   * instead of a fixed scanner root so they follow the Job's Video/Audio
+   * folder when type sorting is enabled.
+   */
+  getJobDirectory(id: string): string | null {
+    return this.jobs.get(id)?.record.dir ?? null
+  }
+
+  /**
    * One sanitized job by exact id, or null. A cheap alternative to building the
    * whole snapshot when a caller only needs a single child record.
    */
   getJob(id: string): MediaJob | null {
     const job = this.jobs.get(id)
     return job ? this.toMediaJob(job) : null
+  }
+
+  /**
+   * Aggregate for the Windows taskbar, without building or sorting a snapshot.
+   * Only downloading jobs are visited; merging jobs do not count, matching
+   * `computeTaskbarProgress`.
+   */
+  getActiveProgress(): TaskbarActiveProgress {
+    let activeCount = 0
+    let sizedCount = 0
+    let completedBytes = 0
+    let totalBytes = 0
+    for (const id of this.taskbarActiveIds) {
+      const job = this.jobs.get(id)
+      const record = job?.record
+      if (!job || !record || record.status !== 'downloading') continue
+      activeCount += 1
+      const total = record.totalBytes
+      if (total === null || !(total > 0)) continue
+      sizedCount += 1
+      totalBytes += total
+      completedBytes += Number.isFinite(record.completedBytes)
+        ? Math.max(0, record.completedBytes)
+        : 0
+    }
+    return { activeCount, sizedCount, completedBytes, totalBytes }
+  }
+
+  private trackTaskbarStatus(
+    id: string,
+    status: MediaJobStatus
+  ): void {
+    if (status === 'downloading') {
+      this.taskbarActiveIds.add(id)
+    } else {
+      this.taskbarActiveIds.delete(id)
+    }
   }
 
   async getMediaStatus(rawId: unknown): Promise<MediaJob> {
@@ -699,6 +748,7 @@ export class MediaJobsManager {
     this.endMergePhase(job)
     const updatedAt = this.now()
     job.record.status = 'cancelled'
+    this.trackTaskbarStatus(job.record.id, 'cancelled')
     job.record.errorMessage = null
     job.record.updatedAt = updatedAt
     job.speedBps = 0
@@ -731,6 +781,7 @@ export class MediaJobsManager {
 
     this.endMergePhase(job)
     job.record.status = 'paused'
+    this.trackTaskbarStatus(job.record.id, 'paused')
     job.record.errorMessage = null
     job.record.updatedAt = this.now()
     job.awaitingPolicy = false
@@ -759,6 +810,7 @@ export class MediaJobsManager {
     this.assertSelectionAvailable(job)
 
     job.record.status = 'queued'
+    this.trackTaskbarStatus(job.record.id, 'queued')
     job.record.errorMessage = null
     job.record.completedAt = null
     job.record.updatedAt = this.now()
@@ -794,6 +846,7 @@ export class MediaJobsManager {
 
     this.endMergePhase(job)
     job.record.status = 'queued'
+    this.trackTaskbarStatus(job.record.id, 'queued')
     job.record.completedBytes = 0
     job.record.errorMessage = null
     job.record.filePath = null
@@ -914,10 +967,28 @@ export class MediaJobsManager {
     return this.getMediaSnapshot()
   }
 
+  /**
+   * Drop rows that a shared history-cleanup transaction already deleted from
+   * SQLite. Reuses the normal "Remove from list" forget path and publishes one
+   * snapshot. Media files stay on disk.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      if (!this.jobs.has(id)) continue
+      this.forgetJob(id)
+      changed = true
+    }
+    if (!changed) return
+    this.stopFlushIfIdle()
+    this.publish(true)
+  }
+
   /** Drop every in-memory trace of one job. Media files are untouched. */
   private forgetJob(id: string): void {
     this.stopMergeProgressPolling(id)
     this.jobs.delete(id)
+    this.taskbarActiveIds.delete(id)
     this.dirtyIds.delete(id)
   }
 
@@ -1114,6 +1185,7 @@ export class MediaJobsManager {
       if (!isActiveMediaJobStatus(job.record.status)) continue
 
       job.record.status = 'interrupted'
+      this.trackTaskbarStatus(job.record.id, 'interrupted')
       job.record.errorMessage = MEDIA_INTERRUPTED_MESSAGE
       job.record.updatedAt = updatedAt
       job.speedBps = 0
@@ -1192,6 +1264,7 @@ export class MediaJobsManager {
     job.runId = runId
 
     job.record.status = 'downloading'
+    this.trackTaskbarStatus(job.record.id, 'downloading')
     job.record.updatedAt = this.now()
     this.persistNow(job)
     this.publish(true)
@@ -1266,6 +1339,7 @@ export class MediaJobsManager {
     const previousSpeedBps = job.speedBps
 
     job.record.status = nextStatus
+    this.trackTaskbarStatus(job.record.id, nextStatus)
     job.record.totalBytes = totalBytes
     job.record.completedBytes =
       totalBytes === null
@@ -1420,6 +1494,7 @@ export class MediaJobsManager {
     const completedAt = this.now()
 
     job.record.status = 'complete'
+    this.trackTaskbarStatus(job.record.id, 'complete')
     job.record.filePath = filePath
     job.record.totalBytes = totalBytes
     job.record.completedBytes =
@@ -1446,6 +1521,7 @@ export class MediaJobsManager {
 
     this.endMergePhase(job)
     job.record.status = 'error'
+    this.trackTaskbarStatus(job.record.id, 'error')
     job.record.errorMessage =
       error instanceof AppError && error.code === 'MEDIA_SIZE_CAP_EXCEEDED'
         ? error.message

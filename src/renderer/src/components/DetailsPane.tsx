@@ -1,7 +1,14 @@
-import { formatBytes, formatEta, formatSpeed } from '@shared/format'
-import type { JSX } from 'react'
+import { formatBytes } from '@shared/format'
+import {
+  CHECKSUM_ALGORITHM_LABELS,
+  parseExpectedHash,
+  type ChecksumProgress,
+  type ChecksumResult
+} from '@shared/checksum'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import type { StatusTone, UnifiedRow } from '../lib/unified'
-import { CATEGORY_LABELS, retryCountdownText } from '../lib/unified'
+import { CATEGORY_LABELS } from '../lib/unified'
+import { progressLine, shortDateTime } from '../lib/rowProgress'
 import { useNowUntil } from '../lib/useNow'
 import { canOpenRow, canShowRow } from '../lib/actions'
 import { CATEGORY_ACCENT, CATEGORY_ICON, Icon, type IconName } from './Icon'
@@ -22,66 +29,6 @@ const PILL_DOT: Record<StatusTone, string> = {
   complete: 'bg-emerald-400',
   warning: 'bg-amber-400',
   failed: 'bg-red-400'
-}
-
-function shortDateTime(value: number): string {
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return '—'
-  const time = date.toLocaleTimeString([], {
-    hour: 'numeric',
-    minute: '2-digit'
-  })
-  const today = new Date().toDateString()
-  if (date.toDateString() === today) return `Today ${time}`
-  const yesterday = new Date()
-  yesterday.setDate(yesterday.getDate() - 1)
-  if (date.toDateString() === yesterday.toDateString()) {
-    return `Yesterday ${time}`
-  }
-  return `${date.toLocaleDateString([], {
-    month: 'short',
-    day: 'numeric'
-  })} ${time}`
-}
-
-/**
- * Plain-language size/progress summary. Active rows keep their live speed and
- * ETA; finished rows state when they landed; everything else shows bytes only.
- */
-export function progressLine(row: UnifiedRow, now: number = Date.now()): string {
-  const totalBytes = row.sizeBytes
-  const sizeKnown = totalBytes !== null && totalBytes > 0
-  // A job that has not received any bytes yet and has no known total has
-  // effectively not started; "0 B" would read like a glitch.
-  const range = sizeKnown
-    ? `${formatBytes(row.completedBytes)} of ${formatBytes(totalBytes)}`
-    : row.completedBytes > 0
-      ? formatBytes(row.completedBytes)
-      : 'Waiting to start'
-
-  // A failed row never "waits to start": say so, and show the retry countdown
-  // while an automatic retry is pending.
-  if (row.statusGroup === 'failed') {
-    const retryText = retryCountdownText(row.retryAt, now)
-    if (retryText !== null) return retryText
-    const failure = row.errorMessage ?? 'Failed'
-    return sizeKnown || row.completedBytes > 0 ? `${failure} · ${range}` : failure
-  }
-
-  if (row.statusGroup === 'active') {
-    if (row.speedBps > 0 && row.etaSeconds !== null) {
-      return `${range} · ${formatSpeed(row.speedBps)} · ${formatEta(row.etaSeconds)} left`
-    }
-    if (row.speedBps > 0) return `${range} · ${formatSpeed(row.speedBps)}`
-    return range
-  }
-  if (row.completedAt !== null) {
-    return `${range} · finished ${shortDateTime(row.completedAt)}`
-  }
-  if (row.scheduledAt !== null) {
-    return `Starts ${shortDateTime(row.scheduledAt)} · ${range}`
-  }
-  return range
 }
 
 export function DetailsPane({
@@ -193,6 +140,11 @@ export function DetailsPane({
             Retried {row.attempts - 1} {row.attempts - 1 === 1 ? 'time' : 'times'}
           </p>
         ) : null}
+        {row.source === 'download' &&
+        row.download?.status === 'complete' &&
+        row.filePath !== null ? (
+          <ChecksumSection key={row.download.id} row={row} />
+        ) : null}
       </div>
 
       {row.errorMessage ? (
@@ -259,5 +211,201 @@ function IconAction({
     >
       <Icon name={icon} size={13} />
     </button>
+  )
+}
+
+/**
+ * Streaming checksum verification for one completed direct download. Only the
+ * opaque download id crosses IPC; the main process resolves the recorded path.
+ */
+function ChecksumSection({ row }: { row: UnifiedRow }): JSX.Element {
+  const downloadId = row.download?.id ?? ''
+  const stored = row.download?.checksum ?? null
+  const [expected, setExpected] = useState('')
+  const [busy, setBusy] = useState<'verify' | 'compute' | null>(null)
+  const [progress, setProgress] = useState<ChecksumProgress | null>(null)
+  const [localResult, setLocalResult] = useState<ChecksumResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = window.donDownload.onChecksumProgress((next) => {
+      if (next.downloadId === downloadId) setProgress(next)
+    })
+    return unsubscribe
+  }, [downloadId])
+
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current)
+    },
+    []
+  )
+
+  const parsed = parseExpectedHash(expected)
+  const invalid = expected.trim().length > 0 && parsed === null
+  const busyNow = busy !== null
+  const result = localResult ?? stored
+  const totalBytes = progress?.totalBytes ?? 0
+  const percent =
+    progress !== null && totalBytes > 0
+      ? Math.min(100, Math.round((progress.hashedBytes / totalBytes) * 100))
+      : null
+
+  const copy = (value: string): void => {
+    void window.donDownload.copyText(value).then((response) => {
+      if (!response.ok) return
+      setCopied(true)
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopied(false), 1_500)
+    })
+  }
+
+  const verify = async (): Promise<void> => {
+    if (parsed === null || busyNow) return
+    setBusy('verify')
+    setError(null)
+    setLocalResult(null)
+    setProgress(null)
+    const response = await window.donDownload.verifyChecksum(
+      downloadId,
+      parsed.hash
+    )
+    setBusy(null)
+    if (!response.ok) {
+      if (response.error.code !== 'CHECKSUM_CANCELLED') {
+        setError(response.error.message)
+      }
+      return
+    }
+    setLocalResult(response.value)
+  }
+
+  const compute = async (): Promise<void> => {
+    if (busyNow) return
+    setBusy('compute')
+    setError(null)
+    setLocalResult(null)
+    setProgress(null)
+    const response = await window.donDownload.computeChecksum(downloadId)
+    setBusy(null)
+    if (!response.ok) {
+      if (response.error.code !== 'CHECKSUM_CANCELLED') {
+        setError(response.error.message)
+      }
+      return
+    }
+    setLocalResult(response.value)
+  }
+
+  return (
+    <div className="mt-2 border-t border-white/[0.07] pt-2">
+      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-zinc-500">
+        Checksum
+      </p>
+      <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
+        <input
+          value={expected}
+          onChange={(event) => {
+            setExpected(event.target.value)
+            setError(null)
+          }}
+          disabled={busyNow}
+          aria-label="Expected hash"
+          aria-invalid={invalid}
+          placeholder="Expected hash"
+          spellCheck={false}
+          autoComplete="off"
+          className={`h-7 min-w-0 flex-1 rounded-md border bg-black/20 px-2 font-mono text-[11px] text-zinc-200 outline-none placeholder:font-sans placeholder:text-zinc-600 disabled:opacity-60 ${
+            invalid
+              ? 'border-red-400/50'
+              : 'border-white/10 focus:border-accent-400/50'
+          }`}
+        />
+        <button
+          type="button"
+          onClick={() => void verify()}
+          disabled={busyNow || parsed === null}
+          className="h-7 shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-2.5 text-[11px] font-semibold text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Verify
+        </button>
+      </div>
+      {invalid ? (
+        <p role="alert" className="mt-1 text-[10.5px] leading-4 text-red-300">
+          Enter 32 (MD5), 40 (SHA-1), 64 (SHA-256) or 128 (SHA-512) hex
+          characters.
+        </p>
+      ) : parsed !== null ? (
+        <p className="mt-1 text-[10.5px] text-zinc-500">
+          {CHECKSUM_ALGORITHM_LABELS[parsed.algorithm]} detected
+        </p>
+      ) : null}
+
+      <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => void compute()}
+          disabled={busyNow}
+          className="h-7 shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-2.5 text-[11px] font-semibold text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Compute SHA-256
+        </button>
+        {busyNow ? (
+          <button
+            type="button"
+            onClick={() => void window.donDownload.cancelChecksum(downloadId)}
+            className="h-7 shrink-0 rounded-md px-2 text-[11px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+          >
+            Cancel
+          </button>
+        ) : null}
+      </div>
+
+      {busyNow ? (
+        <p className="mt-1 text-[10.5px] text-zinc-500" aria-live="polite">
+          {progress === null
+            ? 'Hashing…'
+            : percent === null
+              ? `Hashing… ${formatBytes(progress.hashedBytes)}`
+              : `Hashing… ${percent}%`}
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="mt-1 text-[10.5px] leading-4 text-red-300">
+          {error}
+        </p>
+      ) : null}
+      {result ? (
+        <div className="mt-1.5 min-w-0">
+          <p className="flex min-w-0 items-center gap-1.5">
+            <span className="font-semibold text-zinc-300">
+              {CHECKSUM_ALGORITHM_LABELS[result.algorithm]}
+            </span>
+            {result.ok === null ? (
+              <span className="text-zinc-500">Computed</span>
+            ) : result.ok ? (
+              <span className="font-semibold text-emerald-300">Match</span>
+            ) : (
+              <span className="font-semibold text-red-300">Mismatch</span>
+            )}
+            <span className="ml-auto shrink-0 text-[10px] text-zinc-600">
+              {shortDateTime(result.checkedAt)}
+            </span>
+          </p>
+          <div className="mt-0.5 flex min-w-0 items-start gap-1">
+            <code className="min-w-0 flex-1 break-all text-[10.5px] leading-4 text-zinc-400 select-text">
+              {result.computed}
+            </code>
+            <IconAction
+              icon="copy"
+              label={copied ? 'Copied' : 'Copy checksum'}
+              onClick={() => copy(result.computed)}
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }

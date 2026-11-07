@@ -1,10 +1,12 @@
 # Download settings contract and runtime application (Milestone 5A)
 
-Status: shared settings contract, additive SQLite schema v16 persistence, runtime
+Status: shared settings contract, additive SQLite schema v19 persistence, runtime
 settings service, trusted IPC/preload API, startup/live aria2 application and a
 renderer form for global limits. A Windows installer baseline is integrated.
 Scheduling and individual download controls are not implemented; this does not
-change existing download, media or batch history and adds no torrent/VPN behavior.
+change existing download, media or batch history and adds no torrent/VPN
+behavior. Automatic history cleanup removes old finished list rows only; files
+on disk are never deleted.
 
 ## Scope
 
@@ -47,6 +49,7 @@ previous all-day, unlimited-speed behavior:
 | `allowedHours.start` | `"00:00"` | exact `HH:mm` | Local-clock start of the allowed window. |
 | `allowedHours.end` | `"00:00"` | exact `HH:mm` | Local-clock end of the allowed window. |
 | `sortDownloadsByType` | `false` | boolean | Saves new downloads into type subfolders of the default download directory. |
+| `historyRetentionDays` | `30` | `0`, `7`, `30`, `90` | Remove old finished list entries after this many days; `0` means Never. Files stay on disk. |
 
 The database also enforces these bounds with CHECK constraints, including
 `id = 1`, integer-only flags and zero-padded 24-hour clock strings.
@@ -75,7 +78,9 @@ only; no URL, header or cookie is stored. The policy lives in the pure module
 
 Each download sets aria2's `split` to its effective connection count, so a
 lowered count also lowers the split. The launch arguments keep
-`--min-split-size=1M` and `--optimize-concurrent-downloads=true`.
+`--min-split-size=1M`, `--optimize-concurrent-downloads=true`,
+`--stream-piece-selector=inorder` and `--disk-cache=0` (see Performance tuning
+below).
 
 ### Runtime defaults and the 5/8 to 3/4 change
 
@@ -116,6 +121,39 @@ The subfolder is created when missing. The mapping and path resolution live in
 the pure `src/shared/typeFolders.ts` module. Only new downloads are affected:
 existing rows are never moved, and a download with an explicitly picked folder
 is never re-sorted.
+
+### Automatic history cleanup
+
+`historyRetentionDays` keeps the download list small without touching files on
+disk. The choices are Never (`0`), 7, 30 and 90 days; the default is 30. The
+Settings page shows it as "Remove finished entries from the list after" with the
+hint "Files stay on disk."
+
+Eligibility is deliberately narrow:
+
+- Downloads: `complete`, `error` and `interrupted` rows whose
+  `completedAt ?? updatedAt` is strictly older than the cutoff. An `error` or
+  `interrupted` row with a pending automatic retry is kept.
+- Media jobs: `complete`, `error`, `cancelled` and `interrupted` rows with the
+  same timestamp rule.
+- Active, queued, waiting, paused, scheduled and retrying rows are never
+  removed.
+- A child row referenced by a batch is kept while that batch still has any
+  unfinished item.
+- A batch is removed only when every item is terminal and the batch's own
+  finished time is older than the cutoff. Its child rows are evaluated
+  separately and keep their files.
+
+The cleanup reuses the existing "Remove from list" / "Clear download list" path:
+every list source is deleted in one SQLite transaction and the managers then
+clear their in-memory maps through the same forget helpers, so snapshots,
+thumbnails and caches stay consistent. Nothing is deleted from the filesystem.
+
+It runs once about 30 seconds after startup (so first paint is not delayed),
+then every 6 hours, and immediately after a committed settings change. "Never"
+disables all runs. Schema 19 adds the setting column and expression indexes on
+`(status, COALESCE(completed_at, updated_at))` for downloads, media jobs and
+batches so the state + timestamp predicate stays cheap.
 
 ### Runtime application
 
@@ -203,10 +241,78 @@ other secrets have no place in the contract.
   statuses, indexes and the `batch_items` cascade FK are preserved.
 - A failed v5 migration rolls back completely: no new columns, no settings row
   and no version bump. There is no destructive table rebuild in v5.
-- `SCHEMA_VERSION` is `16`. Databases written by a newer schema are still
+- `SCHEMA_VERSION` is `19`. Databases written by a newer schema are still
   refused rather than modified.
 
-## Verification
+## Performance tuning
+
+Measured with the local loopback benchmark in `tests/bench/`
+(`npm run bench:throughput`, excluded from `test:fast`). It serves a generated
+1 GiB file with HTTP Range support through the real `buildAria2Args` launch
+path, optionally capping every socket at 8 MiB/s to model a slow server. Each
+row is a median over rotated runs, so a variant does not always run first.
+
+### aria2 launch flags (chosen)
+
+| Flag | Why it is kept |
+| --- | --- |
+| `--split=16` / `--max-connection-per-server=16` | 16 connections per file measured ~2x the throughput of 8; already the user's configurable ceiling. |
+| `--min-split-size=1M` | Smaller pieces let all 16 connections start early. aria2's 20M default used only 8 connections on a 256 MiB file (53.8 vs 101.1 MiB/s). |
+| `--optimize-concurrent-downloads=true` | Disabling it dropped the 1 GiB loopback run from ~466 to ~131 MiB/s on a short sweep. |
+| `--stream-piece-selector=inorder` | New. In-order pieces let 16 parallel connections write the file sequentially instead of out of order. 1 GiB / 16 connections: **427 -> 590 MiB/s** (median of 4 rounds). |
+| `--disk-cache=0` | New. With sequential writes, the 16 MiB default cache only adds buffering: **590 -> 676 MiB/s** and aria2 CPU 1.48 s -> 1.27 s per 1 GiB (median of 8 rounds). |
+| `--file-allocation=none` | Unchanged. `falloc` was neutral and `prealloc` pushed time-to-first-byte from ~80 ms to 664 ms with no throughput gain. Keeping `none` also avoids the documented `falloc` stall on non-NTFS/FAT32 and network targets. |
+
+Before/after for the combined change on the 1 GiB unlimited-loopback fixture:
+
+| Metric | Previous profile | Tuned profile |
+| --- | ---: | ---: |
+| Throughput | 427 MiB/s | **676 MiB/s** (1.58x) |
+| Elapsed | 2396 ms | **1516 ms** |
+| Time to first byte | 24 ms | 23 ms (within noise) |
+| aria2 CPU per 1 GiB | 1.32 s | 1.27 s |
+| Peak aria2 RAM | 13.5 MiB | 13.1 MiB |
+
+On the 8 MiB/s-per-socket slow-server fixture the same change is neutral
+(102.7 vs 105.5 MiB/s, 512 MiB file), because the server, not the disk, is the
+bottleneck. The per-host connection back-off is unchanged and every download
+still sets `split` to its own effective connection count.
+
+Candidates measured and deliberately **not** kept: 32M/64M disk cache
+(415/343 vs 466 MiB/s), HTTP pipelining (360 vs 466 MiB/s), `piece-length=4M`
+(no gain), `stream-piece-selector=inorder` without disabling the cache (less
+gain than the pair), `prealloc`/`falloc`, and `--lowest-speed-limit` (aborts
+legitimately slow transfers without improving speed).
+
+### yt-dlp media flags
+
+`--concurrent-fragments` is now **8** (was 4). The native HLS/DASH downloader
+already reports per-fragment progress, so fragments stay on yt-dlp and FFmpeg
+is still used only for the merge/remux. Local HLS fixture: 100 fragments, 100 ms
+latency per request.
+
+| Concurrent fragments | Fragment download window | Whole job (startup + merge) |
+| ---: | ---: | ---: |
+| 4 (previous) | 3077 ms | 5507 ms |
+| 8 (chosen) | **1567 ms** (1.96x) | **4017 ms** |
+| 12 | 1215 ms | 3633 ms |
+
+12 was faster on the synthetic fixture but is not used: 8 is the upper end of
+the conservative range for real CDNs, and media jobs do not have the per-host
+back-off that aria2 downloads have.
+
+Not adopted for media:
+
+- `--http-chunk-size`: no local evidence with per-connection throttling, and it
+  adds Range requests and retry surface for servers that do not honour them.
+- `--no-part`: hurts resume after an interruption; the current `.part` behavior
+  is kept.
+- yt-dlp's aria2c external downloader: no clear win for fragments, and it would
+  duplicate progress/back-off handling outside the aria2 service.
+- FFmpeg `-c copy` is already how yt-dlp merges; no transcode, `-threads` or
+  postprocessor arguments were added because a stream copy does not decode.
+
+
 
 | Command | Result |
 | --- | --- |

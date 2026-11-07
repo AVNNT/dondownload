@@ -13,6 +13,7 @@ import {
   type DownloadControls,
   type DownloadSettings
 } from '../src/shared/settings'
+import { ARIA2_STATUS_KEYS } from '../src/main/aria2/poll'
 import type { Aria2Service } from '../src/main/aria2/service'
 import {
   openDownloadDatabase,
@@ -59,6 +60,17 @@ class FakeAria2 {
   setStatus(gid: string, status: string): void {
     const tracked = this.tracked.get(gid)
     if (tracked) tracked.status = status
+  }
+
+  /** Report the final aria2 file path, as Content-Disposition can change it. */
+  setFile(gid: string, filePath: string, length = 100): void {
+    const tracked = this.tracked.get(gid)
+    if (!tracked) return
+    tracked.totalLength = String(length)
+    tracked.completedLength = String(length)
+    tracked.files = [
+      { path: filePath, length: String(length), completedLength: String(length) }
+    ]
   }
 
   /** Report an aria2 failure for one GID, as aria2 does for a broken transfer. */
@@ -108,12 +120,50 @@ class FakeAria2 {
           const entries = Array.isArray(params[0]) ? params[0] : []
           return entries.map((entry) => {
             const sub = entry as { methodName?: string; params?: unknown[] }
-            const subGid =
-              typeof sub.params?.[0] === 'string' ? sub.params[0] : ''
-            const tracked = this.tracked.get(subGid)
-            return tracked === undefined
-              ? { code: 1, message: 'GID is not found.' }
-              : [{ ...tracked }]
+            switch (sub.methodName) {
+              case 'aria2.tellActive':
+                return [
+                  [...this.tracked.values()]
+                    .filter((tracked) => tracked.status === 'active')
+                    .map((tracked) => ({ ...tracked }))
+                ]
+              case 'aria2.tellWaiting':
+                return [
+                  [...this.tracked.values()]
+                    .filter(
+                      (tracked) =>
+                        tracked.status === 'waiting' ||
+                        tracked.status === 'paused'
+                    )
+                    .map((tracked) => ({ ...tracked }))
+                ]
+              case 'aria2.getGlobalStat': {
+                const active = [...this.tracked.values()].filter(
+                  (tracked) => tracked.status === 'active'
+                ).length
+                const waiting = [...this.tracked.values()].filter(
+                  (tracked) =>
+                    tracked.status === 'waiting' || tracked.status === 'paused'
+                ).length
+                return [
+                  {
+                    numActive: String(active),
+                    numWaiting: String(waiting),
+                    numStopped: '0'
+                  }
+                ]
+              }
+              case 'aria2.tellStatus': {
+                const subGid =
+                  typeof sub.params?.[0] === 'string' ? sub.params[0] : ''
+                const tracked = this.tracked.get(subGid)
+                return tracked === undefined
+                  ? { code: 1, message: 'GID is not found.' }
+                  : [{ ...tracked }]
+              }
+              default:
+                return { code: 1, message: 'Unsupported method.' }
+            }
           })
         }
         case 'aria2.pause': {
@@ -1049,7 +1099,7 @@ describe('automatic retry after a transient failure', () => {
 })
 
 describe('poll batching and snapshot publishing', () => {
-  it('observes every pending GID in one system.multicall', async () => {
+  it('observes pending downloads with one list batch and a bounded fallback', async () => {
     const { database, downloadDir } = await makeWorkspace()
     const clock = { value: at(9, 30) }
     const settings = { value: settingsWithHours(false) }
@@ -1068,17 +1118,34 @@ describe('poll batching and snapshot publishing', () => {
     const multicalls = aria2.calls.filter(
       (call) => call.method === 'system.multicall'
     )
-    expect(multicalls).toHaveLength(1)
-    const batch = multicalls[0]?.params[0] as Array<{
+    // The list batch observes the active transfer. The completed GID is no
+    // longer in either list, so exactly that GID gets one bounded tellStatus.
+    expect(multicalls).toHaveLength(2)
+    const listBatch = multicalls[0]?.params[0] as Array<{
       methodName: string
-      params: string[]
+      params: unknown[]
     }>
-    expect(batch.map((entry) => entry.methodName)).toEqual([
-      'aria2.tellStatus',
+    expect(listBatch.map((entry) => entry.methodName)).toEqual([
+      'aria2.tellActive',
+      'aria2.tellWaiting',
+      'aria2.getGlobalStat'
+    ])
+    // Every status request asks only for the fields the app reads.
+    expect(listBatch[0]?.params[0]).toEqual([...ARIA2_STATUS_KEYS])
+    expect(listBatch[1]?.params).toEqual([0, -1, [...ARIA2_STATUS_KEYS]])
+    expect(listBatch[0]?.params[0]).not.toContain('dir')
+    expect(listBatch[0]?.params[0]).not.toContain('bitfield')
+
+    const fallback = multicalls[1]?.params[0] as Array<{
+      methodName: string
+      params: unknown[]
+    }>
+    expect(fallback.map((entry) => entry.methodName)).toEqual([
       'aria2.tellStatus'
     ])
-    expect(batch.map((entry) => entry.params[0])).toEqual([first.gid, second.gid])
-    // No per-GID round trip is left in the poll path.
+    expect(fallback[0]?.params[0]).toBe(second.gid)
+    expect(fallback[0]?.params[1]).toEqual([...ARIA2_STATUS_KEYS])
+    // No standalone per-GID round trip is left in the poll path.
     expect(
       aria2.methods.filter((method) => method === 'aria2.tellStatus')
     ).toEqual([])
@@ -1261,6 +1328,74 @@ describe('sort downloads into folders by type', () => {
       path.join(downloadDir, 'Video'),
       downloadDir
     ])
+  })
+
+  it('moves a completed header-named file into its type folder', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/download?id=42'
+
+    await manager.add({ url })
+    const pending = itemByUrl(manager, url)
+    expect(pending.dir).toBe(downloadDir)
+
+    // aria2 learns the real name only from Content-Disposition.
+    await mkdir(downloadDir, { recursive: true })
+    const source = path.join(downloadDir, 'clip.mkv')
+    await writeFile(source, 'video')
+    aria2.setFile(pending.gid, source)
+    aria2.setStatus(pending.gid, 'complete')
+    await manager.refreshPolicy()
+
+    const targetDirectory = path.join(downloadDir, 'Video')
+    await vi.waitFor(() => {
+      expect(itemByUrl(manager, url)).toMatchObject({
+        dir: targetDirectory,
+        filename: 'clip.mkv',
+        filePath: path.join(targetDirectory, 'clip.mkv')
+      })
+    })
+    await expect(stat(path.join(targetDirectory, 'clip.mkv'))).resolves.toMatchObject(
+      { size: 5 }
+    )
+    await expect(stat(source)).rejects.toThrow()
+    expect(database.loadAll()[0]?.record).toMatchObject({
+      dir: targetDirectory,
+      filename: 'clip.mkv'
+    })
+  })
+
+  it('picks the type folder from sortFilename while keeping the temporary name', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await manager.add({
+      url: 'https://mega.example/encrypted',
+      filename: 'movie.mp4.megaenc',
+      sortFilename: 'movie.mp4'
+    })
+
+    const item = itemByUrl(manager, 'https://mega.example/encrypted')
+    expect(item.dir).toBe(path.join(downloadDir, 'Video'))
+    expect(item.filename).toBe('movie.mp4.megaenc')
   })
 
   it('never re-sorts a download that uses an explicitly picked folder', async () => {

@@ -12,8 +12,16 @@ export const PROGRESS_MARKER = 'DONDOWNLOAD_PROGRESS'
  * Bounded parallelism for native HLS/DASH fragment downloads. yt-dlp's native
  * fragment downloader reports progress through the template below, unlike the
  * FFmpeg downloader that `--hls-prefer-ffmpeg` used to select.
+ *
+ * Measured against a loopback HLS fixture with 100 fragments and 100 ms of
+ * latency per request: the fragment download window dropped from 3077 ms at 4
+ * to 1567 ms at 8 (1.96x), while total job time including startup and the
+ * FFmpeg merge dropped from 5507 ms to 4017 ms. 12 was faster still on the
+ * synthetic fixture but is deliberately not used: 8 is the upper bound of the
+ * conservative range for real CDNs, and yt-dlp/aria2 retry behavior does not
+ * back off per host for media jobs.
  */
-export const CONCURRENT_FRAGMENTS = 4
+export const CONCURRENT_FRAGMENTS = 8
 
 /**
  * Bundled yt-dlp builds ship curl_cffi impersonation targets. Adding the flag

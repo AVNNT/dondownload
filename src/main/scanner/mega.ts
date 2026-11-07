@@ -22,7 +22,7 @@ import {
  * main process: only the card's name, size and category are published.
  */
 
-export const SCAN_MEGA_CONCURRENCY = 2
+export const SCAN_MEGA_CONCURRENCY = 4
 export const MAX_SCAN_MEGA_REQUESTS = 60
 
 /** The public adapter surface the scanner needs; injected for hermetic tests. */

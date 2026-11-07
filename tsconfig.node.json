@@ -29,5 +29,8 @@
     "src/shared/**/*.ts",
     "tests/**/*.ts",
     "tests/**/*.tsx"
+  ],
+  "exclude": [
+    "tests/bench/download-list.bench.test.tsx"
   ]
 }

@@ -21,8 +21,6 @@ import {
 import { MediaAnalyzer } from './MediaAnalyzer'
 import { MediaJobCard } from './MediaJobCard'
 
-const SNAPSHOT_REFRESH_MS = 5_000
-
 export function MediaSection(): JSX.Element {
   const [snapshot, setSnapshot] = useState<MediaSnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<AppErrorInfo | null>(null)
@@ -84,14 +82,19 @@ export function MediaSection(): JSX.Element {
         setSnapshotError(null)
       }
     })
-    const timer = window.setInterval(() => {
-      void refresh()
-    }, SNAPSHOT_REFRESH_MS)
+    // Deltas keep this snapshot current; no fixed-interval full poll. Ask for
+    // fresh full deltas after the window becomes visible again.
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        void window.donDownload.requestSnapshotResync()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
       cancelled = true
       unsubscribe()
-      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       store.dispose()
       if (storeRef.current === store) storeRef.current = null
     }

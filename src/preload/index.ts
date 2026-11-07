@@ -33,6 +33,10 @@ import type {
   MediaSnapshotDelta
 } from '../shared/snapshotDelta'
 import type { DownloadSettings } from '../shared/settings'
+import type {
+  ChecksumProgress,
+  ChecksumResult
+} from '../shared/checksum'
 import type { DesktopSettings } from '../shared/desktopSettings'
 import type {
   MediaToolSettings,
@@ -87,6 +91,31 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.probeUrlSize, url) as Promise<
       ApiResult<UrlSizeProbe>
     >,
+  verifyChecksum: (downloadId: string, expectedHash: string) =>
+    ipcRenderer.invoke(IPC.verifyChecksum, {
+      downloadId,
+      expectedHash
+    }) as Promise<ApiResult<ChecksumResult>>,
+  computeChecksum: (downloadId: string) =>
+    ipcRenderer.invoke(IPC.computeChecksum, { downloadId }) as Promise<
+      ApiResult<ChecksumResult>
+    >,
+  cancelChecksum: (downloadId: string) =>
+    ipcRenderer.invoke(IPC.cancelChecksum, { downloadId }) as Promise<
+      ApiResult<null>
+    >,
+  onChecksumProgress: (listener: (progress: ChecksumProgress) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      progress: ChecksumProgress
+    ): void => {
+      listener(progress)
+    }
+    ipcRenderer.on(IPC.checksumProgress, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.checksumProgress, handler)
+    }
+  },
   onSnapshotChanged: (listener: (delta: AppSnapshotDelta) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, delta: AppSnapshotDelta): void => {
       listener(delta)
@@ -200,6 +229,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.getSettings) as Promise<ApiResult<DownloadSettings>>,
   updateSettings: (settings: DownloadSettings) =>
     ipcRenderer.invoke(IPC.updateSettings, settings) as Promise<
+      ApiResult<DownloadSettings>
+    >,
+  setSpeedLimit: (bps: number) =>
+    ipcRenderer.invoke(IPC.setSpeedLimit, bps) as Promise<
       ApiResult<DownloadSettings>
     >,
   onSettingsChanged: (listener: (settings: DownloadSettings) => void) => {

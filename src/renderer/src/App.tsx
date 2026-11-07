@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -46,11 +47,8 @@ import { RuntimeNotice } from './components/RuntimeNotice'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
 import type { AddDialogTab } from './components/AddDialog'
-import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
-import { ShortcutsDialog } from './components/ShortcutsDialog'
+import type { ConfirmRequest } from './components/ConfirmDialog'
 import { UndoToast } from './components/UndoToast'
-import { ContextMenu } from './components/ContextMenu'
-import { DetailsPane } from './components/DetailsPane'
 import { Icon, type IconName } from './components/Icon'
 import {
   buildUnifiedRows,
@@ -70,16 +68,19 @@ import {
 } from './lib/snapshotDeltaStore'
 import {
   EMPTY_SELECTION,
+  areAllRowsSelected,
   jumpFocus,
   moveFocus,
   pruneSelection,
+  rowsForSelectedKeys,
   selectAllRows,
   selectSingle,
-  selectedRows as pickSelectedRows,
+  selectionKeys,
   updateSelection,
   type SelectionMode,
   type SelectionState
 } from './lib/selection'
+import { useDebouncedValue } from './lib/useDebouncedValue'
 import {
   buildContextActions,
   canCopyLink,
@@ -156,6 +157,26 @@ const AddDialog = lazy(() =>
 const ScanSheet = lazy(() =>
   import('./components/ScanSheet').then((module) => ({
     default: module.ScanSheet
+  }))
+)
+const ConfirmDialog = lazy(() =>
+  import('./components/ConfirmDialog').then((module) => ({
+    default: module.ConfirmDialog
+  }))
+)
+const ShortcutsDialog = lazy(() =>
+  import('./components/ShortcutsDialog').then((module) => ({
+    default: module.ShortcutsDialog
+  }))
+)
+const ContextMenu = lazy(() =>
+  import('./components/ContextMenu').then((module) => ({
+    default: module.ContextMenu
+  }))
+)
+const DetailsPane = lazy(() =>
+  import('./components/DetailsPane').then((module) => ({
+    default: module.DetailsPane
   }))
 )
 
@@ -236,6 +257,11 @@ export default function App(): JSX.Element {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  /**
+   * The input value stays immediate; filtering/sorting follows the debounced
+   * copy so a fast typist never blocks on a 10,000-row pass per keystroke.
+   */
+  const debouncedQuery = useDebouncedValue(query, 120)
   const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
   const [focusedKey, setFocusedKey] = useState<string | null>(null)
   const [detailsClosedFor, setDetailsClosedFor] = useState<string | null>(null)
@@ -475,15 +501,21 @@ export default function App(): JSX.Element {
     const unsubscribeMedia = window.donDownload.onMediaSnapshotChanged((delta) => {
       if (!cancelled) mediaStore.applyDelta(delta)
     })
-    const timer = window.setInterval(() => {
-      void refresh()
-    }, 5_000)
+    // No fixed-interval full-snapshot polling: deltas keep the stores current.
+    // A hidden window can suppress them, so ask main for fresh full deltas when
+    // the window becomes visible again.
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        void window.donDownload.requestSnapshotResync()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
       cancelled = true
       unsubscribeDownloads()
       unsubscribeMedia()
-      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       downloadStore.dispose()
       mediaStore.dispose()
       if (downloadStoreRef.current === downloadStore) {
@@ -529,28 +561,54 @@ export default function App(): JSX.Element {
   }, [snapshotKeys])
   /* eslint-enable react-hooks/set-state-in-effect */
   const statusCounts = useMemo(
-    () => buildStatusCounts(listedRows, 'all', query),
-    [listedRows, query]
+    () => buildStatusCounts(listedRows, 'all', debouncedQuery),
+    [listedRows, debouncedQuery]
   )
   const filteredRows = useMemo(
-    () => filterRows(listedRows, { category: 'all', status: statusFilter, query }),
-    [listedRows, statusFilter, query]
+    () =>
+      filterRows(listedRows, {
+        category: 'all',
+        status: statusFilter,
+        query: debouncedQuery
+      }),
+    [listedRows, statusFilter, debouncedQuery]
   )
   const visibleRows = useMemo(
     () => sortRows(filteredRows, sortKey, sortDirection),
     [filteredRows, sortKey, sortDirection]
   )
+  // One Set per selection state; every render-path check below is O(1) per row
+  // instead of scanning `selection.selected` (quadratic when everything is
+  // selected in a 10,000-row list).
+  const selectedKeys = useMemo(() => selectionKeys(selection), [selection])
   const visibleSelection = useMemo(
-    () =>
-      pickSelectedRows(visibleRows, selection).filter((row) =>
-        selection.selected.includes(row.key)
-      ),
-    [visibleRows, selection]
+    () => rowsForSelectedKeys(visibleRows, selectedKeys),
+    [visibleRows, selectedKeys]
   )
   const singleSelected = useMemo(() => {
     if (selection.selected.length !== 1) return null
     return visibleRows.find((row) => row.key === selection.selected[0]) ?? null
   }, [visibleRows, selection])
+
+  /**
+   * Row handlers must stay referentially stable so memoised rows are not
+   * re-rendered by a new snapshot or selection. They read the latest lists
+   * through this ref instead of closing over them.
+   */
+  const latestLists = useRef({
+    rows: visibleRows,
+    selection,
+    selectedKeys,
+    visibleSelection
+  })
+  useLayoutEffect(() => {
+    latestLists.current = {
+      rows: visibleRows,
+      selection,
+      selectedKeys,
+      visibleSelection
+    }
+  })
 
   /* eslint-disable react-hooks/set-state-in-effect -- focus and selection are derived from the filtered rows and must be reconciled after a filter change */
   useEffect(() => {
@@ -680,26 +738,19 @@ export default function App(): JSX.Element {
   )
 
   /**
-   * Quick speed-limit presets from the toolbar. This deliberately uses the
-   * same `updateSettings` path as the Settings page, so validation, persistence
-   * and the live aria2 apply all happen exactly once.
+   * Quick speed-limit presets from the toolbar. Main merges this partial value
+   * with the current settings inside its serialized update, so a stale toolbar
+   * snapshot can never revert a concurrent change to another field.
    */
-  const changeSpeedLimit = useCallback(
-    async (bps: number): Promise<void> => {
-      if (!settings) return
-      try {
-        const result = await window.donDownload.updateSettings({
-          ...settings,
-          globalSpeedLimitBps: bps
-        })
-        if (result.ok) setSettings(result.value)
-        else setBanner(result.error)
-      } catch {
-        setToast('Could not change the speed limit')
-      }
-    },
-    [settings]
-  )
+  const changeSpeedLimit = useCallback(async (bps: number): Promise<void> => {
+    try {
+      const result = await window.donDownload.setSpeedLimit(bps)
+      if (result.ok) setSettings(result.value)
+      else setBanner(result.error)
+    } catch {
+      setToast('Could not change the speed limit')
+    }
+  }, [])
 
   const copyText = useCallback(async (text: string): Promise<void> => {
     try {
@@ -1037,22 +1088,19 @@ export default function App(): JSX.Element {
     (row: UnifiedRow, mode: SelectionMode): void => {
       setMenu(null)
       setSelection((current) =>
-        updateSelection(visibleRows, current, row.key, mode)
+        updateSelection(latestLists.current.rows, current, row.key, mode)
       )
       setFocusedKey(row.key)
     },
-    [visibleRows]
+    []
   )
 
-  const handleToggleRow = useCallback(
-    (row: UnifiedRow): void => {
-      setSelection((current) =>
-        updateSelection(visibleRows, current, row.key, 'toggle')
-      )
-      setFocusedKey(row.key)
-    },
-    [visibleRows]
-  )
+  const handleToggleRow = useCallback((row: UnifiedRow): void => {
+    setSelection((current) =>
+      updateSelection(latestLists.current.rows, current, row.key, 'toggle')
+    )
+    setFocusedKey(row.key)
+  }, [])
 
   /** Stable handler so a memoised row is not re-rendered by a new closure. */
   const handleFocusRow = useCallback((row: UnifiedRow): void => {
@@ -1060,21 +1108,21 @@ export default function App(): JSX.Element {
   }, [])
 
   const handleSelectAll = useCallback((): void => {
-    setSelection((current) => {
-      const allSelected =
-        visibleRows.length > 0 &&
-        visibleRows.every((row) => current.selected.includes(row.key))
-      return allSelected ? EMPTY_SELECTION : selectAllRows(visibleRows)
-    })
+    const allSelected = areAllRowsSelected(
+      visibleRows,
+      latestLists.current.selectedKeys
+    )
+    setSelection(allSelected ? EMPTY_SELECTION : selectAllRows(visibleRows))
   }, [visibleRows])
 
   const handleContextMenu = useCallback(
     (row: UnifiedRow, event: MouseEvent): void => {
       event.preventDefault()
-      const alreadySelected = selection.selected.includes(row.key)
+      const currentSelectedRows = latestLists.current.visibleSelection
+      const alreadySelected = latestLists.current.selectedKeys.has(row.key)
       const rows = alreadySelected
-        ? visibleSelection.length > 0
-          ? visibleSelection
+        ? currentSelectedRows.length > 0
+          ? currentSelectedRows
           : [row]
         : [row]
       if (!alreadySelected) {
@@ -1084,7 +1132,7 @@ export default function App(): JSX.Element {
       setFocusedKey(row.key)
       setMenu({ x: event.clientX, y: event.clientY, rows })
     },
-    [selection.selected, visibleSelection]
+    []
   )
 
   const handleContextAction = useCallback(
@@ -1192,8 +1240,7 @@ export default function App(): JSX.Element {
           x: rect ? rect.left + 48 : 40,
           y: rect ? rect.top + 24 : 80,
           rows:
-            visibleSelection.length > 0 &&
-            selection.selected.includes(focusedRow.key)
+            visibleSelection.length > 0 && selectedKeys.has(focusedRow.key)
               ? visibleSelection
               : [focusedRow]
         })
@@ -1209,6 +1256,7 @@ export default function App(): JSX.Element {
       handleToggleRow,
       openRow,
       requestRemove,
+      selectedKeys,
       selection,
       visibleRows,
       visibleSelection
@@ -1344,16 +1392,17 @@ export default function App(): JSX.Element {
   )
 
   const filtersActive =
-    query.trim().length > 0 || statusFilter !== 'all'
+    debouncedQuery.trim().length > 0 || statusFilter !== 'all'
   const activeDownloadCount = runningCount(listedRows)
   const aggregateSpeed = totalSpeed(listedRows)
   const totalOnDisk = listedRows.reduce((sum, row) => sum + row.completedBytes, 0)
   const saveDir = snapshot?.downloads[0]?.dir ?? null
   const menuActions = menu ? buildContextActions(menu.rows) : []
   const selectMode = selection.selected.length > 1
-  const allSelected =
-    visibleRows.length > 0 &&
-    visibleRows.every((row) => selection.selected.includes(row.key))
+  const allSelected = useMemo(
+    () => areAllRowsSelected(visibleRows, selectedKeys),
+    [visibleRows, selectedKeys]
+  )
 
   return (
     <div
@@ -1641,15 +1690,17 @@ export default function App(): JSX.Element {
             />
 
             {showDetails && singleSelected !== null ? (
-              <DetailsPane
-                row={detailsPaneRow ?? singleSelected}
-                onClose={() => setDetailsClosedFor(singleSelected.key)}
-                onOpen={openRow}
-                onShowInFolder={showRowInFolder}
-                onCopyLink={(copyRow) => {
-                  if (copyRow.url !== null) void copyText(copyRow.url)
-                }}
-              />
+              <Suspense fallback={null}>
+                <DetailsPane
+                  row={detailsPaneRow ?? singleSelected}
+                  onClose={() => setDetailsClosedFor(singleSelected.key)}
+                  onOpen={openRow}
+                  onShowInFolder={showRowInFolder}
+                  onCopyLink={(copyRow) => {
+                    if (copyRow.url !== null) void copyText(copyRow.url)
+                  }}
+                />
+              </Suspense>
             ) : null}
 
             <footer className="flex shrink-0 items-center gap-4 border-t border-white/[0.07] px-4 py-1.5 text-[12px] text-zinc-500">
@@ -1745,21 +1796,27 @@ export default function App(): JSX.Element {
       ) : null}
 
       {menu ? (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          actions={menuActions}
-          onSelect={handleContextAction}
-          onClose={() => setMenu(null)}
-        />
+        <Suspense fallback={null}>
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            actions={menuActions}
+            onSelect={handleContextAction}
+            onClose={() => setMenu(null)}
+          />
+        </Suspense>
       ) : null}
 
       {confirm ? (
-        <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+        <Suspense fallback={null}>
+          <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+        </Suspense>
       ) : null}
 
       {shortcutsOpen ? (
-        <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        <Suspense fallback={null}>
+          <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        </Suspense>
       ) : null}
 
       {dragActive ? (

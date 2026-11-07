@@ -56,6 +56,14 @@ export const DEFAULT_ALLOWED_HOURS_END = '00:00'
 export const DEFAULT_SORT_DOWNLOADS_BY_TYPE = false
 
 /**
+ * Automatic history cleanup. Only list/history rows are removed; downloaded
+ * files always stay on disk. `0` means "Never". The default keeps 30 days.
+ */
+export const HISTORY_RETENTION_DAYS = [0, 7, 30, 90] as const
+export type HistoryRetentionDays = (typeof HISTORY_RETENTION_DAYS)[number]
+export const DEFAULT_HISTORY_RETENTION_DAYS: HistoryRetentionDays = 30
+
+/**
  * Largest timestamp accepted by an ECMAScript Date, used as a practical bound
  * for an optional scheduled start expressed in epoch milliseconds.
  */
@@ -83,6 +91,8 @@ export interface DownloadSettings {
   theme: AppTheme
   /** Sort new downloads into type subfolders of the default directory. */
   sortDownloadsByType: boolean
+  /** Remove old finished list entries after this many days; `0` is never. */
+  historyRetentionDays: HistoryRetentionDays
 }
 
 /**
@@ -121,7 +131,8 @@ export function defaultDownloadSettings(): DownloadSettings {
       end: DEFAULT_ALLOWED_HOURS_END
     },
     theme: DEFAULT_THEME,
-    sortDownloadsByType: DEFAULT_SORT_DOWNLOADS_BY_TYPE
+    sortDownloadsByType: DEFAULT_SORT_DOWNLOADS_BY_TYPE,
+    historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS
   }
 }
 
@@ -207,6 +218,25 @@ export function parseAppTheme(value: unknown): AppTheme {
   return value
 }
 
+/** True only for one of the documented history-retention choices. */
+export function isHistoryRetentionDays(
+  value: unknown
+): value is HistoryRetentionDays {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    (HISTORY_RETENTION_DAYS as readonly number[]).includes(value)
+  )
+}
+
+/** Parse the automatic history-retention choice; `0` means never. */
+export function parseHistoryRetentionDays(value: unknown): HistoryRetentionDays {
+  if (!isHistoryRetentionDays(value)) {
+    throw new ValidationError('Invalid history retention choice.')
+  }
+  return value
+}
+
 /** True only for an exact, zero-padded 24-hour `HH:mm` string. */
 export function isClockTime(value: unknown): value is string {
   return typeof value === 'string' && CLOCK_TIME.test(value)
@@ -242,7 +272,8 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       'globalSpeedLimitBps',
       'allowedHours',
       'theme',
-      'sortDownloadsByType'
+      'sortDownloadsByType',
+      'historyRetentionDays'
     ],
     'download settings'
   )
@@ -275,6 +306,9 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       record,
       'sortDownloadsByType',
       'download settings'
+    ),
+    historyRetentionDays: parseHistoryRetentionDays(
+      record.historyRetentionDays
     )
   }
 }

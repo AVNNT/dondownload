@@ -21,6 +21,7 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type { ChecksumResult } from '@shared/checksum'
 import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
   MediaToolSettings,
@@ -40,6 +41,7 @@ import {
 } from '@shared/scanner'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
+import type { ChecksumService } from './checksum/service'
 import { probeUrlSize } from './net/urlSize'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
@@ -66,6 +68,8 @@ export interface IpcContext {
   mediaJobs?: MediaJobsManager
   /** Additive Milestone 3B batch orchestration. */
   batches?: BatchManager
+  /** Streaming file checksum jobs (optional until wired in index.ts). */
+  checksums?: ChecksumService
   /** Additive Milestone 5A runtime download settings. */
   settings?: SettingsManager
   /** Desktop-only preferences (notifications, clipboard, startup, zoom). */
@@ -172,6 +176,31 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.deleteDownloadFile, (_event, id) =>
     context.manager.deleteFile(id)
   )
+
+  // Checksum verification. The renderer sends only the opaque download id and
+  // an expected hash; the service resolves the download's own recorded path.
+  const checksums = (): ChecksumService => {
+    if (!context.checksums) {
+      throw new AppError(
+        'CHECKSUM_UNAVAILABLE',
+        'Checksum verification is not available.'
+      )
+    }
+    return context.checksums
+  }
+
+  invoke<ChecksumResult>(IPC.verifyChecksum, (_event, input) =>
+    checksums().verify(input)
+  )
+
+  invoke<ChecksumResult>(IPC.computeChecksum, (_event, input) =>
+    checksums().compute(input)
+  )
+
+  invoke<null>(IPC.cancelChecksum, (_event, input) => {
+    checksums().cancel(input)
+    return null
+  })
 
   // Additive media channels. They reuse the same trusted-sender wrapper and
   // never widen the existing download capabilities.
@@ -324,6 +353,16 @@ export function registerIpc(context: IpcContext): void {
       applyThemeToWindow(window, updated.theme)
     }
     return updated
+  })
+
+  // Quick actions send one value only; the manager merges it with the current
+  // settings inside its serialized update instead of trusting a stale snapshot.
+  invoke<DownloadSettings>(IPC.setSpeedLimit, (_event, input) => {
+    const manager = settings()
+    if (typeof input !== 'number' || !Number.isFinite(input)) {
+      throw new AppError('INVALID_INPUT', 'The speed limit is invalid.')
+    }
+    return manager.setGlobalSpeedLimit(input)
   })
 
   // Desktop-only settings are separate from aria2's download settings so a

@@ -24,12 +24,19 @@ import {
   type BatchRecord
 } from '@shared/batches'
 import {
+  DEFAULT_HISTORY_RETENTION_DAYS,
   DEFAULT_THEME,
   parseDownloadControls,
   parseDownloadSettings,
   type DownloadControls,
   type DownloadSettings
 } from '@shared/settings'
+import type { HistoryCleanupDeletion } from '../history/cleanup'
+import {
+  isChecksumAlgorithm,
+  isChecksumResult,
+  type ChecksumResult
+} from '@shared/checksum'
 import {
   parseDesktopSettings,
   type DesktopSettings
@@ -51,7 +58,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 19
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -96,7 +103,11 @@ interface Migration {
   sql: string
 }
 
-const MIGRATIONS: readonly Migration[] = [
+/**
+ * Exported for migration tests only. The Database class applies every entry up
+ * to SCHEMA_VERSION in order; application code should never use this directly.
+ */
+export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
     sql: `
@@ -574,6 +585,63 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE download_settings ADD COLUMN sort_downloads_by_type INTEGER
         NOT NULL DEFAULT 0 CHECK (sort_downloads_by_type IN (0, 1));
     `
+  },
+  {
+    // History/list reads all use `ORDER BY created_at DESC, updated_at DESC`.
+    // The v1 single-column index cannot satisfy the second sort key, so add
+    // the composite covering index for downloads and the same shape for the
+    // media/batch lists. `IF NOT EXISTS` keeps this migration self-contained
+    // and safe if a database already carries an identically named index.
+    version: 17,
+    sql: `
+      CREATE INDEX IF NOT EXISTS downloads_created_at_updated_at_idx
+        ON downloads (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS media_jobs_created_at_updated_at_idx
+        ON media_jobs (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS batches_created_at_updated_at_idx
+        ON batches (created_at DESC, updated_at DESC);
+    `
+  },
+  {
+    // Additive only: persist the last checksum result for a download's own
+    // recorded file. Existing rows keep nulls until a verification runs, and
+    // the main download upsert never writes these columns, so ordinary
+    // progress saves cannot clobber a stored result.
+    version: 18,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN checksum_algorithm TEXT
+        CHECK (
+          checksum_algorithm IS NULL OR
+          checksum_algorithm IN ('md5', 'sha1', 'sha256', 'sha512')
+        );
+
+      ALTER TABLE downloads ADD COLUMN checksum_ok INTEGER
+        CHECK (checksum_ok IS NULL OR checksum_ok IN (0, 1));
+
+      ALTER TABLE downloads ADD COLUMN checksum_computed TEXT;
+
+      ALTER TABLE downloads ADD COLUMN checksum_checked_at INTEGER
+        CHECK (checksum_checked_at IS NULL OR checksum_checked_at >= 0);
+    `
+  },
+  {
+    // Additive only: automatic history cleanup. Existing rows keep every value
+    // and gain the documented 30-day default. The expression indexes cover the
+    // "terminal state + finished/updated time" cleanup predicate so a future
+    // SQL-side sweep stays cheap. No row, file or list entry is touched here.
+    version: 19,
+    sql: `
+      ALTER TABLE download_settings ADD COLUMN history_retention_days INTEGER
+        NOT NULL DEFAULT 30
+        CHECK (history_retention_days IN (0, 7, 30, 90));
+
+      CREATE INDEX IF NOT EXISTS downloads_history_cleanup_idx
+        ON downloads (status, COALESCE(completed_at, updated_at));
+      CREATE INDEX IF NOT EXISTS media_jobs_history_cleanup_idx
+        ON media_jobs (status, COALESCE(completed_at, updated_at));
+      CREATE INDEX IF NOT EXISTS batches_history_cleanup_idx
+        ON batches (status, COALESCE(completed_at, updated_at));
+    `
   }
 ]
 
@@ -647,6 +715,23 @@ function nullableNumber(
   return null
 }
 
+function rowToChecksum(row: Record<string, unknown>): ChecksumResult | null {
+  const algorithm = text(row, 'checksum_algorithm')
+  const computed = text(row, 'checksum_computed')
+  const checkedAt = nullableNumber(row, 'checksum_checked_at')
+  if (!isChecksumAlgorithm(algorithm) || computed === null || checkedAt === null) {
+    return null
+  }
+  const rawOk = nullableNumber(row, 'checksum_ok')
+  const result: ChecksumResult = {
+    algorithm,
+    ok: rawOk === null ? null : rawOk === 1,
+    computed,
+    checkedAt
+  }
+  return isChecksumResult(result) ? result : null
+}
+
 function rowToStored(row: Record<string, unknown>): StoredDownload | null {
   const id = text(row, 'id')
   const gid = text(row, 'gid')
@@ -664,6 +749,7 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
 
   const attempts = Math.max(1, Math.trunc(number(row, 'attempts', 1)))
   const maxAttempts = Math.max(1, Math.trunc(number(row, 'max_attempts', 3)))
+  const checksum = rowToChecksum(row)
 
   return {
     record: {
@@ -685,7 +771,8 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
       maxAttempts,
       createdAt: Math.trunc(number(row, 'created_at')),
       updatedAt: Math.trunc(number(row, 'updated_at')),
-      completedAt: nullableNumber(row, 'completed_at')
+      completedAt: nullableNumber(row, 'completed_at'),
+      ...(checksum === null ? {} : { checksum })
     },
     explicitFilename: text(row, 'explicit_filename'),
     scheduledAt: nullableNumber(row, 'scheduled_at'),
@@ -711,7 +798,12 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
     // The migration default covers old rows; this fallback keeps a malformed
     // row from taking the app down before the shared parser can reject it.
     theme: text(row, 'theme') ?? DEFAULT_THEME,
-    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1
+    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1,
+    historyRetentionDays: number(
+      row,
+      'history_retention_days',
+      DEFAULT_HISTORY_RETENTION_DAYS
+    )
   })
 }
 
@@ -876,6 +968,7 @@ export class DownloadDatabase {
   private readonly deleteStatement: StatementSync
   private readonly downloadControlsStatement: StatementSync
   private readonly downloadBlockReasonStatement: StatementSync
+  private readonly downloadChecksumStatement: StatementSync
   private readonly settingsSelectStatement: StatementSync
   private readonly settingsUpsertStatement: StatementSync
   private readonly mediaToolSettingsSelectStatement: StatementSync
@@ -908,6 +1001,9 @@ export class DownloadDatabase {
       this.db.exec('PRAGMA journal_mode = WAL')
       this.db.exec('PRAGMA synchronous = NORMAL')
       this.db.exec('PRAGMA busy_timeout = 5000')
+      // Sort/compare scratch space stays in memory; no temp files for the
+      // small ORDER BY / index maintenance this database performs.
+      this.db.exec('PRAGMA temp_store = MEMORY')
       this.db.exec('PRAGMA foreign_keys = ON')
       migrate(this.db)
 
@@ -953,6 +1049,12 @@ export class DownloadDatabase {
         SET block_reason = ?
         WHERE id = ?
       `)
+      this.downloadChecksumStatement = this.db.prepare(`
+        UPDATE downloads
+        SET checksum_algorithm = ?, checksum_ok = ?,
+            checksum_computed = ?, checksum_checked_at = ?
+        WHERE id = ?
+      `)
       this.settingsSelectStatement = this.db.prepare(
         'SELECT * FROM download_settings WHERE id = 1'
       )
@@ -961,8 +1063,8 @@ export class DownloadDatabase {
           id, max_concurrent_downloads, per_host_connections,
           global_speed_limit_bps, allowed_hours_enabled,
           allowed_hours_start, allowed_hours_end, theme,
-          sort_downloads_by_type, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sort_downloads_by_type, history_retention_days, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           max_concurrent_downloads = excluded.max_concurrent_downloads,
           per_host_connections = excluded.per_host_connections,
@@ -972,6 +1074,7 @@ export class DownloadDatabase {
           allowed_hours_end = excluded.allowed_hours_end,
           theme = excluded.theme,
           sort_downloads_by_type = excluded.sort_downloads_by_type,
+          history_retention_days = excluded.history_retention_days,
           updated_at = excluded.updated_at
       `)
       this.mediaToolSettingsSelectStatement = this.db.prepare(
@@ -1287,6 +1390,40 @@ export class DownloadDatabase {
     }
   }
 
+  /**
+   * Persist the last checksum result for one download. Only the checksum
+   * columns are touched so a concurrent progress save cannot resurrect an old
+   * status. The result is validated against its algorithm's hex length.
+   */
+  saveDownloadChecksum(id: string, result: ChecksumResult): void {
+    this.assertOpen()
+    try {
+      if (!isChecksumResult(result)) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update the checksum result: invalid result.'
+        )
+      }
+      const changes = this.downloadChecksumStatement.run(
+        result.algorithm,
+        result.ok === null ? null : result.ok ? 1 : 0,
+        result.computed,
+        result.checkedAt,
+        id
+      )
+      if (Number(changes.changes) === 0) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update the checksum result: download was not found.'
+        )
+      }
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not update the checksum result', error)
+    }
+  }
+
   loadSettings(): DownloadSettings {
     this.assertOpen()
     try {
@@ -1320,6 +1457,7 @@ export class DownloadDatabase {
         parsed.allowedHours.end,
         parsed.theme,
         parsed.sortDownloadsByType ? 1 : 0,
+        parsed.historyRetentionDays,
         Date.now()
       )
     } catch (error) {
@@ -1511,6 +1649,47 @@ export class DownloadDatabase {
         // The transaction may already be closed by SQLite.
       }
       throw databaseError('Could not remove media job history', error)
+    }
+  }
+
+  /**
+   * Remove old list/history rows for every list source in ONE transaction.
+   * Used by the automatic history cleanup so a download row, a media row and a
+   * batch never disappear in separate commits. Files on disk are never touched.
+   */
+  deleteHistoryEntries(input: HistoryCleanupDeletion): void {
+    const downloadIds = input.downloadIds
+    const mediaJobIds = input.mediaJobIds
+    const batchIds = input.batchIds
+    if (
+      downloadIds.length === 0 &&
+      mediaJobIds.length === 0 &&
+      batchIds.length === 0
+    ) {
+      return
+    }
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of downloadIds) {
+        this.deleteStatement.run(id)
+      }
+      for (const id of mediaJobIds) {
+        this.mediaDeleteStatement.run(id)
+      }
+      // batch_items cascades from batches; foreign_keys is on.
+      for (const id of batchIds) {
+        this.batchDeleteStatement.run(id)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not remove old history', error)
     }
   }
 

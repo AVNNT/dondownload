@@ -12,6 +12,7 @@
 import {
   OVERLAY_ALL_SITES_ID,
   OVERLAY_ALL_SITES_MATCHES,
+  OVERLAY_BOOTSTRAP_FILE,
   OVERLAY_MESSAGE_TYPES,
   OVERLAY_SCRIPT_FILES,
   allSitesOverlayWanted,
@@ -361,6 +362,100 @@ async function injectOverlayIntoMatchingTab(
   return { ok: true, granted: true, registered: true, injected: true }
 }
 
+/** Probe one tab without injecting anything. */
+async function overlayPresentInTab(chromeApi, tabId) {
+  try {
+    const presence = await chromeApi.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      func: overlayPresenceProbe,
+      world: 'ISOLATED'
+    })
+    return (
+      Array.isArray(presence) &&
+      presence.some((result) => result && result.result === true)
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Load the full overlay files into one tab on demand.
+ *
+ * The all-sites registration injects only `overlay-bootstrap.js`; the bootstrap
+ * calls this through the worker when a page really uses a player. The trusted
+ * sender supplies the tab and origin, and the same grant/exclusion rules as the
+ * popup path are re-checked here, so a page can never request the overlay for a
+ * site the user turned off. The probe makes a repeated request a no-op.
+ */
+export async function ensureOverlayForSender(chromeApi, sender) {
+  if (!sender || !sender.tab || sender.frameId !== 0) {
+    return failure('INVALID_SENDER', 'The overlay request did not come from a page.')
+  }
+  const tabId = sender.tab.id
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    return failure('INVALID_SENDER', 'The overlay request did not come from a page.')
+  }
+  const origin = originFromUrl(sender.tab.url)
+  if (origin === null) {
+    return failure('INVALID_ORIGIN', 'The page origin is not supported.')
+  }
+
+  // An excluded origin is off even though the broad registration matches it.
+  if (await isOverlayOriginExcluded(chromeApi, origin)) {
+    return failure('EXCLUDED', 'The overlay is turned off for this site.')
+  }
+
+  const allSites = await allSitesOverlayActive(chromeApi)
+  let exactGranted = false
+  if (!allSites) {
+    const pattern = originToMatchPattern(origin)
+    if (pattern === null) {
+      return failure('INVALID_ORIGIN', 'The page origin is not supported.')
+    }
+    try {
+      exactGranted =
+        (await chromeApi.permissions.contains({ origins: [pattern] })) === true
+    } catch {
+      exactGranted = false
+    }
+  }
+  if (!allSites && !exactGranted) {
+    return failure(
+      'PERMISSION_REQUIRED',
+      'The overlay is not enabled for this site.'
+    )
+  }
+
+  if (await overlayPresentInTab(chromeApi, tabId)) {
+    await rememberOverlayTab(chromeApi, origin, tabId)
+    return { ok: true, ready: true, already: true }
+  }
+
+  try {
+    await chromeApi.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      files: [...OVERLAY_SCRIPT_FILES],
+      injectImmediately: true
+    })
+  } catch {
+    return failure(
+      'OVERLAY_NOT_READY',
+      'The overlay could not be added to this tab. Reload the page and try again.'
+    )
+  }
+
+  const present = await overlayPresentInTab(chromeApi, tabId)
+  if (!present) {
+    return failure(
+      'OVERLAY_NOT_READY',
+      'The overlay did not report itself in this tab. Reload the page and try again.'
+    )
+  }
+  await rememberOverlayTab(chromeApi, origin, tabId)
+  return { ok: true, ready: true }
+}
+
 /**
  * True when the broad host grant is present. All-sites mode needs it for both
  * the registration and the injection into already-open tabs.
@@ -483,21 +578,16 @@ export async function injectAllSitesIntoOpenTabs(chromeApi) {
       continue
     }
     try {
-      const presence = await chromeApi.scripting.executeScript({
-        target: { tabId, allFrames: false },
-        func: overlayPresenceProbe,
-        world: 'ISOLATED'
-      })
-      const present =
-        Array.isArray(presence) &&
-        presence.some((result) => result && result.result === true)
-      if (present) {
+      if (await overlayPresentInTab(chromeApi, tabId)) {
         skipped.push(tabId)
         continue
       }
+      // Only the bootstrap is injected into already-open tabs. It loads the
+      // full overlay when this tab has a player, so a tab without one stays
+      // cheap after a settings change or a browser restart.
       await chromeApi.scripting.executeScript({
         target: { tabId, allFrames: false },
-        files: [...OVERLAY_SCRIPT_FILES],
+        files: [OVERLAY_BOOTSTRAP_FILE],
         injectImmediately: true
       })
       await rememberOverlayTab(chromeApi, origin, tabId)

@@ -204,6 +204,11 @@ export interface BatchMediaJobsPort {
   queueSniffedMedia?(input: unknown): Promise<MediaJob>
   /** Final video path of a completed child, for the post-download rename. */
   getFilePath?(id: string): string | null
+  /**
+   * Output directory of a queued/running child. Optional so narrow test
+   * doubles stay valid; without it no child folder is available.
+   */
+  getJobDirectory?(id: string): string | null
 }
 
 export interface BatchCollectionTarget {
@@ -400,6 +405,15 @@ function asRecord(value: unknown): Record<string, unknown> {
     throw new ValidationError('Invalid batch request.')
   }
   return value as Record<string, unknown>
+}
+
+/** True when `candidate` is `root` or one of its descendants. */
+function directoryIsInside(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate))
+  return (
+    relative === '' ||
+    (!relative.startsWith('..') && !path.isAbsolute(relative))
+  )
 }
 
 /** Parse the smart multi-URL submit input without normalizing each URL yet. */
@@ -2525,22 +2539,29 @@ export class BatchManager {
     const input: BatchTargetInput = parseBatchTargetInput(rawInput)
     const batch = this.requireBatch(input.batchId)
 
-    this.batches.delete(batch.record.id)
-    this.scanPairings.delete(batch.record.id)
-    for (const item of batch.items.values()) {
-      this.dirtyItems.delete(item.id)
-      this.scanRequestHeaders.delete(item.id)
-      this.scanResolvedUrls.delete(item.id)
-      this.scanFilenames.delete(item.id)
-      this.scanFallbacks.delete(item.id)
-      this.scanSubfolders.delete(item.id)
-      this.scanMediaSelections.delete(item.id)
-      this.scanSniffedMediaSelections.delete(item.id)
-    }
+    this.forgetBatch(batch)
     this.removePersistedBatch(batch.record.id)
     this.stopPollingIfIdle()
     this.publish(true)
     return this.getBatchSnapshot()
+  }
+
+  /**
+   * Drop parents that a shared history-cleanup transaction already deleted from
+   * SQLite. This is the same in-memory path as "Remove batch": items and their
+   * memory-only scanner state are cleared, while child jobs and files stay.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      const batch = this.batches.get(id)
+      if (!batch) continue
+      this.forgetBatch(batch)
+      changed = true
+    }
+    if (!changed) return
+    this.stopPollingIfIdle()
+    this.publish(true)
   }
 
   /**
@@ -2774,6 +2795,10 @@ export class BatchManager {
       if (batch.record.status === 'cancelled') continue
       for (const item of this.sortedItems(batch)) {
         if (item.kind === 'download' && item.status === 'queued') {
+          // A paired script needs the video's actual output directory. Wait
+          // until its child exists, so type sorting cannot place the script in
+          // the root before the video reveals its Video/Audio folder.
+          if (!this.pairedVideoStarted(batch, item)) continue
           return { batch, item }
         }
       }
@@ -2827,6 +2852,7 @@ export class BatchManager {
 
       let targetUrl = sourceUrl
       let filename: string | undefined = this.scanFilenames.get(item.id)
+      let sortFilename: string | undefined
       let parsed: URL
       try {
         parsed = new URL(sourceUrl)
@@ -2850,6 +2876,9 @@ export class BatchManager {
         // final path is temporary and carries the `.megaenc` suffix.
         const resolution = await this.requireMega().resolveFile(sourceUrl)
         targetUrl = resolution.downloadUrl
+        // The temporary `.megaenc` name must not decide the type folder; the
+        // real pre-suffix name does, so the decrypted file lands beside it.
+        sortFilename = resolution.name
         filename = megaEncryptedFilename(resolution.name)
         this.megaDownloads.set(item.id, {
           key: resolution.key,
@@ -2863,6 +2892,7 @@ export class BatchManager {
       const addInput = {
         url: targetUrl,
         ...(filename ? { filename } : {}),
+        ...(sortFilename === undefined ? {} : { sortFilename }),
         ...(resolvedScanUrl === undefined
           ? {}
           : { resolvedUrl: resolvedScanUrl }),
@@ -3573,9 +3603,27 @@ export class BatchManager {
   }
 
   /**
-   * Folder for paired scripts that are downloaded next to their video. Returns
-   * null when the download should use the normal download root or when the
-   * optional scanner download path is unavailable.
+   * True when a queued script's paired video has a child whose output folder is
+   * known. A script without a pairing is always ready.
+   */
+  private pairedVideoStarted(
+    batch: ManagedBatch,
+    item: BatchItemRecord
+  ): boolean {
+    const pairing = this.pairingForScript(batch, item.id)
+    if (pairing === null || pairing.videoItemId === null) return true
+    const video = batch.items.get(pairing.videoItemId)
+    if (video === undefined) return true
+    if (video.status === 'queued') return false
+    if (video.status === 'running' && video.childId === null) return false
+    return true
+  }
+
+  /**
+   * Folder for paired scripts that are downloaded next to their video. Derived
+   * from the video's ACTUAL output directory, which follows type sorting, and
+   * still bounded by the scanner download root. Returns null when no child
+   * directory is available yet; the download then uses the normal root.
    */
   private pairedScriptDirectory(
     batch: ManagedBatch,
@@ -3584,11 +3632,15 @@ export class BatchManager {
     if (pairing === null || pairing.videoItemId === null) return null
     if (typeof this.downloads.addScanFile !== 'function') return null
     const video = batch.items.get(pairing.videoItemId)
-    if (!video) return null
-    if (video.kind === 'media') return this.scanMediaDir
-    // A browser-matched direct file is downloaded into the normal root, so its
-    // scripts must land in that same folder.
-    return this.scanRootDir ?? this.scanMediaDir
+    if (!video || video.childId === null) return null
+    const directory =
+      video.kind === 'media'
+        ? this.mediaJobs.getJobDirectory?.(video.childId) ?? null
+        : this.downloads.getItem(video.childId)?.dir ?? null
+    if (directory === null) return null
+    const root = this.scanRootDir ?? this.scanMediaDir
+    if (root === null || !directoryIsInside(root, directory)) return null
+    return directory
   }
 
   /**
@@ -3810,6 +3862,22 @@ export class BatchManager {
     } catch {
       this.logPersistenceError('could not be saved')
       this.markItemDirty(item)
+    }
+  }
+
+  /** Drop every in-memory trace of one batch. Child jobs/files stay. */
+  private forgetBatch(batch: ManagedBatch): void {
+    this.batches.delete(batch.record.id)
+    this.scanPairings.delete(batch.record.id)
+    for (const item of batch.items.values()) {
+      this.dirtyItems.delete(item.id)
+      this.scanRequestHeaders.delete(item.id)
+      this.scanResolvedUrls.delete(item.id)
+      this.scanFilenames.delete(item.id)
+      this.scanFallbacks.delete(item.id)
+      this.scanSubfolders.delete(item.id)
+      this.scanMediaSelections.delete(item.id)
+      this.scanSniffedMediaSelections.delete(item.id)
     }
   }
 

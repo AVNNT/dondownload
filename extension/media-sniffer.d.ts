@@ -5,6 +5,10 @@ export const MEDIA_SNIFFER_MESSAGE_TYPES: {
 }
 
 export const MAX_SNIFFED_PER_TAB: number
+export const MAX_SNIFFED_TABS: number
+export const SNIFFED_TAB_TTL_MS: number
+export const MAX_MANIFEST_CACHE_ENTRIES: number
+export const MANIFEST_CACHE_TTL_MS: number
 export const MIN_MEDIA_BYTES: number
 export const MAX_HLS_VARIANTS: number
 export const MAX_HLS_TEXT_BYTES: number
@@ -68,6 +72,7 @@ export interface MediaSnifferStore {
   list(tabId: number): SniffedMediaEntry[]
   get(tabId: number, url: string): SniffedMediaEntry | null
   count(tabId: number): number
+  tabCount(): number
   clearTab(tabId: number): void
   clearBefore(tabId: number, timestamp: number): void
   clearAll(): void
@@ -91,6 +96,8 @@ export function parseHlsMaster(text: string, baseUrl: string): HlsManifestInfo
 export function createMediaSnifferStore(options?: {
   now?: () => number
   maximumPerTab?: number
+  maximumTabs?: number
+  tabTtlMs?: number
 }): MediaSnifferStore
 export function installMediaSniffer(
   chromeApi: unknown,

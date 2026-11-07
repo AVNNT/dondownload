@@ -669,6 +669,12 @@ describe('MediaJobsManager queue lifecycle', () => {
     expect(current.completedBytes).toBe(100)
     expect(current.totalBytes).toBe(1_000)
     expect(current.speedBps).toBe(50)
+    expect(harness.manager.getActiveProgress()).toEqual({
+      activeCount: 1,
+      sizedCount: 1,
+      completedBytes: 100,
+      totalBytes: 1_000
+    })
 
     harness.engine.pending.onProgress(
       progress({
@@ -682,6 +688,8 @@ describe('MediaJobsManager queue lifecycle', () => {
     current = harness.manager.getMediaJob(job.id)
     expect(current.status).toBe('merging')
     expect(current.speedBps).toBe(0)
+    // Merging no longer transfers, so it does not contribute to the taskbar.
+    expect(harness.manager.getActiveProgress().activeCount).toBe(0)
 
     harness.engine.pending.resolve({
       filePath: finalPath,

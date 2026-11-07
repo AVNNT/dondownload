@@ -1227,6 +1227,45 @@
     })
   }
 
+  /**
+   * True only when a MutationObserver batch can change what the overlay shows.
+   *
+   * The observer watches the whole document for childList changes, but a busy
+   * page also rewrites unrelated text, ads, tickers and analytics nodes. The
+   * overlay only cares about a player appearing or leaving. `records` is
+   * omitted by older test doubles, in which case the pass is kept (fail open).
+   */
+  function mutationRecordsAreRelevant(records) {
+    if (!Array.isArray(records) || records.length === 0) return true
+    for (var index = 0; index < records.length; index += 1) {
+      var record = records[index]
+      if (!record || record.type !== 'childList') continue
+      if (nodeListHasPlayer(record.addedNodes)) return true
+      if (nodeListHasPlayer(record.removedNodes)) return true
+    }
+    return false
+  }
+
+  function nodeListHasPlayer(nodes) {
+    if (!nodes || typeof nodes.length !== 'number') return false
+    for (var index = 0; index < nodes.length; index += 1) {
+      if (nodeHasPlayer(nodes[index])) return true
+    }
+    return false
+  }
+
+  function nodeHasPlayer(node) {
+    if (!node) return false
+    var tag = typeof node.tagName === 'string' ? node.tagName.toUpperCase() : ''
+    if (tag === 'VIDEO' || tag === 'IFRAME' || tag === 'SOURCE') return true
+    if (typeof node.querySelector !== 'function') return false
+    try {
+      return node.querySelector('video, iframe, source') !== null
+    } catch {
+      return false
+    }
+  }
+
   var api = Object.freeze({
     BUTTON_SIZE: BUTTON_SIZE,
     EDGE_INSET: EDGE_INSET,
@@ -1245,6 +1284,7 @@
     placeTrigger: placeTrigger,
     placePanel: placePanel,
     nextActiveVideo: nextActiveVideo,
+    mutationRecordsAreRelevant: mutationRecordsAreRelevant,
     isTriggerReady: isTriggerReady,
     largestTriggerCandidate: largestTriggerCandidate,
     prefetchDecision: prefetchDecision,
