@@ -401,7 +401,12 @@ async function allSitesRegistrationStored(chromeApi) {
   }
 }
 
-async function allSitesOverlayActive(chromeApi) {
+/**
+ * True when the one broad all-sites registration is stored and the broad host
+ * grant is present. Callers that authorize a page must still check the
+ * per-site exclusion themselves (see `isOverlayOriginExcluded`).
+ */
+export async function allSitesOverlayActive(chromeApi) {
   return (
     (await allSitesOverlayWantedFromSettings(chromeApi)) &&
     (await allSitesRegistrationStored(chromeApi))
@@ -427,6 +432,21 @@ function isExcludedOrigin(settings, origin) {
       origin !== null &&
       settings.excludedOrigins.includes(origin)
   )
+}
+
+/**
+ * True when the user turned the overlay off for this exact origin ("Turn off
+ * overlay on this site"). The exclusion list is a user setting rather than a
+ * match pattern, so the broad all-sites registration still matches the page at
+ * the browser level; every all-sites authorization path must check this.
+ */
+export async function isOverlayOriginExcluded(chromeApi, origin) {
+  if (!isExactOrigin(origin)) return false
+  try {
+    return isExcludedOrigin(await readCaptureSettings(chromeApi), origin)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -950,15 +970,12 @@ export async function handleOverlayReady(chromeApi, message, sender) {
 
   // In all-sites mode the broad grant covers this origin, and an excluded site
   // must never run the overlay.
-  if (!granted && (await allSitesOverlayActive(chromeApi))) {
-    let excluded = false
-    try {
-      const settings = await readCaptureSettings(chromeApi)
-      excluded = isExcludedOrigin(settings, origin)
-    } catch {
-      excluded = false
-    }
-    if (!excluded) return rememberOverlayTab(chromeApi, origin, tabId)
+  if (
+    !granted &&
+    (await allSitesOverlayActive(chromeApi)) &&
+    !(await isOverlayOriginExcluded(chromeApi, origin))
+  ) {
+    return rememberOverlayTab(chromeApi, origin, tabId)
   }
 
   if (!granted) {

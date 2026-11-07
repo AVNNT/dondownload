@@ -91,7 +91,14 @@ export function forgetOverlayTab(
 ): Promise<boolean>
 export function overlayRemovalConfirmed(result: unknown): boolean
 export function allSitesHostsGranted(chromeApi: unknown): Promise<boolean>
-export function allSitesOverlayWantedFromSettings(chromeApi: unknown): Promise<boolean>
+export function allSitesOverlayWantedFromSettings(
+  chromeApi: unknown
+): Promise<boolean>
+export function allSitesOverlayActive(chromeApi: unknown): Promise<boolean>
+export function isOverlayOriginExcluded(
+  chromeApi: unknown,
+  origin: unknown
+): Promise<boolean>
 export function injectAllSitesIntoOpenTabs(chromeApi: unknown): Promise<{
   ok: boolean
   injected: number[]

@@ -8,7 +8,9 @@ import {
   queueMediaForSender
 } from '../extension/media-bridge'
 import {
+  OVERLAY_ALL_SITES_MATCHES,
   originToMatchPattern,
+  overlayAllSitesRegistration,
   overlayRegistrationForOrigin
 } from '../extension/site-policy'
 
@@ -26,6 +28,7 @@ interface FakeChrome {
   state: {
     granted: Set<string>
     registered: boolean
+    allSites: boolean
     tracked: Record<string, number[]>
     nativeMessages: Array<{ host: string; message: unknown }>
     calls: string[]
@@ -38,12 +41,40 @@ interface FakeChrome {
   nativeError: string | null
 }
 
-function createFakeChrome(): FakeChrome {
+interface FakeOptions {
+  /** True when the single broad all-sites registration is stored. */
+  allSites?: boolean
+}
+
+/**
+ * Grant the broad host patterns the all-sites overlay requires. The fake keeps
+ * `contains` exact, so the narrow per-origin pattern stays ungranted: that is
+ * the case the bridge has to handle without a per-origin registration.
+ */
+function grantAllSites(fake: FakeChrome): void {
+  for (const pattern of OVERLAY_ALL_SITES_MATCHES) {
+    fake.state.granted.add(pattern)
+  }
+}
+
+/**
+ * The always-on install: the broad grant and the single all-sites registration
+ * exist, no per-origin registration was ever created, and the exact pattern is
+ * not granted on its own.
+ */
+function useAllSitesOnly(fake: FakeChrome): void {
+  fake.state.registered = false
+  fake.state.granted.delete(PATTERN)
+  grantAllSites(fake)
+}
+
+function createFakeChrome(options: FakeOptions = {}): FakeChrome {
   const fake: FakeChrome = {
     api: null as any,
     state: {
       granted: new Set([PATTERN]),
       registered: true,
+      allSites: options.allSites === true,
       tracked: { [ORIGIN]: [7] },
       nativeMessages: [],
       calls: [],
@@ -58,6 +89,7 @@ function createFakeChrome(): FakeChrome {
 
   const registration = overlayRegistrationForOrigin(ORIGIN)
   if (!registration) throw new Error('registration fixture is invalid')
+  const allSitesRegistration = overlayAllSitesRegistration()
 
   fake.api = {
     runtime: {
@@ -97,9 +129,11 @@ function createFakeChrome(): FakeChrome {
     },
     scripting: {
       async getRegisteredContentScripts({ ids }: { ids?: string[] } = {}) {
-        if (!fake.state.registered) return []
-        if (!ids || ids.includes(registration.id)) return [{ ...registration }]
-        return []
+        const stored = []
+        if (fake.state.registered) stored.push({ ...registration })
+        if (fake.state.allSites) stored.push({ ...allSitesRegistration })
+        if (!ids) return stored
+        return stored.filter((entry) => ids.includes(entry.id))
       }
     },
     storage: {
@@ -266,6 +300,78 @@ describe('media sender authorization', () => {
     const result = await authorizeMediaSender(fake.api, validSender())
     expect(result).toMatchObject({ ok: false, error: { code: 'OVERLAY_NOT_REGISTERED' } })
     expect(fake.state.nativeMessages).toHaveLength(0)
+  })
+
+  it('accepts the all-sites registration without a per-origin one', async () => {
+    const fake = createFakeChrome({ allSites: true })
+    useAllSitesOnly(fake)
+    useChrome(fake)
+
+    const result = await authorizeMediaSender(fake.api, validSender())
+    expect(result).toMatchObject({
+      ok: true,
+      origin: ORIGIN,
+      tabId: 7,
+      url: TAB_URL
+    })
+  })
+
+  it('analyzes media under the all-sites registration only', async () => {
+    const fake = createFakeChrome({ allSites: true })
+    useAllSitesOnly(fake)
+    fake.nativeResponse = {
+      ok: true,
+      operation: 'analyze-media',
+      analysis: analysis()
+    }
+    useChrome(fake)
+
+    const result = await analyzeMediaForSender(
+      fake.api,
+      { type: MEDIA_MESSAGE_TYPES.ANALYZE },
+      validSender()
+    )
+
+    expect(result).toMatchObject({ ok: true, analysis: { title: 'Example media' } })
+    expect(fake.state.nativeMessages).toEqual([
+      {
+        host: 'com.dondownload.bridge',
+        message: { type: 'analyze-media', url: TAB_URL }
+      }
+    ])
+  })
+
+  it('rejects an origin the user turned the overlay off for, even in all-sites mode', async () => {
+    const fake = createFakeChrome({ allSites: true })
+    useAllSitesOnly(fake)
+    fake.state.captureSettings = { excludedOrigins: [ORIGIN] }
+    useChrome(fake)
+
+    const result = await authorizeMediaSender(fake.api, validSender())
+    expect(result).toMatchObject({ ok: false, error: { code: 'OVERLAY_NOT_REGISTERED' } })
+    expect(fake.state.nativeMessages).toHaveLength(0)
+  })
+
+  it('rejects an all-sites page when the broad registration is missing', async () => {
+    const fake = createFakeChrome({ allSites: false })
+    fake.state.registered = false
+    fake.state.granted.delete(PATTERN)
+    grantAllSites(fake)
+    useChrome(fake)
+
+    const result = await authorizeMediaSender(fake.api, validSender())
+    expect(result).toMatchObject({ ok: false, error: { code: 'OVERLAY_NOT_REGISTERED' } })
+    expect(fake.state.nativeMessages).toHaveLength(0)
+  })
+
+  it('keeps accepting the per-origin registration while all-sites mode is off', async () => {
+    const fake = createFakeChrome({ allSites: false })
+    useChrome(fake)
+
+    const result = await authorizeMediaSender(fake.api, validSender())
+    expect(result).toMatchObject({ ok: true, origin: ORIGIN, tabId: 7, url: TAB_URL })
+    // The per-origin registration short-circuits, so the broad grant is never read.
+    expect(fake.state.calls).toEqual(['contains'])
   })
 
   it('rejects a tab that is not tracked as running the overlay', async () => {
