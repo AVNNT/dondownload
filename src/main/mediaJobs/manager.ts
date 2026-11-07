@@ -151,6 +151,12 @@ const MEDIA_TOOL_STATE_FAILED_MESSAGE =
   'The media tool state could not be read.'
 
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
+/**
+ * Same-status progress lines arrive far faster than the renderer can paint.
+ * Coalesce them into one trailing publish; status transitions and terminal
+ * states still publish immediately.
+ */
+const PROGRESS_PUBLISH_COALESCE_MS = 200
 // Keep this aligned with the engine's 32-entry analysis cache. A larger cache
 // here would expose an opaque analysis ID that the engine has already evicted,
 // turning a valid queue request into a confusing download-time failure.
@@ -286,7 +292,10 @@ export class MediaJobsManager {
   private readonly analyses = new Map<string, CachedMediaAnalysis>()
   private readonly dirtyIds = new Set<string>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
-  private lastPublished: string | null = null
+  private publishTimer: ReturnType<typeof setTimeout> | null = null
+  /** Bumped by every change that the published snapshot must reflect. */
+  private revision = 0
+  private publishedRevision = 0
   private persistenceErrorLogged = false
   private closed = false
   private tool: MediaToolState = {
@@ -344,6 +353,15 @@ export class MediaJobsManager {
   getFilePath(id: string): string | null {
     const job = this.jobs.get(id)
     return job && job.record.status === 'complete' ? job.record.filePath : null
+  }
+
+  /**
+   * One sanitized job by exact id, or null. A cheap alternative to building the
+   * whole snapshot when a caller only needs a single child record.
+   */
+  getJob(id: string): MediaJob | null {
+    const job = this.jobs.get(id)
+    return job ? this.toMediaJob(job) : null
   }
 
   async getMediaStatus(rawId: unknown): Promise<MediaJob> {
@@ -943,7 +961,7 @@ export class MediaJobsManager {
         hint: null
       }
     }
-    this.publish()
+    this.publish(true)
     return Object.freeze({ ...this.tool })
   }
 
@@ -996,6 +1014,7 @@ export class MediaJobsManager {
       this.flushTimer = null
     }
     this.flushPending()
+    this.flushPublish()
   }
 
   /**
@@ -1038,11 +1057,34 @@ export class MediaJobsManager {
     this.flushPersistence()
   }
 
+  /**
+   * Publish the current snapshot. `force` publishes synchronously and is used
+   * for status transitions and terminal states; a plain call is coalesced into
+   * one trailing publish so per-line yt-dlp progress cannot rebuild the full
+   * snapshot on every line.
+   */
   publish(force = false): void {
+    this.revision += 1
+    if (force) {
+      this.flushPublish()
+      return
+    }
+    if (this.publishTimer !== null) return
+    this.publishTimer = setTimeout(() => {
+      this.publishTimer = null
+      this.flushPublish()
+    }, PROGRESS_PUBLISH_COALESCE_MS)
+    this.publishTimer.unref?.()
+  }
+
+  private flushPublish(): void {
+    if (this.publishTimer !== null) {
+      clearTimeout(this.publishTimer)
+      this.publishTimer = null
+    }
+    if (this.revision === this.publishedRevision) return
+    this.publishedRevision = this.revision
     const snapshot = this.getMediaSnapshot()
-    const serialized = JSON.stringify(snapshot)
-    if (!force && serialized === this.lastPublished) return
-    this.lastPublished = serialized
     try {
       this.onUpdate(snapshot)
     } catch {
@@ -1069,7 +1111,7 @@ export class MediaJobsManager {
     job.record.status = 'downloading'
     job.record.updatedAt = this.now()
     this.persistNow(job)
-    this.publish()
+    this.publish(true)
 
     try {
       const result = await this.engine.download(
@@ -1136,6 +1178,9 @@ export class MediaJobsManager {
 
     const previousStatus = job.record.status
     const previousFilePath = job.record.filePath
+    const previousCompletedBytes = job.record.completedBytes
+    const previousTotalBytes = job.record.totalBytes
+    const previousSpeedBps = job.speedBps
 
     job.record.status = nextStatus
     job.record.totalBytes = totalBytes
@@ -1152,9 +1197,19 @@ export class MediaJobsManager {
       (filePath !== null && filePath !== previousFilePath)
     if (critical) {
       this.persistNow(job)
-    } else {
-      this.markDirty(job)
+      this.publish(true)
+      return
     }
+
+    // A repeated line with identical numbers is not a change worth publishing.
+    if (
+      job.record.completedBytes === previousCompletedBytes &&
+      job.record.totalBytes === previousTotalBytes &&
+      job.speedBps === previousSpeedBps
+    ) {
+      return
+    }
+    this.markDirty(job)
     this.publish()
   }
 

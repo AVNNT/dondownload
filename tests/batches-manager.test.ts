@@ -133,6 +133,11 @@ class FakeDownloads implements BatchDownloadsPort {
     }
   }
 
+  getItem(id: string): DownloadItem | null {
+    const record = this.records.find((entry) => entry.id === id)
+    return record ? { ...record } : null
+  }
+
   complete(id: string): void {
     const record = this.records.find((entry) => entry.id === id)
     if (!record) throw new Error(`Unknown download ${id}`)
@@ -241,6 +246,11 @@ class FakeMediaJobs implements BatchMediaJobsPort {
 
   getMediaSnapshot(): MediaSnapshot {
     return { tool: TOOL, jobs: this.jobs.map((job) => ({ ...job })) }
+  }
+
+  getJob(id: string): MediaJob | null {
+    const job = this.jobs.find((entry) => entry.id === id)
+    return job ? { ...job } : null
   }
 
   complete(id: string): void {

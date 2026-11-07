@@ -146,6 +146,8 @@ export interface BatchDownloadsPort {
   add(input: unknown): Promise<unknown>
   pause(id: string): Promise<unknown>
   getSnapshot(): AppSnapshot
+  /** One public child item by id, or null. Cheaper than a full snapshot. */
+  getItem(id: string): DownloadItem | null
   /**
    * Drop one child record. Used only to clean up the failed first attempt of an
    * image item that is retried with its fallback URL. Optional so existing test
@@ -177,6 +179,8 @@ export interface BatchMediaJobsPort {
   queueMedia(input: unknown): Promise<MediaJob>
   cancelMedia(id: string): Promise<MediaJob>
   getMediaSnapshot(): MediaSnapshot
+  /** One sanitized child job by id, or null. Cheaper than a full snapshot. */
+  getJob(id: string): MediaJob | null
   /**
    * Additive detected media path (HLS/DASH). The input is the already
    * validated sniffed-media payload; the manager creates a normal media job.
@@ -2340,24 +2344,19 @@ export class BatchManager {
     if (this.closed) return
     let changed = false
 
-    const downloads = new Map(
-      this.downloads.getSnapshot().downloads.map((entry) => [entry.id, entry])
-    )
-    const media = new Map(
-      this.mediaJobs.getMediaSnapshot().jobs.map((entry) => [entry.id, entry])
-    )
-
     for (const batch of this.batches.values()) {
       if (batch.record.status === 'cancelled') continue
       for (const item of batch.items.values()) {
         if (!isActiveBatchItemStatus(item.status)) continue
         if (item.childId === null) continue
 
+        // One child lookup per item instead of rebuilding both full snapshots
+        // on every tick.
         if (item.kind === 'media') {
-          const child = media.get(item.childId)
+          const child = this.mediaJobs.getJob(item.childId)
           if (child && this.applyMediaChild(item, child)) changed = true
         } else {
-          const child = downloads.get(item.childId)
+          const child = this.downloads.getItem(item.childId)
           if (child && this.applyDownloadChild(item, child)) changed = true
         }
       }

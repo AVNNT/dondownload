@@ -327,6 +327,9 @@ function createMediaStub(): BatchMediaJobsPort {
     },
     getMediaSnapshot(): MediaSnapshot {
       return { tool: UNUSED_TOOL, jobs: [] }
+    },
+    getJob(): MediaJob | null {
+      return null
     }
   }
 }

@@ -136,6 +136,7 @@ function createDownloads() {
       },
       downloads: records.map((entry) => ({ ...entry }))
     })),
+    getItem: (id: string) => records.find((entry) => entry.id === id) ?? null,
     failLast(message: string): void {
       const record = records[records.length - 1]
       if (record === undefined) throw new Error('no child to fail')
@@ -152,7 +153,8 @@ function createBatchManager(downloads: ReturnType<typeof createDownloads>) {
       analyzeMedia: vi.fn(),
       queueMedia: vi.fn(),
       cancelMedia: vi.fn(),
-      getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] }))
+      getMediaSnapshot: vi.fn(() => ({ tool: {} as never, jobs: [] })),
+      getJob: vi.fn(() => null)
     },
     collectionEngine: {
       analyzeCollection: vi.fn(),

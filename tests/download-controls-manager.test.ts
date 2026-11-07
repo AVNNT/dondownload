@@ -7,7 +7,7 @@ vi.mock('electron', () => ({
   shell: { showItemInFolder: vi.fn() }
 }))
 
-import type { Aria2State, DownloadItem } from '../src/shared/types'
+import type { AppSnapshot, Aria2State, DownloadItem } from '../src/shared/types'
 import {
   defaultDownloadSettings,
   type DownloadControls,
@@ -103,6 +103,19 @@ class FakeAria2 {
           }
           return { ...tracked }
         }
+        case 'system.multicall': {
+          // One batch per poll tick; per-entry faults mirror aria2.
+          const entries = Array.isArray(params[0]) ? params[0] : []
+          return entries.map((entry) => {
+            const sub = entry as { methodName?: string; params?: unknown[] }
+            const subGid =
+              typeof sub.params?.[0] === 'string' ? sub.params[0] : ''
+            const tracked = this.tracked.get(subGid)
+            return tracked === undefined
+              ? { code: 1, message: 'GID is not found.' }
+              : [{ ...tracked }]
+          })
+        }
         case 'aria2.pause': {
           const tracked = this.tracked.get(gid)
           if (!tracked) {
@@ -189,13 +202,16 @@ function createManager(
   database: DownloadDatabase,
   downloadDir: string,
   clock: Clock,
-  settings: SettingsRef
+  settings: SettingsRef,
+  updates?: AppSnapshot[]
 ): { manager: DownloadManager; aria2: FakeAria2 } {
   const aria2 = new FakeAria2()
   const manager = new DownloadManager(
     aria2.asService(),
     downloadDir,
-    () => undefined,
+    (snapshot) => {
+      updates?.push(snapshot)
+    },
     database,
     { now: () => clock.value, settings: () => settings.value }
   )
@@ -904,5 +920,95 @@ describe('automatic retry after a transient failure', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(manager.getSnapshot().downloads).toHaveLength(0)
     expect(aria2.addUriCalls).toHaveLength(1)
+  })
+})
+
+describe('poll batching and snapshot publishing', () => {
+  it('observes every pending GID in one system.multicall', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(database, downloadDir, clock, settings)
+    const firstUrl = 'https://example.com/batch-one.bin'
+    const secondUrl = 'https://example.com/batch-two.bin'
+    await manager.add({ url: firstUrl })
+    await manager.add({ url: secondUrl })
+    const first = itemByUrl(manager, firstUrl)
+    const second = itemByUrl(manager, secondUrl)
+    aria2.setStatus(first.gid, 'active')
+    aria2.setStatus(second.gid, 'complete')
+
+    await manager.refreshPolicy()
+
+    const multicalls = aria2.calls.filter(
+      (call) => call.method === 'system.multicall'
+    )
+    expect(multicalls).toHaveLength(1)
+    const batch = multicalls[0]?.params[0] as Array<{
+      methodName: string
+      params: string[]
+    }>
+    expect(batch.map((entry) => entry.methodName)).toEqual([
+      'aria2.tellStatus',
+      'aria2.tellStatus'
+    ])
+    expect(batch.map((entry) => entry.params[0])).toEqual([first.gid, second.gid])
+    // No per-GID round trip is left in the poll path.
+    expect(
+      aria2.methods.filter((method) => method === 'aria2.tellStatus')
+    ).toEqual([])
+    expect(itemByUrl(manager, firstUrl).status).toBe('active')
+    expect(itemByUrl(manager, secondUrl).status).toBe('complete')
+  })
+
+  it('handles a per-entry fault without losing the rest of the batch', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(database, downloadDir, clock, settings)
+    const lostUrl = 'https://example.com/lost.bin'
+    const keptUrl = 'https://example.com/kept.bin'
+    await manager.add({ url: lostUrl })
+    await manager.add({ url: keptUrl })
+    const lost = itemByUrl(manager, lostUrl)
+    const kept = itemByUrl(manager, keptUrl)
+    aria2.setStatus(kept.gid, 'active')
+    // aria2 no longer knows this GID: the batch reports a fault for it only.
+    aria2.tracked.delete(lost.gid)
+
+    await manager.refreshPolicy()
+
+    expect(itemByUrl(manager, lostUrl)).toMatchObject({
+      status: 'interrupted',
+      speedBps: 0
+    })
+    expect(itemByUrl(manager, keptUrl).status).toBe('active')
+  })
+
+  it('publishes only when the snapshot actually changed', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const updates: AppSnapshot[] = []
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      updates
+    )
+    const url = 'https://example.com/publish.bin'
+    await manager.add({ url })
+    const afterAdd = updates.length
+    expect(afterAdd).toBeGreaterThan(0)
+
+    // Nothing changed since the last publish: no snapshot is rebuilt or sent.
+    manager.publish()
+    expect(updates.length).toBe(afterAdd)
+
+    // A record change bumps the revision, so the next plain publish sends it.
+    await manager.pause(itemByUrl(manager, url).id)
+    expect(updates.length).toBe(afterAdd + 1)
+    expect(updates[updates.length - 1]?.downloads[0]?.status).toBe('paused')
   })
 })

@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   aria2ErrorHint,
   aria2FailureDetail,
+  buildMulticallRequest,
   buildRpcRequest,
   describeAria2Failure,
   mapAria2Status,
   parseAria2Status,
-  parseRpcResponse
+  parseRpcResponse,
+  parseRpcSubCalls
 } from '../src/main/aria2/rpc'
 
 describe('buildRpcRequest', () => {
@@ -26,6 +28,45 @@ describe('buildRpcRequest', () => {
         { dir: 'C:\\Downloads' }
       ]
     })
+  })
+})
+
+describe('buildMulticallRequest', () => {
+  it('puts the token inside each sub-call instead of the outer params', () => {
+    const request = buildMulticallRequest(9, 'secret-token', [
+      { methodName: 'aria2.tellStatus', params: ['0123456789abcdef'] },
+      { methodName: 'aria2.tellStatus', params: ['fedcba9876543210'] }
+    ])
+
+    // aria2 rejects `[token, [calls]]` for system.multicall, so the outer
+    // parameter list is the call list only.
+    expect(request.method).toBe('system.multicall')
+    expect(request.params).toEqual([
+      [
+        {
+          methodName: 'aria2.tellStatus',
+          params: ['token:secret-token', '0123456789abcdef']
+        },
+        {
+          methodName: 'aria2.tellStatus',
+          params: ['token:secret-token', 'fedcba9876543210']
+        }
+      ]
+    ])
+  })
+})
+
+describe('parseRpcSubCalls', () => {
+  it('keeps well-formed sub-calls and drops the rest', () => {
+    expect(
+      parseRpcSubCalls([
+        { methodName: 'aria2.tellStatus', params: ['0123456789abcdef'] },
+        { methodName: '', params: [] },
+        { params: [] },
+        null
+      ])
+    ).toEqual([{ methodName: 'aria2.tellStatus', params: ['0123456789abcdef'] }])
+    expect(parseRpcSubCalls(undefined)).toEqual([])
   })
 })
 

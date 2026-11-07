@@ -192,15 +192,7 @@ function isMainWindowVisible(): boolean {
  * update install.
  */
 function hasActiveDownloadJobs(): boolean {
-  if (!manager) return false
-  return manager
-    .getSnapshot()
-    .downloads.some(
-      (download) =>
-        download.status === 'queued' ||
-        download.status === 'active' ||
-        download.status === 'waiting'
-    )
+  return manager?.hasPendingDownloads() ?? false
 }
 
 function refreshTray(): void {
@@ -857,7 +849,7 @@ if (unregisterRequested) {
         : attachSmokeDiagnostics(window.webContents, smokeDiagnostics)
 
     aria2.onStateChange = () => {
-      manager?.publish()
+      manager?.publish(true)
     }
 
     // Start eagerly so the top bar can explain a missing/broken aria2, then

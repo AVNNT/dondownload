@@ -700,6 +700,51 @@ describe('MediaJobsManager queue lifecycle', () => {
     expect(harness.database.rows.get(job.id)?.status).toBe('complete')
   })
 
+  it('coalesces progress publishes into one trailing update', async () => {
+    vi.useFakeTimers()
+    const harness = await createHarness({ progressPersistIntervalMs: 1_000 })
+    const job = await queueVideo(harness)
+    await flushMicrotasks()
+    const before = harness.updates.length
+
+    harness.engine.pending.onProgress(
+      progress({ completedBytes: 10, totalBytes: 100 })
+    )
+    harness.engine.pending.onProgress(
+      progress({ completedBytes: 20, totalBytes: 100 })
+    )
+    harness.engine.pending.onProgress(
+      progress({ completedBytes: 30, totalBytes: 100 })
+    )
+
+    // Same-status progress is coalesced instead of publishing on every line.
+    expect(harness.updates.length).toBe(before)
+    await vi.advanceTimersByTimeAsync(199)
+    expect(harness.updates.length).toBe(before)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(harness.updates.length).toBe(before + 1)
+    expect(harness.updates[harness.updates.length - 1]?.jobs[0]?.completedBytes).toBe(
+      30
+    )
+
+    // A repeated line with the same numbers is not a change at all.
+    harness.engine.pending.onProgress(
+      progress({ completedBytes: 30, totalBytes: 100 })
+    )
+    await vi.advanceTimersByTimeAsync(200)
+    expect(harness.updates.length).toBe(before + 1)
+
+    // A status transition publishes immediately, without waiting.
+    harness.engine.pending.onProgress(
+      progress({ status: 'merging', completedBytes: 30, totalBytes: 100 })
+    )
+    expect(harness.updates.length).toBe(before + 2)
+    expect(harness.updates[harness.updates.length - 1]?.jobs[0]?.status).toBe(
+      'merging'
+    )
+    expect(harness.database.rows.get(job.id)?.status).toBe('merging')
+  })
+
   it('turns engine failures into a sanitized error state', async () => {
     const harness = await createHarness()
     const job = await queueVideo(harness)
