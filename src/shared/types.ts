@@ -35,6 +35,11 @@ import type {
   ScanSession,
   ScanStartInput
 } from './scanner'
+import type {
+  AppSnapshotDelta,
+  BatchSnapshotDelta,
+  MediaSnapshotDelta
+} from './snapshotDelta'
 
 export type DownloadStatus =
   | 'queued'
@@ -269,7 +274,14 @@ export interface DonDownloadApi {
   restartAria2: () => Promise<ApiResult<AppSnapshot>>
   /** Bounded anonymous HEAD probe: total bytes of a direct file URL, or null. */
   probeUrlSize: (url: string) => Promise<ApiResult<UrlSizeProbe>>
-  onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => () => void
+  /**
+   * Revisioned snapshot stream. The first message is a full snapshot, later
+   * messages are patches. On a revision gap the renderer calls
+   * `requestSnapshotResync`.
+   */
+  onSnapshotChanged: (listener: (delta: AppSnapshotDelta) => void) => () => void
+  /** Ask main to resend full snapshots for downloads, media and batches. */
+  requestSnapshotResync: () => Promise<ApiResult<null>>
 
   // Media (Milestone 3A). These are additive and do not change the download
   // API above. Public media values never contain URLs, paths or raw metadata.
@@ -295,7 +307,7 @@ export interface DonDownloadApi {
   /** Open a completed media output with the OS default app. */
   openMediaFile: (jobId: string) => Promise<ApiResult<null>>
   onMediaSnapshotChanged: (
-    listener: (snapshot: MediaSnapshot) => void
+    listener: (delta: MediaSnapshotDelta) => void
   ) => () => void
 
   // Batch orchestration (Milestone 3B). Collection previews are ephemeral and
@@ -324,7 +336,7 @@ export interface DonDownloadApi {
   removeBatch: (input: BatchTargetInput) => Promise<ApiResult<BatchSnapshot>>
   openBatchSource: (input: BatchItemTargetInput) => Promise<ApiResult<null>>
   onBatchSnapshotChanged: (
-    listener: (snapshot: BatchSnapshot) => void
+    listener: (delta: BatchSnapshotDelta) => void
   ) => () => void
 
   // Milestone 5A runtime settings. The update replaces the complete, exact-key

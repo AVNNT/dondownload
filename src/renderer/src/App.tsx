@@ -15,14 +15,28 @@ import type {
   AddDownloadInput,
   ApiResult,
   AppErrorInfo,
-  AppSnapshot
+  AppSnapshot,
+  DownloadItem
 } from '@shared/types'
 import type {
   MediaAnalysis,
+  MediaJob,
   MediaJobDetails,
   MediaOutputFormat,
   MediaSnapshot
 } from '@shared/media'
+import {
+  appSnapshotFromState,
+  appSnapshotPayload,
+  batchRowVersion,
+  downloadRowVersion,
+  mediaRowVersion,
+  mediaSnapshotFromState,
+  mediaSnapshotPayload,
+  type AppSnapshotFields,
+  type BatchSnapshotFields,
+  type MediaSnapshotFields
+} from '@shared/snapshotDelta'
 import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
 import { formatBytes, formatSpeed } from '@shared/format'
@@ -50,6 +64,10 @@ import {
   type StatusFilterId,
   type UnifiedRow
 } from './lib/unified'
+import {
+  createSnapshotDeltaStore,
+  type SnapshotDeltaStore
+} from './lib/snapshotDeltaStore'
 import {
   EMPTY_SELECTION,
   jumpFocus,
@@ -204,6 +222,14 @@ function mergeScanSessionList(
 export default function App(): JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
   const [mediaSnapshot, setMediaSnapshot] = useState<MediaSnapshot | null>(null)
+  const downloadStoreRef = useRef<SnapshotDeltaStore<
+    DownloadItem,
+    AppSnapshotFields
+  > | null>(null)
+  const mediaStoreRef = useRef<SnapshotDeltaStore<
+    MediaJob,
+    MediaSnapshotFields
+  > | null>(null)
   const [banner, setBanner] = useState<AppErrorInfo | null>(null)
   const [page, setPage] = useState<AppPage>('library')
   const [statusFilter, setStatusFilter] = useState<StatusFilterId>('all')
@@ -296,15 +322,27 @@ export default function App(): JSX.Element {
   // Batches view itself owns its snapshot; this read never mutates anything.
   useEffect(() => {
     let cancelled = false
-    void window.donDownload.getBatchSnapshot().then((result) => {
-      if (!cancelled && result.ok) setBatchCount(result.value.batches.length)
+    const store = createSnapshotDeltaStore<Batch, BatchSnapshotFields>({
+      rowVersion: batchRowVersion,
+      onChange: (state) => {
+        if (!cancelled) setBatchCount(state.rows.length)
+      },
+      requestResync: () => {
+        void window.donDownload.requestSnapshotResync()
+      }
     })
-    const unsubscribe = window.donDownload.onBatchSnapshotChanged((snapshot) => {
-      if (!cancelled) setBatchCount(snapshot.batches.length)
+    void window.donDownload.getBatchSnapshot().then((result) => {
+      if (!cancelled && result.ok) {
+        store.replacePayload({ fields: {}, rows: result.value.batches })
+      }
+    })
+    const unsubscribe = window.donDownload.onBatchSnapshotChanged((delta) => {
+      if (!cancelled) store.applyDelta(delta)
     })
     return () => {
       cancelled = true
       unsubscribe()
+      store.dispose()
     }
   }, [])
 
@@ -313,10 +351,16 @@ export default function App(): JSX.Element {
       window.donDownload.getSnapshot(),
       window.donDownload.getMediaSnapshot()
     ])
-    if (downloadResult.ok) setSnapshot(downloadResult.value)
-    else setBanner(downloadResult.error)
-    if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
-    else if (downloadResult.ok) setBanner(mediaResult.error)
+    if (downloadResult.ok) {
+      const payload = appSnapshotPayload(downloadResult.value)
+      if (downloadStoreRef.current) downloadStoreRef.current.replacePayload(payload)
+      else setSnapshot(downloadResult.value)
+    } else setBanner(downloadResult.error)
+    if (mediaResult.ok) {
+      const payload = mediaSnapshotPayload(mediaResult.value)
+      if (mediaStoreRef.current) mediaStoreRef.current.replacePayload(payload)
+      else setMediaSnapshot(mediaResult.value)
+    } else if (downloadResult.ok) setBanner(mediaResult.error)
   }, [])
 
   useEffect(() => {
@@ -383,24 +427,53 @@ export default function App(): JSX.Element {
   useEffect(() => {
     let cancelled = false
 
+    const downloadStore = createSnapshotDeltaStore<
+      DownloadItem,
+      AppSnapshotFields
+    >({
+      rowVersion: downloadRowVersion,
+      onChange: (state) => {
+        if (!cancelled) setSnapshot(appSnapshotFromState(state))
+      },
+      requestResync: () => {
+        void window.donDownload.requestSnapshotResync()
+      }
+    })
+    const mediaStore = createSnapshotDeltaStore<
+      MediaJob,
+      MediaSnapshotFields
+    >({
+      rowVersion: mediaRowVersion,
+      onChange: (state) => {
+        if (!cancelled) setMediaSnapshot(mediaSnapshotFromState(state))
+      },
+      requestResync: () => {
+        void window.donDownload.requestSnapshotResync()
+      }
+    })
+    downloadStoreRef.current = downloadStore
+    mediaStoreRef.current = mediaStore
+
     const refresh = async (): Promise<void> => {
       const [downloadResult, mediaResult] = await Promise.all([
         window.donDownload.getSnapshot(),
         window.donDownload.getMediaSnapshot()
       ])
       if (cancelled) return
-      if (downloadResult.ok) setSnapshot(downloadResult.value)
-      else setBanner(downloadResult.error)
-      if (mediaResult.ok) setMediaSnapshot(mediaResult.value)
-      else setBanner((current) => current ?? mediaResult.error)
+      if (downloadResult.ok) {
+        downloadStore.replacePayload(appSnapshotPayload(downloadResult.value))
+      } else setBanner(downloadResult.error)
+      if (mediaResult.ok) {
+        mediaStore.replacePayload(mediaSnapshotPayload(mediaResult.value))
+      } else setBanner((current) => current ?? mediaResult.error)
     }
 
     void refresh()
-    const unsubscribeDownloads = window.donDownload.onSnapshotChanged((next) => {
-      if (!cancelled) setSnapshot(next)
+    const unsubscribeDownloads = window.donDownload.onSnapshotChanged((delta) => {
+      if (!cancelled) downloadStore.applyDelta(delta)
     })
-    const unsubscribeMedia = window.donDownload.onMediaSnapshotChanged((next) => {
-      if (!cancelled) setMediaSnapshot(next)
+    const unsubscribeMedia = window.donDownload.onMediaSnapshotChanged((delta) => {
+      if (!cancelled) mediaStore.applyDelta(delta)
     })
     const timer = window.setInterval(() => {
       void refresh()
@@ -411,6 +484,12 @@ export default function App(): JSX.Element {
       unsubscribeDownloads()
       unsubscribeMedia()
       window.clearInterval(timer)
+      downloadStore.dispose()
+      mediaStore.dispose()
+      if (downloadStoreRef.current === downloadStore) {
+        downloadStoreRef.current = null
+      }
+      if (mediaStoreRef.current === mediaStore) mediaStoreRef.current = null
     }
   }, [])
 
@@ -544,7 +623,11 @@ export default function App(): JSX.Element {
         return false
       }
       setBanner(null)
-      setSnapshot(result.value)
+      if (downloadStoreRef.current) {
+        downloadStoreRef.current.replacePayload(appSnapshotPayload(result.value))
+      } else {
+        setSnapshot(result.value)
+      }
       return true
     },
     []
@@ -584,7 +667,11 @@ export default function App(): JSX.Element {
         ...(input.maxBytes === null ? {} : { maxBytes: input.maxBytes })
       })
       if (result.ok) {
-        setMediaSnapshot(result.value)
+        if (mediaStoreRef.current) {
+          mediaStoreRef.current.replacePayload(mediaSnapshotPayload(result.value))
+        } else {
+          setMediaSnapshot(result.value)
+        }
         setBanner(null)
       }
       return result

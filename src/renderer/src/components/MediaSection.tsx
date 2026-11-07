@@ -2,11 +2,22 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import type { ApiResult, AppErrorInfo } from '@shared/types'
 import type {
   MediaAnalysis,
+  MediaJob,
   MediaOutputFormat,
   MediaSnapshot,
   MediaToolState
 } from '@shared/media'
 import { normalizeMediaSourceUrl } from '@shared/media'
+import {
+  mediaRowVersion,
+  mediaSnapshotFromState,
+  mediaSnapshotPayload,
+  type MediaSnapshotFields
+} from '@shared/snapshotDelta'
+import {
+  createSnapshotDeltaStore,
+  type SnapshotDeltaStore
+} from '../lib/snapshotDeltaStore'
 import { MediaAnalyzer } from './MediaAnalyzer'
 import { MediaJobCard } from './MediaJobCard'
 
@@ -24,16 +35,39 @@ export function MediaSection(): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
   const analysisRequestRef = useRef(0)
   const analysisUrlRef = useRef<string | null>(null)
+  const storeRef = useRef<SnapshotDeltaStore<
+    MediaJob,
+    MediaSnapshotFields
+  > | null>(null)
+
+  const applySnapshot = useCallback((snapshot: MediaSnapshot): void => {
+    if (storeRef.current) {
+      storeRef.current.replacePayload(mediaSnapshotPayload(snapshot))
+    } else {
+      setSnapshot(snapshot)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+
+    const store = createSnapshotDeltaStore<MediaJob, MediaSnapshotFields>({
+      rowVersion: mediaRowVersion,
+      onChange: (state) => {
+        if (!cancelled) setSnapshot(mediaSnapshotFromState(state))
+      },
+      requestResync: () => {
+        void window.donDownload.requestSnapshotResync()
+      }
+    })
+    storeRef.current = store
 
     const refresh = async (): Promise<void> => {
       try {
         const result = await window.donDownload.getMediaSnapshot()
         if (cancelled) return
         if (result.ok) {
-          setSnapshot(result.value)
+          store.replacePayload(mediaSnapshotPayload(result.value))
           setSnapshotError(null)
         } else {
           setSnapshotError(result.error)
@@ -44,9 +78,9 @@ export function MediaSection(): JSX.Element {
     }
 
     void refresh()
-    const unsubscribe = window.donDownload.onMediaSnapshotChanged((next) => {
+    const unsubscribe = window.donDownload.onMediaSnapshotChanged((delta) => {
       if (!cancelled) {
-        setSnapshot(next)
+        store.applyDelta(delta)
         setSnapshotError(null)
       }
     })
@@ -58,6 +92,8 @@ export function MediaSection(): JSX.Element {
       cancelled = true
       unsubscribe()
       window.clearInterval(timer)
+      store.dispose()
+      if (storeRef.current === store) storeRef.current = null
     }
   }, [])
 
@@ -136,7 +172,7 @@ export function MediaSection(): JSX.Element {
           ...(maxBytes === null ? {} : { maxBytes })
         })
         if (result.ok) {
-          setSnapshot(result.value)
+          applySnapshot(result.value)
           setSnapshotError(null)
           setNotice('Media download queued.')
         } else {
@@ -148,7 +184,7 @@ export function MediaSection(): JSX.Element {
         setQueuingOptionId(null)
       }
     },
-    [analysis, queuingOptionId]
+    [analysis, applySnapshot, queuingOptionId]
   )
 
   const runJobAction = useCallback(
@@ -162,7 +198,7 @@ export function MediaSection(): JSX.Element {
       try {
         const result = await action()
         if (result.ok) {
-          setSnapshot(result.value)
+          applySnapshot(result.value)
           setSnapshotError(null)
         } else {
           setSnapshotError(result.error)
@@ -173,7 +209,7 @@ export function MediaSection(): JSX.Element {
         setPendingJobId(null)
       }
     },
-    []
+    [applySnapshot]
   )
 
   const handleShowInFolder = useCallback(async (jobId: string): Promise<void> => {
