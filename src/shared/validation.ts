@@ -216,6 +216,16 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     }
   }
 
+  let sortFilename: string | undefined
+  if (record.sortFilename !== undefined && record.sortFilename !== null) {
+    if (typeof record.sortFilename !== 'string') {
+      throw new ValidationError('The sort file name must be text.')
+    }
+    if (record.sortFilename.trim().length > 0) {
+      sortFilename = sanitizeFilename(record.sortFilename)
+    }
+  }
+
   let force = false
   if (record.force !== undefined && record.force !== null) {
     if (typeof record.force !== 'boolean') {
@@ -244,6 +254,7 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
   return {
     url,
     ...(filename === undefined ? {} : { filename }),
+    ...(sortFilename === undefined ? {} : { sortFilename }),
     ...(force ? { force: true } : {}),
     ...(record.controls === undefined || record.controls === null
       ? {}

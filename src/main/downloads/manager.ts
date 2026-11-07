@@ -19,7 +19,11 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { evaluateStart, isAllowedAt } from '@shared/schedule'
-import { resolveDownloadDirectory } from '@shared/typeFolders'
+import {
+  resolveDownloadDirectory,
+  typeFolderDirectory,
+  typeFolderForFilename
+} from '@shared/typeFolders'
 import {
   guessFilenameFromUrl,
   normalizeHttpUrl,
@@ -280,6 +284,12 @@ export class DownloadManager {
   private revision = 0
   private publishedRevision = 0
   private persistenceErrorLogged = false
+  /**
+   * Downloads added into the plain default root while sorting is on, before
+   * aria2 could reveal the final Content-Disposition name. They may need one
+   * move into a type folder after completion.
+   */
+  private readonly pendingTypeSortIds = new Set<string>()
   private database: DownloadDatabase | null
 
   constructor(
@@ -664,7 +674,9 @@ export class DownloadManager {
         directory === undefined
           ? resolveDownloadDirectory(
               this.downloadDir,
-              input.filename ?? guessFilenameFromUrl(target.url),
+              input.sortFilename ??
+                input.filename ??
+                guessFilenameFromUrl(target.url),
               this.settingsProvider().sortDownloadsByType
             )
           : requestedDirectory
@@ -687,6 +699,18 @@ export class DownloadManager {
       )
 
       id = randomUUID()
+      // Only a default-root job whose sort name was guessed from the URL can
+      // still turn out to belong to a type folder once aria2 reports the real
+      // Content-Disposition name. Explicit names/folders and the batch MEGA
+      // intermediate are deliberately left alone.
+      if (
+        directory === undefined &&
+        input.filename === undefined &&
+        this.settingsProvider().sortDownloadsByType &&
+        path.resolve(outputDirectory) === path.resolve(this.downloadDir)
+      ) {
+        this.pendingTypeSortIds.add(id)
+      }
       let finalFilename = input.filename
       if (decision.allowed) {
         // Only a job that may start now is handed to aria2. Blocked jobs stay
@@ -808,6 +832,7 @@ export class DownloadManager {
     this.startNowIds.delete(id)
     this.submittingIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
     this.persistedSignatures.delete(id)
     if (this.database) {
@@ -2023,6 +2048,11 @@ export class DownloadManager {
 
     if (Object.keys(patch).length > 0) {
       this.updateRecord(record, patch)
+      if (nextStatus === 'complete' && statusChanged) {
+        // aria2 only learns the Content-Disposition name when it finishes.
+        // A job added into the plain root may now belong in a type folder.
+        void this.moveCompletedIntoTypeFolder(record)
+      }
       // Any status observed here is not policy-blocked: policy-blocked waiting
       // rows are skipped by the caller or guarded above.
       if (this.blockReasons.get(record.id) !== null) {
@@ -2053,6 +2083,58 @@ export class DownloadManager {
       } else {
         this.markDirty(record)
       }
+    }
+  }
+
+  /**
+   * One conservative post-completion sort pass for a default-root job whose
+   * folder could only be guessed from the URL before aria2 started. The move
+   * stays inside the download root, never overwrites an existing file, and on
+   * any failure the file is left exactly where aria2 wrote it.
+   */
+  private async moveCompletedIntoTypeFolder(record: DownloadItem): Promise<void> {
+    if (!this.pendingTypeSortIds.delete(record.id)) return
+    if (!this.settingsProvider().sortDownloadsByType) return
+    if (record.status !== 'complete' || record.filePath === null) return
+    if (path.resolve(record.dir) !== path.resolve(this.downloadDir)) return
+    const source = record.filePath
+    if (!this.isInsideDownloadRoot(source)) return
+    const name = path.basename(source)
+    // The encrypted MEGA intermediate must stay next to its decrypted output;
+    // a paired script was already placed in the video folder explicitly.
+    if (name.toLowerCase().endsWith('.megaenc')) return
+    const folder = typeFolderForFilename(name)
+    if (folder === null) return
+    const targetDirectory = typeFolderDirectory(this.downloadDir, folder)
+    if (
+      !this.isInsideDownloadRoot(targetDirectory) ||
+      path.resolve(targetDirectory) === path.resolve(record.dir)
+    ) {
+      return
+    }
+
+    try {
+      await this.ensureDownloadDirectory(targetDirectory)
+      const targetName = await this.uniqueDownloadFilename(
+        name,
+        targetDirectory
+      )
+      const targetPath = path.join(targetDirectory, targetName)
+      if (!this.isInsideDownloadRoot(targetPath)) return
+      await fs.rename(source, targetPath)
+      if (!this.records.has(record.id)) return
+      this.updateRecord(record, {
+        dir: targetDirectory,
+        filename: targetName,
+        filePath: targetPath
+      })
+      this.persistNow(record)
+      this.publish()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      console.error(
+        `A completed download could not be sorted into its type folder: ${detail}`
+      )
     }
   }
 
@@ -2149,6 +2231,7 @@ export class DownloadManager {
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
     this.persistedSignatures.delete(id)
   }

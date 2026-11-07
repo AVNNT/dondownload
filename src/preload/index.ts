@@ -195,6 +195,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.updateSettings, settings) as Promise<
       ApiResult<DownloadSettings>
     >,
+  setSpeedLimit: (bps: number) =>
+    ipcRenderer.invoke(IPC.setSpeedLimit, bps) as Promise<
+      ApiResult<DownloadSettings>
+    >,
   onSettingsChanged: (listener: (settings: DownloadSettings) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

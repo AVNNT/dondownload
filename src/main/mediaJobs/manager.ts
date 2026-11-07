@@ -382,6 +382,15 @@ export class MediaJobsManager {
   }
 
   /**
+   * Output directory of a job as soon as it exists. Paired funscripts use this
+   * instead of a fixed scanner root so they follow the Job's Video/Audio
+   * folder when type sorting is enabled.
+   */
+  getJobDirectory(id: string): string | null {
+    return this.jobs.get(id)?.record.dir ?? null
+  }
+
+  /**
    * One sanitized job by exact id, or null. A cheap alternative to building the
    * whole snapshot when a caller only needs a single child record.
    */

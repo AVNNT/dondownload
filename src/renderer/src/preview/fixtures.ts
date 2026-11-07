@@ -1514,6 +1514,23 @@ export function createPreviewApi(
       return ok(cloneSettings(settings))
     },
 
+    setSpeedLimit: async (bps: number) => {
+      try {
+        settings = parseDownloadSettings({
+          ...settings,
+          globalSpeedLimitBps: bps
+        })
+      } catch (error) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          error instanceof Error ? error.message : 'Invalid settings.'
+        )
+      }
+      const snapshot = cloneSettings(settings)
+      for (const listener of settingsListeners) listener(snapshot)
+      return ok(cloneSettings(settings))
+    },
+
     onSettingsChanged: (listener) => {
       settingsListeners.add(listener)
       return () => settingsListeners.delete(listener)

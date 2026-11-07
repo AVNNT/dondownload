@@ -1,3 +1,5 @@
+import os from 'node:os'
+import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { openExternal } = vi.hoisted(() => ({
@@ -21,6 +23,7 @@ import {
   type StoredBatchRecord
 } from '../src/main/batches/manager'
 import { AppError } from '../src/main/errors'
+import { resolveDownloadDirectory } from '../src/shared/typeFolders'
 import {
   parseCollectionPreview,
   type BatchItemRecord,
@@ -154,6 +157,37 @@ class FakeDownloads implements BatchDownloadsPort {
   }
 }
 
+/** Fake download manager that applies type sorting like the real one. */
+class SortedFakeDownloads extends FakeDownloads {
+  readonly scanDirs: string[] = []
+
+  constructor(private readonly root: string) {
+    super()
+  }
+
+  override async add(input: unknown): Promise<AppSnapshot> {
+    await super.add(input)
+    const record = input as Record<string, unknown>
+    const item = this.records[this.records.length - 1]
+    if (item) {
+      item.dir = resolveDownloadDirectory(
+        this.root,
+        String(record.sortFilename ?? record.filename ?? record.url),
+        true
+      )
+    }
+    return this.getSnapshot()
+  }
+
+  async addScanFile(input: unknown, directory: string): Promise<AppSnapshot> {
+    this.scanDirs.push(directory)
+    await super.add(input)
+    const item = this.records[this.records.length - 1]
+    if (item) item.dir = directory
+    return this.getSnapshot()
+  }
+}
+
 function analysisFixture(
   overrides: Partial<MediaAnalysis> = {}
 ): MediaAnalysis {
@@ -212,6 +246,8 @@ class FakeMediaJobs implements BatchMediaJobsPort {
   readonly analyzeCalls: AnalyzeMediaInput[] = []
   readonly queueCalls: Array<Record<string, unknown>> = []
   readonly cancelCalls: string[] = []
+  readonly jobDirectories = new Map<string, string>()
+  outputDirectory = 'C:\\Downloads\\Media'
   analysis = analysisFixture()
   analyzeError: Error | null = null
   private counter = 0
@@ -233,7 +269,12 @@ class FakeMediaJobs implements BatchMediaJobsPort {
       optionId: String((input as Record<string, unknown>).optionId)
     })
     this.jobs.push(job)
+    this.jobDirectories.set(job.id, this.outputDirectory)
     return { ...job }
+  }
+
+  getJobDirectory(id: string): string | null {
+    return this.jobDirectories.get(id) ?? null
   }
 
   async cancelMedia(id: string): Promise<MediaJob> {
@@ -505,6 +546,8 @@ function createHarness(
     engine?: FakeCollectionEngine
     pixeldrain?: FakePixeldrain
     database?: FakePersistence
+    scanRootDir?: string
+    scanMediaDir?: string
   } = {}
 ): Harness {
   const downloads = options.downloads ?? new FakeDownloads()
@@ -522,7 +565,13 @@ function createHarness(
     now: () => NOW,
     pollIntervalMs: 0,
     progressPersistIntervalMs: 0,
-    openExternal
+    openExternal,
+    ...(options.scanRootDir === undefined
+      ? {}
+      : { scanRootDir: options.scanRootDir }),
+    ...(options.scanMediaDir === undefined
+      ? {}
+      : { scanMediaDir: options.scanMediaDir })
   })
   return { manager, downloads, media, engine, pixeldrain, database }
 }
@@ -1141,6 +1190,100 @@ describe('cancel, retry and remove isolation', () => {
     expect(media.cancelCalls).toContain(childId)
     expect(manager.getBatch(batch.id).status).toBe('cancelled')
     expect(media.jobs.some((job) => job.id === childId)).toBe(true)
+  })
+
+  it('places a paired direct-file script in the video actual Video folder', async () => {
+    const root = path.join(os.tmpdir(), 'dondownload-batch-sort-direct')
+    const downloads = new SortedFakeDownloads(root)
+    const { manager } = createHarness({ downloads, scanRootDir: root })
+    const pageUrl = 'https://cdn.example.test/watch'
+
+    const batch = await manager.createBrowserMatchBatch({
+      title: 'Sorted direct video',
+      video: {
+        url: 'https://cdn.example.test/video.mp4',
+        pageUrl,
+        referer: pageUrl,
+        userAgent: 'Mozilla/5.0 Test',
+        kind: 'file',
+        title: 'Fancam 01'
+      },
+      scripts: [
+        {
+          url: 'https://cdn.example.test/script.funscript',
+          title: 'script.funscript',
+          filename: 'script.funscript',
+          scanItemId: 'script1'
+        }
+      ],
+      pairing: {
+        setId: 'set:sorted-direct',
+        scriptItemIds: ['script1'],
+        primaryVariant: null,
+        rename: true
+      }
+    })
+
+    await manager.waitForIdle()
+
+    expect(downloads.records[0]?.dir).toBe(path.join(root, 'Video'))
+    expect(downloads.scanDirs).toEqual([path.join(root, 'Video')])
+    expect(
+      manager.getBatch(batch.id).items.find((item) => item.kind === 'download')
+        ?.status
+    ).toBe('running')
+  })
+
+  it('places a paired script in a media job actual sorted output folder', async () => {
+    const root = path.join(os.tmpdir(), 'dondownload-batch-sort-media')
+    const downloads = new SortedFakeDownloads(root)
+    const media = new FakeMediaJobs()
+    media.outputDirectory = path.join(root, 'Video')
+    const { manager } = createHarness({
+      downloads,
+      media,
+      scanRootDir: root,
+      scanMediaDir: path.join(root, 'Media')
+    })
+
+    const batch = await manager.createScanMediaBatch({
+      title: 'Sorted media video',
+      files: [
+        {
+          url: 'https://media.example/script.funscript',
+          title: 'script.funscript',
+          filename: 'script.funscript',
+          scanItemId: 'script1'
+        }
+      ],
+      videos: [
+        {
+          url: 'https://media.example/watch/1',
+          title: 'Example media',
+          analysisId: 'analysis_0123456789abcdef',
+          optionId: 'option_video_0123456789',
+          scanItemId: 'video1'
+        }
+      ],
+      pairings: [
+        {
+          videoItemId: 'video1',
+          setId: 'set:sorted-media',
+          scriptItemIds: ['script1'],
+          primaryVariant: null,
+          rename: true
+        }
+      ]
+    })
+
+    await manager.waitForIdle()
+
+    expect(media.queueCalls).toHaveLength(1)
+    expect(downloads.scanDirs).toEqual([path.join(root, 'Video')])
+    expect(
+      manager.getBatch(batch.id).items.find((item) => item.kind === 'media')
+        ?.status
+    ).toBe('running')
   })
 
   it('removes only the batch row and leaves every child record intact', async () => {

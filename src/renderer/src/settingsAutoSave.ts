@@ -105,6 +105,34 @@ export function hoursConflict(hours: AllowedHours): boolean {
 }
 
 /**
+ * True when the speed INPUT text differs from the last saved value rendered in
+ * that same text form. The draft only changes after the debounce, so comparing
+ * the draft would miss an edit that is still waiting to be saved.
+ */
+export function speedInputDirty(
+  speedInput: string,
+  previous: DownloadSettings | null
+): boolean {
+  if (previous === null) return false
+  return speedInput !== speedInputValue(previous.globalSpeedLimitBps)
+}
+
+/**
+ * Whether an external settings update should replace the speed field. A speed
+ * change from the tray/toolbar is an explicit newer choice and always wins; a
+ * non-speed change never clobbers text the user is still editing.
+ */
+export function shouldApplyExternalSpeed(
+  speedInput: string,
+  previous: DownloadSettings | null,
+  next: DownloadSettings
+): boolean {
+  if (previous === null) return true
+  if (previous.globalSpeedLimitBps !== next.globalSpeedLimitBps) return true
+  return !speedInputDirty(speedInput, previous)
+}
+
+/**
  * The exact payload sent to `updateSettings`: the newest draft, with the
  * theme taken from the last *saved* theme so an in-flight draft can never
  * roll back an appearance change made in the meantime.

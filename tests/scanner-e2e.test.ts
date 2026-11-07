@@ -333,6 +333,7 @@ function createMediaPorts(mediaDir: string) {
     }),
     getMediaSnapshot: vi.fn(() => snapshot()),
     getJob: (id: string) => jobs.get(id) ?? null,
+    getJobDirectory: (id: string) => (jobs.has(id) ? mediaDir : null),
     getFilePath: (id: string) => finalPaths.get(id) ?? null
   }
 }

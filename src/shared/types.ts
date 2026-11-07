@@ -161,6 +161,13 @@ export interface DownloadRequestHeaders {
 export interface AddDownloadInput {
   url: string
   filename?: string
+  /**
+   * Internal: the name used only to pick the type folder. It lets a batch pass
+   * the real name for a still-encrypted MEGA transfer (`movie.mp4.megaenc`
+   * writes under `Video` but keeps the temporary suffix) without changing the
+   * final aria2 output name.
+   */
+  sortFilename?: string
   requestHeaders?: DownloadRequestHeaders
   /**
    * Internal: a redirect chain that a trusted caller (the scanner probe or the
@@ -334,6 +341,12 @@ export interface DonDownloadApi {
   updateSettings: (
     settings: DownloadSettings
   ) => Promise<ApiResult<DownloadSettings>>
+  /**
+   * Change only the global speed limit. Main merges this partial value with
+   * the current settings inside its serialized update, so a concurrent edit to
+   * another field is never reverted by a stale snapshot.
+   */
+  setSpeedLimit: (bps: number) => Promise<ApiResult<DownloadSettings>>
   /** Any validated settings update, including a tray/toolbar quick change. */
   onSettingsChanged: (
     listener: (settings: DownloadSettings) => void

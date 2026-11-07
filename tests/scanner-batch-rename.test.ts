@@ -137,6 +137,7 @@ describe('batch post-download pairing', () => {
       }),
       getMediaSnapshot: vi.fn(() => mediaSnapshot()),
       getJob: (id: string) => mediaJobs.get(id) ?? null,
+      getJobDirectory: (id: string) => (mediaJobs.has(id) ? mediaDir : null),
       getFilePath: (id: string) => mediaPaths.get(id) ?? null
     }
 
