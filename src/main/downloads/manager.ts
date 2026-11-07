@@ -30,6 +30,8 @@ import {
   sanitizeFilename
 } from '@shared/validation'
 import type { Aria2Client } from '../aria2/client'
+import type { ChecksumTarget } from '../checksum/service'
+import type { ChecksumResult } from '@shared/checksum'
 import {
   buildPollPlan,
   buildTellStatusCalls,
@@ -1183,6 +1185,67 @@ export class DownloadManager {
     }
 
     return this.remove(record.id)
+  }
+
+  /**
+   * Resolve a renderer-supplied download id to that download's own completed
+   * file. This is the only path source for hashing: an arbitrary renderer path
+   * is never accepted, and the recorded path is re-validated against the
+   * configured download folder before a stream is opened.
+   */
+  async checksumTarget(rawId: unknown): Promise<ChecksumTarget> {
+    const record = this.getRecord(rawId)
+    if (record.status !== 'complete' || !record.filePath) {
+      throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
+    }
+    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+      throw new AppError(
+        'FILE_OUTSIDE_DOWNLOAD_DIR',
+        'The reported file is outside the configured download folder.'
+      )
+    }
+
+    let sizeBytes: number
+    try {
+      const stat = await fs.stat(record.filePath)
+      if (!stat.isFile()) {
+        throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
+      }
+      sizeBytes = stat.size
+    } catch (error) {
+      if (error instanceof AppError) throw error
+      throw new AppError(
+        'FILE_MISSING',
+        'The downloaded file is no longer on disk.',
+        'It may have been moved or deleted.'
+      )
+    }
+
+    return {
+      downloadId: record.id,
+      filePath: record.filePath,
+      filename: record.filename,
+      sizeBytes
+    }
+  }
+
+  /**
+   * Record the last checksum result in memory and SQLite. Published so the
+   * details pane and row status chip reflect it without a reload.
+   */
+  saveChecksumResult(id: string, result: ChecksumResult): void {
+    const record = this.records.get(id)
+    if (!record) return
+    record.checksum = result
+    if (this.database) {
+      try {
+        this.database.saveDownloadChecksum(id, result)
+      } catch (error) {
+        this.logPersistenceError('checksum result could not be saved', error)
+      }
+    }
+    this.markSnapshotDirty()
+    this.publish()
   }
 
   /** Flush bounded progress snapshots. Call before closing the database. */

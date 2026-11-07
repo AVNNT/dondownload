@@ -11,6 +11,7 @@ import {
 } from '../src/main/downloads/recovery'
 import {
   DATABASE_FILENAME,
+  MIGRATIONS,
   SCHEMA_VERSION,
   openDownloadDatabase,
   resolveDownloadDatabasePath,
@@ -365,6 +366,76 @@ describe('schema migrations', () => {
     raw.close()
 
     expect(() => openDownloadDatabase(filePath)).toThrow(/newer version/i)
+  })
+})
+
+describe('v17 to v18 checksum migration', () => {
+  it('adds checksum columns in place and keeps existing downloads', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+
+    const record = sample({ status: 'complete', completedAt: Date.UTC(2026, 0, 3) })
+    const raw = new DatabaseSync(filePath)
+    for (const migration of MIGRATIONS) {
+      if (migration.version > 17) break
+      raw.exec(migration.sql)
+      raw.exec(`PRAGMA user_version = ${migration.version}`)
+    }
+
+    const beforeColumns = (
+      raw.prepare('PRAGMA table_info(downloads)').all() as { name: string }[]
+    ).map((column) => column.name)
+    expect(beforeColumns).not.toContain('checksum_algorithm')
+
+    raw
+      .prepare(
+        `INSERT INTO downloads (
+          id, gid, url, filename, explicit_filename, dir, file_path, status,
+          total_bytes, completed_bytes, error_message, attempts, max_attempts,
+          created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        record.id,
+        record.gid,
+        record.url,
+        record.filename,
+        'chosen-name.zip',
+        record.dir,
+        record.filePath,
+        record.status,
+        record.totalBytes,
+        record.completedBytes,
+        record.errorMessage,
+        record.attempts,
+        record.maxAttempts,
+        record.createdAt,
+        record.updatedAt,
+        record.completedAt
+      )
+    raw.close()
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
+    const loaded = database.loadAll()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0]?.record.filename).toBe(record.filename)
+    expect(loaded[0]?.explicitFilename).toBe('chosen-name.zip')
+    expect(loaded[0]?.record.checksum).toBeUndefined()
+
+    const result = {
+      algorithm: 'sha256' as const,
+      ok: false,
+      computed:
+        'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+      checkedAt: Date.UTC(2026, 10, 7, 9, 30, 0)
+    }
+    database.saveDownloadChecksum(record.id, result)
+    close(database)
+
+    const reopened = open(filePath)
+    expect(reopened.loadAll()[0]?.record.checksum).toEqual(result)
+    close(reopened)
   })
 })
 

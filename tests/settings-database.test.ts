@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(17)
+    expect(SCHEMA_VERSION).toBe(18)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -819,7 +819,11 @@ describe('per-download control persistence', () => {
       'connections',
       'block_reason',
       'needs_login',
-      'error_detail'
+      'error_detail',
+      'checksum_algorithm',
+      'checksum_ok',
+      'checksum_computed',
+      'checksum_checked_at'
     ])
     const invalidUpdates = [
       'UPDATE downloads SET scheduled_at = -1',
@@ -1036,7 +1040,11 @@ describe('v5 to v8 migration', () => {
       'connections',
       'block_reason',
       'needs_login',
-      'error_detail'
+      'error_detail',
+      'checksum_algorithm',
+      'checksum_ok',
+      'checksum_computed',
+      'checksum_checked_at'
     ])
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(before, DOWNLOAD_COLUMNS)
@@ -1066,6 +1074,10 @@ describe('v7 to v8 theme migration', () => {
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       ALTER TABLE downloads DROP COLUMN needs_login;
       ALTER TABLE downloads DROP COLUMN error_detail;
+      ALTER TABLE downloads DROP COLUMN checksum_algorithm;
+      ALTER TABLE downloads DROP COLUMN checksum_ok;
+      ALTER TABLE downloads DROP COLUMN checksum_computed;
+      ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       UPDATE download_settings
       SET max_concurrent_downloads = 9,
           per_host_connections = 7,
@@ -1119,6 +1131,10 @@ describe('v13 to v14 per-host connection migration', () => {
     // Simulate a database created before the default changed to 16.
     const legacy = new DatabaseSync(filePath)
     legacy.exec(`
+      ALTER TABLE downloads DROP COLUMN checksum_algorithm;
+      ALTER TABLE downloads DROP COLUMN checksum_ok;
+      ALTER TABLE downloads DROP COLUMN checksum_computed;
+      ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       UPDATE download_settings SET per_host_connections = ${perHostConnections};
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       PRAGMA user_version = 13;
@@ -1229,6 +1245,10 @@ describe('v14 to v15 MEGA folder migration', () => {
 
     const legacy = new DatabaseSync(filePath)
     legacy.exec(`
+      ALTER TABLE downloads DROP COLUMN checksum_algorithm;
+      ALTER TABLE downloads DROP COLUMN checksum_ok;
+      ALTER TABLE downloads DROP COLUMN checksum_computed;
+      ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       PRAGMA user_version = 14;
     `)
@@ -1295,6 +1315,10 @@ describe('v15 to v16 sort-by-type migration', () => {
     // Simulate a database created before type sorting existed.
     const legacy = new DatabaseSync(filePath)
     legacy.exec(`
+      ALTER TABLE downloads DROP COLUMN checksum_algorithm;
+      ALTER TABLE downloads DROP COLUMN checksum_ok;
+      ALTER TABLE downloads DROP COLUMN checksum_computed;
+      ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
       PRAGMA user_version = 15;
     `)

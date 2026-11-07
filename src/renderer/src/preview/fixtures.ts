@@ -20,6 +20,11 @@ import type {
   MediaSnapshot
 } from '@shared/media'
 import { normalizeMediaSourceUrl } from '@shared/media'
+import {
+  CHECKSUM_HEX_LENGTHS,
+  parseExpectedHash,
+  type ChecksumAlgorithm
+} from '@shared/checksum'
 import type { DownloadSettings } from '@shared/settings'
 import { parseDownloadSettings } from '@shared/settings'
 import {
@@ -1263,6 +1268,55 @@ export function createPreviewApi(
       }
       return ok(null)
     },
+
+    verifyChecksum: async (downloadId: string, expectedHash: string) => {
+      const item = findDownload(downloadId)
+      if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
+      if (item.status !== 'complete') {
+        return fail('FILE_NOT_READY', 'The file is not ready yet.')
+      }
+      const parsed = parseExpectedHash(expectedHash)
+      if (parsed === null) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          'Enter a valid MD5, SHA-1, SHA-256 or SHA-512 hex hash.'
+        )
+      }
+      const computed = previewHash(parsed.algorithm, item.filename)
+      const result = {
+        algorithm: parsed.algorithm,
+        ok: computed === parsed.hash,
+        computed,
+        checkedAt: now()
+      }
+      item.checksum = result
+      emitDownloads()
+      return ok(result)
+    },
+
+    computeChecksum: async (downloadId: string) => {
+      const item = findDownload(downloadId)
+      if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
+      if (item.status !== 'complete') {
+        return fail('FILE_NOT_READY', 'The file is not ready yet.')
+      }
+      const result = {
+        algorithm: 'sha256' as const,
+        ok: null,
+        computed: previewHash('sha256', item.filename),
+        checkedAt: now()
+      }
+      item.checksum = result
+      emitDownloads()
+      return ok(result)
+    },
+
+    cancelChecksum: async (downloadId: string) =>
+      findDownload(downloadId)
+        ? ok(null)
+        : fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.'),
+
+    onChecksumProgress: () => () => undefined,
 
     restartAria2: async () => ok(emitDownloads()),
 
@@ -2846,6 +2900,20 @@ function hostnameOf(url: string): string {
   } catch {
     return 'example.com'
   }
+}
+
+/** Deterministic, correctly sized placeholder digest for the preview only. */
+function previewHash(algorithm: ChecksumAlgorithm, seed: string): string {
+  const length = CHECKSUM_HEX_LENGTHS[algorithm]
+  const alphabet = '0123456789abcdef'
+  let state = 17
+  let value = ''
+  for (let index = 0; index < length; index += 1) {
+    const code = seed.length > 0 ? seed.charCodeAt(index % seed.length) : 0
+    state = (state * 31 + code + index) >>> 0
+    value += alphabet[state % 16]
+  }
+  return value
 }
 
 function cloneDownload(item: DownloadItem): DownloadItem {

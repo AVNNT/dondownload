@@ -28,6 +28,10 @@ import type {
   UrlSizeProbe
 } from '../shared/types'
 import type { DownloadSettings } from '../shared/settings'
+import type {
+  ChecksumProgress,
+  ChecksumResult
+} from '../shared/checksum'
 import type { DesktopSettings } from '../shared/desktopSettings'
 import type {
   MediaToolSettings,
@@ -82,6 +86,31 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.probeUrlSize, url) as Promise<
       ApiResult<UrlSizeProbe>
     >,
+  verifyChecksum: (downloadId: string, expectedHash: string) =>
+    ipcRenderer.invoke(IPC.verifyChecksum, {
+      downloadId,
+      expectedHash
+    }) as Promise<ApiResult<ChecksumResult>>,
+  computeChecksum: (downloadId: string) =>
+    ipcRenderer.invoke(IPC.computeChecksum, { downloadId }) as Promise<
+      ApiResult<ChecksumResult>
+    >,
+  cancelChecksum: (downloadId: string) =>
+    ipcRenderer.invoke(IPC.cancelChecksum, { downloadId }) as Promise<
+      ApiResult<null>
+    >,
+  onChecksumProgress: (listener: (progress: ChecksumProgress) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      progress: ChecksumProgress
+    ): void => {
+      listener(progress)
+    }
+    ipcRenderer.on(IPC.checksumProgress, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.checksumProgress, handler)
+    }
+  },
   onSnapshotChanged: (listener: (snapshot: AppSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot): void => {
       listener(snapshot)

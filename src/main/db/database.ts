@@ -31,6 +31,11 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import {
+  isChecksumAlgorithm,
+  isChecksumResult,
+  type ChecksumResult
+} from '@shared/checksum'
+import {
   parseDesktopSettings,
   type DesktopSettings
 } from '@shared/desktopSettings'
@@ -51,7 +56,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 17
+export const SCHEMA_VERSION = 18
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -96,7 +101,11 @@ interface Migration {
   sql: string
 }
 
-const MIGRATIONS: readonly Migration[] = [
+/**
+ * Exported for migration tests only. The Database class applies every entry up
+ * to SCHEMA_VERSION in order; application code should never use this directly.
+ */
+export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
     sql: `
@@ -590,6 +599,28 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS batches_created_at_updated_at_idx
         ON batches (created_at DESC, updated_at DESC);
     `
+  },
+  {
+    // Additive only: persist the last checksum result for a download's own
+    // recorded file. Existing rows keep nulls until a verification runs, and
+    // the main download upsert never writes these columns, so ordinary
+    // progress saves cannot clobber a stored result.
+    version: 18,
+    sql: `
+      ALTER TABLE downloads ADD COLUMN checksum_algorithm TEXT
+        CHECK (
+          checksum_algorithm IS NULL OR
+          checksum_algorithm IN ('md5', 'sha1', 'sha256', 'sha512')
+        );
+
+      ALTER TABLE downloads ADD COLUMN checksum_ok INTEGER
+        CHECK (checksum_ok IS NULL OR checksum_ok IN (0, 1));
+
+      ALTER TABLE downloads ADD COLUMN checksum_computed TEXT;
+
+      ALTER TABLE downloads ADD COLUMN checksum_checked_at INTEGER
+        CHECK (checksum_checked_at IS NULL OR checksum_checked_at >= 0);
+    `
   }
 ]
 
@@ -663,6 +694,23 @@ function nullableNumber(
   return null
 }
 
+function rowToChecksum(row: Record<string, unknown>): ChecksumResult | null {
+  const algorithm = text(row, 'checksum_algorithm')
+  const computed = text(row, 'checksum_computed')
+  const checkedAt = nullableNumber(row, 'checksum_checked_at')
+  if (!isChecksumAlgorithm(algorithm) || computed === null || checkedAt === null) {
+    return null
+  }
+  const rawOk = nullableNumber(row, 'checksum_ok')
+  const result: ChecksumResult = {
+    algorithm,
+    ok: rawOk === null ? null : rawOk === 1,
+    computed,
+    checkedAt
+  }
+  return isChecksumResult(result) ? result : null
+}
+
 function rowToStored(row: Record<string, unknown>): StoredDownload | null {
   const id = text(row, 'id')
   const gid = text(row, 'gid')
@@ -680,6 +728,7 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
 
   const attempts = Math.max(1, Math.trunc(number(row, 'attempts', 1)))
   const maxAttempts = Math.max(1, Math.trunc(number(row, 'max_attempts', 3)))
+  const checksum = rowToChecksum(row)
 
   return {
     record: {
@@ -701,7 +750,8 @@ function rowToStored(row: Record<string, unknown>): StoredDownload | null {
       maxAttempts,
       createdAt: Math.trunc(number(row, 'created_at')),
       updatedAt: Math.trunc(number(row, 'updated_at')),
-      completedAt: nullableNumber(row, 'completed_at')
+      completedAt: nullableNumber(row, 'completed_at'),
+      ...(checksum === null ? {} : { checksum })
     },
     explicitFilename: text(row, 'explicit_filename'),
     scheduledAt: nullableNumber(row, 'scheduled_at'),
@@ -892,6 +942,7 @@ export class DownloadDatabase {
   private readonly deleteStatement: StatementSync
   private readonly downloadControlsStatement: StatementSync
   private readonly downloadBlockReasonStatement: StatementSync
+  private readonly downloadChecksumStatement: StatementSync
   private readonly settingsSelectStatement: StatementSync
   private readonly settingsUpsertStatement: StatementSync
   private readonly mediaToolSettingsSelectStatement: StatementSync
@@ -970,6 +1021,12 @@ export class DownloadDatabase {
       this.downloadBlockReasonStatement = this.db.prepare(`
         UPDATE downloads
         SET block_reason = ?
+        WHERE id = ?
+      `)
+      this.downloadChecksumStatement = this.db.prepare(`
+        UPDATE downloads
+        SET checksum_algorithm = ?, checksum_ok = ?,
+            checksum_computed = ?, checksum_checked_at = ?
         WHERE id = ?
       `)
       this.settingsSelectStatement = this.db.prepare(
@@ -1303,6 +1360,40 @@ export class DownloadDatabase {
       throw error instanceof AppError
         ? error
         : databaseError('Could not update download policy state', error)
+    }
+  }
+
+  /**
+   * Persist the last checksum result for one download. Only the checksum
+   * columns are touched so a concurrent progress save cannot resurrect an old
+   * status. The result is validated against its algorithm's hex length.
+   */
+  saveDownloadChecksum(id: string, result: ChecksumResult): void {
+    this.assertOpen()
+    try {
+      if (!isChecksumResult(result)) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update the checksum result: invalid result.'
+        )
+      }
+      const changes = this.downloadChecksumStatement.run(
+        result.algorithm,
+        result.ok === null ? null : result.ok ? 1 : 0,
+        result.computed,
+        result.checkedAt,
+        id
+      )
+      if (Number(changes.changes) === 0) {
+        throw new AppError(
+          'DATABASE_ERROR',
+          'Could not update the checksum result: download was not found.'
+        )
+      }
+    } catch (error) {
+      throw error instanceof AppError
+        ? error
+        : databaseError('Could not update the checksum result', error)
     }
   }
 

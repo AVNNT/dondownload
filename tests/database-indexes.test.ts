@@ -85,7 +85,7 @@ describe('v17 history indexes', () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(17)
+    expect(SCHEMA_VERSION).toBe(18)
 
     // Inspect the live connection that DownloadDatabase owns.
     const raw = (database as unknown as { db: DatabaseSync }).db
@@ -148,7 +148,7 @@ describe('v17 history indexes', () => {
     }
   })
 
-  it('re-adds the v17 indexes when upgrading a v16 database', async () => {
+  it('re-adds the v17 indexes and adds checksum columns when upgrading a v16 database', async () => {
     const filePath = await makeDatabasePath()
     open(filePath).close()
 
@@ -156,11 +156,15 @@ describe('v17 history indexes', () => {
     raw.exec('DROP INDEX downloads_created_at_updated_at_idx')
     raw.exec('DROP INDEX media_jobs_created_at_updated_at_idx')
     raw.exec('DROP INDEX batches_created_at_updated_at_idx')
+    raw.exec('ALTER TABLE downloads DROP COLUMN checksum_algorithm')
+    raw.exec('ALTER TABLE downloads DROP COLUMN checksum_ok')
+    raw.exec('ALTER TABLE downloads DROP COLUMN checksum_computed')
+    raw.exec('ALTER TABLE downloads DROP COLUMN checksum_checked_at')
     raw.exec('PRAGMA user_version = 16')
     raw.close()
 
     const upgraded = open(filePath)
-    expect(upgraded.schemaVersion).toBe(17)
+    expect(upgraded.schemaVersion).toBe(18)
     const verify = (upgraded as unknown as { db: DatabaseSync }).db
     expect(indexNames(verify, 'downloads')).toContain(
       'downloads_created_at_updated_at_idx'
@@ -170,6 +174,17 @@ describe('v17 history indexes', () => {
     )
     expect(indexNames(verify, 'batches')).toContain(
       'batches_created_at_updated_at_idx'
+    )
+    const downloadColumns = (
+      verify.prepare('PRAGMA table_info(downloads)').all() as { name: string }[]
+    ).map((column) => column.name)
+    expect(downloadColumns).toEqual(
+      expect.arrayContaining([
+        'checksum_algorithm',
+        'checksum_ok',
+        'checksum_computed',
+        'checksum_checked_at'
+      ])
     )
   })
 })

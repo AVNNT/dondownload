@@ -21,6 +21,7 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type { ChecksumResult } from '@shared/checksum'
 import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
   MediaToolSettings,
@@ -40,6 +41,7 @@ import {
 } from '@shared/scanner'
 import type { Aria2Service } from './aria2/service'
 import type { BatchManager } from './batches/manager'
+import type { ChecksumService } from './checksum/service'
 import { probeUrlSize } from './net/urlSize'
 import type { DownloadManager } from './downloads/manager'
 import { AppError, toErrorInfo } from './errors'
@@ -66,6 +68,8 @@ export interface IpcContext {
   mediaJobs?: MediaJobsManager
   /** Additive Milestone 3B batch orchestration. */
   batches?: BatchManager
+  /** Streaming file checksum jobs (optional until wired in index.ts). */
+  checksums?: ChecksumService
   /** Additive Milestone 5A runtime download settings. */
   settings?: SettingsManager
   /** Desktop-only preferences (notifications, clipboard, startup, zoom). */
@@ -165,6 +169,31 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.deleteDownloadFile, (_event, id) =>
     context.manager.deleteFile(id)
   )
+
+  // Checksum verification. The renderer sends only the opaque download id and
+  // an expected hash; the service resolves the download's own recorded path.
+  const checksums = (): ChecksumService => {
+    if (!context.checksums) {
+      throw new AppError(
+        'CHECKSUM_UNAVAILABLE',
+        'Checksum verification is not available.'
+      )
+    }
+    return context.checksums
+  }
+
+  invoke<ChecksumResult>(IPC.verifyChecksum, (_event, input) =>
+    checksums().verify(input)
+  )
+
+  invoke<ChecksumResult>(IPC.computeChecksum, (_event, input) =>
+    checksums().compute(input)
+  )
+
+  invoke<null>(IPC.cancelChecksum, (_event, input) => {
+    checksums().cancel(input)
+    return null
+  })
 
   // Additive media channels. They reuse the same trusted-sender wrapper and
   // never widen the existing download capabilities.
