@@ -376,9 +376,15 @@ if (unregisterRequested) {
       store: database,
       aria2,
       // Allowed-hours edits take effect on the existing policy timer; active
-      // aria2 transfers are never paused by a settings change.
-      onChanged: () => {
+      // aria2 transfers are never paused by a settings change. The tray menu
+      // and every renderer surface also refresh from the same committed
+      // snapshot, so a tray/toolbar preset never leaves another view stale.
+      onChanged: (next) => {
         void manager?.refreshPolicy()
+        refreshTray()
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC.settingsChanged, next)
+        }
       }
     })
     settingsManager = settings
@@ -828,7 +834,16 @@ if (unregisterRequested) {
           quitRequested = true
           app.quit()
         },
-        isWindowVisible: isMainWindowVisible
+        isWindowVisible: isMainWindowVisible,
+        getSpeedLimitBps: () =>
+          settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
+        setSpeedLimitBps: (bps) => {
+          void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
+            const detail =
+              error instanceof Error ? error.message : 'unknown error'
+            console.error(`Speed limit could not be changed: ${detail}`)
+          })
+        }
       })
     }
 

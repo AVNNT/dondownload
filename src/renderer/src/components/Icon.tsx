@@ -34,6 +34,7 @@ export type IconName =
   | 'external'
   | 'copy'
   | 'puzzle'
+  | 'gauge'
 
 export const CATEGORY_ICON: Record<ItemCategory, IconName> = {
   video: 'video',
@@ -234,6 +235,13 @@ const ICONS: Record<IconName, JSX.Element> = {
   puzzle: (
     <>
       <path d="M10 4a2 2 0 1 1 4 0v1h4a1 1 0 0 1 1 1v4h-1a2 2 0 1 0 0 4h1v5a1 1 0 0 1-1 1h-4v-1a2 2 0 1 0-4 0v1H6a1 1 0 0 1-1-1v-4H4a2 2 0 1 1 0-4h1V6a1 1 0 0 1 1-1h4z" />
+    </>
+  ),
+  gauge: (
+    <>
+      <path d="M4.5 16.5a8 8 0 1 1 15 0" />
+      <path d="m12 12.5 3.5-3.5" />
+      <circle cx="12" cy="16.5" r="1.3" fill="currentColor" stroke="none" />
     </>
   )
 }

@@ -1,4 +1,10 @@
-import { useEffect, useRef, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
+import {
+  SPEED_LIMIT_PRESETS,
+  formatSpeedLimitBps,
+  speedLimitMenuLabel,
+  speedLimitPreset
+} from '@shared/speedLimits'
 import type { SortDirection, SortKey, StatusFilterId } from '../lib/unified'
 import { SORT_KEYS, SORT_LABELS } from '../lib/unified'
 import { Icon } from './Icon'
@@ -35,6 +41,11 @@ interface ToolbarProps {
   /** Removes every finished or failed entry; files on disk are kept. */
   canClearList: boolean
   onClearList: () => void
+  /** Current global download limit in bytes per second (`0` = unlimited). */
+  speedLimitBps: number
+  onSpeedLimitChange: (bps: number) => void
+  /** Settings are still loading or unavailable. */
+  speedLimitDisabled?: boolean
 }
 
 export function Toolbar({
@@ -54,9 +65,31 @@ export function Toolbar({
   canClearCompleted,
   onClearCompleted,
   canClearList,
-  onClearList
+  onClearList,
+  speedLimitBps,
+  onSpeedLimitChange,
+  speedLimitDisabled = false
 }: ToolbarProps): JSX.Element {
   const searchRef = useRef<HTMLInputElement>(null)
+  const speedRef = useRef<HTMLDivElement>(null)
+  const [speedOpen, setSpeedOpen] = useState(false)
+
+  useEffect(() => {
+    if (!speedOpen) return undefined
+    const onPointerDown = (event: PointerEvent): void => {
+      if (speedRef.current?.contains(event.target as Node)) return
+      setSpeedOpen(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSpeedOpen(false)
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [speedOpen])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -69,6 +102,9 @@ export function Toolbar({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  const currentSpeedPreset = speedLimitPreset(speedLimitBps)
+  const speedLimited = speedLimitBps > 0
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-4 pb-1 pt-2">
@@ -155,6 +191,71 @@ export function Toolbar({
         >
           {sortDirection === 'asc' ? '↑' : '↓'}
         </button>
+
+        <div ref={speedRef} className="relative">
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={speedOpen}
+            aria-label={`Speed limit: ${formatSpeedLimitBps(speedLimitBps)}`}
+            title={`Download speed limit: ${formatSpeedLimitBps(speedLimitBps)}`}
+            disabled={speedLimitDisabled}
+            onClick={() => setSpeedOpen((open) => !open)}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[12px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${
+              speedLimited
+                ? 'border-accent-400/40 bg-accent-500/10 text-accent-200 hover:border-accent-400/60'
+                : 'border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+            }`}
+          >
+            <Icon name="gauge" size={14} />
+            <span className="tabular-nums">
+              {formatSpeedLimitBps(speedLimitBps)}
+            </span>
+            <Icon name="chevron-down" size={11} className="opacity-70" />
+          </button>
+          {speedOpen ? (
+            <div
+              role="menu"
+              aria-label="Speed limit"
+              className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-white/10 bg-[var(--surface-card)] p-1 shadow-2xl shadow-black/60"
+            >
+              {SPEED_LIMIT_PRESETS.map((preset) => {
+                const checked = preset.bps === speedLimitBps
+                return (
+                  <button
+                    key={preset.bps}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={checked}
+                    onClick={() => {
+                      setSpeedOpen(false)
+                      onSpeedLimitChange(preset.bps)
+                    }}
+                    className="flex h-7 w-full items-center justify-between gap-3 rounded px-2 text-left text-[12px] font-medium text-zinc-200 transition hover:bg-white/5 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-300"
+                  >
+                    <span>{preset.label}</span>
+                    {checked ? (
+                      <Icon name="check" size={13} className="text-accent-400" />
+                    ) : null}
+                  </button>
+                )
+              })}
+              {currentSpeedPreset === null ? (
+                <div
+                  role="menuitemradio"
+                  aria-checked="true"
+                  aria-disabled="true"
+                  className="flex h-7 w-full items-center justify-between gap-3 rounded px-2 text-[12px] font-medium text-zinc-400"
+                >
+                  <span className="truncate">
+                    {speedLimitMenuLabel(speedLimitBps)}
+                  </span>
+                  <Icon name="check" size={13} className="text-accent-400" />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <span aria-hidden="true" className="mx-0.5 hidden h-5 w-px bg-white/10 sm:block" />

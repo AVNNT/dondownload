@@ -1,12 +1,17 @@
 import { Menu, Tray, nativeImage, type NativeImage } from 'electron'
 import trayIconPath from './assets/tray.ico?asset'
 import { trayMenuLabel } from './lifecycle'
+import { buildSpeedLimitSubmenu } from './trayMenu'
 
 export interface TrayActions {
   showWindow: () => void
   hideWindow: () => void
   quit: () => void
   isWindowVisible: () => boolean
+  /** Current global download limit in bytes per second (`0` = unlimited). */
+  getSpeedLimitBps: () => number
+  /** Apply one of the quick presets through the settings update path. */
+  setSpeedLimitBps: (bps: number) => void
 }
 
 export interface AppTray {
@@ -60,6 +65,14 @@ export function createAppTray(actions: TrayActions): AppTray | null {
             if (actions.isWindowVisible()) actions.hideWindow()
             else actions.showWindow()
           }
+        },
+        { type: 'separator' },
+        {
+          label: 'Speed limit',
+          submenu: buildSpeedLimitSubmenu(
+            actions.getSpeedLimitBps(),
+            actions.setSpeedLimitBps
+          )
         },
         { type: 'separator' },
         {

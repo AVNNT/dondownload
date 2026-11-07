@@ -119,6 +119,19 @@ export class SettingsManager {
   }
 
   /**
+   * Change only the global download limit (used by the tray and toolbar quick
+   * presets). It delegates to `update`, so the same exact-key validation,
+   * live aria2 apply/rollback, persistence and `onChanged` notification run as
+   * for a value edited on the Settings page.
+   */
+  async setGlobalSpeedLimit(globalSpeedLimitBps: number): Promise<DownloadSettings> {
+    return this.update({
+      ...this.getSettings(),
+      globalSpeedLimitBps
+    })
+  }
+
+  /**
    * Validate and persist one complete settings object. Unknown/missing keys and
    * out-of-range values are rejected by the shared parser before persistence.
    */

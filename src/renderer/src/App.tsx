@@ -279,9 +279,16 @@ export default function App(): JSX.Element {
     const unsubscribe = window.donDownload.onAppUpdateStateChanged((state) => {
       if (!cancelled) setAppUpdate(state)
     })
+    const unsubscribeSettings = window.donDownload.onSettingsChanged((next) => {
+      if (!cancelled) {
+        setSettings(next)
+        applyRendererTheme(next.theme)
+      }
+    })
     return () => {
       cancelled = true
       unsubscribe()
+      unsubscribeSettings()
     }
   }, [])
 
@@ -583,6 +590,28 @@ export default function App(): JSX.Element {
       return result
     },
     []
+  )
+
+  /**
+   * Quick speed-limit presets from the toolbar. This deliberately uses the
+   * same `updateSettings` path as the Settings page, so validation, persistence
+   * and the live aria2 apply all happen exactly once.
+   */
+  const changeSpeedLimit = useCallback(
+    async (bps: number): Promise<void> => {
+      if (!settings) return
+      try {
+        const result = await window.donDownload.updateSettings({
+          ...settings,
+          globalSpeedLimitBps: bps
+        })
+        if (result.ok) setSettings(result.value)
+        else setBanner(result.error)
+      } catch {
+        setToast('Could not change the speed limit')
+      }
+    },
+    [settings]
   )
 
   const copyText = useCallback(async (text: string): Promise<void> => {
@@ -1490,6 +1519,11 @@ export default function App(): JSX.Element {
                 onClearCompleted={requestClearCompleted}
                 canClearList={planBulkAction('clear-list', allRows).length > 0}
                 onClearList={requestClearList}
+                speedLimitBps={settings?.globalSpeedLimitBps ?? 0}
+                speedLimitDisabled={settings === null}
+                onSpeedLimitChange={(bps) => {
+                  void changeSpeedLimit(bps)
+                }}
               />
             )}
 

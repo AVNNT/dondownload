@@ -183,6 +183,7 @@ export function createPreviewApi(
   const mediaListeners = new Set<Listener<MediaSnapshot>>()
   const batchListeners = new Set<Listener<{ batches: Batch[] }>>()
   const appUpdateListeners = new Set<Listener<AppUpdateState>>()
+  const settingsListeners = new Set<Listener<DownloadSettings>>()
   const scanListeners = new Set<Listener<ScanSession>>()
 
   const nextId = (prefix: string): string => `${prefix}-${++sequence}`
@@ -1508,7 +1509,14 @@ export function createPreviewApi(
           error instanceof Error ? error.message : 'Invalid settings.'
         )
       }
+      const snapshot = cloneSettings(settings)
+      for (const listener of settingsListeners) listener(snapshot)
       return ok(cloneSettings(settings))
+    },
+
+    onSettingsChanged: (listener) => {
+      settingsListeners.add(listener)
+      return () => settingsListeners.delete(listener)
     },
 
     getDesktopSettings: async () => ok({ ...desktopSettings }),
