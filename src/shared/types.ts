@@ -256,6 +256,11 @@ export interface DonDownloadApi {
   startDownloadNow: (id: string) => Promise<ApiResult<AppSnapshot>>
   retryDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   removeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
+  /**
+   * Remove many history entries in one main-process transaction. Used by
+   * "Clear list"; downloaded files are never touched.
+   */
+  removeDownloads: (ids: string[]) => Promise<ApiResult<AppSnapshot>>
   showInFolder: (id: string) => Promise<ApiResult<null>>
   /** Open a completed download's verified file with the OS default app. */
   openFile: (id: string) => Promise<ApiResult<null>>
@@ -282,6 +287,8 @@ export interface DonDownloadApi {
   resumeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   retryMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   removeMedia: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
+  /** Remove many media history entries in one transaction; files are kept. */
+  removeMediaJobs: (ids: string[]) => Promise<ApiResult<MediaSnapshot>>
   /** Move a finished media job's recorded output to the Recycle Bin. */
   deleteMediaFile: (jobId: string) => Promise<ApiResult<MediaSnapshot>>
   showMediaInFolder: (jobId: string) => Promise<ApiResult<null>>

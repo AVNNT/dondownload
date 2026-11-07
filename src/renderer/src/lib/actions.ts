@@ -28,7 +28,11 @@ export interface ContextAction {
   hint?: string
 }
 
-export type BulkActionId = 'pause-all' | 'resume-all' | 'clear-completed'
+export type BulkActionId =
+  | 'pause-all'
+  | 'resume-all'
+  | 'clear-completed'
+  | 'clear-list'
 
 export function canPauseRow(row: UnifiedRow): boolean {
   if (row.download !== null) {
@@ -267,7 +271,20 @@ export function planBulkAction(
       return rows
         .filter((row) => row.statusGroup === 'completed')
         .map((row) => ({ action: 'remove', row }))
+    case 'clear-list':
+      // Everything that is not still in flight: completed, failed, cancelled
+      // and interrupted rows. Queued, downloading, merging and paused rows stay
+      // because their status group is `active` or `queued`.
+      return rows.filter(isClearListRow).map((row) => ({ action: 'remove', row }))
   }
+}
+
+/**
+ * Whether "Clear list" removes this row. Only finished or dead entries go;
+ * anything the user can still watch, pause or resume stays in the list.
+ */
+export function isClearListRow(row: UnifiedRow): boolean {
+  return row.statusGroup === 'completed' || row.statusGroup === 'failed'
 }
 
 export interface ConfirmationCopy {
@@ -283,6 +300,19 @@ export function clearCompletedConfirmation(count: number): ConfirmationCopy {
     message:
       'This removes only the completed history entries. Downloaded files stay on disk.',
     confirmLabel: 'Clear completed'
+  }
+}
+
+/**
+ * Copy for "Clear list". The dialog must say plainly that only the list entries
+ * go: files already on disk are kept, and in-flight rows stay.
+ */
+export function clearListConfirmation(count: number): ConfirmationCopy {
+  return {
+    title: `Remove ${count} ${count === 1 ? 'entry' : 'entries'} from the list?`,
+    message:
+      'Files on disk are kept. Downloads that are queued, downloading or paused stay in the list.',
+    confirmLabel: 'Clear list'
   }
 }
 
@@ -429,4 +459,61 @@ function collect(
   errors: AppErrorInfo[]
 ): void {
   if (!result.ok) errors.push(result.error)
+}
+
+/** The two bulk channels "Clear list" uses instead of one call per row. */
+export interface BulkRemovalApi {
+  removeDownloads: (ids: string[]) => Promise<ApiResult<AppSnapshot>>
+  removeMediaJobs: (ids: string[]) => Promise<ApiResult<MediaSnapshot>>
+}
+
+export interface BulkRemovalIds {
+  downloadIds: string[]
+  mediaIds: string[]
+}
+
+/** Split a removal plan into the per-source id lists the bulk channels take. */
+export function removalIds(plan: readonly ActionPlanEntry[]): BulkRemovalIds {
+  const downloadIds: string[] = []
+  const mediaIds: string[] = []
+  for (const entry of plan) {
+    if (entry.action !== 'remove') continue
+    if (entry.row.source === 'download') downloadIds.push(entry.row.id)
+    else mediaIds.push(entry.row.id)
+  }
+  return { downloadIds, mediaIds }
+}
+
+/**
+ * Commit a removal plan through the bulk IPC channels: at most one call per
+ * source, never one call per row. Files on disk are never touched.
+ */
+export async function executeBulkRemoval(
+  plan: readonly ActionPlanEntry[],
+  api: BulkRemovalApi
+): Promise<ActionExecution> {
+  const errors: AppErrorInfo[] = []
+  const { downloadIds, mediaIds } = removalIds(plan)
+
+  const results = await Promise.allSettled([
+    downloadIds.length > 0
+      ? api.removeDownloads(downloadIds)
+      : Promise.resolve(null),
+    mediaIds.length > 0 ? api.removeMediaJobs(mediaIds) : Promise.resolve(null)
+  ])
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      errors.push({
+        code: 'ACTION_FAILED',
+        message:
+          result.reason instanceof Error
+            ? result.reason.message
+            : 'The entries could not be removed.'
+      })
+      continue
+    }
+    if (result.value !== null) collect(result.value, errors)
+  }
+
+  return { errors, analyzeAgain: [], copyUrls: [] }
 }

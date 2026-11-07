@@ -8,6 +8,9 @@ export const IPC = {
   startDownloadNow: 'download:start-now',
   retryDownload: 'download:retry',
   removeDownload: 'download:remove',
+  // Bulk history removal for "Clear list": one database transaction and one
+  // publish in the main process instead of a call per row. Files are kept.
+  removeDownloads: 'download:remove-many',
   showInFolder: 'download:show-in-folder',
   openFile: 'download:open-file',
   analyzeMedia: 'media:analyze',
@@ -25,6 +28,7 @@ export const IPC = {
   deleteDownloadFile: 'download:delete-file',
   deleteMediaFile: 'media:delete-file',
   removeMedia: 'media:remove',
+  removeMediaJobs: 'media:remove-many',
   showMediaInFolder: 'media:show-in-folder',
   openMediaFile: 'media:open-file',
   mediaSnapshotChanged: 'media:snapshot-changed',

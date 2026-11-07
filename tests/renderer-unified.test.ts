@@ -37,9 +37,13 @@ import {
   canPauseRow,
   canResumeRow,
   clearCompletedConfirmation,
+  clearListConfirmation,
   executeActionPlan,
+  executeBulkRemoval,
+  isClearListRow,
   planBulkAction,
   planRowAction,
+  removalIds,
   removeConfirmation,
   type ActionApi
 } from '../src/renderer/src/lib/actions'
@@ -108,8 +112,8 @@ function mediaRow(overrides: Partial<MediaJob> = {}): UnifiedRow {
   return mediaJobToRow(mediaJob(overrides))
 }
 
-function fakeApi() {
-  const snapshot: AppSnapshot = {
+function snapshotFixture(): AppSnapshot {
+  return {
     aria2: {
       status: 'ready',
       version: 'test',
@@ -119,7 +123,10 @@ function fakeApi() {
     },
     downloads: []
   }
-  const media: MediaSnapshot = {
+}
+
+function mediaFixture(): MediaSnapshot {
+  return {
     tool: {
       status: 'ready',
       version: 'test',
@@ -128,6 +135,11 @@ function fakeApi() {
     },
     jobs: []
   }
+}
+
+function fakeApi() {
+  const snapshot = snapshotFixture()
+  const media = mediaFixture()
   return {
     pauseDownload: vi.fn<ActionApi['pauseDownload']>(async () => ok(snapshot)),
     resumeDownload: vi.fn<ActionApi['resumeDownload']>(async () => ok(snapshot)),
@@ -576,6 +588,103 @@ describe('context menu and action plans', () => {
     expect(copy.message).toContain('files stay on disk')
     expect(copy.confirmLabel).toBe('Clear completed')
     expect(removeConfirmation(2).title).toBe('Remove 2 items?')
+  })
+
+  it('clears every finished or dead entry and keeps in-flight rows', () => {
+    const queued = rowFor({ id: 'queued', status: 'queued' })
+    const waiting = rowFor({ id: 'waiting', status: 'waiting' })
+    const mediaDownloading = mediaRow({ id: 'media-downloading' })
+    const mediaMerging = mediaRow({ id: 'media-merging', status: 'merging' })
+    const mediaPaused = mediaRow({ id: 'media-paused', status: 'paused' })
+    const mediaCancelled = mediaRow({ id: 'media-cancelled', status: 'cancelled' })
+    const interrupted = rowFor({ id: 'interrupted', status: 'interrupted' })
+
+    const rows = [
+      active,
+      queued,
+      waiting,
+      paused,
+      complete,
+      failed,
+      interrupted,
+      mediaDownloading,
+      mediaMerging,
+      mediaPaused,
+      mediaComplete,
+      mediaFailed,
+      mediaCancelled
+    ]
+
+    const plan = planBulkAction('clear-list', rows)
+
+    expect(plan.map((entry) => entry.row.id)).toEqual([
+      'complete',
+      'failed',
+      'interrupted',
+      'media-complete',
+      'media-failed',
+      'media-cancelled'
+    ])
+    expect(plan.every((entry) => entry.action === 'remove')).toBe(true)
+    // Rows the user can still watch, pause or resume are never cleared.
+    for (const kept of [
+      active,
+      queued,
+      waiting,
+      paused,
+      mediaDownloading,
+      mediaMerging,
+      mediaPaused
+    ]) {
+      expect(isClearListRow(kept)).toBe(false)
+    }
+
+    const copy = clearListConfirmation(plan.length)
+    expect(copy.title).toBe('Remove 6 entries from the list?')
+    expect(copy.message).toContain('Files on disk are kept')
+    expect(copy.confirmLabel).toBe('Clear list')
+    expect(clearListConfirmation(1).title).toBe('Remove 1 entry from the list?')
+  })
+
+  it('commits a clear-list plan through one bulk call per source', async () => {
+    const plan = planBulkAction('clear-list', [
+      complete,
+      failed,
+      mediaComplete,
+      active
+    ])
+    expect(removalIds(plan)).toEqual({
+      downloadIds: ['complete', 'failed'],
+      mediaIds: ['media-complete']
+    })
+
+    const api = {
+      removeDownloads: vi.fn(async () => ok(snapshotFixture())),
+      removeMediaJobs: vi.fn(async () => ok(mediaFixture()))
+    }
+    const result = await executeBulkRemoval(plan, api)
+
+    expect(result.errors).toEqual([])
+    expect(api.removeDownloads).toHaveBeenCalledTimes(1)
+    expect(api.removeDownloads).toHaveBeenCalledWith(['complete', 'failed'])
+    expect(api.removeMediaJobs).toHaveBeenCalledTimes(1)
+    expect(api.removeMediaJobs).toHaveBeenCalledWith(['media-complete'])
+  })
+
+  it('reports a failed bulk removal instead of throwing', async () => {
+    const plan = planBulkAction('clear-list', [complete])
+    const api = {
+      removeDownloads: vi.fn(async () => ({
+        ok: false as const,
+        error: { code: 'DB_BUSY', message: 'Could not remove download history.' }
+      })),
+      removeMediaJobs: vi.fn(async () => ok(mediaFixture()))
+    }
+
+    const result = await executeBulkRemoval(plan, api)
+    expect(result.errors.map((error) => error.code)).toEqual(['DB_BUSY'])
+    // No media ids in the plan: the media channel is never called.
+    expect(api.removeMediaJobs).not.toHaveBeenCalled()
   })
 })
 

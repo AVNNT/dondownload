@@ -132,6 +132,7 @@ class FakePersistence implements MediaJobsPersistence {
   readonly savedSingles: string[] = []
   readonly savedBatches: MediaJobRecord[][] = []
   readonly deleted: string[] = []
+  readonly deletedBatches: string[][] = []
   loadFails = false
   saveFails = false
 
@@ -157,6 +158,14 @@ class FakePersistence implements MediaJobsPersistence {
   deleteMediaJob(id: string): void {
     this.deleted.push(id)
     this.rows.delete(id)
+  }
+
+  deleteMediaJobs(ids: readonly string[]): void {
+    this.deletedBatches.push([...ids])
+    for (const id of ids) {
+      this.deleted.push(id)
+      this.rows.delete(id)
+    }
   }
 
   seed(record: MediaJobRecord): void {

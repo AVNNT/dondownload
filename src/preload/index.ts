@@ -64,6 +64,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.retryDownload, id) as Promise<ApiResult<AppSnapshot>>,
   removeDownload: (id: string) =>
     ipcRenderer.invoke(IPC.removeDownload, id) as Promise<ApiResult<AppSnapshot>>,
+  removeDownloads: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.removeDownloads, ids) as Promise<
+      ApiResult<AppSnapshot>
+    >,
   showInFolder: (id: string) =>
     ipcRenderer.invoke(IPC.showInFolder, id) as Promise<ApiResult<null>>,
   openFile: (id: string) =>
@@ -109,6 +113,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.retryMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
   removeMedia: (jobId: string) =>
     ipcRenderer.invoke(IPC.removeMedia, jobId) as Promise<ApiResult<MediaSnapshot>>,
+  removeMediaJobs: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.removeMediaJobs, ids) as Promise<
+      ApiResult<MediaSnapshot>
+    >,
   deleteMediaFile: (jobId: string) =>
     ipcRenderer.invoke(IPC.deleteMediaFile, jobId) as Promise<
       ApiResult<MediaSnapshot>

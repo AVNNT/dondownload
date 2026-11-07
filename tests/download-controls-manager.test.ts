@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1010,5 +1010,74 @@ describe('poll batching and snapshot publishing', () => {
     await manager.pause(itemByUrl(manager, url).id)
     expect(updates.length).toBe(afterAdd + 1)
     expect(updates[updates.length - 1]?.downloads[0]?.status).toBe('paused')
+  })
+})
+
+describe('bulk list removal', () => {
+  it('removes many entries in one transaction and one publish, keeping files', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const updates: AppSnapshot[] = []
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      updates
+    )
+
+    const urls = [
+      'https://example.com/one.bin',
+      'https://example.com/two.bin',
+      'https://example.com/three.bin'
+    ]
+    for (const url of urls) await manager.add({ url })
+    // A file the user already downloaded must survive the clear.
+    await mkdir(downloadDir, { recursive: true })
+    const keptFile = path.join(downloadDir, 'one.bin')
+    await writeFile(keptFile, 'payload')
+
+    const ids = manager.getSnapshot().downloads.map((item) => item.id)
+    expect(ids).toHaveLength(3)
+    const before = updates.length
+
+    await manager.removeMany(ids)
+
+    expect(manager.getSnapshot().downloads).toHaveLength(0)
+    expect(database.loadAll()).toHaveLength(0)
+    // One publish for the whole batch, not one per row.
+    expect(updates.length).toBe(before + 1)
+    await expect(stat(keptFile)).resolves.toMatchObject({ size: 7 })
+  })
+
+  it('skips ids the backend no longer knows instead of failing the clear', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(database, downloadDir, clock, settings)
+
+    await manager.add({ url: 'https://example.com/keep.bin' })
+    const id = itemByUrl(manager, 'https://example.com/keep.bin').id
+    const unknown = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+    await manager.removeMany([id, unknown])
+
+    expect(manager.getSnapshot().downloads).toHaveLength(0)
+    expect(database.loadAll()).toHaveLength(0)
+  })
+
+  it('rejects a malformed bulk payload without touching any row', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(database, downloadDir, clock, settings)
+
+    await manager.add({ url: 'https://example.com/safe.bin' })
+
+    await expect(manager.removeMany('not-a-list')).rejects.toThrow()
+    await expect(manager.removeMany(['not-a-uuid'])).rejects.toThrow()
+    expect(manager.getSnapshot().downloads).toHaveLength(1)
+    expect(database.loadAll()).toHaveLength(1)
   })
 })

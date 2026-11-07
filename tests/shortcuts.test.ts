@@ -217,4 +217,26 @@ describe('SHORTCUT_HELP', () => {
     expect(undo).toHaveLength(1)
     expect(undo[0]?.keys).toEqual(['Ctrl', 'Z'])
   })
+
+  it('maps Ctrl+Shift+L to clearing the list', () => {
+    expect(
+      matchShortcut(key('l', { ctrlKey: true, shiftKey: true }), IDLE)
+    ).toBe('clear-list')
+    expect(
+      matchShortcut(key('L', { metaKey: true, shiftKey: true }), IDLE)
+    ).toBe('clear-list')
+    // Plain Ctrl+L is not a shortcut, and dialogs keep their own keys.
+    expect(matchShortcut(key('l', { ctrlKey: true }), IDLE)).toBeNull()
+    expect(
+      matchShortcut(key('l', { ctrlKey: true, shiftKey: true }), {
+        ...IDLE,
+        dialogOpen: true
+      })
+    ).toBeNull()
+
+    const entries = SHORTCUT_HELP.flatMap((section) => section.entries)
+    const clear = entries.filter((entry) => entry.label.startsWith('Clear the list'))
+    expect(clear).toHaveLength(1)
+    expect(clear[0]?.keys).toEqual(['Ctrl', 'Shift', 'L'])
+  })
 })

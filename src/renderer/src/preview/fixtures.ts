@@ -1228,6 +1228,12 @@ export function createPreviewApi(
       return ok(emitDownloads())
     },
 
+    removeDownloads: async (ids: string[]) => {
+      const gone = new Set(ids)
+      downloads = downloads.filter((item) => !gone.has(item.id))
+      return ok(emitDownloads())
+    },
+
     showInFolder: async (id: string) =>
       findDownload(id)
         ? ok(null)
@@ -1380,6 +1386,12 @@ export function createPreviewApi(
 
     removeMedia: async (jobId: string) => {
       mediaJobs = mediaJobs.filter((job) => job.id !== jobId)
+      return ok(emitMedia())
+    },
+
+    removeMediaJobs: async (ids: string[]) => {
+      const gone = new Set(ids)
+      mediaJobs = mediaJobs.filter((job) => !gone.has(job.id))
       return ok(emitMedia())
     },
 
