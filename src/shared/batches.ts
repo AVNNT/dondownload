@@ -13,9 +13,9 @@ import { ValidationError, normalizeHttpUrl } from './validation'
  * child has not been created yet. Items fail, retry and cancel independently;
  * the batch itself can be cancelled as a group.
  *
- * Playlists and Pixeldrain lists are first resolved into an ephemeral
- * `CollectionPreview`. The preview exposes only opaque preview/entry IDs,
- * bounded display text, positions and a safe availability code. A batch can
+ * Playlists, Pixeldrain lists and MEGA folders are first resolved into an
+ * ephemeral `CollectionPreview`. The preview exposes only opaque preview/entry
+ * IDs, bounded display text, positions and a safe availability code. A batch can
  * then be created from an explicit, bounded selection of preview entry IDs;
  * there is no implicit "select all" path.
  */
@@ -23,6 +23,7 @@ import { ValidationError, normalizeHttpUrl } from './validation'
 export const BATCH_KINDS = [
   'media-playlist',
   'pixeldrain-list',
+  'mega-folder',
   'direct-urls'
 ] as const
 export type BatchKind = (typeof BATCH_KINDS)[number]
@@ -259,7 +260,8 @@ export interface BatchTargetInput {
 
 export const COLLECTION_PREVIEW_KINDS = [
   'playlist',
-  'pixeldrain-list'
+  'pixeldrain-list',
+  'mega-folder'
 ] as const
 export type CollectionPreviewKind = (typeof COLLECTION_PREVIEW_KINDS)[number]
 
@@ -343,7 +345,8 @@ export interface CollectionEntry {
 }
 
 /**
- * Renderer-safe, ephemeral selection preview for a playlist or Pixeldrain list.
+ * Renderer-safe, ephemeral selection preview for a playlist, Pixeldrain list or
+ * MEGA folder.
  * The renderer sends back only `id` plus explicitly selected entry IDs.
  */
 export interface CollectionPreview {
@@ -357,7 +360,7 @@ export interface CollectionPreview {
   entries: CollectionEntry[]
 }
 
-/** Strict input for analyzing a playlist or Pixeldrain list source URL. */
+/** Strict input for analyzing a playlist or provider-list source URL. */
 export interface AnalyzeCollectionInput {
   url: string
 }

@@ -4,6 +4,8 @@
  * and never rewrites the path.
  */
 
+import { keepsUrlFragment } from '@shared/urlFragment'
+
 const TRACKING_PARAMETERS = new Set(['fbclid'])
 
 function isTrackingParameter(name: string): boolean {
@@ -31,8 +33,13 @@ export function normalizeScanUrl(raw: string): string {
     throw new Error('The URL is not valid.')
   }
 
-  parsed.hash = ''
   parsed.hostname = parsed.hostname.toLowerCase().replace(/\.$/, '')
+
+  // A fragment is a client-side anchor for every normal host, but a public MEGA
+  // key lives there: dropping it would make a valid link unusable. The full
+  // link stays in main-process state only and is redacted before it is logged
+  // or published.
+  if (!keepsUrlFragment(parsed.hostname)) parsed.hash = ''
 
   const entries: Array<[string, string]> = []
   for (const [name, value] of parsed.searchParams) {

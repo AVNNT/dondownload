@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { shell } from 'electron'
 import {
@@ -59,6 +60,14 @@ import type {
   PixeldrainLink,
   PixeldrainListResolution
 } from '../hosts/pixeldrain'
+import type {
+  MegaFileKey,
+  MegaFileResolution,
+  MegaFolderResolution,
+  MegaLink
+} from '../hosts/mega'
+import { decryptMegaFile } from '../hosts/megaDecrypt'
+import { isMegaHost } from '@shared/urlFragment'
 import { AppError } from '../errors'
 import {
   PAIR_RENAME_FAILED,
@@ -128,6 +137,13 @@ const GOFILE_INVALID_LINK_MESSAGE =
 
 const PIXELDRAIN_INVALID_LIST_MESSAGE =
   'This Pixeldrain link is a file, not a list.'
+
+const MEGA_INVALID_FOLDER_MESSAGE = 'This MEGA link is a file, not a folder.'
+const MEGA_INVALID_LINK_MESSAGE =
+  'Enter a public MEGA file link or folder link.'
+
+/** Suffix of the temporary file that holds the still-encrypted download. */
+const MEGA_ENCRYPTED_SUFFIX = '.megaenc'
 
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
 const DEFAULT_POLL_INTERVAL_MS = 1_000
@@ -211,6 +227,17 @@ export interface BatchPixeldrainPort {
   resolveList(value: unknown): Promise<PixeldrainListResolution>
 }
 
+/**
+ * Public MEGA adapter surface. `resolveFile` returns the short-lived signed
+ * download URL plus the INTERNAL AES key material, which the manager keeps in
+ * memory for the decryption step and never publishes.
+ */
+export interface BatchMegaPort {
+  parseLink(value: unknown): MegaLink
+  resolveFile(value: unknown): Promise<MegaFileResolution>
+  resolveFolder(value: unknown): Promise<MegaFolderResolution>
+}
+
 export interface BatchPersistencePort {
   loadBatches(): StoredBatchRecord[]
   saveBatch(record: BatchRecord): void
@@ -232,6 +259,12 @@ export interface BatchManagerOptions {
   mediaJobs: BatchMediaJobsPort
   collectionEngine: BatchCollectionEnginePort
   pixeldrain: BatchPixeldrainPort
+  /**
+   * Public MEGA adapter. Optional so a build or a focused test double without
+   * MEGA support stays valid; a MEGA link then fails closed with
+   * `MEGA_UNSUPPORTED` instead of being downloaded as a web page.
+   */
+  mega?: BatchMegaPort
   onUpdate: (snapshot: BatchSnapshot) => void
   database?: BatchPersistencePort | null
   /** Injectable clock for deterministic tests. */
@@ -257,6 +290,11 @@ export interface BatchManagerOptions {
   resolvePairingFolder?: (token: string) =>
     | { directory: string; filePath: string; filename: string }
     | null
+  /**
+   * Injectable MEGA decryption step. Defaults to the streaming AES-128-CTR
+   * implementation; tests replace it so no real file has to exist.
+   */
+  decryptMega?: typeof decryptMegaFile
 }
 
 interface ManagedBatch {
@@ -290,7 +328,7 @@ interface ManagedScanPairing {
 
 interface StoredPreview {
   id: string
-  kind: 'playlist' | 'pixeldrain-list'
+  kind: 'playlist' | 'pixeldrain-list' | 'mega-folder'
   sourceUrl: string
   preview: CollectionPreview
   expiresAt: number
@@ -299,13 +337,15 @@ interface StoredPreview {
     string,
     PixeldrainListResolution['entries'][number]
   > | null
+  /** Internal MEGA metadata keyed by the preview's opaque entry IDs. */
+  megaEntries: Map<string, MegaFolderResolution['entries'][number]> | null
 }
 
 export interface DirectTarget {
   entryIndex: number
   itemId: string
   url: string
-  kind: 'direct' | 'pixeldrain-file' | 'gofile'
+  kind: 'direct' | 'pixeldrain-file' | 'mega-file' | 'gofile'
   title: string
   label: string
 }
@@ -501,6 +541,31 @@ export function describeBatchFailure(error: unknown, fallback: string): string {
   if (code === 'PIXELDRAIN_TOO_MANY_FILES') {
     return 'This provider list has too many files to preview.'
   }
+  if (code === 'MEGA_RATE_LIMITED') {
+    return 'MEGA rate-limited this request. Try again later.'
+  }
+  if (code === 'MEGA_QUOTA_EXCEEDED') {
+    return 'MEGA transfer quota for this network is exhausted. Try again later.'
+  }
+  if (code === 'MEGA_NOT_FOUND') {
+    return 'This MEGA item could not be found. It may have been removed.'
+  }
+  if (code === 'MEGA_UNAVAILABLE') {
+    return 'This MEGA item is currently unavailable.'
+  }
+  if (code === 'MEGA_TOO_MANY_FILES') {
+    return 'This MEGA folder has too many files to preview.'
+  }
+  if (
+    code === 'MEGA_UNSUPPORTED' ||
+    code === 'MEGA_INVALID_LINK' ||
+    code === 'MEGA_INVALID_RESPONSE'
+  ) {
+    return 'This MEGA link is not supported.'
+  }
+  if (code === 'MEGA_TIMEOUT' || code === 'MEGA_NETWORK_ERROR') {
+    return 'MEGA could not be reached.'
+  }
   if (code === 'MEDIA_TOOL_UNAVAILABLE') {
     return 'The media tool is not available.'
   }
@@ -622,6 +687,38 @@ function safeMessageForBatch(error: unknown, fallback: string): string {
   return isSafeMessage(text) ? text : fallback
 }
 
+/**
+ * Temporary path name for the still-encrypted MEGA body. It keeps the real
+ * extension so the final rename only drops the marker.
+ */
+function megaEncryptedFilename(name: string): string {
+  try {
+    return sanitizeFilename(`${name}${MEGA_ENCRYPTED_SUFFIX}`)
+  } catch {
+    return `mega-file${MEGA_ENCRYPTED_SUFFIX}`
+  }
+}
+
+/**
+ * Final plaintext path for a decrypted MEGA file. An existing file is never
+ * overwritten: the same ` (n)` convention aria2 uses is applied instead.
+ */
+function megaOutputPath(directory: string, name: string): string {
+  let safe: string
+  try {
+    safe = sanitizeFilename(name)
+  } catch {
+    safe = 'mega-file'
+  }
+  const extension = path.extname(safe)
+  const base = extension.length > 0 ? safe.slice(0, safe.length - extension.length) : safe
+  let candidate = path.join(directory, safe)
+  for (let index = 1; index <= 100 && existsSync(candidate); index += 1) {
+    candidate = path.join(directory, `${base} (${index})${extension}`)
+  }
+  return candidate
+}
+
 function clampBytes(reported: unknown, fallback: number): number {
   if (typeof reported !== 'number' || !Number.isFinite(reported) || reported < 0) {
     return fallback
@@ -664,6 +761,7 @@ export class BatchManager {
   private readonly mediaJobs: BatchMediaJobsPort
   private readonly collectionEngine: BatchCollectionEnginePort
   private readonly pixeldrain: BatchPixeldrainPort
+  private readonly mega: BatchMegaPort | null
   private readonly onUpdate: (snapshot: BatchSnapshot) => void
   private readonly database: BatchPersistencePort | null
   private readonly now: () => number
@@ -674,6 +772,7 @@ export class BatchManager {
   private readonly resolvePairingFolder:
     | ((token: string) => { directory: string; filePath: string; filename: string } | null)
     | null
+  private readonly decryptMega: typeof decryptMegaFile
 
   private readonly batches = new Map<string, ManagedBatch>()
   private readonly previews = new Map<string, StoredPreview>()
@@ -704,6 +803,23 @@ export class BatchManager {
   private readonly scanPairings = new Map<string, ManagedScanPairing[]>()
   /** Detected HLS/DASH inputs for browser-matched batch items. Memory-only. */
   private readonly scanSniffedMediaSelections = new Map<string, SniffedMediaInput>()
+  /**
+   * MEGA decryption keys of running items, keyed by batch item ID. Deliberately
+   * memory-only: the key is never part of a public DTO, a log line or a
+   * download URL, and a restart marks the item interrupted instead of resuming
+   * it. A user retry re-resolves the link and gets a fresh key.
+   */
+  private readonly megaDownloads = new Map<
+    string,
+    { key: MegaFileKey; name: string; size: number }
+  >()
+  /** Items whose downloaded body is being decrypted right now. */
+  private readonly megaDecrypting = new Set<string>()
+  /** Abort handles for running decryptions, so a cancel stops the file copy. */
+  private readonly megaAborts = new Map<string, AbortController>()
+  /** Items that already used their one fresh-URL retry. */
+  private readonly megaRefreshed = new Set<string>()
+  private readonly megaTasks = new Set<Promise<void>>()
   private readonly pairingTasks = new Set<Promise<void>>()
   private readonly scanMediaDir: string | null
   private readonly scanRootDir: string | null
@@ -721,6 +837,7 @@ export class BatchManager {
     this.mediaJobs = options.mediaJobs
     this.collectionEngine = options.collectionEngine
     this.pixeldrain = options.pixeldrain
+    this.mega = options.mega ?? null
     this.onUpdate = options.onUpdate
     this.database = options.database ?? null
     this.now = options.now ?? Date.now
@@ -732,6 +849,7 @@ export class BatchManager {
     this.scanMediaDir = options.scanMediaDir ?? null
     this.scanRootDir = options.scanRootDir ?? null
     this.resolvePairingFolder = options.resolvePairingFolder ?? null
+    this.decryptMega = options.decryptMega ?? decryptMegaFile
 
     this.loadPersistedBatches()
   }
@@ -791,6 +909,26 @@ export class BatchManager {
         )
       }
       return this.resolvePixeldrainList(link.sourceUrl)
+    }
+
+    if (isMegaHost(parsed.hostname)) {
+      let link: MegaLink
+      try {
+        link = this.requireMega().parseLink(input.url)
+      } catch (error) {
+        throw this.megaError(
+          error,
+          'MEGA_INVALID_LINK',
+          MEGA_INVALID_LINK_MESSAGE
+        )
+      }
+      if (link.kind !== 'folder' || link.subFileId !== null) {
+        throw new AppError(
+          'BATCH_COLLECTION_NOT_LIST',
+          MEGA_INVALID_FOLDER_MESSAGE
+        )
+      }
+      return this.resolveMegaFolder(link.sourceUrl)
     }
 
     return this.analyzePlaylist(input.url)
@@ -970,6 +1108,64 @@ export class BatchManager {
           kind: 'pixeldrain-file',
           title: 'Pixeldrain file',
           label: 'Pixeldrain'
+        })
+        continue
+      }
+
+      if (isMegaHost(host)) {
+        let link: MegaLink
+        try {
+          link = this.requireMega().parseLink(url)
+        } catch (error) {
+          entries[index] = {
+            index,
+            outcome: 'failed',
+            batchId: null,
+            itemId: null,
+            previewId: null,
+            code: errorCode(error) ?? 'MEGA_INVALID_LINK',
+            message: safeMessageForBatch(error, MEGA_INVALID_LINK_MESSAGE)
+          }
+          continue
+        }
+
+        if (link.kind === 'folder' && link.subFileId === null) {
+          try {
+            const preview = await this.resolveMegaFolder(link.sourceUrl)
+            previews.push(preview)
+            entries[index] = {
+              index,
+              outcome: 'collection-preview',
+              batchId: null,
+              itemId: null,
+              previewId: preview.id,
+              code: null,
+              message: null
+            }
+          } catch (error) {
+            entries[index] = {
+              index,
+              outcome: 'failed',
+              batchId: null,
+              itemId: null,
+              previewId: null,
+              code: errorCode(error) ?? 'MEGA_UNAVAILABLE',
+              message: safeMessageForBatch(
+                error,
+                'This MEGA folder could not be previewed.'
+              )
+            }
+          }
+          continue
+        }
+
+        directTargets.push({
+          entryIndex: index,
+          itemId: newOpaqueId('bitem'),
+          url: link.sourceUrl,
+          kind: 'mega-file',
+          title: 'MEGA file',
+          label: 'MEGA'
         })
         continue
       }
@@ -2072,7 +2268,7 @@ export class BatchManager {
     const input: CreateCollectionBatchInput =
       parseCreateCollectionBatchInput(rawInput)
     const stored = this.requirePreview(input.previewId)
-    if (stored.kind === 'pixeldrain-list' && (input.mediaQuality !== undefined || input.maxBytesPerItem != null)) {
+    if (stored.kind !== 'playlist' && (input.mediaQuality !== undefined || input.maxBytesPerItem != null)) {
       throw new AppError('BATCH_MEDIA_POLICY_UNSUPPORTED', 'Media quality and size limits apply only to playlist media jobs.')
     }
 
@@ -2130,7 +2326,9 @@ export class BatchManager {
         sourceUrl =
           stored.kind === 'playlist'
             ? targets.get(entry.id) ?? null
-            : stored.pixeldrainEntries?.get(entry.id)?.sourceUrl ?? null
+            : stored.kind === 'mega-folder'
+              ? stored.megaEntries?.get(entry.id)?.sourceUrl ?? null
+              : stored.pixeldrainEntries?.get(entry.id)?.sourceUrl ?? null
       }
 
       const canQueue = isAvailable && sourceUrl !== null
@@ -2154,7 +2352,12 @@ export class BatchManager {
         kind: stored.kind === 'playlist' ? 'media' : 'download',
         status,
         title: entry.title,
-        label: stored.kind === 'playlist' ? 'Playlist item' : 'Pixeldrain file',
+        label:
+          stored.kind === 'playlist'
+            ? 'Playlist item'
+            : stored.kind === 'mega-folder'
+              ? 'MEGA file'
+              : 'Pixeldrain file',
         childId: null,
         completedBytes: 0,
         totalBytes: null,
@@ -2168,7 +2371,12 @@ export class BatchManager {
 
     const record: BatchRecord = {
       id: batchId,
-      kind: stored.kind === 'playlist' ? 'media-playlist' : 'pixeldrain-list',
+      kind:
+        stored.kind === 'playlist'
+          ? 'media-playlist'
+          : stored.kind === 'mega-folder'
+            ? 'mega-folder'
+            : 'pixeldrain-list',
       title: stored.preview.title,
       status: 'queued',
       sourceUrl: stored.sourceUrl,
@@ -2440,6 +2648,11 @@ export class BatchManager {
     this.scanMediaSelections.clear()
     this.scanSniffedMediaSelections.clear()
     this.scanPairings.clear()
+    this.megaDownloads.clear()
+    this.megaDecrypting.clear()
+    this.megaRefreshed.clear()
+    for (const controller of this.megaAborts.values()) controller.abort()
+    this.megaAborts.clear()
     this.resolveIdleWaiters()
   }
 
@@ -2454,6 +2667,11 @@ export class BatchManager {
     // tests and shutdown observe the final labels.
     while (this.pairingTasks.size > 0) {
       await Promise.allSettled([...this.pairingTasks])
+    }
+    // MEGA decryption is the last phase of a download item, so an idle wait
+    // must cover it too.
+    while (this.megaTasks.size > 0) {
+      await Promise.allSettled([...this.megaTasks])
     }
   }
 
@@ -2588,6 +2806,21 @@ export class BatchManager {
         const resolution = await this.pixeldrain.resolveFile(sourceUrl)
         targetUrl = resolution.downloadUrl
         filename = resolution.name
+      }
+
+      if (isMegaHost(parsed.hostname)) {
+        // MEGA serves the body encrypted and its download URL expires, so the
+        // URL is requested fresh here, on every start and retry. aria2 keeps its
+        // normal multi-connection download and pause/resume behavior; only the
+        // final path is temporary and carries the `.megaenc` suffix.
+        const resolution = await this.requireMega().resolveFile(sourceUrl)
+        targetUrl = resolution.downloadUrl
+        filename = megaEncryptedFilename(resolution.name)
+        this.megaDownloads.set(item.id, {
+          key: resolution.key,
+          name: resolution.name,
+          size: resolution.size
+        })
       }
 
       const resolvedScanUrl =
@@ -2858,8 +3091,23 @@ export class BatchManager {
     item: BatchItemRecord,
     child: DownloadItem
   ): boolean {
+    // The encrypted body is complete and is being decrypted. The child row is
+    // already `complete`, so it must not settle the item yet: the item stays
+    // running with the decryption's own byte progress until the plaintext file
+    // exists.
+    if (this.megaDecrypting.has(item.id)) return false
+
     const nextStatus = statusFromDownload(child.status)
+    if (nextStatus === 'error' && this.retryWithMegaUrl(item)) return true
     if (nextStatus === 'error' && this.retryWithFallback(item)) return true
+
+    // A MEGA download is only a temporary `.megaenc` file: decrypt it before the
+    // item is reported complete.
+    if (nextStatus === 'complete' && this.megaDownloads.has(item.id)) {
+      this.beginMegaDecrypt(item, child)
+      return true
+    }
+
     const total = child.totalBytes > 0 ? child.totalBytes : item.totalBytes
     let completed = clampBytes(child.completedBytes, item.completedBytes)
     if (total !== null) completed = Math.min(completed, total)
@@ -2914,6 +3162,32 @@ export class BatchManager {
   }
 
   /**
+   * Retry one MEGA item once with a freshly requested download URL. MEGA's
+   * signed URLs expire, so a resumed or delayed job can fail with a plain HTTP
+   * error even though the link is still valid. Re-queueing the item runs the
+   * normal start path, which asks the adapter for a new URL; aria2's global
+   * `--continue` resumes from the partial `.megaenc` file.
+   *
+   * The budget is one refresh per item: the flag is never cleared on start, so
+   * a download that keeps failing settles as an error instead of looping.
+   */
+  private retryWithMegaUrl(item: BatchItemRecord): boolean {
+    if (!this.megaDownloads.has(item.id)) return false
+    if (this.megaRefreshed.has(item.id)) return false
+    if (item.status !== 'running') return false
+    this.megaRefreshed.add(item.id)
+    const failedChildId = item.childId
+    item.childId = null
+    item.status = 'queued'
+    item.errorMessage = null
+    item.completedBytes = 0
+    item.updatedAt = this.now()
+    this.persistItemNow(item)
+    if (failedChildId !== null) this.discardFailedChild(failedChildId)
+    return true
+  }
+
+  /**
    * Remove the failed child record of a superseded first attempt. Best effort
    * only: the item is already re-queued, so a missing or failing remove API
    * must never block the fallback retry.
@@ -2926,6 +3200,97 @@ export class BatchManager {
       .catch(() => {
         // The row may already be gone, or the manager may be closing.
       })
+  }
+
+  /* --------------------------- MEGA decryption --------------------------- */
+
+  /**
+   * Start the streamed decryption of one finished `.megaenc` download. The item
+   * keeps its `running` status and reports the decryption's own byte progress,
+   * so a large file does not look frozen after the transfer reached 100%.
+   */
+  private beginMegaDecrypt(item: BatchItemRecord, child: DownloadItem): void {
+    const pending = this.megaDownloads.get(item.id)
+    if (pending === undefined) return
+    if (this.megaDecrypting.has(item.id)) return
+    this.megaDecrypting.add(item.id)
+    const controller = new AbortController()
+    this.megaAborts.set(item.id, controller)
+    const task = this.runMegaDecrypt(item, child, pending, controller.signal)
+      .catch(() => {
+        // A failure is settled inside `runMegaDecrypt`; nothing escapes here.
+      })
+      .finally(() => {
+        this.megaDecrypting.delete(item.id)
+        this.megaAborts.delete(item.id)
+        this.megaDownloads.delete(item.id)
+        this.megaTasks.delete(task)
+        this.publish()
+        this.schedulePump()
+      })
+    this.megaTasks.add(task)
+  }
+
+  private async runMegaDecrypt(
+    item: BatchItemRecord,
+    child: DownloadItem,
+    pending: { key: MegaFileKey; name: string; size: number },
+    signal: AbortSignal
+  ): Promise<void> {
+    const batch = this.batches.get(item.batchId)
+    const encryptedPath = this.downloads.getFilePath?.(child.id) ?? null
+    if (batch === undefined || encryptedPath === null) {
+      this.failMegaItem(item, batch, 'The MEGA download could not be decrypted.')
+      return
+    }
+
+    try {
+      const result = await this.decryptMega({
+        inputPath: encryptedPath,
+        outputPath: megaOutputPath(path.dirname(encryptedPath), pending.name),
+        key: pending.key,
+        totalBytes: pending.size > 0 ? pending.size : child.completedBytes,
+        signal,
+        onProgress: (completed, total) => {
+          if (item.status !== 'running') return
+          item.completedBytes = total > 0 ? Math.min(completed, total) : completed
+          if (total > 0) item.totalBytes = total
+          item.updatedAt = this.now()
+          this.markItemDirty(item)
+          this.publish()
+        }
+      })
+
+      // The child row now points at the plaintext file, exactly like the
+      // post-download funscript rename does.
+      this.downloads.adoptRenamedFile?.(child.id, result.outputPath)
+      if (item.status !== 'running' || !this.batches.has(item.batchId)) return
+      this.applyChildState(item, {
+        status: 'complete',
+        completedBytes: result.bytes,
+        totalBytes: result.bytes,
+        errorMessage: null
+      })
+      this.recomputeBatch(batch)
+      this.persistBatchNow(batch)
+    } catch {
+      // A decryption failure is an internal file/crypto error; its raw message
+      // is never useful to the user and may name a local path.
+      this.failMegaItem(item, batch, 'The MEGA file could not be decrypted.')
+    }
+  }
+
+  private failMegaItem(
+    item: BatchItemRecord,
+    batch: ManagedBatch | undefined,
+    message: string
+  ): void {
+    if (item.status !== 'running') return
+    this.markItemTerminal(item, 'error', message)
+    this.persistItemNow(item)
+    if (batch === undefined) return
+    this.recomputeBatch(batch)
+    this.persistBatchNow(batch)
   }
 
   private applyMediaChild(item: BatchItemRecord, child: MediaJob): boolean {
@@ -3573,6 +3938,8 @@ export class BatchManager {
   }
 
   private async cancelChild(item: BatchItemRecord): Promise<void> {
+    // A decryption in flight is stopped first; it removes its partial output.
+    this.megaAborts.get(item.id)?.abort()
     if (item.childId === null) return
     if (item.kind === 'media') {
       try {
@@ -3614,6 +3981,30 @@ export class BatchManager {
       code && code.startsWith('PIXELDRAIN_') ? code : fallbackCode,
       safeMessageForBatch(error, fallbackMessage)
     )
+  }
+
+  private megaError(
+    error: unknown,
+    fallbackCode: string,
+    fallbackMessage: string
+  ): AppError {
+    if (error instanceof AppError) return error
+    const code = errorCode(error)
+    return new AppError(
+      code && code.startsWith('MEGA_') ? code : fallbackCode,
+      safeMessageForBatch(error, fallbackMessage)
+    )
+  }
+
+  /** The MEGA adapter, or a fail-closed error when this build has none. */
+  private requireMega(): BatchMegaPort {
+    if (this.mega === null) {
+      throw new AppError(
+        'MEGA_UNSUPPORTED',
+        'MEGA links are not supported in this build.'
+      )
+    }
+    return this.mega
   }
 
   private collectionError(
@@ -3659,7 +4050,8 @@ export class BatchManager {
       sourceUrl: url,
       preview: parsed,
       expiresAt: this.now() + this.previewTtlMs,
-      pixeldrainEntries: null
+      pixeldrainEntries: null,
+      megaEntries: null
     })
     return parsed
   }
@@ -3700,7 +4092,52 @@ export class BatchManager {
       sourceUrl: resolution.sourceUrl,
       preview,
       expiresAt: this.now() + this.previewTtlMs,
-      pixeldrainEntries: entries
+      pixeldrainEntries: entries,
+      megaEntries: null
+    })
+    return preview
+  }
+
+  /**
+   * Resolve a public MEGA folder into an ephemeral preview plus internal entry
+   * metadata. The folder key stays in the internal `sourceUrl`; the preview that
+   * reaches the renderer carries no URL and no key.
+   */
+  private async resolveMegaFolder(url: string): Promise<CollectionPreview> {
+    let resolution: MegaFolderResolution
+    try {
+      resolution = await this.requireMega().resolveFolder(url)
+    } catch (error) {
+      throw this.megaError(
+        error,
+        'MEGA_UNAVAILABLE',
+        'This MEGA folder could not be previewed.'
+      )
+    }
+
+    let preview: CollectionPreview
+    try {
+      preview = parseCollectionPreview(resolution.preview)
+    } catch {
+      throw new AppError(
+        'MEGA_INVALID_RESPONSE',
+        'MEGA returned an unexpected preview.'
+      )
+    }
+
+    const entries = new Map<string, MegaFolderResolution['entries'][number]>()
+    for (const entry of resolution.entries) {
+      entries.set(entry.entryId, entry)
+    }
+
+    this.storePreview({
+      id: preview.id,
+      kind: 'mega-folder',
+      sourceUrl: resolution.sourceUrl,
+      preview,
+      expiresAt: this.now() + this.previewTtlMs,
+      pixeldrainEntries: null,
+      megaEntries: entries
     })
     return preview
   }

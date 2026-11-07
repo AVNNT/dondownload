@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 14
+export const SCHEMA_VERSION = 15
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -497,6 +497,73 @@ const MIGRATIONS: readonly Migration[] = [
     sql: `
       UPDATE download_settings SET per_host_connections = 16
         WHERE per_host_connections = 4;
+    `
+  },
+  {
+    // A public MEGA folder is a new batch source. SQLite cannot widen a CHECK
+    // constraint in place, so the parent table is rebuilt with the same columns
+    // and rows plus 'mega-folder' in the kind list. The child table, its
+    // cascade and both indexes are untouched.
+    version: 15,
+    sql: `
+      CREATE TABLE batches_v15 (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('media-playlist', 'pixeldrain-list', 'mega-folder', 'direct-urls')
+        ),
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'running', 'complete', 'partial',
+            'error', 'cancelled', 'interrupted'
+          )
+        ),
+        source_url TEXT,
+        error_message TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        media_quality TEXT
+          CHECK (media_quality IS NULL OR media_quality IN (
+            'best', '1080p', '720p', '480p', '360p', 'audio-only'
+          )),
+        max_bytes_per_item INTEGER
+          CHECK (max_bytes_per_item IS NULL OR max_bytes_per_item BETWEEN 1 AND 107374182400)
+      );
+
+      INSERT INTO batches_v15 (
+        id, kind, title, status, source_url, error_message,
+        created_at, updated_at, completed_at, media_quality, max_bytes_per_item
+      )
+      SELECT
+        id, kind, title, status, source_url, error_message,
+        created_at, updated_at, completed_at, media_quality, max_bytes_per_item
+      FROM batches;
+
+      -- batch_items declares ON DELETE CASCADE to batches and foreign_keys is
+      -- on, so dropping the parent would delete every child row. Keep an exact
+      -- copy, empty the child, swap the parent, then restore the children.
+      CREATE TABLE batch_items_v15_backup AS SELECT * FROM batch_items;
+      DELETE FROM batch_items;
+
+      DROP TABLE batches;
+      ALTER TABLE batches_v15 RENAME TO batches;
+
+      INSERT INTO batch_items (
+        id, batch_id, position, kind, status, child_id, title, label,
+        completed_bytes, total_bytes, error_message, source_url,
+        created_at, updated_at, completed_at
+      )
+      SELECT
+        id, batch_id, position, kind, status, child_id, title, label,
+        completed_bytes, total_bytes, error_message, source_url,
+        created_at, updated_at, completed_at
+      FROM batch_items_v15_backup;
+
+      DROP TABLE batch_items_v15_backup;
+
+      CREATE INDEX batches_created_at_idx ON batches (created_at DESC);
+      CREATE INDEX batches_status_idx ON batches (status);
     `
   }
 ]

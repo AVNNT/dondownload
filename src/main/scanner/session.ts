@@ -34,6 +34,19 @@ import {
   type PixeldrainFileResolution,
   type PixeldrainListResolution
 } from '../hosts/pixeldrain'
+import {
+  MAX_MEGA_FOLDER_ENTRIES,
+  type MegaFileResolution,
+  type MegaFolderResolution
+} from '../hosts/mega'
+import {
+  MAX_SCAN_MEGA_REQUESTS,
+  megaTargetOf,
+  resolveMegaTargets,
+  type ScanMegaOutcome,
+  type ScanMegaPort,
+  type ScanMegaTarget
+} from './mega'
 import { classifyScanCandidate } from './classify'
 import {
   extractCandidates,
@@ -127,6 +140,12 @@ export interface ScanSessionOptions {
    * `/l/<id>` list is expanded into one item per file.
    */
   pixeldrain?: ScanPixeldrainPort
+  /**
+   * Public MEGA adapter. When present, a discovered `/file/<id>#<key>` link is
+   * resolved to its real file name and size, and a `/folder/<id>#<key>` link is
+   * expanded into one item per file. The decryption key stays internal.
+   */
+  mega?: ScanMegaPort
   videoCap?: number
   followPages?: number
   followDepth?: number
@@ -354,6 +373,7 @@ export class ScanSessionManager {
   private readonly probeItem: ProbeScanItemFn | undefined
   private readonly analyzeMedia: ScanMediaAnalyzer | undefined
   private readonly pixeldrain: ScanPixeldrainPort | undefined
+  private readonly mega: ScanMegaPort | undefined
   private readonly videoCap: number
   private readonly followPages: number
   private readonly followDepth: number
@@ -379,6 +399,7 @@ export class ScanSessionManager {
     this.probeItem = options.probeItem
     this.analyzeMedia = options.analyzeMedia
     this.pixeldrain = options.pixeldrain
+    this.mega = options.mega
     this.videoCap = Math.max(
       0,
       Math.min(options.videoCap ?? MAX_SCAN_VIDEO_ANALYSES, MAX_SCAN_VIDEO_ANALYSES)
@@ -1365,51 +1386,72 @@ export class ScanSessionManager {
 
   private async run(session: StoredScanSession): Promise<void> {
     try {
-      const page = await this.fetchPage(
-        {
+      // A public MEGA link is the whole scan. The page behind it is a
+      // JavaScript application with no discoverable links, so the link itself
+      // becomes the single seed candidate and nothing is fetched.
+      if (megaTargetOf(session.url) !== null) {
+        this.addCandidate(session, {
           url: session.url,
-          ...(session.cookie === null ? {} : { cookie: session.cookie }),
-          accept: 'html',
-          signal: session.controller.signal
-        },
-        this.lookup === undefined ? {} : { lookup: this.lookup }
-      )
-      if (session.controller.signal.aborted) return
-      session.fetchedPages += 1
-      session.url = page.finalUrl
-      session.hostname = hostnameOf(page.finalUrl)
-      session.expiresAt = this.now() + this.ttlMs
-      this.touch(session)
+          nameHint: null,
+          downloadAttribute: false,
+          isAttachment: false,
+          fromScript: false,
+          isEmbed: false,
+          source: 'anchor'
+        })
+        session.updatedAt = this.now()
+        this.publish(session, true)
+      } else {
+        const page = await this.fetchPage(
+          {
+            url: session.url,
+            ...(session.cookie === null ? {} : { cookie: session.cookie }),
+            accept: 'html',
+            signal: session.controller.signal
+          },
+          this.lookup === undefined ? {} : { lookup: this.lookup }
+        )
+        if (session.controller.signal.aborted) return
+        session.fetchedPages += 1
+        session.url = page.finalUrl
+        session.hostname = hostnameOf(page.finalUrl)
+        session.expiresAt = this.now() + this.ttlMs
+        this.touch(session)
 
-      const discourse = await this.tryDiscourse(session, page)
-      const candidates: ScanCandidate[] =
-        discourse?.candidates ??
-        extractCandidates(page.body, page.finalUrl).map((candidate) => ({
-          ...candidate,
-          postNumber: null,
-          author: null
-        }))
+        const discourse = await this.tryDiscourse(session, page)
+        const candidates: ScanCandidate[] =
+          discourse?.candidates ??
+          extractCandidates(page.body, page.finalUrl).map((candidate) => ({
+            ...candidate,
+            postNumber: null,
+            author: null
+          }))
 
-      for (const candidate of candidates) {
-        if (this.addCandidate(session, candidate) === 'limited') break
+        for (const candidate of candidates) {
+          if (this.addCandidate(session, candidate) === 'limited') break
+        }
+        this.addOtherLinks(
+          session,
+          discourse === null
+            ? this.contentPageLinks(session, page.body, page.finalUrl)
+            : discourse.pageLinks
+        )
+
+        session.updatedAt = this.now()
+        this.publish(session, true)
+
+        if (session.controller.signal.aborted) return
+        await this.followVideoPages(session, page)
+        if (session.controller.signal.aborted) return
       }
-      this.addOtherLinks(
-        session,
-        discourse === null
-          ? this.contentPageLinks(session, page.body, page.finalUrl)
-          : discourse.pageLinks
-      )
 
-      session.updatedAt = this.now()
-      this.publish(session, true)
-
-      if (session.controller.signal.aborted) return
-      await this.followVideoPages(session, page)
-      if (session.controller.signal.aborted) return
       session.message =
         session.items.size === 0
           ? 'No downloadable content was found on that page.'
           : null
+
+      await this.resolveMegaItems(session)
+      if (session.controller.signal.aborted) return
 
       await this.resolvePixeldrainItems(session)
       if (session.controller.signal.aborted) return
@@ -1789,6 +1831,183 @@ export class ScanSessionManager {
     this.publish(session, true)
   }
 
+  /**
+   * Resolve discovered MEGA links through the public adapter so a file card gets
+   * its real name and size, and a folder becomes one card per file. Requests are
+   * deduped by provider ID, capped per session and run with bounded concurrency.
+   * A provider failure only marks the affected card; the scan itself keeps
+   * going. The decryption key never leaves this method's input.
+   */
+  private async resolveMegaItems(session: StoredScanSession): Promise<void> {
+    if (this.mega === undefined) return
+
+    const targets: ScanMegaTarget[] = []
+    const seen = new Set<string>()
+    for (const id of session.order) {
+      const item = session.items.get(id)
+      if (!item || item.status !== 'found') continue
+      const target = megaTargetOf(item.url)
+      if (target === null) continue
+      const key = `${target.kind}:${target.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      targets.push(target)
+    }
+    if (targets.length === 0) return
+
+    const selected = targets.slice(0, MAX_SCAN_MEGA_REQUESTS)
+    for (const target of selected) {
+      for (const item of this.megaItems(session, target.kind, target.id)) {
+        item.status = 'probing'
+      }
+    }
+    this.touch(session)
+    this.publish(session, true)
+
+    await resolveMegaTargets(selected, {
+      port: this.mega,
+      signal: session.controller.signal,
+      shouldStop: () => this.now() >= session.deadline,
+      onResult: (_index, outcome) => {
+        this.applyMegaOutcome(session, outcome)
+        this.touch(session)
+        this.scheduleEmit(session)
+      }
+    })
+
+    // A cancelled or timed-out request leaves its card unresolved instead of
+    // spinning forever.
+    for (const target of selected) {
+      for (const item of this.megaItems(session, target.kind, target.id)) {
+        if (item.status === 'probing') item.status = 'found'
+      }
+    }
+    this.touch(session)
+    this.publish(session, true)
+  }
+
+  /** Every item that still points at one MEGA scan target. */
+  private megaItems(
+    session: StoredScanSession,
+    kind: 'file' | 'folder',
+    id: string
+  ): StoredScanItem[] {
+    const matches: StoredScanItem[] = []
+    for (const item of session.items.values()) {
+      const target = megaTargetOf(item.url)
+      if (target !== null && target.kind === kind && target.id === id) {
+        matches.push(item)
+      }
+    }
+    return matches
+  }
+
+  private applyMegaOutcome(
+    session: StoredScanSession,
+    outcome: ScanMegaOutcome
+  ): void {
+    if (outcome.type === 'error') {
+      for (const item of this.megaItems(session, outcome.kind, outcome.id)) {
+        item.status = 'unavailable'
+        item.verified = false
+        item.unavailableReason = outcome.reason
+      }
+      return
+    }
+    if (outcome.type === 'file') {
+      this.applyMegaFile(session, outcome.id, outcome.resolution)
+      return
+    }
+    this.expandMegaFolder(session, outcome.resolution)
+  }
+
+  private applyMegaFile(
+    session: StoredScanSession,
+    id: string,
+    resolution: MegaFileResolution
+  ): void {
+    const items = this.megaItems(session, 'file', id)
+    for (const item of items) {
+      // MEGA does not publish a content type, so the resolved name's extension
+      // is what turns a card into a video, a script or an archive.
+      this.applyResolvedFile(item, {
+        name: resolution.name,
+        size: resolution.size,
+        mimeType: null
+      })
+    }
+    this.mergeResolvedItems(session, items)
+  }
+
+  /**
+   * Replace a folder card with one card per file. The folder's post number and
+   * author are inherited so per-post funscript pairing still works, and a file
+   * that was already found as its own link is upgraded in place instead of
+   * being listed twice.
+   */
+  private expandMegaFolder(
+    session: StoredScanSession,
+    resolution: MegaFolderResolution
+  ): void {
+    const folderItems = this.megaItems(session, 'folder', resolution.folderId)
+    const postNumber =
+      folderItems.find((item) => item.postNumber !== null)?.postNumber ?? null
+    const author = folderItems.find((item) => item.author !== null)?.author ?? null
+    let expanded = 0
+    let limited = false
+
+    for (const entry of resolution.entries.slice(0, MAX_MEGA_FOLDER_ENTRIES)) {
+      if (
+        entry.availability !== 'available' ||
+        entry.nodeId === null ||
+        entry.sourceUrl === null
+      ) {
+        continue
+      }
+      const targetId = `${resolution.folderId}/${entry.nodeId}`
+      const existing = this.megaItems(session, 'file', targetId)
+      if (existing.length > 0) {
+        for (const item of existing) {
+          this.applyResolvedFile(item, {
+            name: entry.name,
+            size: entry.size,
+            mimeType: null
+          })
+        }
+        this.mergeResolvedItems(session, existing)
+        expanded += 1
+        continue
+      }
+      if (session.items.size >= MAX_SCAN_ITEMS) {
+        limited = true
+        break
+      }
+      const added = this.addResolvedFileItem(session, {
+        url: entry.sourceUrl,
+        name: entry.name,
+        size: entry.size,
+        mimeType: null,
+        postNumber,
+        author
+      })
+      if (added !== null) expanded += 1
+    }
+
+    if (limited) {
+      session.limited = true
+      session.limitedMessage ??= `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+    }
+    if (expanded === 0) {
+      for (const item of folderItems) {
+        item.status = 'unavailable'
+        item.unavailableReason = 'This MEGA folder has no downloadable files.'
+      }
+      return
+    }
+    // The folder page itself is not downloadable; its files replace it.
+    for (const item of folderItems) this.removeItem(session, item.id)
+  }
+
   /** Every item that still points at one provider ID. */
   private pixeldrainItems(
     session: StoredScanSession,
@@ -1836,7 +2055,7 @@ export class ScanSessionManager {
         mimeType: resolution.mimeType
       })
     }
-    this.mergePixeldrainItems(session, items)
+    this.mergeResolvedItems(session, items)
   }
 
   /**
@@ -1844,7 +2063,7 @@ export class ScanSessionManager {
    * `/u/<id>` link and the same file inside a list) into the first one, keeping
    * any post context the kept card was missing.
    */
-  private mergePixeldrainItems(
+  private mergeResolvedItems(
     session: StoredScanSession,
     items: readonly StoredScanItem[]
   ): void {
@@ -1912,7 +2131,7 @@ export class ScanSessionManager {
         for (const item of existing) {
           this.applyResolvedFile(item, entry)
         }
-        this.mergePixeldrainItems(session, existing)
+        this.mergeResolvedItems(session, existing)
         expanded += 1
         continue
       }

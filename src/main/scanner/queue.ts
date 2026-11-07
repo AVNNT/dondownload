@@ -16,6 +16,7 @@ import { ValidationError } from '@shared/validation'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
+import { isMegaFileUrl } from './mega'
 import { isPixeldrainFileUrl } from './pixeldrain'
 import type {
   ResolvedScriptPairing,
@@ -167,6 +168,22 @@ function isImageTarget(target: ResolvedScanTarget): boolean {
  */
 function isPixeldrainTarget(target: ResolvedScanTarget): boolean {
   return target.kind === 'file' && isPixeldrainFileUrl(target.url)
+}
+
+/**
+ * True for a public MEGA link that resolves to one file. The page behind it is
+ * a JavaScript application, so the generic probe would read it as a web page and
+ * refuse the download. The batch manager resolves the public metadata and the
+ * short-lived download URL (and fails closed) at download time, so the canonical
+ * link — including its key — is handed over unchanged and stays internal.
+ */
+function isMegaTarget(target: ResolvedScanTarget): boolean {
+  return target.kind === 'file' && isMegaFileUrl(target.url)
+}
+
+/** A provider file link that the batch manager resolves itself. */
+function isProviderFileTarget(target: ResolvedScanTarget): boolean {
+  return isPixeldrainTarget(target) || isMegaTarget(target)
 }
 
 function errorCode(error: unknown): string {
@@ -329,7 +346,7 @@ export class ScanQueueService {
         if (isImageTarget(target)) {
           return { target, probe: null }
         }
-        if (isPixeldrainTarget(target)) {
+        if (isProviderFileTarget(target)) {
           return { target, probe: null }
         }
         const probe = await (this.probeItem ?? probeScanItem)(
@@ -386,7 +403,7 @@ export class ScanQueueService {
         continue
       }
 
-      if (isPixeldrainTarget(target)) {
+      if (isProviderFileTarget(target)) {
         queued.push({
           itemId: target.itemId,
           file: {

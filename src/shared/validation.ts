@@ -1,5 +1,6 @@
 import type { AddDownloadInput, DownloadRequestHeaders } from './types'
 import { ValidationError } from './errors'
+import { keepsUrlFragment } from './urlFragment'
 import {
   defaultDownloadControls,
   parseDownloadControls
@@ -59,7 +60,10 @@ export function normalizeHttpUrl(value: unknown): string {
   }
 
   // Fragments are not sent to the server and can confuse file name inference.
-  parsed.hash = ''
+  // The one exception is a public MEGA link, whose decryption key is the
+  // fragment: dropping it would make the link unusable. The full link stays in
+  // main-process state and is redacted before it is shown or logged.
+  if (!keepsUrlFragment(parsed.hostname)) parsed.hash = ''
 
   if (parsed.href.length > MAX_URL_LENGTH) {
     throw new ValidationError('The URL is too long (maximum 4096 characters).')
