@@ -32,6 +32,7 @@ import {
 } from './handoff-card.js'
 import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
 import { ensureAllSitesActive } from './browser-downloads.js'
+import { GOFILE_SCAN_MESSAGE_TYPE, runGofileScan } from './gofile-scan.js'
 import {
   CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
@@ -831,6 +832,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           overlayFailure(
             'CAPTURE_REQUEST_FAILED',
             'The captured source request could not be completed.'
+          )
+        )
+      )
+    return true
+  }
+
+  if (message.type === GOFILE_SCAN_MESSAGE_TYPE) {
+    // A Gofile share is a JavaScript application, so the popup (or the welcome
+    // page after a cookie grant) asks this worker to read the rendered rows from
+    // the user's own tab. The collector never touches the page's main world, and
+    // the Cookie is read once for gofile.io only.
+    void runGofileScan(chrome, {
+      tabId: message.tabId,
+      pageUrl: message.pageUrl
+    })
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'GOFILE_SCAN_FAILED',
+            'The Gofile share could not be read from that tab.'
           )
         )
       )

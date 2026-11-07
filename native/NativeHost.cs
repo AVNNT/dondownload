@@ -29,6 +29,7 @@ using System.Web.Script.Serialization;
 //   { "type": "download-status", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "show-download", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "scan-page", "url": "https://discuss.example/t/topic/123", "cookie": "..." }
+//   { "type": "scan-gofile", "shareId": "AbCd1234", "status": "ok", "files": [ { "name": "a.mp4", "size": 123, "url": "https://store3.gofile.io/download/web/id/a.mp4" } ], "cookie": "..." }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
 //   { "type": "media-status", "jobId": "..." }
@@ -62,8 +63,14 @@ internal static class NativeHost
     private const string ShowDownloadOperation = "show-download";
     private const string ScanPageOperation = "scan-page";
     private const string ScanImagesOperation = "scan-images";
+    private const string ScanGofileOperation = "scan-gofile";
     // One page may report up to 1000 images, each with an optional fallback URL.
     private const int MaxScanImages = 1000;
+    // One Gofile share reports at most 500 rendered rows.
+    private const int MaxScanGofileFiles = 500;
+    private const int MaxGofileNameLength = 240;
+    // 10 TB is far above any real Gofile file and keeps the size a sane long.
+    private const long MaxGofileSizeBytes = 10000000000000L;
     private const string StateFileName = "native-bridge.json";
     private const string RequestIdKey = "id";
     // aria2 may need up to ~12 seconds to start on the first add. The host
@@ -321,6 +328,10 @@ internal static class NativeHost
         if (type == ScanImagesOperation)
         {
             return HandleScanImagesMessage(message);
+        }
+        if (type == ScanGofileOperation)
+        {
+            return HandleScanGofileMessage(message);
         }
 
         return Error("UNSUPPORTED_OPERATION", "Unsupported native operation.");
@@ -903,6 +914,181 @@ internal static class NativeHost
         body.Add("pageTitle", pageTitle);
         body.Add("images", images.ToArray());
         return ForwardScanImages(body);
+    }
+
+    /// <summary>
+    /// "Scan this Gofile share". The extension read the rows from the user's own
+    /// signed-in tab, so this only validates the shape and forwards the list.
+    /// Every download URL must be HTTPS on gofile.io or one of its store hosts,
+    /// and the optional accountToken Cookie is forwarded once, never stored.
+    /// </summary>
+    private static Dictionary<string, object> HandleScanGofileMessage(
+        Dictionary<string, object> message)
+    {
+        if (!HasExactKeys(
+            message,
+            new string[] { "type", "shareId", "status", "files" },
+            new string[] { "cookie" }))
+        {
+            return Error(
+                "INVALID_MESSAGE",
+                "Only scan-gofile messages containing type, shareId, status, files and an optional cookie are accepted.");
+        }
+
+        string shareId = message["shareId"] as string;
+        if (!IsGofileShareId(shareId))
+        {
+            return Error("INVALID_MESSAGE", "The Gofile share identifier is invalid.");
+        }
+
+        string status = message["status"] as string;
+        if (!IsGofileShareStatus(status))
+        {
+            return Error("INVALID_MESSAGE", "The Gofile share status is invalid.");
+        }
+
+        object[] rawFiles = message["files"] as object[];
+        if (rawFiles == null || rawFiles.Length > MaxScanGofileFiles)
+        {
+            return Error("INVALID_MESSAGE", "The Gofile file list is invalid.");
+        }
+
+        List<object> files = new List<object>();
+        for (int index = 0; index < rawFiles.Length; index++)
+        {
+            Dictionary<string, object> raw = rawFiles[index] as Dictionary<string, object>;
+            if (raw == null ||
+                !HasExactKeys(
+                    raw,
+                    new string[] { "name", "url" },
+                    new string[] { "size" }))
+            {
+                return Error("INVALID_MESSAGE", "A Gofile file entry is invalid.");
+            }
+
+            string name = raw["name"] as string;
+            if (!IsSafeHeaderValue(name, MaxGofileNameLength))
+            {
+                return Error("INVALID_MESSAGE", "A Gofile file name is invalid.");
+            }
+
+            string fileUrl;
+            string urlError;
+            if (!TryNormalizeUrl(raw["url"] as string, out fileUrl, out urlError))
+            {
+                return Error("INVALID_URL", urlError);
+            }
+            if (!IsGofileDownloadUrl(fileUrl))
+            {
+                return Error("INVALID_URL", "A Gofile download link is not on gofile.io.");
+            }
+
+            Dictionary<string, object> entry = new Dictionary<string, object>();
+            entry.Add("name", name);
+            entry.Add("url", fileUrl);
+            if (raw.ContainsKey("size") && raw["size"] != null)
+            {
+                long size;
+                if (!TryReadPositiveLong(raw["size"], out size) || size > MaxGofileSizeBytes)
+                {
+                    return Error("INVALID_MESSAGE", "A Gofile file size is invalid.");
+                }
+                entry.Add("size", size);
+            }
+            files.Add(entry);
+        }
+
+        string cookie = null;
+        if (message.ContainsKey("cookie"))
+        {
+            cookie = message["cookie"] as string;
+            if (!IsSafeHeaderValue(cookie, 8192))
+            {
+                return Error("INVALID_MESSAGE", "The browser cookie header is invalid.");
+            }
+        }
+
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body.Add("shareId", shareId);
+        body.Add("status", status);
+        body.Add("files", files.ToArray());
+        if (cookie != null)
+        {
+            body.Add("cookie", cookie);
+        }
+        return ForwardScanGofile(body);
+    }
+
+    /// <summary>Gofile share ids are short URL-safe tokens, never a path.</summary>
+    private static bool IsGofileShareId(string value)
+    {
+        if (value == null || value.Length < 4 || value.Length > 64)
+        {
+            return false;
+        }
+        for (int index = 0; index < value.Length; index++)
+        {
+            char character = value[index];
+            bool allowed =
+                (character >= 'a' && character <= 'z') ||
+                (character >= 'A' && character <= 'Z') ||
+                (character >= '0' && character <= '9') ||
+                character == '-' ||
+                character == '_';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsGofileShareStatus(string value)
+    {
+        return value == "ok" ||
+            value == "empty" ||
+            value == "not-found" ||
+            value == "password" ||
+            value == "premium" ||
+            value == "timeout";
+    }
+
+    /// <summary>gofile.io, www.gofile.io and every store&lt;N&gt;.gofile.io host.</summary>
+    private static bool IsGofileHostName(string host)
+    {
+        if (host == null)
+        {
+            return false;
+        }
+        string lowered = host.ToLowerInvariant();
+        if (lowered == "gofile.io" || lowered == "www.gofile.io")
+        {
+            return true;
+        }
+        return lowered.Length > ".gofile.io".Length &&
+            lowered.EndsWith(".gofile.io", StringComparison.Ordinal);
+    }
+
+    private static bool IsGofileDownloadUrl(string value)
+    {
+        Uri uri;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out uri))
+        {
+            return false;
+        }
+        if (uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            return false;
+        }
+        if (!IsGofileHostName(uri.Host))
+        {
+            return false;
+        }
+        return uri.AbsolutePath.StartsWith("/download/", StringComparison.Ordinal);
     }
 
     private static bool IsSafeHeaderValue(string value, int maximum)
@@ -1644,80 +1830,7 @@ internal static class NativeHost
     private static Dictionary<string, object> ForwardScanPage(
         Dictionary<string, object> body)
     {
-        BridgeState state;
-        string stateError;
-        if (!TryLoadBridgeState(out state, out stateError))
-        {
-            return Error("APP_NOT_RUNNING", stateError);
-        }
-
-        HttpWebRequest request = null;
-        try
-        {
-            request = CreateBridgeRequest(
-                state,
-                "/scan-page",
-                BridgeTimeoutMilliseconds);
-            byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
-            request.ContentLength = payload.Length;
-            using (Stream stream = request.GetRequestStream())
-            {
-                stream.Write(payload, 0, payload.Length);
-            }
-        }
-        catch (WebException)
-        {
-            return Error(
-                "APP_NOT_RUNNING",
-                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
-        }
-        catch (InvalidOperationException)
-        {
-            return Error("APP_NOT_RUNNING", "DonDownload's browser bridge is unavailable. Restart DonDownload.");
-        }
-        catch (Exception)
-        {
-            return Error(
-                "APP_NOT_RUNNING",
-                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
-        }
-
-        HttpWebResponse response = null;
-        try
-        {
-            response = (HttpWebResponse)request.GetResponse();
-        }
-        catch (WebException error)
-        {
-            response = error.Response as HttpWebResponse;
-            if (response == null)
-            {
-                return Error(
-                    "APP_NOT_RUNNING",
-                    "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
-            }
-        }
-        catch (Exception)
-        {
-            return Error(
-                "APP_NOT_RUNNING",
-                "DonDownload is not running or its browser bridge is unavailable. Start DonDownload and try again.");
-        }
-
-        using (response)
-        {
-            string responseText;
-            try
-            {
-                responseText = ReadBounded(response.GetResponseStream(), MaxResponseBytes);
-            }
-            catch (Exception)
-            {
-                return Error("APP_RESPONSE_INVALID", "DonDownload returned an unreadable response.");
-            }
-
-            return ParseAppResponse(responseText);
-        }
+        return ForwardScanRoute(body, "/scan-page");
     }
 
     /// <summary>
@@ -1727,6 +1840,29 @@ internal static class NativeHost
     /// </summary>
     private static Dictionary<string, object> ForwardScanImages(
         Dictionary<string, object> body)
+    {
+        return ForwardScanRoute(body, "/scan-images");
+    }
+
+    /// <summary>
+    /// POST one validated Gofile share to the desktop /scan-gofile route. The
+    /// rows came from the user's own signed-in tab, so the desktop never fetches
+    /// Gofile itself and nothing is queued from here.
+    /// </summary>
+    private static Dictionary<string, object> ForwardScanGofile(
+        Dictionary<string, object> body)
+    {
+        return ForwardScanRoute(body, "/scan-gofile");
+    }
+
+    /// <summary>
+    /// POST one already validated scan body to its desktop route. Every scan
+    /// operation shares this transport: load the bridge endpoint, send the exact
+    /// validated fields with the bearer token, and parse the bounded answer.
+    /// </summary>
+    private static Dictionary<string, object> ForwardScanRoute(
+        Dictionary<string, object> body,
+        string route)
     {
         BridgeState state;
         string stateError;
@@ -1740,7 +1876,7 @@ internal static class NativeHost
         {
             request = CreateBridgeRequest(
                 state,
-                "/scan-images",
+                route,
                 BridgeTimeoutMilliseconds);
             byte[] payload = Encoding.UTF8.GetBytes(Serializer.Serialize(body));
             request.ContentLength = payload.Length;

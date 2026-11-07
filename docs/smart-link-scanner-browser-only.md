@@ -67,6 +67,10 @@ bypassing a site's access controls.
 - **Matching.** `buildScanScriptSets` includes both `ready` and `browser-only`
   video page links, so a browser-only card participates in title/post matching
   exactly like a resolved video.
+- **Gofile share links.** A `gofile.io/d/<id>` link is the same kind of card: a
+  `browser-only` page link with the action "Open in browser to list files". The
+  extension then reads the rendered rows from the user's own tab and the files
+  become normal cards; see `smart-link-scanner-gofile.md`.
 - **Open in browser.** A new strict channel (`scan:open-in-browser`) accepts
   `{sessionId, itemId, pairing?}` with opaque IDs only. Main resolves the stored
   URL, validates it as a public HTTP(S) URL (`isPublicOpenableUrl`: no file/

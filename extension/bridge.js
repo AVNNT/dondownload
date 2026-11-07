@@ -20,6 +20,18 @@ export const DOWNLOAD_STATUS_MESSAGE_TYPE = 'download-status'
 export const SHOW_DOWNLOAD_MESSAGE_TYPE = 'show-download'
 export const SCAN_PAGE_MESSAGE_TYPE = 'scan-page'
 export const SCAN_IMAGES_MESSAGE_TYPE = 'scan-images'
+export const SCAN_GOFILE_MESSAGE_TYPE = 'scan-gofile'
+export const MAX_SCAN_GOFILE_FILES = 500
+export const MAX_GOFILE_NAME_LENGTH = 240
+const GOFILE_SHARE_ID = /^[A-Za-z0-9_-]{4,64}$/
+const GOFILE_SHARE_STATUSES = [
+  'ok',
+  'empty',
+  'not-found',
+  'password',
+  'premium',
+  'timeout'
+]
 export const MAX_SCAN_IMAGES = 1000
 export const MAX_IMAGE_ALT_LENGTH = 200
 export const MAX_PAGE_TITLE_LENGTH = 200
@@ -1234,6 +1246,99 @@ export function sendScanPage(rawUrl, rawCookie) {
   return sendNativeRequest({
     type: SCAN_PAGE_MESSAGE_TYPE,
     url: normalized.url,
+    ...(cookie === undefined ? {} : { cookie })
+  }).then((result) => {
+    if (result.ok === false) return result
+    const response = result.response
+    if (!response || response.ok !== true || response.accepted !== true) {
+      return {
+        ok: false,
+        error:
+          response && response.ok === false
+            ? describeResponseError(response)
+            : {
+                code: 'NATIVE_RESPONSE_INVALID',
+                message: 'The DonDownload helper returned an unexpected response.'
+              }
+      }
+    }
+    return { ok: true }
+  })
+}
+
+/**
+ * "Scan this Gofile share". The rows were read from the user's own signed-in
+ * tab, so this only forwards the share id, the extraction status and the
+ * validated download links. Every link must be HTTPS on gofile.io or one of its
+ * `store<N>` hosts; the optional `accountToken` Cookie is the same one-shot
+ * value the other scans use and is never stored.
+ */
+export function sendScanGofile(input) {
+  const raw = input === null || typeof input !== 'object' ? {} : input
+  const shareId = typeof raw.shareId === 'string' ? raw.shareId.trim() : ''
+  if (!GOFILE_SHARE_ID.test(shareId)) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_SHARE',
+        message: 'That Gofile share link is not valid.'
+      }
+    })
+  }
+  const status = GOFILE_SHARE_STATUSES.includes(raw.status) ? raw.status : 'empty'
+
+  const files = []
+  const seen = new Set()
+  for (const entry of Array.isArray(raw.files) ? raw.files : []) {
+    if (files.length >= MAX_SCAN_GOFILE_FILES) break
+    if (entry === null || typeof entry !== 'object') continue
+    const url = normalizeSupportedUrl(entry.url)
+    if (!url.ok) continue
+    let parsed
+    try {
+      parsed = new URL(url.url)
+    } catch {
+      continue
+    }
+    const host = parsed.hostname.toLowerCase()
+    const onGofile =
+      host === 'gofile.io' ||
+      host === 'www.gofile.io' ||
+      /^[a-z0-9-]+(\.[a-z0-9-]+)*\.gofile\.io$/.test(host)
+    if (!onGofile || parsed.protocol !== 'https:') continue
+    if (!/^\/download\//.test(parsed.pathname)) continue
+    if (seen.has(url.url)) continue
+    seen.add(url.url)
+    const name = normalizeHeaderText(entry.name, MAX_GOFILE_NAME_LENGTH)
+    if (name === null) continue
+    const size =
+      typeof entry.size === 'number' &&
+      Number.isFinite(entry.size) &&
+      entry.size > 0
+        ? Math.round(entry.size)
+        : null
+    files.push({ name, size, url: url.url })
+  }
+
+  let cookie
+  if (raw.cookie !== undefined && raw.cookie !== null) {
+    cookie = normalizeHeaderText(raw.cookie, MAX_COOKIE_HEADER_LENGTH)
+    if (cookie === null || /[\r\n]/.test(cookie)) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: 'INVALID_MESSAGE',
+          message: 'The browser cookie header is not valid.'
+        }
+      })
+    }
+  }
+
+  return sendNativeRequest({
+    type: SCAN_GOFILE_MESSAGE_TYPE,
+    shareId,
+    status,
+    files,
     ...(cookie === undefined ? {} : { cookie })
   }).then((result) => {
     if (result.ok === false) return result

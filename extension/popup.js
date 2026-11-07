@@ -2,6 +2,7 @@ import { normalizeCapturedSource, normalizeSupportedUrl, probeNativeConnection, 
 import { originFromUrl } from './site-policy.js'
 import { grantPageUrl } from './grant-parameter.js'
 import { rememberPendingScan, rememberPendingScans, scanCookiesReady } from './scan-pending.js'
+import { GOFILE_SCAN_MESSAGE_TYPE, isGofileShareUrl } from './gofile-scan.js'
 import { buildScanSends, groupScanUrlsByOrigin, parseScanUrlList } from './scan-urls.js'
 import {
   appendScanTabUrl,
@@ -1027,8 +1028,67 @@ async function scanLinks() {
   }
 }
 
+/**
+ * "Scan this page" on a Gofile share. The page is a JavaScript application, so
+ * the desktop cannot fetch it: the collector reads the rows this tab already
+ * rendered, and the optional Gofile Cookie is read once for the download
+ * requests. Without the one-time cookies grant the files are still listed, and
+ * the popup says what to allow for the downloads to work.
+ */
+async function scanGofilePage() {
+  if (activeTabId === null || pageUrl === null) return
+  setStatus('', 'Reading the file list from this Gofile tab…')
+  let result
+  try {
+    result = await chrome.runtime.sendMessage({
+      type: GOFILE_SCAN_MESSAGE_TYPE,
+      tabId: activeTabId,
+      pageUrl
+    })
+  } catch {
+    result = null
+  }
+  if (!result || result.ok !== true) {
+    const message =
+      result && result.error && typeof result.error.message === 'string'
+        ? result.error.message
+        : 'The Gofile share could not be read. Reload the share and scan again.'
+    setStatus('error', message)
+    return
+  }
+  if (result.status !== 'ok') {
+    setStatus(
+      'error',
+      'This Gofile share could not be listed. DonDownload sent what the page showed to the desktop.'
+    )
+    return
+  }
+  if (result.cookieAttached === true) {
+    setStatus(
+      'success',
+      `${result.fileCount} file${result.fileCount === 1 ? '' : 's'} listed in DonDownload with your Gofile sign-in.`
+    )
+    return
+  }
+  setStatus(
+    '',
+    `${result.fileCount} file${result.fileCount === 1 ? '' : 's'} listed in DonDownload. Downloads need your Gofile sign-in: allow DonDownload to use your login on this site (asked once) and scan again.`
+  )
+}
+
 async function scanPage() {
   if (scanning || pageUrl === null) return
+  if (isGofileShareUrl(pageUrl)) {
+    scanning = true
+    setSending(false)
+    try {
+      await scanGofilePage()
+    } finally {
+      scanning = false
+      setSending(false)
+    }
+    return
+  }
   scanning = true
   setSending(false)
   setStatus('', 'Scanning this page in DonDownload…')

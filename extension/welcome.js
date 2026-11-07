@@ -1,6 +1,11 @@
 import { probeNativeConnection, sendScanPage } from './bridge.js'
 import { readOptInCookieHeader } from './capture-settings.js'
 import { pendingScanGroups, takePendingScans } from './scan-pending.js'
+import {
+  GOFILE_SCAN_MESSAGE_TYPE,
+  findGofileTab,
+  isGofileShareUrl
+} from './gofile-scan.js'
 import { connectionView, siteEnableLabel, welcomeUrl } from './onboarding.js'
 import { grantPageUrl, readGrantParameter } from './grant-parameter.js'
 import {
@@ -207,6 +212,30 @@ async function startPendingScans(origin) {
     `Starting ${pageUrls.length} scan${pageUrls.length === 1 ? '' : 's'} in DonDownload…`
   )
   for (const pageUrl of pageUrls) {
+    // A Gofile share is read from the tab the user already has open, so the
+    // continuation asks the background worker to run the collector there
+    // instead of sending a page URL the desktop cannot render.
+    if (isGofileShareUrl(pageUrl)) {
+      const tabId = await findGofileTab(chrome, pageUrl)
+      const scanned =
+        tabId === null
+          ? null
+          : await chrome.runtime.sendMessage({
+              type: GOFILE_SCAN_MESSAGE_TYPE,
+              tabId,
+              pageUrl
+            })
+      if (!scanned || scanned.ok !== true) {
+        setGrantStatus(
+          'error',
+          (scanned && scanned.error && scanned.error.message) ||
+            'The Gofile share could not be read. Open the share in a tab and scan it again.'
+        )
+        void continuePendingGrant()
+        return
+      }
+      continue
+    }
     const cookie = await readOptInCookieHeader(chrome, pageUrl, pageUrl)
     const result = await sendScanPage(pageUrl, cookie)
     if (!result.ok) {

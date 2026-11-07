@@ -63,9 +63,14 @@ import {
   type NativeBridgeEndpoint
 } from '@shared/nativeBridge'
 import {
+  MAX_SCAN_GOFILE_BODY_BYTES,
+  SCAN_GOFILE_CHANNEL,
+  SCAN_GOFILE_ROUTE,
   SCAN_PAGE_CHANNEL,
   SCAN_PAGE_ROUTE,
-  parseScanPageRequest
+  parseScanGofileRequest,
+  parseScanPageRequest,
+  type ScanGofileRequest
 } from '@shared/scanBridge'
 import {
   MAX_SCAN_IMAGES_BODY_BYTES,
@@ -178,6 +183,12 @@ export interface NativeBridgeOptions {
      * page. Nothing is fetched: the desktop only opens the picker.
      */
     startImages?(input: ScanImagesRequest): ScanSession
+    /**
+     * Fill a session from the rows the user's own signed-in Gofile tab
+     * rendered. Nothing is fetched from Gofile: the desktop only turns the
+     * reported files into cards.
+     */
+    startGofile?(input: ScanGofileRequest): ScanSession
   }
   /** Focus the desktop and open the scanner view after an extension request. */
   onScanRequested?: (session: ScanSession) => void
@@ -393,6 +404,7 @@ export async function startNativeBridge(
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
+      route !== SCAN_GOFILE_ROUTE &&
       route !== DOWNLOAD_STATUS_ROUTE &&
       route !== SHOW_DOWNLOAD_ROUTE &&
       !isMediaRoute(route)
@@ -422,6 +434,7 @@ export async function startNativeBridge(
       route !== SNIFFED_MEDIA_ROUTE &&
       route !== SCAN_PAGE_ROUTE &&
       route !== SCAN_IMAGES_ROUTE &&
+      route !== SCAN_GOFILE_ROUTE &&
       route !== DOWNLOAD_STATUS_ROUTE &&
       route !== SHOW_DOWNLOAD_ROUTE &&
       options.mediaBridge === undefined
@@ -440,11 +453,16 @@ export async function startNativeBridge(
       return
     }
 
-    // One route carries a whole page walk of images, so it needs a much larger
-    // body than every other (single URL or small status) request. The limit is
-    // chosen from the already validated route, before any byte is read.
+    // One route carries a whole page walk of images, and the Gofile route can
+    // carry up to 500 rendered rows, so both need a much larger body than every
+    // other (single URL or small status) request. The limit is chosen from the
+    // already validated route, before any byte is read.
     const bodyLimit =
-      route === SCAN_IMAGES_ROUTE ? MAX_SCAN_IMAGES_BODY_BYTES : MAX_BRIDGE_BODY_BYTES
+      route === SCAN_IMAGES_ROUTE
+        ? MAX_SCAN_IMAGES_BODY_BYTES
+        : route === SCAN_GOFILE_ROUTE
+          ? MAX_SCAN_GOFILE_BODY_BYTES
+          : MAX_BRIDGE_BODY_BYTES
 
     const declaredLength = request.headers['content-length']
     if (declaredLength !== undefined) {
@@ -513,6 +531,11 @@ export async function startNativeBridge(
 
     if (route === SCAN_IMAGES_ROUTE) {
       await handleScanImagesRequest(parsed, response)
+      return
+    }
+
+    if (route === SCAN_GOFILE_ROUTE) {
+      await handleScanGofileRequest(parsed, response)
       return
     }
 
@@ -1183,6 +1206,60 @@ export async function startNativeBridge(
       ok: true,
       accepted: true,
       operation: SCAN_IMAGES_CHANNEL
+    })
+  }
+
+  /**
+   * Explicit "Scan this Gofile share" from the extension. The user's own
+   * signed-in tab rendered the rows, so no page is fetched and `api.gofile.io`
+   * is never called. Every download URL was validated against Gofile's own
+   * hosts, and the optional `accountToken` Cookie stays in the scanner session
+   * memory for the Gofile download requests only. Nothing is queued here.
+   */
+  async function handleScanGofileRequest(
+    parsed: unknown,
+    response: ServerResponse
+  ): Promise<void> {
+    if (options.scanner === undefined || options.scanner.startGofile === undefined) {
+      sendError(
+        response,
+        503,
+        'SCAN_UNAVAILABLE',
+        'Gofile scanning is not available in this DonDownload build.'
+      )
+      return
+    }
+    let input: ScanGofileRequest
+    try {
+      input = parseScanGofileRequest(parsed)
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(response, 400, error.code, error.message)
+        return
+      }
+      throw error
+    }
+
+    let session: ScanSession
+    try {
+      session = options.scanner.startGofile(input)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge could not start a Gofile session (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
+      options.onScanRequested?.(session)
+    } catch {
+      // Focus is best effort; the session already holds the files.
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      accepted: true,
+      operation: SCAN_GOFILE_CHANNEL
     })
   }
 

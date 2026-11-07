@@ -75,7 +75,9 @@ examples.
 - Known video hosts are followed only when robots allows it; they are primarily
   resolved through yt-dlp rather than scraped.
 - Gofile/Pixeldrain pages keep their phase 1 direct-file/batch handling and are
-  not routed through yt-dlp.
+  not routed through yt-dlp. Gofile share links are never fetched by the app at
+  all; the extension lists them from the user's own tab
+  (`smart-link-scanner-gofile.md`).
 - URL-pattern identity can miss an unfamiliar extractor's aliases; normalized
   URL dedupe still applies.
 

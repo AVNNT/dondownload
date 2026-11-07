@@ -7,6 +7,9 @@ export const DOWNLOAD_STATUS_MESSAGE_TYPE: string
 export const SHOW_DOWNLOAD_MESSAGE_TYPE: string
 export const SCAN_PAGE_MESSAGE_TYPE: string
 export const SCAN_IMAGES_MESSAGE_TYPE: string
+export const SCAN_GOFILE_MESSAGE_TYPE: string
+export const MAX_SCAN_GOFILE_FILES: number
+export const MAX_GOFILE_NAME_LENGTH: number
 export const MAX_SCAN_IMAGES: number
 export const MAX_IMAGE_ALT_LENGTH: number
 export const MAX_PAGE_TITLE_LENGTH: number
@@ -171,6 +174,9 @@ export function sendScanPage(
   rawCookie?: unknown
 ): Promise<{ ok: true } | BridgeFailure>
 export function sendScanImages(
+  input: unknown
+): Promise<{ ok: true } | BridgeFailure>
+export function sendScanGofile(
   input: unknown
 ): Promise<{ ok: true } | BridgeFailure>
 export function probeNativeConnection(): Promise<
