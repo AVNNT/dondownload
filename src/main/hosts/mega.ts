@@ -20,8 +20,9 @@ import { sanitizeFilename } from '@shared/validation'
  * A public MEGA link carries its own AES key in the URL fragment, so the adapter
  * never needs an account: it derives the file key with `node:crypto`, asks the
  * API for a short-lived download URL and hands that URL to the existing aria2
- * engine. Nothing is decrypted here; `megaDecrypt.ts` streams the AES-CTR
- * post-processing step.
+ * engine. A file body is never decrypted here; `megaDecrypt.ts` streams the
+ * AES-CTR post-processing step. Folder node keys are decrypted in-process only to
+ * learn the public names of the listing.
  *
  * The key material below is INTERNAL. It is returned to the main process only:
  * it is never part of a renderer DTO, never logged and never written into a
@@ -349,20 +350,14 @@ export function decryptMegaNodeKey(
  *
  * The field is `<handle>:<base64urlKey>`; a node shared with several owners
  * carries one such entry per owner, separated by `/`. The owning handle is not
- * needed to decrypt, so only the key part of each entry is kept. Entries whose
- * handle matches `preferredHandle` are tried first: the live API prefixes keys
- * with the owner handle, which for a public folder listing is the parent's, but
- * a different prefix must not make the node undecryptable.
+ * needed to decrypt, so only the key part of each entry is kept, in field order.
+ * Every entry is tried by the caller and only the one whose key decrypts the
+ * node's `MEGA{...}` attribute block is accepted.
  */
-function nodeKeyCandidates(
-  raw: string,
-  preferredHandle: string | null = null
-): Buffer[] {
-  const matching: Buffer[] = []
-  const others: Buffer[] = []
+function nodeKeyCandidates(raw: string): Buffer[] {
+  const candidates: Buffer[] = []
   for (const part of raw.split('/')) {
     const separator = part.indexOf(':')
-    const handle = separator === -1 ? '' : part.slice(0, separator)
     const encoded = separator === -1 ? part : part.slice(separator + 1)
     if (encoded.length === 0) continue
     let decoded: Buffer
@@ -372,10 +367,9 @@ function nodeKeyCandidates(
       continue
     }
     if (decoded.length === 0 || decoded.length % 16 !== 0) continue
-    if (preferredHandle !== null && handle === preferredHandle) matching.push(decoded)
-    else others.push(decoded)
+    candidates.push(decoded)
   }
-  return [...matching, ...others]
+  return candidates
 }
 
 /* -------------------------------- links -------------------------------- */
@@ -883,35 +877,32 @@ interface DecryptedNode {
 }
 
 /**
- * Decrypt one node with its parent folder key.
+ * Decrypt one node with the folder LINK key.
  *
- * The node's own key is AES-128-ECB under the parent folder key: 32 bytes for a
- * file node, which become AES-128-CTR material through `deriveMegaFileKey`, and
- * 16 bytes for a subfolder node, which is that folder's raw AES-128 key. The
- * node's attributes are always decrypted with the node's own key, never with the
- * parent folder key. A `k` field may carry one entry per owning handle, so the
- * first entry whose key decrypts the attributes wins.
+ * In a public folder listing every node key — files and subfolders alike, at
+ * every depth — is AES-128-ECB under the raw 16-byte link key from the URL, not
+ * under its parent folder's key. A decrypted file key is 32 bytes and becomes
+ * AES-128-CTR material through `deriveMegaFileKey`; a decrypted folder key is
+ * that folder's raw 16-byte AES key. The node's attributes are always decrypted
+ * with the node's own decrypted key, never with the link key.
+ *
+ * A `k` field may carry one entry per owning handle, so every entry is tried and
+ * only a key that decrypts the `MEGA{...}` attribute block is accepted.
  */
-function decryptNode(
-  node: MegaNode,
-  parentFolderKey: Buffer
-): DecryptedNode | null {
+function decryptNode(node: MegaNode, linkKey: Buffer): DecryptedNode | null {
   if (node.key === null) return null
-  const wantsFolderKey = node.type === 1
-  let fallbackFolderKey: Buffer | null = null
+  const wantsFolderKey = node.type === 1 || node.type === 2
 
-  for (const candidate of nodeKeyCandidates(node.key, node.parentId)) {
+  for (const candidate of nodeKeyCandidates(node.key)) {
     if (candidate.length !== (wantsFolderKey ? 16 : 32)) continue
     let key: Buffer
     try {
-      key = decryptMegaNodeKey(parentFolderKey, candidate)
+      key = decryptMegaNodeKey(linkKey, candidate)
     } catch {
       continue
     }
 
     if (wantsFolderKey) {
-      // A subfolder key is used raw; its attributes prove which entry is the
-      // right one, but a folder without attributes still yields a usable key.
       try {
         return {
           fileKey: null,
@@ -919,7 +910,6 @@ function decryptNode(
           name: parseAttributeName(decryptMegaAttributes(key, node.attributes))
         }
       } catch {
-        fallbackFolderKey ??= key
         continue
       }
     }
@@ -943,9 +933,7 @@ function decryptNode(
     }
   }
 
-  return fallbackFolderKey === null
-    ? null
-    : { fileKey: null, folderKey: fallbackFolderKey, name: '' }
+  return null
 }
 
 interface MegaFolderFile {
@@ -961,21 +949,20 @@ interface MegaFolderListing {
 }
 
 /**
- * Walk one folder listing and decrypt every node.
+ * Walk one folder listing and decrypt every node with the link key.
  *
- * A node key is encrypted with its parent folder's key, so a node can only be
- * opened once its parent folder is known; the response order is not guaranteed,
- * so the walk repeats until nothing new resolves. Subfolder nodes are never
- * entries: their key only unlocks that folder's own attributes and children.
+ * No node depends on another, so each one is decrypted on its own and the
+ * response order does not matter. Parent handles are kept only as structure:
+ * they identify the root node, whose own key titles the folder, and they never
+ * gate a decryption. Subfolder nodes are never entries: their key only unlocks
+ * that folder's own attributes.
  *
  * The root of the listing is not identified by the link id: the live API returns
  * the root folder node under its own handle and gives it a parent handle that is
- * never part of the listing. Roots are therefore the nodes whose parent handle is
- * absent, and the link key is the root folder's key.
+ * never part of the listing.
  */
 function buildFolderListing(
-  folderId: string,
-  folderKey: Buffer,
+  linkKey: Buffer,
   rawNodes: readonly unknown[]
 ): MegaFolderListing {
   const nodes: MegaNode[] = []
@@ -985,61 +972,41 @@ function buildFolderListing(
   }
 
   const handles = new Set(nodes.map((node) => node.id))
-  const roots = nodes.filter(
-    (node) => node.parentId === null || !handles.has(node.parentId)
-  )
+  const isRootCandidate = (node: MegaNode): boolean =>
+    node.type !== 0 && (node.parentId === null || !handles.has(node.parentId))
+  // The API marks the root folder with type 2. When it does not, only a folder
+  // whose own key is the link key can be told apart from a subfolder whose
+  // parent handle was left out of the listing.
+  const titleCandidates = [
+    ...nodes.filter((node) => node.type === 2 && isRootCandidate(node)),
+    ...nodes.filter((node) => node.type !== 2 && isRootCandidate(node))
+  ]
 
-  // Folder handle -> raw 16-byte key.
-  const folderKeys = new Map<string, Buffer>()
   let title = 'MEGA folder'
-  let titled = false
-  for (const node of roots) {
-    // A node whose parent handle is missing from the listing hangs directly off
-    // the root folder, so that parent handle carries the link key.
-    if (node.parentId !== null) folderKeys.set(node.parentId, folderKey)
-    // A file at the root is decrypted by the walk below with the link key.
-    if (node.type === 0) continue
-    folderKeys.set(node.id, folderKey)
-    if (titled || node.attributes.length === 0) continue
+  for (const node of titleCandidates) {
+    if (node.key !== null) {
+      const opened = decryptNode(node, linkKey)
+      if (opened === null) continue
+      if (node.type !== 2 && opened.folderKey?.equals(linkKey) !== true) continue
+      if (opened.name.length > 0) {
+        title = opened.name
+        break
+      }
+      continue
+    }
+    // A root that arrives without a `k` field keeps the link key as its own key.
+    if (node.attributes.length === 0) continue
     try {
-      title = parseAttributeName(decryptMegaAttributes(folderKey, node.attributes))
-      titled = true
+      title = parseAttributeName(decryptMegaAttributes(linkKey, node.attributes))
+      break
     } catch {
       // A root whose attributes do not decrypt keeps the placeholder title.
     }
   }
-  // Some responses only reference the link id as a parent handle.
-  if (!folderKeys.has(folderId)) folderKeys.set(folderId, folderKey)
-
-  const decrypted = new Map<string, DecryptedNode>()
-  let pending = nodes.filter((node) => node.type === 0 || node.type === 1)
-  while (pending.length > 0) {
-    const unresolved: MegaNode[] = []
-    let progressed = false
-    for (const node of pending) {
-      // A node without a parent handle is listed at the root of the folder.
-      const parentKey =
-        node.parentId === null ? folderKey : folderKeys.get(node.parentId)
-      if (parentKey === undefined) {
-        unresolved.push(node)
-        continue
-      }
-      const opened = decryptNode(node, parentKey)
-      if (opened === null) {
-        unresolved.push(node)
-        continue
-      }
-      decrypted.set(node.id, opened)
-      if (opened.folderKey !== null) folderKeys.set(node.id, opened.folderKey)
-      progressed = true
-    }
-    if (!progressed) break
-    pending = unresolved
-  }
 
   const files = nodes
     .filter((node) => node.type === 0)
-    .map((node) => ({ node, decrypted: decrypted.get(node.id) ?? null }))
+    .map((node) => ({ node, decrypted: decryptNode(node, linkKey) }))
 
   return { title: parseFolderTitle(title), files }
 }
@@ -1060,7 +1027,7 @@ async function fetchFolderListing(
   if (!Array.isArray(rawNodes)) throw invalidResponse()
   if (rawNodes.length > MAX_MEGA_FOLDER_NODES) throw tooManyFiles()
 
-  return buildFolderListing(folderId, folderKey, rawNodes)
+  return buildFolderListing(folderKey, rawNodes)
 }
 
 /** Build one download-ready entry from an already decrypted file node. */
@@ -1138,7 +1105,8 @@ function buildPreview(
  *
  * A `/file/<id>#<key>` link is one API call. A folder sub-file link needs the
  * folder listing first, because the node's own key is encrypted with the folder
- * key. The file body is never fetched here.
+ * LINK key and the download URL has to be requested on the folder. The file body
+ * is never fetched here.
  */
 export async function resolveMegaFile(
   value: unknown,
@@ -1207,9 +1175,9 @@ export async function resolveMegaFile(
 
 /**
  * Resolve a public folder into internal entries plus a renderer-safe preview.
- * Only plain files are listed; subfolders are walked for their keys but never
- * become entries, because a public link has no path selector. Nothing is queued
- * and nothing is downloaded here.
+ * Only plain files are listed; subfolders are decrypted for their own names but
+ * never become entries, because a public link has no path selector. Nothing is
+ * queued and nothing is downloaded here.
  */
 export async function resolveMegaFolder(
   value: unknown,

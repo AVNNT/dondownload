@@ -176,6 +176,41 @@ const NON_VIDEO_PAGE_SEGMENTS = new Set([
   'profile'
 ])
 
+/**
+ * Hosts that only serve page assets: thumbnails, preview sprites and player
+ * fragments. A URL on one of them is never a watchable page, even when its path
+ * carries a video-looking segment such as `/videos/202310/23/…`.
+ */
+const CDN_ASSET_DOMAINS: readonly string[] = [
+  'phncdn.com',
+  'xvideos-cdn.com',
+  'xnxx-cdn.com',
+  'xhcdn.com',
+  'eporner.com'
+]
+
+/** Label prefixes that mark an asset host (`static.`, `img.`, `thumb.`, `cdn.`). */
+const CDN_ASSET_HOST_PREFIXES: readonly string[] = [
+  'static.',
+  'img.',
+  'images.',
+  'thumb.',
+  'thumbs.',
+  'cdn.'
+]
+
+function isCdnAssetHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  if (host.length === 0) return false
+  for (const domain of CDN_ASSET_DOMAINS) {
+    if (!host.endsWith(`.${domain}`)) continue
+    // eporner.com serves its videos from www; every other subdomain is an asset
+    // host. The other domains are asset-only at every level.
+    return domain === 'eporner.com' ? !host.startsWith('www.') : true
+  }
+  return CDN_ASSET_HOST_PREFIXES.some((prefix) => host.startsWith(prefix))
+}
+
 function safeName(value: string, fallback: string): string {
   const cleaned = value
     .normalize('NFKC')
@@ -292,6 +327,10 @@ export function isVideoPageHost(hostname: string): boolean {
  * resolved (browser-only) and for deciding whether a followed link is worth a
  * bounded fetch. It never turns a URL into a direct file.
  *
+ * A media or image extension, and an asset host, are checked before any path
+ * rule: a CDN thumbnail or a preview sprite keeps a video-looking path such as
+ * `/videos/202310/23/<id>/original/…` without ever being a watchable page.
+ *
  * Hosts with an explicit single-video rule decide alone, so their listing,
  * channel, model, category and search pages never look like a video.
  */
@@ -304,13 +343,14 @@ export function isLikelyVideoPageUrl(raw: string): boolean {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
   if (parsed.username !== '' || parsed.password !== '') return false
-  if (hasSingleVideoRules(parsed.hostname)) {
-    return isSingleVideoPageUrl(parsed.href)
-  }
 
   const path = pathnameOf(parsed.href).replace(/\/+$/, '')
   const extension = extensionOfPath(path)
   if (extension !== null && !PAGE_EXTENSIONS.has(extension)) return false
+  if (isCdnAssetHost(parsed.hostname)) return false
+  if (hasSingleVideoRules(parsed.hostname)) {
+    return isSingleVideoPageUrl(parsed.href)
+  }
 
   const segments = path
     .split('/')

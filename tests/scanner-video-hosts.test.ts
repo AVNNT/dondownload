@@ -178,3 +178,74 @@ describe('scanner discovery of rule-host videos', () => {
     }
   })
 })
+
+/**
+ * Real asset URLs from a live pornhub homepage scan. Every one of them keeps a
+ * `/videos/<date>/<id>/…` path, so only the extension and the host can tell them
+ * apart from a watchable page.
+ */
+const CDN_ASSET_URLS = [
+  'https://pix-fl.phncdn.com/c6371/videos/202310/23/440000000/original/(m=eGJF8f)(mh=xyz)12.jpg',
+  'https://pix-fl.phncdn.com/c6371/videos/202310/23/440000000/plain/rs:fit:2000:1000:1/w:720/h:405/x:0/y:0/12.webp',
+  'https://ei.phncdn.com/videos/202310/23/440000000/original/(m=eGJF8f)(mh=xyz)12.jpg',
+  'https://img.xvideos-cdn.com/videos/202310/23/440000000/original/preview.jpg',
+  'https://static.eporner.com/videos/202310/23/440000000/preview',
+  'https://cdn.example.com/videos/202310/23/440000000/original/preview',
+  'https://thumb.example.com/videos/202310/23/440000000/original/preview',
+  'https://example.com/videos/202310/23/440000000/original/preview.gif'
+]
+
+/** Profile and hub links: only `/<user>/status/<id>` is a video. */
+const NON_VIDEO_TWITTER_URLS = [
+  'https://twitter.com/someone',
+  'https://x.com/someone',
+  'https://twitter.com/someone/media',
+  'https://x.com/someone/status/',
+  'https://twitter.com/someone/status/notanid',
+  'https://twitter.com/search?q=example',
+  'https://x.com/i/lists/1234'
+]
+
+const TWITTER_STATUS_URLS = [
+  'https://twitter.com/someone/status/1234567890',
+  'https://x.com/someone/status/1234567890',
+  'https://x.com/i/web/status/1234567890'
+]
+
+describe('scanner asset and profile detection', () => {
+  it('never treats a CDN asset URL as a video page', () => {
+    for (const url of CDN_ASSET_URLS) {
+      expect(isLikelyVideoPageUrl(url), url).toBe(false)
+      expect(classifyScanCandidate({ url }), url).not.toMatchObject({
+        category: 'video',
+        kind: 'page-link'
+      })
+    }
+  })
+
+  it('keeps a real single-video page on a rule host a video page', () => {
+    for (const url of SINGLE_VIDEO_URLS) {
+      expect(isLikelyVideoPageUrl(url), url).toBe(true)
+    }
+  })
+
+  it('treats only a twitter/x status link as a video page', () => {
+    for (const url of NON_VIDEO_TWITTER_URLS) {
+      expect(isSingleVideoPageUrl(url), url).toBe(false)
+      expect(isVideoHostVideoUrl(url), url).toBe(false)
+      expect(isLikelyVideoPageUrl(url), url).toBe(false)
+      expect(classifyScanCandidate({ url }), url).toMatchObject({
+        category: 'page',
+        kind: 'page-link'
+      })
+    }
+    for (const url of TWITTER_STATUS_URLS) {
+      expect(isSingleVideoPageUrl(url), url).toBe(true)
+      expect(isLikelyVideoPageUrl(url), url).toBe(true)
+      expect(classifyScanCandidate({ url }), url).toMatchObject({
+        category: 'video',
+        kind: 'page-link'
+      })
+    }
+  })
+})
