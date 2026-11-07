@@ -176,6 +176,22 @@
     if (typeof chrome.runtime.onMessage.addListener !== 'function') return
     state.runtimeListener = function (message, sender, sendResponse) {
       var respond = typeof sendResponse === 'function' ? sendResponse : function () {}
+      // The all-sites bootstrap sends the popup/shortcut through this once. A
+      // full overlay answers immediately; a torn-down one fails closed.
+      if (message && message.type === 'dondownload:overlay-ensure') {
+        if (state.disabled || state.active !== true) {
+          respond({
+            ok: false,
+            error: {
+              code: 'OVERLAY_NOT_READY',
+              message: 'The overlay is not available on this page.'
+            }
+          })
+          return false
+        }
+        respond({ ok: true, ready: true })
+        return false
+      }
       // An external revoke sends this to tracked tabs. Only the exact origin
       // that was revoked may tear down; a reused/stale tab id is harmless.
       if (

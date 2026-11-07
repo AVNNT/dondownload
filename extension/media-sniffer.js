@@ -15,6 +15,8 @@
 // Pure functions and the store are exported separately so the classification,
 // grouping, manifest parsing and reset rules can be tested without Chrome.
 
+import { createBoundedTtlCache } from './bounded-cache.js'
+
 export const MEDIA_SNIFFER_MESSAGE_TYPES = Object.freeze({
   QUERY: 'dondownload:sniffed-query',
   QUEUE: 'dondownload:sniffed-queue',
@@ -22,6 +24,12 @@ export const MEDIA_SNIFFER_MESSAGE_TYPES = Object.freeze({
 })
 
 export const MAX_SNIFFED_PER_TAB = 50
+/** Hard cap on tabs with sniffed media. Closed tabs are removed by onRemoved. */
+export const MAX_SNIFFED_TABS = 64
+/** An abandoned tab record expires even if its onRemoved event was missed. */
+export const SNIFFED_TAB_TTL_MS = 30 * 60 * 1000
+export const MAX_MANIFEST_CACHE_ENTRIES = 100
+export const MANIFEST_CACHE_TTL_MS = 60 * 1000
 export const MIN_MEDIA_BYTES = 100 * 1024
 export const MAX_HLS_VARIANTS = 20
 export const MAX_HLS_TEXT_BYTES = 256 * 1024
@@ -464,12 +472,38 @@ export function createMediaSnifferStore(options = {}) {
     Number.isSafeInteger(options.maximumPerTab) && options.maximumPerTab > 0
       ? options.maximumPerTab
       : MAX_SNIFFED_PER_TAB
+  const maximumTabs =
+    Number.isSafeInteger(options.maximumTabs) && options.maximumTabs > 0
+      ? options.maximumTabs
+      : MAX_SNIFFED_TABS
+  const tabTtlMs =
+    Number.isSafeInteger(options.tabTtlMs) && options.tabTtlMs > 0
+      ? options.tabTtlMs
+      : SNIFFED_TAB_TTL_MS
   const tabs = new Map()
 
+  /** Drop expired tab records and enforce the hard tab cap (oldest first). */
+  function pruneTabs(current = now()) {
+    for (const [tabId, state] of tabs) {
+      if (current - state.lastSeenAt >= tabTtlMs) tabs.delete(tabId)
+    }
+    while (tabs.size > maximumTabs) {
+      const oldest = tabs.keys().next()
+      if (oldest.done) break
+      tabs.delete(oldest.value)
+    }
+  }
+
   function tabState(tabId) {
+    pruneTabs()
     let state = tabs.get(tabId)
     if (!state) {
-      state = { entries: new Map(), pageTitle: null, pageUrl: null }
+      state = {
+        entries: new Map(),
+        pageTitle: null,
+        pageUrl: null,
+        lastSeenAt: now()
+      }
       tabs.set(tabId, state)
     }
     return state
@@ -515,6 +549,7 @@ export function createMediaSnifferStore(options = {}) {
   function record(tabId, pageUrl, pageTitle, entry, manifestInfo, at = now()) {
     if (!Number.isInteger(tabId) || tabId < 0 || !entry) return null
     const state = tabState(tabId)
+    state.lastSeenAt = at
     state.pageUrl = pageUrl
     if (typeof pageTitle === 'string' && pageTitle.trim().length > 0) {
       state.pageTitle = pageTitle.trim().slice(0, 500)
@@ -579,6 +614,7 @@ export function createMediaSnifferStore(options = {}) {
   function markSegment(tabId, sourceHost, at = now()) {
     const state = tabs.get(tabId)
     if (!state) return false
+    state.lastSeenAt = at
     let changed = false
     for (const entry of state.entries.values()) {
       if (entry.kind !== 'hls') continue
@@ -601,6 +637,7 @@ export function createMediaSnifferStore(options = {}) {
     if (!state || typeof pageTitle !== 'string' || pageTitle.trim().length === 0) {
       return
     }
+    state.lastSeenAt = now()
     state.pageTitle = pageTitle.trim().slice(0, 500)
     for (const entry of state.entries.values()) {
       if (entry.title === null) entry.title = state.pageTitle
@@ -608,16 +645,20 @@ export function createMediaSnifferStore(options = {}) {
   }
 
   function list(tabId) {
+    pruneTabs()
     const state = tabs.get(tabId)
     if (!state) return []
+    state.lastSeenAt = now()
     return [...state.entries.values()]
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
       .map(cloneEntry)
   }
 
   function get(tabId, rawUrl) {
+    pruneTabs()
     const state = tabs.get(tabId)
     if (!state) return null
+    state.lastSeenAt = now()
     const key = canonicalMediaUrl(rawUrl)
     if (key === null) return null
     const entry = state.entries.get(key)
@@ -625,6 +666,7 @@ export function createMediaSnifferStore(options = {}) {
   }
 
   function count(tabId) {
+    pruneTabs()
     const state = tabs.get(tabId)
     return state ? state.entries.size : 0
   }
@@ -644,6 +686,7 @@ export function createMediaSnifferStore(options = {}) {
   function clearBefore(tabId, timestamp) {
     const state = tabs.get(tabId)
     if (!state) return
+    state.lastSeenAt = now()
     for (const [key, entry] of state.entries) {
       if (entry.lastSeenAt < timestamp) state.entries.delete(key)
     }
@@ -660,6 +703,10 @@ export function createMediaSnifferStore(options = {}) {
     list,
     get,
     count,
+    tabCount() {
+      pruneTabs()
+      return tabs.size
+    },
     clearTab,
     clearBefore,
     clearAll
@@ -710,11 +757,16 @@ export function installMediaSniffer(chromeApi, options = {}) {
   let permissionGranted = false
   let installed = false
   let listening = false
-  const manifestCache = new Map()
+  const manifestCache = createBoundedTtlCache({
+    max: MAX_MANIFEST_CACHE_ENTRIES,
+    ttlMs: MANIFEST_CACHE_TTL_MS,
+    now
+  })
 
   async function fetchManifestInfo(url) {
     const key = canonicalMediaUrl(url) ?? url
-    if (manifestCache.has(key)) return manifestCache.get(key)
+    const cached = manifestCache.get(key)
+    if (cached !== undefined) return cached
     const task = (async () => {
       if (typeof fetchImpl !== 'function') {
         return { isMaster: false, isMediaPlaylist: false, variants: [] }
@@ -740,11 +792,9 @@ export function installMediaSniffer(chromeApi, options = {}) {
         clearTimeout(timer)
       }
     })()
+    // The bounded cache keeps at most MAX_MANIFEST_CACHE_ENTRIES promises and
+    // expires them after one minute, so a media-heavy page cannot grow it.
     manifestCache.set(key, task)
-    if (manifestCache.size > 100) {
-      const oldest = manifestCache.keys().next()
-      if (!oldest.done) manifestCache.delete(oldest.value)
-    }
     return task
   }
 

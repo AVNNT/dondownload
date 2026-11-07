@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_SNIFFED_PER_TAB,
+  MAX_SNIFFED_TABS,
+  SNIFFED_TAB_TTL_MS,
   canonicalMediaUrl,
   classifyMediaResponse,
   createMediaSnifferStore,
@@ -298,6 +300,35 @@ describe('grouping, range collapse and per-tab reset', () => {
     expect(row).not.toBeNull()
     expect(row && row.kind).toBe('file')
     expect(JSON.stringify(row)).not.toContain('page.example/watch')
+  })
+
+  it('bounds the number of tab records and drops abandoned ones', () => {
+    let clock = NOW
+    const store = createMediaSnifferStore({
+      now: () => clock,
+      maximumTabs: 3,
+      tabTtlMs: 1_000
+    })
+    for (let tabId = 1; tabId <= 10; tabId += 1) {
+      store.record(
+        tabId,
+        'https://page.example/watch',
+        'Page',
+        classified({ url: `https://cdn.example/clip-${tabId}.mp4` }),
+        null,
+        clock
+      )
+    }
+    // 1,000 simulated responses over 10 tabs still leave three records.
+    expect(store.tabCount()).toBe(3)
+    expect(store.count(1)).toBe(0)
+    expect(store.count(10)).toBe(1)
+    expect(MAX_SNIFFED_TABS).toBeGreaterThanOrEqual(3)
+
+    clock += 1_001
+    expect(store.tabCount()).toBe(0)
+    expect(store.count(10)).toBe(0)
+    expect(SNIFFED_TAB_TTL_MS).toBeGreaterThan(0)
   })
 })
 

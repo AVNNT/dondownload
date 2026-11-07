@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   allSitesHostsGranted,
   allSitesOverlayWantedFromSettings,
+  ensureOverlayForSender,
   handlePermissionsRemoved,
   injectAllSitesIntoOpenTabs,
   reconcileOverlayMode
 } from '../extension/overlay-controller'
 import {
   OVERLAY_ALL_SITES_ID,
+  OVERLAY_SCRIPT_FILES,
   overlayAllSitesRegistration,
   overlayRegistrationForOrigin
 } from '../extension/site-policy'
@@ -293,6 +295,79 @@ describe('all-sites overlay registration', () => {
     expect(result.mode).toBe('per-origin')
     expect(result.registered).toBe(false)
     expect(fake.registrations.size).toBe(0)
+    expect(fake.fileInjections).toHaveLength(0)
+  })
+})
+
+describe('bootstrap on-demand load', () => {
+  it('loads the full overlay only when the probe says it is absent', async () => {
+    const fake = createFake({
+      granted: ['http://*/*', 'https://*/*'],
+      tabs: [YT]
+    })
+    await allSitesOn(fake)
+    await reconcileOverlayMode(fake.chrome)
+
+    let probes = 0
+    fake.chrome.scripting.executeScript = async (injection: any) => {
+      if (Array.isArray(injection.files)) {
+        fake.fileInjections.push(injection)
+        return [{ result: undefined }]
+      }
+      fake.funcInjections.push(injection)
+      probes += 1
+      return [{ result: probes >= 2 }]
+    }
+
+    const result = await ensureOverlayForSender(fake.chrome, {
+      tab: { id: YT.id, url: YT.url },
+      frameId: 0
+    })
+
+    expect(result).toMatchObject({ ok: true, ready: true })
+    expect(fake.fileInjections).toHaveLength(1)
+    expect(fake.fileInjections[0]).toMatchObject({
+      target: { tabId: YT.id, allFrames: false },
+      files: OVERLAY_SCRIPT_FILES
+    })
+  })
+
+  it('returns immediately when the full overlay is already present', async () => {
+    const fake = createFake({
+      granted: ['http://*/*', 'https://*/*'],
+      tabs: [YT],
+      overlayPresent: true
+    })
+    await allSitesOn(fake)
+    await reconcileOverlayMode(fake.chrome)
+
+    const result = await ensureOverlayForSender(fake.chrome, {
+      tab: { id: YT.id, url: YT.url },
+      frameId: 0
+    })
+
+    expect(result).toMatchObject({ ok: true, ready: true, already: true })
+    expect(fake.fileInjections).toHaveLength(0)
+  })
+
+  it('refuses an origin the user excluded', async () => {
+    const fake = createFake({
+      granted: ['http://*/*', 'https://*/*'],
+      tabs: [YT]
+    })
+    await writeCaptureSettings(fake.chrome, {
+      detectAllSites: true,
+      floatingTriggerEnabled: true,
+      excludedOrigins: ['https://www.youtube.com']
+    })
+
+    const result = await ensureOverlayForSender(fake.chrome, {
+      tab: { id: YT.id, url: YT.url },
+      frameId: 0
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('EXCLUDED')
     expect(fake.fileInjections).toHaveLength(0)
   })
 })

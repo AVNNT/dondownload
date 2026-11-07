@@ -120,6 +120,7 @@ describe('browser extension manifest', () => {
     for (const file of [
       'manifest.json',
       'background.js',
+      'bounded-cache.js',
       'bridge.js',
       'browser-downloads.js',
       'capture-settings.js',
@@ -146,6 +147,7 @@ describe('browser extension manifest', () => {
       'overlay-qualities.js',
       'overlay-kvs.js',
       'overlay-capture.js',
+      'overlay-bootstrap.js',
       'overlay.js',
       'overlay-controller.js',
       'welcome.html',

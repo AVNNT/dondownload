@@ -10,6 +10,7 @@ import {
 import {
   disableOverlayForOrigin,
   enableOverlayForTab,
+  ensureOverlayForSender,
   forgetOverlayTab,
   handleOverlayReady,
   handlePermissionsAdded,
@@ -61,39 +62,83 @@ import {
   sniffedEntryForMessage,
   sniffedFilename
 } from './media-sniffer.js'
+import { createBoundedTtlCache } from './bounded-cache.js'
 
 const MENU_ID = 'dondownload-link'
 const BADGE_CLEAR_MS = 4_000
 const DEFAULT_TITLE = 'Send this page to DonDownload'
 const DETECTED_BADGE_COLOR = '#1f6feb'
 const SNIFF_AUTH_TTL_MS = 5_000
+const SNIFF_AUTH_CACHE_MAX = 64
+const SETTINGS_CACHE_MS = 5_000
+const PERMISSION_CACHE_MS = 30_000
+const SNIFFED_NOTIFY_MS = 150
 
 let badgeGeneration = 0
 
 /**
- * Settings are read once per event batch. Both the evidence observer and the
- * media sniffer must fail closed when a read fails.
+ * Settings and the optional webRequest grant are read for every candidate
+ * media response. Both change rarely, so a short in-memory cache with explicit
+ * invalidation on storage/permission events avoids one storage read and one
+ * permissions.contains call per response. The worker still re-reads both when
+ * the user changes a setting or grants/revokes the permission.
  */
+let settingsCache = null
+let settingsRead = null
+let webRequestPermissionCache = null
+
+function invalidateSettingsCache() {
+  settingsCache = null
+}
+
+function invalidatePermissionCache() {
+  webRequestPermissionCache = null
+}
+
 async function readSnifferSettings() {
-  try {
-    return await readCaptureSettings(chrome)
-  } catch {
-    return null
+  const at = Date.now()
+  if (settingsCache && at - settingsCache.at < SETTINGS_CACHE_MS) {
+    return settingsCache.value
   }
+  if (settingsRead !== null) return settingsRead
+  settingsRead = (async () => {
+    try {
+      return await readCaptureSettings(chrome)
+    } catch {
+      return null
+    }
+  })()
+  const value = await settingsRead
+  settingsRead = null
+  // A failed read stays uncached so the next event can recover immediately.
+  settingsCache = value === null ? null : { value, at }
+  return value
 }
 
 async function hasWebRequestPermission() {
+  const at = Date.now()
+  if (
+    webRequestPermissionCache &&
+    at - webRequestPermissionCache.at < PERMISSION_CACHE_MS
+  ) {
+    return webRequestPermissionCache.value
+  }
+  let value = false
   try {
-    return (
+    value =
       (await chrome.permissions.contains({ permissions: ['webRequest'] })) ===
       true
-    )
   } catch {
-    return false
+    value = false
   }
+  webRequestPermissionCache = { value, at }
+  return value
 }
 
-const sniffAuthCache = new Map()
+const sniffAuthCache = createBoundedTtlCache({
+  max: SNIFF_AUTH_CACHE_MAX,
+  ttlMs: SNIFF_AUTH_TTL_MS
+})
 
 /**
  * True only when this tab may be sniffed: either the user enabled this exact
@@ -103,12 +148,7 @@ const sniffAuthCache = new Map()
 async function authorizeSniffTab(tabId, pageUrl) {
   if (!Number.isInteger(tabId) || tabId < 0) return false
   const cached = sniffAuthCache.get(tabId)
-  if (
-    cached &&
-    cached.pageUrl === pageUrl &&
-    cached.allowed === true &&
-    Date.now() - cached.at < SNIFF_AUTH_TTL_MS
-  ) {
+  if (cached && cached.pageUrl === pageUrl && cached.allowed === true) {
     return true
   }
 
@@ -157,7 +197,19 @@ async function authorizeSniffTab(tabId, pageUrl) {
   return allowed
 }
 
+const sniffedNotifyTimers = new Map()
+
 function notifySniffedChanged(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) return
+  if (sniffedNotifyTimers.has(tabId)) return
+  const timer = setTimeout(() => {
+    sniffedNotifyTimers.delete(tabId)
+    sendSniffedChanged(tabId)
+  }, SNIFFED_NOTIFY_MS)
+  sniffedNotifyTimers.set(tabId, timer)
+}
+
+function sendSniffedChanged(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) return
   try {
     chrome.tabs.sendMessage(
@@ -168,6 +220,13 @@ function notifySniffedChanged(tabId) {
   } catch {
     // The tab may be closed or have no overlay content script.
   }
+}
+
+function forgetSniffedNotify(tabId) {
+  const timer = sniffedNotifyTimers.get(tabId)
+  if (timer === undefined) return
+  clearTimeout(timer)
+  sniffedNotifyTimers.delete(tabId)
 }
 
 async function activeTabForBadge() {
@@ -448,13 +507,7 @@ const networkObservation = installNetworkObservation(chrome, {
 networkObservation.install()
 
 async function refreshNetworkObservation() {
-  let granted = false
-  try {
-    granted =
-      (await chrome.permissions.contains({ permissions: ['webRequest'] })) === true
-  } catch {
-    granted = false
-  }
+  const granted = await hasWebRequestPermission()
   let settings
   try {
     settings = await readCaptureSettings(chrome)
@@ -684,6 +737,7 @@ chrome.runtime.onStartup.addListener(installLifecycleListeners)
 // closed by the browser's permission prompt. These top-level listeners let the
 // service worker finish the exact-origin registration and injection anyway.
 chrome.permissions.onAdded.addListener((permissions) => {
+  invalidatePermissionCache()
   networkObservation.install()
   mediaSniffer.install()
   void refreshNetworkObservation().catch(() => undefined)
@@ -695,6 +749,7 @@ chrome.permissions.onAdded.addListener((permissions) => {
 })
 
 chrome.permissions.onRemoved.addListener((permissions) => {
+  invalidatePermissionCache()
   void refreshNetworkObservation().catch(() => undefined)
   void refreshMediaSniffing().catch(() => undefined)
   void handlePermissionsRemoved(chrome, permissions).catch(() => undefined)
@@ -706,6 +761,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   networkObservation.clearTab(tabId)
   mediaSniffer.store.clearTab(tabId)
   sniffAuthCache.delete(tabId)
+  forgetSniffedNotify(tabId)
   refreshActiveBadge()
   void forgetOverlayTab(chrome, tabId).catch(() => undefined)
 })
@@ -715,6 +771,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!changeInfo || typeof changeInfo.url !== 'string') return
   sniffAuthCache.delete(tabId)
+  forgetSniffedNotify(tabId)
   mediaSniffer.handleTabUrlChanged(tabId, Date.now())
   refreshActiveBadge()
 })
@@ -727,6 +784,7 @@ chrome.tabs.onActivated.addListener((info) => {
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes || !changes[CAPTURE_SETTINGS_KEY]) return
+    invalidateSettingsCache()
     const previous = changes[CAPTURE_SETTINGS_KEY].oldValue
     const next = changes[CAPTURE_SETTINGS_KEY].newValue
     if (
@@ -761,6 +819,23 @@ chrome.contextMenus.onClicked.addListener((info) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false
+
+  if (message.type === OVERLAY_MESSAGE_TYPES.ENSURE) {
+    // The all-sites bootstrap found a player. Only this worker may inject the
+    // full overlay files, and only after the same grant/exclusion checks the
+    // popup path uses.
+    void ensureOverlayForSender(chrome, sender)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse(
+          overlayFailure(
+            'OVERLAY_NOT_READY',
+            'The overlay could not be loaded on this page.'
+          )
+        )
+      )
+    return true
+  }
 
   if (message.type === OVERLAY_MESSAGE_TYPES.ENABLE) {
     void enableOverlayForTab(chrome, message.origin, message.tabId)

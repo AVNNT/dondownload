@@ -6,6 +6,7 @@ import {
   matchPatternToOrigin,
   originFromUrl,
   originToMatchPattern,
+  overlayAllSitesRegistration,
   overlayOriginFromRegistration,
   overlayRegistrationForOrigin,
   overlayScriptId,
@@ -124,6 +125,15 @@ describe('per-site overlay permission policy', () => {
     })
     expect(registration?.matches).not.toContain('<all_urls>')
     expect(overlayRegistrationForOrigin('https://*.example.com')).toBeNull()
+  })
+
+  it('injects only the tiny bootstrap on all sites', () => {
+    const registration = overlayAllSitesRegistration()
+    expect(registration.id).toBe('dondownload-overlay-all-sites')
+    expect(registration.matches).toEqual(['http://*/*', 'https://*/*'])
+    expect(registration.js).toEqual(['overlay-bootstrap.js'])
+    expect(registration.runAt).toBe('document_idle')
+    expect(registration.allFrames).toBe(false)
   })
 
   it('recognizes only an exact granted origin pattern', () => {

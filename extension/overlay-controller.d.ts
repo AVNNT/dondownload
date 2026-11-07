@@ -14,6 +14,8 @@ export interface OverlayResult {
   granted?: boolean
   registered?: boolean
   injected?: boolean
+  ready?: boolean
+  already?: boolean
   reason?: string
   message?: string
   error?: OverlayError
@@ -41,6 +43,10 @@ export function enableOverlayForTab(
   chromeApi: unknown,
   origin: unknown,
   tabId: unknown
+): Promise<OverlayResult>
+export function ensureOverlayForSender(
+  chromeApi: unknown,
+  sender: unknown
 ): Promise<OverlayResult>
 export function syncOverlayForTab(
   chromeApi: unknown,
