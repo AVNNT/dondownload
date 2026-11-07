@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -574,6 +574,22 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE download_settings ADD COLUMN sort_downloads_by_type INTEGER
         NOT NULL DEFAULT 0 CHECK (sort_downloads_by_type IN (0, 1));
     `
+  },
+  {
+    // History/list reads all use `ORDER BY created_at DESC, updated_at DESC`.
+    // The v1 single-column index cannot satisfy the second sort key, so add
+    // the composite covering index for downloads and the same shape for the
+    // media/batch lists. `IF NOT EXISTS` keeps this migration self-contained
+    // and safe if a database already carries an identically named index.
+    version: 17,
+    sql: `
+      CREATE INDEX IF NOT EXISTS downloads_created_at_updated_at_idx
+        ON downloads (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS media_jobs_created_at_updated_at_idx
+        ON media_jobs (created_at DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS batches_created_at_updated_at_idx
+        ON batches (created_at DESC, updated_at DESC);
+    `
   }
 ]
 
@@ -908,6 +924,9 @@ export class DownloadDatabase {
       this.db.exec('PRAGMA journal_mode = WAL')
       this.db.exec('PRAGMA synchronous = NORMAL')
       this.db.exec('PRAGMA busy_timeout = 5000')
+      // Sort/compare scratch space stays in memory; no temp files for the
+      // small ORDER BY / index maintenance this database performs.
+      this.db.exec('PRAGMA temp_store = MEMORY')
       this.db.exec('PRAGMA foreign_keys = ON')
       migrate(this.db)
 
