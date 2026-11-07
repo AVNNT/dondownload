@@ -49,7 +49,10 @@ describe('buildAria2Args', () => {
     )
     // aria2 may raise the live concurrency itself; per-host stays polite.
     expect(args).toContain('--optimize-concurrent-downloads=true')
-    expect(args).toContain('--max-connection-per-server=4')
+    expect(args).toContain('--min-split-size=1M')
+    // 16 is aria2's hard cap and the new default.
+    expect(args).toContain('--max-connection-per-server=16')
+    expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(16)
   })
 
   it('keeps the split ceiling above every configurable per-host limit', () => {
@@ -57,7 +60,8 @@ describe('buildAria2Args', () => {
     const split = args.find((arg) => arg.startsWith('--split='))
 
     // aria2 clamps split to the live max-connection-per-server value. The
-    // launch value must not cap a persisted per-host setting above 8.
+    // launch value must not cap a persisted per-host setting; each download
+    // sets `split` to its own effective connection count.
     expect(split).toBe(`--split=${MAX_PER_HOST_CONNECTIONS}`)
     expect(MAX_PER_HOST_CONNECTIONS).toBeGreaterThanOrEqual(
       DEFAULT_PER_HOST_CONNECTIONS

@@ -521,12 +521,12 @@ afterEach(async () => {
 })
 
 describe('download settings persistence', () => {
-  it('creates one defaults row on a new schema-v8 database', async () => {
+  it('creates one defaults row on a new database', async () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(13)
+    expect(SCHEMA_VERSION).toBe(14)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -537,7 +537,7 @@ describe('download settings persistence', () => {
     expect(rows[0]).toMatchObject({
       id: 1,
       max_concurrent_downloads: 3,
-      per_host_connections: 4,
+      per_host_connections: 16,
       global_speed_limit_bps: 0,
       allowed_hours_enabled: 0,
       allowed_hours_start: '00:00',
@@ -1086,6 +1086,66 @@ describe('v7 to v8 theme migration', () => {
       updated_at: 123
     })
     verify.close()
+  })
+})
+
+describe('v13 to v14 per-host connection migration', () => {
+  /** Seed a database at the previous schema version with one stored value. */
+  async function seedV13(perHostConnections: number): Promise<string> {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    seed.saveSettings({ ...defaultDownloadSettings(), perHostConnections })
+    close(seed)
+
+    // Simulate a database created before the default changed to 16.
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      UPDATE download_settings SET per_host_connections = ${perHostConnections};
+      PRAGMA user_version = 13;
+    `)
+    legacy.close()
+    return filePath
+  }
+
+  it('raises the stored old default of 4 to 16', async () => {
+    const filePath = await seedV13(4)
+    const migrated = open(filePath)
+
+    expect(migrated.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(migrated.loadSettings().perHostConnections).toBe(16)
+    close(migrated)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(rowsOf(verify, 'download_settings')[0]).toMatchObject({
+      per_host_connections: 16
+    })
+    verify.close()
+  })
+
+  it('keeps a 4 the user chooses after the migration ran', async () => {
+    const filePath = await seedV13(4)
+    const migrated = open(filePath)
+    expect(migrated.loadSettings().perHostConnections).toBe(16)
+    migrated.saveSettings({
+      ...migrated.loadSettings(),
+      perHostConnections: 4
+    })
+    close(migrated)
+
+    // The migration belongs to the schema version, so it never runs twice.
+    const reopened = open(filePath)
+    expect(reopened.loadSettings().perHostConnections).toBe(4)
+    close(reopened)
+  })
+
+  it('leaves every other stored value untouched', async () => {
+    for (const value of [1, 2, 8, 12, 16]) {
+      const filePath = await seedV13(value)
+      const migrated = open(filePath)
+      expect(migrated.loadSettings().perHostConnections).toBe(value)
+      close(migrated)
+    }
   })
 })
 

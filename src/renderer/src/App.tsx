@@ -27,7 +27,7 @@ import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
 import { formatBytes, formatSpeed } from '@shared/format'
 import type { Batch } from '@shared/batches'
-import type { DownloadSettings } from '@shared/settings'
+import { DEFAULT_PER_HOST_CONNECTIONS, type DownloadSettings } from '@shared/settings'
 import { RuntimeNotice } from './components/RuntimeNotice'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
@@ -1610,7 +1610,9 @@ export default function App(): JSX.Element {
               busy={adding}
               describeDuplicate={describeDuplicate}
               onResumeDuplicate={resumeDuplicateUrl}
-              defaultConnections={settings?.perHostConnections ?? 8}
+              defaultConnections={
+                settings?.perHostConnections ?? DEFAULT_PER_HOST_CONNECTIONS
+              }
               onScanOpen={openScanSheet}
               onClose={() => setAddRequest(null)}
               onAdd={handleAdd}

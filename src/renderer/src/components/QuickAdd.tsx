@@ -4,7 +4,10 @@ import {
   type FormEvent,
   type JSX
 } from 'react'
-import type { DownloadControls } from '@shared/settings'
+import {
+  DEFAULT_PER_HOST_CONNECTIONS,
+  type DownloadControls
+} from '@shared/settings'
 import type { AddDownloadInput, ApiResult, AppSnapshot } from '@shared/types'
 import { isObviousDirectFileUrl } from '@shared/scanner'
 import { normalizeHttpUrl, sanitizeFilename } from '@shared/validation'
@@ -97,7 +100,7 @@ export function QuickAdd({
   onScanSuggested,
   onResumeDuplicate,
   describeDuplicate,
-  defaultConnections = 8,
+  defaultConnections = DEFAULT_PER_HOST_CONNECTIONS,
   url,
   onUrlChange,
   registerSubmit

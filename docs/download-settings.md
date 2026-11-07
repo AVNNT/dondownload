@@ -41,7 +41,7 @@ previous all-day, unlimited-speed behavior:
 | Field | Default | Allowed range | Meaning |
 | --- | --- | --- | --- |
 | `maxConcurrentDownloads` | `3` | `1..16` | Maximum concurrent downloads; applied to aria2. |
-| `perHostConnections` | `4` | `1..16` | Maximum connections per host; applied to aria2. |
+| `perHostConnections` | `16` | `1..16` | Maximum connections per host; applied to aria2. |
 | `globalSpeedLimitBps` | `0` | `0..1073741824` | Global bytes/second; `0` means unlimited; applied to aria2. |
 | `allowedHours.enabled` | `false` | boolean | When false, there is no time restriction (all day). |
 | `allowedHours.start` | `"00:00"` | exact `HH:mm` | Local-clock start of the allowed window. |
@@ -49,6 +49,32 @@ previous all-day, unlimited-speed behavior:
 
 The database also enforces these bounds with CHECK constraints, including
 `id = 1`, integer-only flags and zero-padded 24-hour clock strings.
+
+### 16 connections per server and the one-time migration
+
+`DEFAULT_PER_HOST_CONNECTIONS` is `16`, aria2's hard cap: 16 connections per
+server measured much faster than the previous default of 4. Schema version 14
+performs the one-time settings migration, raising a stored
+`per_host_connections = 4` (the old default) to `16`. Only that exact value is
+touched, and because the migration belongs to the schema version it runs once
+per database: a user who later chooses 4 again keeps it.
+
+### Automatic per-host back-off
+
+Some servers refuse 16 parallel connections. When aria2 reports one of those
+failures — HTTP 429 or 503, "Too many connections", or a repeated
+connection-refused/reset on the same host — the connection count for **that
+host only** walks down `16 -> 8 -> 4 -> 1` and the download is retried
+automatically with the lower value. The user's setting is always the upper
+bound, and the reduced value is remembered in memory for the session (TTL 24 h)
+so new downloads to that host start from it. The memory is keyed by host name
+only; no URL, header or cookie is stored. The policy lives in the pure module
+`src/main/downloads/perHostConnections.ts` and is covered by
+`tests/per-host-connections.test.ts`.
+
+Each download sets aria2's `split` to its effective connection count, so a
+lowered count also lowers the split. The launch arguments keep
+`--min-split-size=1M` and `--optimize-concurrent-downloads=true`.
 
 ### Runtime defaults and the 5/8 to 3/4 change
 

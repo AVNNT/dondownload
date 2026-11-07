@@ -37,7 +37,7 @@ describe('download settings contract', () => {
     const settings = defaultDownloadSettings()
     expect(settings).toEqual({
       maxConcurrentDownloads: 3,
-      perHostConnections: 4,
+      perHostConnections: 16,
       globalSpeedLimitBps: 0,
       allowedHours: {
         enabled: false,
@@ -47,7 +47,7 @@ describe('download settings contract', () => {
       theme: 'oled'
     })
     expect(DEFAULT_MAX_CONCURRENT_DOWNLOADS).toBe(3)
-    expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(4)
+    expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(16)
     expect(DEFAULT_GLOBAL_SPEED_LIMIT_BPS).toBe(0)
     expect(DEFAULT_ALLOWED_HOURS_START).toBe('00:00')
     expect(DEFAULT_ALLOWED_HOURS_END).toBe('00:00')

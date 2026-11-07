@@ -89,6 +89,49 @@ describe('automatic retry schedule', () => {
     }
   )
 
+  it('retries a refused parallel connection that is not otherwise transient', () => {
+    // aria2 code 29 (server overloaded) is not in the transient set, but the
+    // retry runs with the lowered per-host connection count.
+    expect(
+      planAutoRetry({
+        errorCode: 29,
+        attempts: 1,
+        maxAttempts: 3,
+        autoRetriesUsed: 0
+      })
+    ).toBeNull()
+    expect(
+      planAutoRetry({
+        errorCode: 29,
+        attempts: 1,
+        maxAttempts: 3,
+        autoRetriesUsed: 0,
+        connectionRefusal: true
+      })
+    ).toBe(3_000)
+  })
+
+  it('still respects the attempt budget for a connection refusal', () => {
+    expect(
+      planAutoRetry({
+        errorCode: 29,
+        attempts: 3,
+        maxAttempts: 3,
+        autoRetriesUsed: 0,
+        connectionRefusal: true
+      })
+    ).toBeNull()
+    expect(
+      planAutoRetry({
+        errorCode: 29,
+        attempts: 1,
+        maxAttempts: 3,
+        autoRetriesUsed: 2,
+        connectionRefusal: true
+      })
+    ).toBeNull()
+  })
+
   it('describes the waiting state', () => {
     expect(autoRetryStatusText(3)).toBe('Retrying in 3s…')
     expect(autoRetryStatusText(0.2)).toBe('Retrying in 1s…')
