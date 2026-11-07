@@ -27,6 +27,12 @@ export interface AutoRetryDecisionInput {
   maxAttempts: number
   /** How many automatic retries this record already used. */
   autoRetriesUsed: number
+  /**
+   * True when the failure was a refused parallel connection. Such a failure is
+   * retried even when aria2's code is not otherwise transient: the retry runs
+   * with the lowered per-host connection count.
+   */
+  connectionRefusal?: boolean
 }
 
 export function isTransientAria2Failure(
@@ -49,9 +55,11 @@ export function autoRetryDelayMs(autoRetriesUsed: number): number | null {
  * the delay in milliseconds, or null when the failure must stay visible.
  */
 export function planAutoRetry(input: AutoRetryDecisionInput): number | null {
-  if (!isTransientAria2Failure(input.errorCode, input.errorMessage ?? '')) {
-    return null
-  }
+  const transient = isTransientAria2Failure(
+    input.errorCode,
+    input.errorMessage ?? ''
+  )
+  if (!transient && input.connectionRefusal !== true) return null
   if (!canRetry(input.attempts, input.maxAttempts)) return null
   return autoRetryDelayMs(input.autoRetriesUsed)
 }

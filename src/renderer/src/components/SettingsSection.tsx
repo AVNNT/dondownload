@@ -773,7 +773,7 @@ export function SettingsSection(): JSX.Element {
 
             <SettingRow
               title="Connections per file"
-              description="More connections are usually faster, but some servers limit them."
+              description="Up to 16 per server, the fastest setting. Servers that refuse that many are lowered automatically for that site only."
             >
               <Stepper
                 label="Connections per file"

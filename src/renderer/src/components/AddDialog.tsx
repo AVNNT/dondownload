@@ -14,6 +14,7 @@ import type {
   AppSnapshot
 } from '@shared/types'
 import { formatBytes } from '@shared/format'
+import { DEFAULT_PER_HOST_CONNECTIONS } from '@shared/settings'
 import {
   type MediaAnalysis,
   type MediaOutputFormat,
@@ -83,7 +84,7 @@ export function AddDialog({
   busy = false,
   describeDuplicate,
   onResumeDuplicate,
-  defaultConnections = 8,
+  defaultConnections = DEFAULT_PER_HOST_CONNECTIONS,
   onScanOpen,
   onClose,
   onAdd,

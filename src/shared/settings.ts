@@ -27,7 +27,14 @@ export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 3
 export const MIN_MAX_CONCURRENT_DOWNLOADS = 1
 export const MAX_MAX_CONCURRENT_DOWNLOADS = 16
 
-export const DEFAULT_PER_HOST_CONNECTIONS = 4
+/**
+ * Connections per server. `16` is aria2's hard cap and measurably faster than
+ * the old default of 4, so it is the default. Servers that refuse that many
+ * parallel connections are handled by the per-host back-off in
+ * `src/main/downloads/perHostConnections.ts`, which only ever lowers the value
+ * for the offending host and never above this setting.
+ */
+export const DEFAULT_PER_HOST_CONNECTIONS = 16
 export const MIN_PER_HOST_CONNECTIONS = 1
 export const MAX_PER_HOST_CONNECTIONS = 16
 

@@ -34,8 +34,9 @@ export function buildAria2Args(config: Aria2LaunchConfig): string[] {
     '--max-overall-download-limit=' + DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
     // aria2 caps the requested split at the live --max-connection-per-server
     // value. Keep the launch ceiling at the largest configurable per-host
-    // value so a persisted setting above 8 is not silently capped here; the
-    // live setting (default 4) remains the actual politeness bound.
+    // value so a persisted setting is never silently capped here; each
+    // download sets `split` to its own effective connection count, and the
+    // live setting (default 16) remains the politeness bound.
     '--split=' + MAX_PER_HOST_CONNECTIONS,
     '--min-split-size=1M',
     '--file-allocation=none',

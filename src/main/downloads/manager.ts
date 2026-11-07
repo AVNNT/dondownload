@@ -55,6 +55,14 @@ import {
   shouldAutoResumeOnStartup
 } from './recovery'
 import { planAutoRetry } from './autoRetry'
+import {
+  PerHostConnectionMemory,
+  effectivePerHostConnections,
+  hostKeyFromUrl,
+  nextLowerConnectionCount,
+  planHostBackoff,
+  refusalKind
+} from './perHostConnections'
 
 const POLL_INTERVAL_MS = 1_000
 /** Progress is flushed at most this often; critical transitions write at once. */
@@ -234,6 +242,16 @@ export class DownloadManager {
   >()
   /** Epoch ms when the pending automatic retry of a record will start. */
   private readonly autoRetryDeadlines = new Map<string, number>()
+  /**
+   * Reduced connections per host after a server refused parallel connections.
+   * Memory-only and host-keyed: no URL, header or cookie is kept, and the TTL
+   * lets a recovered server use the user's setting again.
+   */
+  private readonly perHostConnections = new PerHostConnectionMemory({
+    now: () => this.now()
+  })
+  /** Refused/reset socket failures seen per host, for the storm threshold. */
+  private readonly hostStormCounts = new Map<string, number>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private polling = false
@@ -1714,12 +1732,21 @@ export class DownloadManager {
       }
     }
 
-    // Per-download aria2 options. When `connections` is null aria2 inherits the
-    // global --max-connection-per-server value, so a later global settings edit
-    // is not frozen into every existing transfer. An explicit per-download
-    // connection count sets both `split` and `max-connection-per-server`.
-    if (controls.connections !== null) {
-      const value = String(controls.connections)
+    // Per-download aria2 options. The effective connection count is the user's
+    // setting (or an explicit per-download choice), lowered by a remembered
+    // back-off for this host. `split` follows that same value so aria2 never
+    // splits into more pieces than the connections actually in use. While no
+    // back-off and no explicit choice apply, the options stay unset so aria2
+    // keeps following the live global setting.
+    const host = hostKeyFromUrl(url)
+    const remembered = host === null ? null : this.perHostConnections.get(host)
+    const effectiveConnections = effectivePerHostConnections({
+      setting: this.settingsProvider().perHostConnections,
+      perDownload: controls.connections,
+      remembered
+    })
+    if (controls.connections !== null || remembered !== null) {
+      const value = String(effectiveConnections)
       options.split = value
       options['max-connection-per-server'] = value
     }
@@ -1781,23 +1808,65 @@ export class DownloadManager {
   }
 
   /**
+   * Lower the connections for the failed download's host when aria2 reports a
+   * refused parallel connection (429/503, "too many connections", or a
+   * repeated connection refused/reset). Only that host is affected, the value
+   * walks 16 -> 8 -> 4 -> 1, and it never exceeds the user's setting. Returns
+   * the refusal kind so the caller can retry the job with the lower value.
+   */
+  private applyPerHostBackoff(
+    record: DownloadItem,
+    errorCode: number,
+    errorMessage: string
+  ): 'limit' | 'storm' | null {
+    const host = hostKeyFromUrl(
+      this.resolvedUrls.get(record.id) ?? record.url
+    )
+    if (host === null) return null
+
+    const failure = { errorCode, errorMessage }
+    const stormCount =
+      refusalKind(failure) === 'storm'
+        ? (this.hostStormCounts.get(host) ?? 0) + 1
+        : 0
+    this.hostStormCounts.set(host, stormCount)
+
+    const plan = planHostBackoff({ failure, stormCount })
+    if (!plan.reduce) return plan.kind
+
+    // An explicit per-download choice is the ceiling for this job; otherwise
+    // the user's setting is.
+    const ceiling =
+      this.controls.get(record.id)?.connections ??
+      this.settingsProvider().perHostConnections
+    const current = this.perHostConnections.get(host) ?? ceiling
+    const next = nextLowerConnectionCount(current, ceiling)
+    if (next < current) this.perHostConnections.remember(host, next)
+    return plan.kind
+  }
+
+  /**
    * Schedule one automatic retry for a transient aria2 failure. The row keeps
    * its `error` status while it waits (so nothing else tries to resume it) but
    * carries a retry deadline the UI shows as "Retrying in Ns…". Non-transient
    * failures, exhausted budgets, paused/removed rows and login-lost hand-offs
-   * are never retried automatically.
+   * are never retried automatically. A connection refusal is retried even when
+   * aria2's code is not otherwise transient, because the retry uses the lower
+   * per-host connection count.
    */
   private scheduleAutoRetry(
     record: DownloadItem,
     errorCode: number,
-    errorMessage: string
+    errorMessage: string,
+    connectionRefusal: 'limit' | 'storm' | null = null
   ): void {
     const delay = planAutoRetry({
       errorCode,
       errorMessage,
       attempts: record.attempts,
       maxAttempts: record.maxAttempts,
-      autoRetriesUsed: this.autoRetriesUsed.get(record.id) ?? 0
+      autoRetriesUsed: this.autoRetriesUsed.get(record.id) ?? 0,
+      connectionRefusal: connectionRefusal !== null
     })
     if (delay === null) return
     if (
@@ -1915,8 +1984,19 @@ export class DownloadManager {
         this.startNowIds.delete(record.id)
       }
       if (nextStatus === 'error' && statusChanged) {
-        // One automatic retry per failure, only for transient causes.
-        this.scheduleAutoRetry(record, status.errorCode, status.errorMessage)
+        // A server that refuses parallel connections gets fewer connections
+        // for its host only, then one automatic retry per failure.
+        const refusal = this.applyPerHostBackoff(
+          record,
+          status.errorCode,
+          status.errorMessage
+        )
+        this.scheduleAutoRetry(
+          record,
+          status.errorCode,
+          status.errorMessage,
+          refusal
+        )
       } else if (nextStatus !== 'error') {
         this.clearAutoRetry(record.id)
       }

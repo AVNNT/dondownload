@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 13
+export const SCHEMA_VERSION = 14
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -485,6 +485,18 @@ const MIGRATIONS: readonly Migration[] = [
     version: 13,
     sql: `
       ALTER TABLE downloads ADD COLUMN error_detail TEXT;
+    `
+  },
+  {
+    // One-time settings migration. The old default of 4 connections per server
+    // is raised to the new default of 16, which is aria2's hard cap. Only the
+    // exact old default is touched: any other stored value (including a user's
+    // own 1, 2, 8 or 12) is left alone. Because this runs once per database
+    // version, a user who later picks 4 again keeps it.
+    version: 14,
+    sql: `
+      UPDATE download_settings SET per_host_connections = 16
+        WHERE per_host_connections = 4;
     `
   }
 ]

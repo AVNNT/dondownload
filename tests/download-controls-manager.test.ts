@@ -304,6 +304,131 @@ describe('per-download aria2 options', () => {
   })
 })
 
+describe('per-host connection back-off', () => {
+  it('lowers the connections for the failing host only and retries there', async () => {
+    vi.useFakeTimers()
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    try {
+      const slow = 'https://slow.example.com/file.bin'
+      await manager.add({ url: slow })
+      const item = itemByUrl(manager, slow)
+      expect(item.connections).toBeNull()
+
+      // The server refuses 16 parallel connections.
+      aria2.fail(item.gid, 22, 'The response status is 429')
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      const failed = itemByUrl(manager, slow)
+      expect(failed.status).toBe('error')
+      // An automatic retry is scheduled with the lowered count.
+      expect(failed.retryAt).not.toBeNull()
+
+      await manager.retry(item.id)
+      const retryOptions = aria2.addUriCalls[1]?.params[1] as Record<
+        string,
+        string
+      >
+      expect(retryOptions.split).toBe('8')
+      expect(retryOptions['max-connection-per-server']).toBe('8')
+
+      // A new download to the same host starts from the remembered value.
+      await manager.add({ url: 'https://slow.example.com/other.bin' })
+      const sameHost = aria2.addUriCalls[2]?.params[1] as Record<string, string>
+      expect(sameHost.split).toBe('8')
+
+      // Another host keeps the full setting.
+      await manager.add({ url: 'https://fast.example.com/file.bin' })
+      const otherHost = aria2.addUriCalls[3]?.params[1] as Record<string, string>
+      expect(otherHost).not.toHaveProperty('split')
+      expect(otherHost).not.toHaveProperty('max-connection-per-server')
+    } finally {
+      manager.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps an explicit per-download count as the back-off ceiling', async () => {
+    vi.useFakeTimers()
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    try {
+      const url = 'https://limited.example.com/file.bin'
+      await manager.add({ url, controls: controls({ connections: 4 }) })
+      const item = itemByUrl(manager, url)
+      expect(
+        (aria2.addUriCalls[0]?.params[1] as Record<string, string>).split
+      ).toBe('4')
+
+      // aria2 code 29: the server is temporarily overloaded.
+      aria2.fail(item.gid, 29, 'Remote server is temporarily overloaded')
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(itemByUrl(manager, url).retryAt).not.toBeNull()
+
+      await manager.retry(item.id)
+      const retryOptions = aria2.addUriCalls[1]?.params[1] as Record<
+        string,
+        string
+      >
+      expect(retryOptions.split).toBe('1')
+      expect(retryOptions['max-connection-per-server']).toBe('1')
+    } finally {
+      manager.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores failures that say nothing about connections', async () => {
+    vi.useFakeTimers()
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    try {
+      const url = 'https://missing.example.com/file.bin'
+      await manager.add({ url })
+      const item = itemByUrl(manager, url)
+      aria2.fail(item.gid, 3, 'Resource not found')
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(itemByUrl(manager, url).status).toBe('error')
+      expect(itemByUrl(manager, url).retryAt).toBeNull()
+
+      await manager.retry(item.id)
+      const retryOptions = aria2.addUriCalls[1]?.params[1] as Record<
+        string,
+        string
+      >
+      expect(retryOptions).not.toHaveProperty('split')
+    } finally {
+      manager.close()
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('scheduled starts', () => {
   it('holds a future job without calling aria2 and starts it when due', async () => {
     const { database, downloadDir } = await makeWorkspace()
