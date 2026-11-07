@@ -1,5 +1,6 @@
 import { Parser } from 'htmlparser2'
-import { isLikelyVideoPageUrl, isVideoPageHost } from '../classify'
+import { isLikelyVideoPageUrl } from '../classify'
+import { isVideoHostVideoUrl } from '../videoHosts'
 import { resolveScanUrl } from './url'
 
 /**
@@ -89,7 +90,7 @@ function looksLikeCandidateUrl(url: string, nameHint: string | null): boolean {
   } catch {
     return false
   }
-  if (isVideoPageHost(hostname)) return true
+  if (isVideoHostVideoUrl(url)) return true
   if (isLikelyVideoPageUrl(url)) return true
   return (
     hostname === 'pixeldrain.com' ||
