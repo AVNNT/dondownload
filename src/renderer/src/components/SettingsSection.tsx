@@ -811,6 +811,19 @@ export function SettingsSection(): JSX.Element {
             </SettingRow>
 
             <SettingRow
+              title="Sort downloads into folders by type"
+              description="New downloads into the default folder are saved in Video, Audio, Images, Archives, Documents or Programs subfolders. Downloads with a folder you pick are unaffected."
+            >
+              <Switch
+                checked={draft.sortDownloadsByType}
+                label="Sort downloads into folders by type"
+                onChange={(checked) =>
+                  commitDownloads({ sortDownloadsByType: checked })
+                }
+              />
+            </SettingRow>
+
+            <SettingRow
               title="Speed limit"
               description="Applies to all downloads together."
               hint={

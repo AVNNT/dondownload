@@ -1206,3 +1206,84 @@ describe('bulk list removal', () => {
     expect(database.loadAll()).toHaveLength(1)
   })
 })
+
+describe('sort downloads into folders by type', () => {
+  it('keeps the default directory when the setting is off', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(database, downloadDir, clock, settings)
+
+    await manager.add({ url: 'https://example.com/movie.mkv' })
+
+    expect(itemByUrl(manager, 'https://example.com/movie.mkv').dir).toBe(
+      downloadDir
+    )
+  })
+
+  it('saves a new default-folder download in the type subfolder when on', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await manager.add({ url: 'https://example.com/movie.mkv' })
+    await manager.add({ url: 'https://example.com/song.flac' })
+    await manager.add({ url: 'https://example.com/scene.funscript' })
+    await manager.add({ url: 'https://example.com/payload.bin' })
+
+    expect(itemByUrl(manager, 'https://example.com/movie.mkv').dir).toBe(
+      path.join(downloadDir, 'Video')
+    )
+    expect(itemByUrl(manager, 'https://example.com/song.flac').dir).toBe(
+      path.join(downloadDir, 'Audio')
+    )
+    expect(itemByUrl(manager, 'https://example.com/scene.funscript').dir).toBe(
+      path.join(downloadDir, 'Video')
+    )
+    expect(itemByUrl(manager, 'https://example.com/payload.bin').dir).toBe(
+      downloadDir
+    )
+
+    const dirs = aria2.addUriCalls.map(
+      (call) => (call.params[1] as Record<string, string>).dir
+    )
+    expect(dirs).toEqual([
+      path.join(downloadDir, 'Video'),
+      path.join(downloadDir, 'Audio'),
+      path.join(downloadDir, 'Video'),
+      downloadDir
+    ])
+  })
+
+  it('never re-sorts a download that uses an explicitly picked folder', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const customDir = path.join(downloadDir, 'My Folder')
+
+    await manager.addScanFile(
+      { url: 'https://example.com/movie.mkv' },
+      customDir
+    )
+
+    const item = itemByUrl(manager, 'https://example.com/movie.mkv')
+    expect(item.dir).toBe(customDir)
+    expect(item.dir).not.toBe(path.join(downloadDir, 'Video'))
+  })
+})

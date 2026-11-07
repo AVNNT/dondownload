@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
 import { mapDownloadStatus } from '@shared/downloadStatus'
 import { isAllowedAt } from '@shared/schedule'
+import { typeFolderDirectory } from '@shared/typeFolders'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
 import {
   START_HIDDEN_ARG,
@@ -514,6 +515,13 @@ if (unregisterRequested) {
     mediaJobs = new MediaJobsManager({
       engine: mediaEngine,
       mediaDir,
+      // With sorting enabled, media output joins the same Video/Audio folders
+      // as ordinary downloads. Off keeps the existing Media folder.
+      outputDirFor: (kind) =>
+        settings.getSettings().sortDownloadsByType
+          ? typeFolderDirectory(downloadDir, kind === 'audio' ? 'Audio' : 'Video')
+          : mediaDir,
+      outputRootDir: downloadDir,
       database,
       startAllowed: (now) => isAllowedAt(settings.getSettings(), now),
       onExtractorFailure: () => mediaUpdater?.notifyExtractorFailure() ?? Promise.resolve(false),

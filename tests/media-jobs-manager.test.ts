@@ -212,6 +212,8 @@ async function createHarness(
     engine?: FakeEngine
     database?: FakePersistence
     mediaDir?: string
+    outputDirFor?: (kind: 'video' | 'audio') => string
+    outputRootDir?: string
     now?: () => number
     progressPersistIntervalMs?: number
     startAllowed?: (now: number) => boolean
@@ -224,6 +226,8 @@ async function createHarness(
   const manager = new MediaJobsManager({
     engine,
     mediaDir,
+    outputDirFor: options.outputDirFor,
+    outputRootDir: options.outputRootDir,
     database,
     onUpdate: (snapshot) => updates.push(snapshot),
     now: options.now,
@@ -372,6 +376,35 @@ afterEach(async () => {
 })
 
 describe('MediaJobsManager analysis and opaque selection', () => {
+  it('sorts new video and audio jobs into the configured type folders', async () => {
+    const root = await makeTempDir()
+    const mediaDir = path.join(root, 'Media')
+    const harness = await createHarness({
+      mediaDir,
+      outputRootDir: root,
+      outputDirFor: (kind) => path.join(root, kind === 'audio' ? 'Audio' : 'Video')
+    })
+    const analysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+
+    await harness.manager.queueMedia({
+      analysisId: analysis.analysisId,
+      optionId: VIDEO_OPTION_ID
+    })
+    await flushMicrotasks()
+    await harness.manager.queueMedia({
+      analysisId: analysis.analysisId,
+      optionId: AUDIO_OPTION_ID
+    })
+    await flushMicrotasks()
+
+    expect(harness.engine.downloads.map((entry) => entry.request.dir)).toEqual([
+      path.join(root, 'Video'),
+      path.join(root, 'Audio')
+    ])
+  })
+
   it('satisfies the MediaBridgeTarget interface structurally', async () => {
     const harness = await createHarness()
     const target: MediaBridgeTarget = harness.manager

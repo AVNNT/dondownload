@@ -123,6 +123,16 @@ export interface MediaJobsPersistence {
 export interface MediaJobsManagerOptions {
   engine: MediaEnginePort
   mediaDir: string
+  /**
+   * Resolves the output directory for a new job (video or audio). Defaults to
+   * `mediaDir` so callers that do not offer type sorting are unchanged.
+   */
+  outputDirFor?: (kind: 'video' | 'audio') => string
+  /**
+   * Root that completed outputs may live under. Defaults to `mediaDir`; the
+   * desktop app passes the download root when type sorting is available.
+   */
+  outputRootDir?: string
   onUpdate: (snapshot: MediaSnapshot) => void
   database?: MediaJobsPersistence | null
   /** Injectable clock for deterministic tests. */
@@ -289,6 +299,8 @@ function sanitizedEngineError(
 export class MediaJobsManager {
   private readonly engine: MediaEnginePort
   private readonly mediaDir: string
+  private readonly outputDirFor: (kind: 'video' | 'audio') => string
+  private readonly outputRootDir: string
   private readonly onUpdate: (snapshot: MediaSnapshot) => void
   private readonly database: MediaJobsPersistence | null
   private readonly now: () => number
@@ -320,6 +332,8 @@ export class MediaJobsManager {
   constructor(options: MediaJobsManagerOptions) {
     this.engine = options.engine
     this.mediaDir = options.mediaDir
+    this.outputDirFor = options.outputDirFor ?? (() => this.mediaDir)
+    this.outputRootDir = options.outputRootDir ?? options.mediaDir
     this.onUpdate = options.onUpdate
     this.database = options.database ?? null
     this.now = options.now ?? Date.now
@@ -529,7 +543,7 @@ export class MediaJobsManager {
       totalBytes:
         knownTotalBytes !== null && knownTotalBytes > 0 ? knownTotalBytes : null,
       errorMessage: null,
-      dir: this.mediaDir,
+      dir: this.outputDirFor(option.kind === 'audio' ? 'audio' : 'video'),
       filePath: null,
       maxBytes: input.maxBytes ?? null,
       outputFormat,
@@ -629,7 +643,7 @@ export class MediaJobsManager {
           ? input.expectedBytes
           : null,
       errorMessage: null,
-      dir: this.mediaDir,
+      dir: this.outputDirFor('video'),
       filePath: null,
       maxBytes: null,
       outputFormat: 'auto',
@@ -957,7 +971,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(this.mediaDir, record.filePath)) {
+    if (!isInsideDirectory(this.outputRootDir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
@@ -985,7 +999,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(this.mediaDir, record.filePath)) {
+    if (!isInsideDirectory(this.outputRootDir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
