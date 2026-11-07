@@ -4,6 +4,12 @@
 // strict durable receipt. Every other outcome leaves it running: an extra copy
 // is safer than losing the user's file. This module never reads page content,
 // never logs a URL and never uses a page-supplied tab id.
+//
+// The decision runs in chrome.downloads.onDeterminingFilename, before the
+// browser starts the transfer, so a "Save as" window never opens for a
+// download DonDownload takes over. Every path releases the held download with
+// suggest(): immediately when it is not a candidate, after the cancel when it
+// is, and from a safety timer if the hand-off hangs.
 
 import { sendDurableHandoff } from './bridge.js'
 import {
@@ -24,6 +30,12 @@ import {
 } from './handoff-policy.js'
 
 export const HANDOFF_BADGE_CLEAR_MS = 4_000
+
+/**
+ * How long a held download waits for the hand-off decision before the browser
+ * is released. A download must never stay stuck behind this extension.
+ */
+export const HANDOFF_SUGGEST_TIMEOUT_MS = 5_000
 let badgeGeneration = 0
 let needsLoginBadge = false
 
@@ -128,15 +140,57 @@ function cancelDownload(chromeApi, downloadId) {
 }
 
 /**
- * Handle one chrome.downloads.onCreated item. Returns a short outcome string for
- * focused tests; callers never need to log it with a URL.
+ * Drop a cancelled download from the browser's download list. Best effort: the
+ * hand-off already succeeded, so a browser that refuses the erase only leaves a
+ * cancelled entry behind.
+ */
+function eraseDownload(chromeApi, downloadId) {
+  return new Promise((resolve) => {
+    const downloads = chromeApi && chromeApi.downloads
+    if (!downloads || typeof downloads.erase !== 'function') {
+      resolve({ ok: false })
+      return
+    }
+    try {
+      downloads.erase({ id: downloadId }, () => {
+        const runtimeError = chromeApi.runtime && chromeApi.runtime.lastError
+        resolve({ ok: !runtimeError })
+      })
+    } catch {
+      resolve({ ok: false })
+    }
+  })
+}
+
+/**
+ * Report a download the browser no longer owns. Purely additive feedback: the
+ * badge, the remembered id for the service worker and the in-page card can all
+ * fail without changing the hand-off outcome.
+ */
+async function completeTakeover(chromeApi, settings, item, receipt) {
+  notifyHandoff(chromeApi, settings, 'DD', 'Sent to DonDownload')
+  try {
+    rememberHandedOffDownload(receipt.downloadId)
+  } catch {
+    // Session memory is best effort; the badge still reports the hand-off.
+  }
+  await showHandoffCard(chromeApi, settings, item, receipt)
+}
+
+/**
+ * Handle one chrome.downloads item. Returns a short outcome string for focused
+ * tests; callers never need to log it with a URL.
  *
  * This is the download-manager path: the browser already decided the transfer
  * is a download, so no extension allowlist applies. The user's "only files
  * larger than" threshold is enforced from the browser's exact total, except for
  * an always-hand-off type (a `.funscript`), which is a few KB by nature.
  */
-export async function handleCreatedDownload(chromeApi, item) {
+export async function handleCreatedDownload(chromeApi, item, options = {}) {
+  // A held item comes from onDeterminingFilename: the browser has not started
+  // the transfer and is waiting for suggest(), so there is no live download to
+  // re-read and nothing to keep running.
+  const held = options !== null && typeof options === 'object' && options.held === true
   let settings
   try {
     settings = await readCaptureSettings(chromeApi)
@@ -238,6 +292,21 @@ export async function handleCreatedDownload(chromeApi, item) {
   await clearNeedsLoginState(chromeApi)
   clearNeedsLoginBadge()
 
+  if (held) {
+    // Cancel the held download before it starts, then erase the cancelled entry
+    // so the browser shows no download at all. The caller releases the browser
+    // with suggest() once this resolves.
+    const heldCancel = await cancelDownload(chromeApi, item.id)
+    if (heldCancel.ok) await eraseDownload(chromeApi, item.id)
+    await finishHandoffDownload(chromeApi, item.id)
+    if (!heldCancel.ok) {
+      notifyHandoff(chromeApi, settings, '!', 'Hand-off saved; browser download kept')
+      return 'left-running-cancel-failed'
+    }
+    await completeTakeover(chromeApi, settings, item, handoff.receipt)
+    return 'cancelled'
+  }
+
   const reread = await searchDownload(chromeApi, item.id)
   if (!reread.ok) {
     await finishHandoffDownload(chromeApi, item.id)
@@ -268,36 +337,115 @@ export async function handleCreatedDownload(chromeApi, item) {
     notifyHandoff(chromeApi, settings, '!', 'Hand-off saved; browser download kept')
     return 'left-running-cancel-failed'
   }
-  notifyHandoff(chromeApi, settings, 'DD', 'Sent to DonDownload')
-  // The download is taken over at this point, so the in-page card is purely
-  // additive feedback: it is remembered for the service worker and injected
-  // best effort. Neither step can change the outcome above.
-  try {
-    rememberHandedOffDownload(handoff.receipt.downloadId)
-  } catch {
-    // Session memory is best effort; the badge still reports the hand-off.
-  }
-  await showHandoffCard(chromeApi, settings, item, handoff.receipt)
+  await completeTakeover(chromeApi, settings, item, handoff.receipt)
   return 'cancelled'
 }
 
-/** Register the downloads listener only when the optional grant is present. */
+/** Register the downloads listeners only when the optional grant is present. */
 let downloadsListenerInstalled = false
+
+/**
+ * Download ids this worker already took over. Both download events can report
+ * one download, so a taken-over id is never decided a second time.
+ */
+const handledDownloadIds = new Set()
+const MAX_HANDLED_DOWNLOAD_IDS = 200
+
+function downloadIdOf(item) {
+  return item && Number.isSafeInteger(item.id) && item.id > 0 ? item.id : null
+}
+
+function wasHandled(item) {
+  const id = downloadIdOf(item)
+  return id !== null && handledDownloadIds.has(id)
+}
+
+function rememberHandled(item) {
+  const id = downloadIdOf(item)
+  if (id === null) return
+  handledDownloadIds.add(id)
+  while (handledDownloadIds.size > MAX_HANDLED_DOWNLOAD_IDS) {
+    const oldest = handledDownloadIds.values().next().value
+    handledDownloadIds.delete(oldest)
+  }
+}
+
+function callSuggest(suggest) {
+  if (typeof suggest !== 'function') return
+  try {
+    suggest()
+  } catch {
+    // A download that already resolved rejects the call; nothing to release.
+  }
+}
+
+/**
+ * Run one held download from chrome.downloads.onDeterminingFilename. The browser
+ * is waiting for suggest() before it starts the transfer or opens a Save As
+ * window, so the decision runs here and the download is released exactly once:
+ * as soon as the decision settles, or from the safety timer if it hangs.
+ */
+function runHeldDownload(chromeApi, item, suggest, onCreated) {
+  if (wasHandled(item)) {
+    callSuggest(suggest)
+    return false
+  }
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    callSuggest(suggest)
+  }
+  const timer = setTimeout(release, HANDOFF_SUGGEST_TIMEOUT_MS)
+  const settle = (outcome) => {
+    clearTimeout(timer)
+    // A taken-over download was cancelled and erased above; releasing the held
+    // decision afterwards only resolves the browser's pending callback.
+    if (outcome === 'cancelled') rememberHandled(item)
+    release()
+  }
+  Promise.resolve()
+    .then(() => onCreated(item, { held: true }))
+    .then(settle, () => {
+      clearTimeout(timer)
+      release()
+    })
+  return true
+}
 
 /**
  * Register the chrome.downloads listeners. Safe to call again after the
  * optional downloads permission is granted at runtime: the permission may
  * expose `chrome.downloads` only after the grant, and only one listener is ever
  * added per worker generation.
+ *
+ * onDeterminingFilename is used whenever the browser has it, because it runs
+ * before the browser starts the download. onCreated stays as the fallback for a
+ * browser without it.
  */
 export function installDownloadsListener(chromeApi, onCreated) {
   const downloads = chromeApi && chromeApi.downloads
-  if (!downloads || !downloads.onCreated) return false
+  if (!downloads || typeof onCreated !== 'function') return false
+  const holdsFilenames =
+    downloads.onDeterminingFilename &&
+    typeof downloads.onDeterminingFilename.addListener === 'function'
+  if (!holdsFilenames && !downloads.onCreated) return false
   if (downloadsListenerInstalled) return true
   try {
-    downloads.onCreated.addListener((item) => {
-      Promise.resolve(onCreated(item)).catch(() => undefined)
-    })
+    if (holdsFilenames) {
+      downloads.onDeterminingFilename.addListener((item, suggest) =>
+        runHeldDownload(chromeApi, item, suggest, onCreated)
+      )
+    } else if (downloads.onCreated) {
+      downloads.onCreated.addListener((item) => {
+        if (wasHandled(item)) return
+        Promise.resolve(onCreated(item))
+          .then((outcome) => {
+            if (outcome === 'cancelled') rememberHandled(item)
+          })
+          .catch(() => undefined)
+      })
+    }
     if (downloads.onChanged && typeof downloads.onChanged.addListener === 'function') {
       downloads.onChanged.addListener((delta) => {
         if (
@@ -310,9 +458,16 @@ export function installDownloadsListener(chromeApi, onCreated) {
         ) {
           return
         }
+        // A download the browser already reported a size for can still become a
+        // candidate; one that was decided is never decided again.
+        if (handledDownloadIds.has(delta.id)) return
         void searchDownload(chromeApi, delta.id).then((result) => {
-          if (result.ok) return onCreated(result.item)
-          return undefined
+          if (!result.ok || wasHandled(result.item)) return undefined
+          return Promise.resolve(onCreated(result.item))
+            .then((outcome) => {
+              if (outcome === 'cancelled') rememberHandled(result.item)
+            })
+            .catch(() => undefined)
         }).catch(() => undefined)
       })
     }
@@ -326,4 +481,5 @@ export function installDownloadsListener(chromeApi, onCreated) {
 /** Test hook: forget that listeners were installed for a previous fake API. */
 export function resetDownloadsListenerForTests() {
   downloadsListenerInstalled = false
+  handledDownloadIds.clear()
 }

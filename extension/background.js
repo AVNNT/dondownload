@@ -608,7 +608,9 @@ function installLifecycleListeners(details) {
  * starts without reloading the extension.
  */
 function installDownloadsSupport() {
-  return installDownloadsListener(chrome, (item) => handleCreatedDownload(chrome, item))
+  return installDownloadsListener(chrome, (item, options) =>
+    handleCreatedDownload(chrome, item, options)
+  )
 }
 
 async function toggleOverlayOnActiveTab() {
