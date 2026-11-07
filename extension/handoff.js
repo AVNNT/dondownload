@@ -129,7 +129,8 @@ function cancelDownload(chromeApi, downloadId) {
  *
  * This is the download-manager path: the browser already decided the transfer
  * is a download, so no extension allowlist applies. The user's "only files
- * larger than" threshold is enforced from the browser's exact total.
+ * larger than" threshold is enforced from the browser's exact total, except for
+ * an always-hand-off type (a `.funscript`), which is a few KB by nature.
  */
 export async function handleCreatedDownload(chromeApi, item) {
   let settings
@@ -187,6 +188,9 @@ export async function handleCreatedDownload(chromeApi, item) {
       expectedBytes: candidate.expectedBytes,
       expectedContentType: candidate.expectedContentType,
       minBytes: settings.handoffMinBytes,
+      // The candidate already decided this file ignores the size threshold; the
+      // bridge must not re-reject it as too small.
+      ignoreMinimumBytes: candidate.alwaysHandoff === true,
       ...(originFromPageUrl(item.referrer) !== null
         ? { referer: item.referrer }
         : {}),
