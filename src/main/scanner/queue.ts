@@ -16,6 +16,7 @@ import { ValidationError } from '@shared/validation'
 import type { PublicTargetLookup } from '../net/publicTarget'
 import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
+import { isPixeldrainFileUrl } from './pixeldrain'
 import type {
   ResolvedScriptPairing,
   ResolvedScanTarget,
@@ -156,6 +157,16 @@ async function mapWithConcurrency<T, R>(
  */
 function isImageTarget(target: ResolvedScanTarget): boolean {
   return target.category === 'image' && target.kind === 'file'
+}
+
+/**
+ * True for a canonical Pixeldrain file link. The page itself is HTML, so the
+ * generic probe would read it as a web page and refuse the download. The batch
+ * manager resolves the public file metadata (and fails closed) at queue time,
+ * so the canonical link is handed over unchanged.
+ */
+function isPixeldrainTarget(target: ResolvedScanTarget): boolean {
+  return target.kind === 'file' && isPixeldrainFileUrl(target.url)
 }
 
 function errorCode(error: unknown): string {
@@ -318,6 +329,9 @@ export class ScanQueueService {
         if (isImageTarget(target)) {
           return { target, probe: null }
         }
+        if (isPixeldrainTarget(target)) {
+          return { target, probe: null }
+        }
         const probe = await (this.probeItem ?? probeScanItem)(
           {
             url: target.url,
@@ -367,6 +381,19 @@ export class ScanQueueService {
             ...(target.cookie === undefined
               ? {}
               : { requestHeaders: { cookie: target.cookie } })
+          }
+        })
+        continue
+      }
+
+      if (isPixeldrainTarget(target)) {
+        queued.push({
+          itemId: target.itemId,
+          file: {
+            url: target.url,
+            title: cleanTitle(target.name),
+            ...(target.name.length > 0 ? { filename: target.name } : {}),
+            scanItemId: target.itemId
           }
         })
         continue
