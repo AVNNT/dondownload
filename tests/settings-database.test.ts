@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(16)
+    expect(SCHEMA_VERSION).toBe(17)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -928,18 +928,26 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
-    expect(indexNames(verify, 'downloads')).toEqual(downloadIndexes)
+    // v17 adds one composite history index per list table; the indexes that
+    // already existed before the migration are still present.
+    expect(indexNames(verify, 'downloads')).toEqual(
+      [...downloadIndexes, 'downloads_created_at_updated_at_idx'].sort()
+    )
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(fixture.downloads, DOWNLOAD_COLUMNS)
     )
     if (version >= 2) {
       expect(rowsOf(verify, 'media_jobs')).toMatchObject(fixture.media)
-      expect(indexNames(verify, 'media_jobs')).toEqual(mediaIndexes)
+      expect(indexNames(verify, 'media_jobs')).toEqual(
+        [...mediaIndexes, 'media_jobs_created_at_updated_at_idx'].sort()
+      )
     }
     if (version >= 3) {
       expect(rowsOf(verify, 'batches')).toMatchObject(fixture.batches)
       expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
-      expect(indexNames(verify, 'batches')).toEqual(batchParentIndexes)
+      expect(indexNames(verify, 'batches')).toEqual(
+        [...batchParentIndexes, 'batches_created_at_updated_at_idx'].sort()
+      )
       expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
       const foreignKeys = verify
         .prepare("PRAGMA foreign_key_list('batch_items')")
