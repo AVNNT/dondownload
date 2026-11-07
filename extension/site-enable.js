@@ -152,16 +152,16 @@ export function recommendedCapturePermissions(chromeApi) {
   if (optional === null || optional.has('cookies')) {
     permissions.push('cookies')
   }
-  return {
-    permissions,
-    origins: ['http://*/*', 'https://*/*']
-  }
+  // Site access for every http/https site is a required manifest permission,
+  // so the welcome page only asks for the optional permissions above.
+  return { permissions }
 }
 
 /**
- * Welcome-page recommended setup: one user gesture requests the broad site
- * grant used by all-site media detection plus optional `downloads`, then turns
- * on detection and automatic browser hand-off only after the grant succeeds.
+ * Welcome-page recommended setup: one user gesture requests the optional
+ * `downloads`, `webRequest` and `cookies` permissions. Detection on all sites
+ * and automatic browser hand-off are already on; the grant only makes them
+ * usable.
  */
 export function enableRecommendedCapture(chromeApi, onResult) {
   let details
@@ -177,7 +177,8 @@ export function enableRecommendedCapture(chromeApi, onResult) {
       if (runtimeError || granted !== true) {
         onResult({
           ok: false,
-          error: 'Broad site access was not granted. Capture stays off.'
+          error:
+            'The optional permissions were not granted. Browser downloads stay in the browser.'
         })
         return
       }
@@ -208,50 +209,5 @@ export function enableRecommendedCapture(chromeApi, onResult) {
     })
   } catch {
     onResult({ ok: false, error: 'Capture permissions could not be requested.' })
-  }
-}
-
-/** Turn on the existing all-sites detection option with its optional grants. */
-export function enableAllSitesDetection(chromeApi, onResult) {
-  try {
-    chromeApi.permissions.request(
-      {
-        permissions: ['webRequest'],
-        origins: ['http://*/*', 'https://*/*']
-      },
-      (granted) => {
-        const runtimeError = chromeApi.runtime.lastError
-        if (runtimeError || granted !== true) {
-          onResult({
-            ok: false,
-            error: 'Broad site access was not granted. All-site detection stays off.'
-          })
-          return
-        }
-        void (async () => {
-          try {
-            const settings = await readCaptureSettings(chromeApi)
-            settings.detectAllSites = true
-            settings.mediaSniffing = true
-            const saved = await writeCaptureSettings(chromeApi, settings)
-            onResult(
-              saved
-                ? { ok: true }
-                : {
-                    ok: false,
-                    error: 'The setting could not be saved in this browser profile.'
-                  }
-            )
-          } catch {
-            onResult({
-              ok: false,
-              error: 'The setting could not be saved in this browser profile.'
-            })
-          }
-        })()
-      }
-    )
-  } catch {
-    onResult({ ok: false, error: 'Broad site access could not be requested.' })
   }
 }

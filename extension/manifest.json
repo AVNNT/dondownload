@@ -13,7 +13,7 @@
   },
   "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage"],
   "optional_permissions": ["downloads", "webRequest", "cookies"],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

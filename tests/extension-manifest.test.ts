@@ -27,7 +27,7 @@ async function readManifest(): Promise<ExtensionManifest> {
 }
 
 describe('browser extension manifest', () => {
-  it('is Manifest V3 with only the minimal manual-capture and overlay-scoped permissions', async () => {
+  it('is Manifest V3 with the minimal manual-capture permissions plus HTTP(S) site access', async () => {
     const manifest = await readManifest()
     expect(manifest.manifest_version).toBe(3)
     expect([...(manifest.permissions ?? [])].sort()).toEqual([
@@ -37,7 +37,6 @@ describe('browser extension manifest', () => {
       'scripting',
       'storage'
     ])
-    expect(manifest.host_permissions).toBeUndefined()
     expect(manifest.content_scripts).toBeUndefined()
     expect(manifest.background?.service_worker).toBe('background.js')
     expect(manifest.action?.default_popup).toBe('popup.html')
@@ -45,15 +44,18 @@ describe('browser extension manifest', () => {
     expect(manifest.commands?.['toggle-overlay']?.suggested_key).toBeUndefined()
   })
 
-  it('declares optional HTTP(S) host patterns but no always-on or all-sites access', async () => {
+  it('grants HTTP(S) site access at install so the all-sites switch is always on', async () => {
     const manifest = await readManifest()
-    expect([...(manifest.optional_host_permissions ?? [])].sort()).toEqual([
+    // "Use DonDownload on all sites" is always on, so the broad host patterns
+    // are required permissions: no prompt and no toggle can remove them.
+    expect([...(manifest.host_permissions ?? [])].sort()).toEqual([
       'http://*/*',
       'https://*/*'
     ])
+    expect(manifest.optional_host_permissions ?? []).toEqual([])
     const raw = await readFile(path.join(extensionDir, 'manifest.json'), 'utf8')
     expect(raw).not.toContain('<all_urls>')
-    expect(raw).not.toContain('"host_permissions"')
+    expect(raw).not.toContain('"optional_host_permissions"')
   })
 
   it('does not require downloads, webRequest, notifications or tab interception', async () => {

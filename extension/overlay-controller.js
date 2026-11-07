@@ -22,7 +22,7 @@ import {
   overlayOriginFromRegistration,
   overlayRegistrationForOrigin
 } from './site-policy.js'
-import { readCaptureSettings } from './capture-settings.js'
+import { readCaptureSettings, writeCaptureSettings } from './capture-settings.js'
 
 export const OVERLAY_PENDING_STORAGE_KEY = 'dondownloadOverlayPendingEnable'
 export const OVERLAY_PENDING_TTL_MS = 5 * 60 * 1000
@@ -221,6 +221,9 @@ async function enableUncached(chromeApi, origin, tabId) {
   if (pattern === null || registration === null) {
     return failure('INVALID_ORIGIN', 'The page origin is not supported.')
   }
+
+  // An explicit enable also lifts a previous per-site exclusion.
+  await setOriginExcluded(chromeApi, origin, false)
 
   // In all-sites mode the one broad registration already covers every origin,
   // so a second per-origin registration would inject the overlay twice.
@@ -635,6 +638,26 @@ export async function syncOverlayForTab(chromeApi, origin, tabId) {
     return { ok: true, granted: false, registered: false, injected: false, reason: 'NOT_GRANTED' }
   }
 
+  // A site the user turned off stays off until an explicit enable, even though
+  // the broad host grant covers it.
+  try {
+    const settings = await readCaptureSettings(chromeApi)
+    if (
+      Array.isArray(settings.excludedOrigins) &&
+      settings.excludedOrigins.includes(origin)
+    ) {
+      return {
+        ok: true,
+        granted: false,
+        registered: false,
+        injected: false,
+        reason: 'EXCLUDED'
+      }
+    }
+  } catch {
+    // Without settings the overlay stays on, exactly like the content script.
+  }
+
   return enableOverlayForTab(chromeApi, origin, tabId)
 }
 
@@ -674,6 +697,40 @@ async function removePermission(chromeApi, pattern) {
   }
   try {
     return (await chromeApi.permissions.contains({ origins: [pattern] })) !== true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when the broad http/https access is a required manifest permission. The
+ * all-sites switch is always on, so such a grant cannot be revoked; a per-site
+ * "off" then means excluding the origin instead.
+ */
+async function broadHostsRequired(chromeApi) {
+  try {
+    const manifest = chromeApi.runtime.getManifest()
+    const hosts = Array.isArray(manifest && manifest.host_permissions)
+      ? manifest.host_permissions
+      : []
+    return OVERLAY_ALL_SITES_MATCHES.every((pattern) => hosts.includes(pattern))
+  } catch {
+    return false
+  }
+}
+
+/** Add or remove one origin in the excluded list and report whether it stuck. */
+async function setOriginExcluded(chromeApi, origin, excluded) {
+  try {
+    const settings = await readCaptureSettings(chromeApi)
+    const current = Array.isArray(settings.excludedOrigins)
+      ? settings.excludedOrigins
+      : []
+    const next = current.filter((value) => value !== origin)
+    if (excluded) next.push(origin)
+    if (next.length === current.length && !excluded) return true
+    settings.excludedOrigins = next
+    return await writeCaptureSettings(chromeApi, settings)
   } catch {
     return false
   }
@@ -749,7 +806,15 @@ export async function disableOverlayForOrigin(chromeApi, origin, tabId) {
   for (const knownTabId of tracked[origin] ?? []) tabIds.add(knownTabId)
 
   const registrationRemoved = await removeRegistration(chromeApi, origin)
+  // Site access is granted at install for every http/https site, so the exact
+  // pattern cannot be revoked. Turning the overlay off for one site then means
+  // excluding its origin from the always-on registration.
   const permissionRemoved = await removePermission(chromeApi, pattern)
+  const excluded =
+    permissionRemoved || !(await broadHostsRequired(chromeApi))
+      ? false
+      : await setOriginExcluded(chromeApi, origin, true)
+  const siteOff = permissionRemoved || excluded
 
   await clearPendingEnable(chromeApi)
 
@@ -759,8 +824,8 @@ export async function disableOverlayForOrigin(chromeApi, origin, tabId) {
   const notification = await notifyOverlayDisabled(chromeApi, tabIds, origin)
   await forgetOverlayOriginTabs(chromeApi, origin)
 
-  if (!registrationRemoved || !permissionRemoved) {
-    return disableFailure(registrationRemoved, permissionRemoved, notification)
+  if (!registrationRemoved || !siteOff) {
+    return disableFailure(registrationRemoved, siteOff, notification)
   }
 
   return {
@@ -769,7 +834,8 @@ export async function disableOverlayForOrigin(chromeApi, origin, tabId) {
     registered: false,
     injected: false,
     registrationRemoved: true,
-    permissionRemoved: true,
+    permissionRemoved: siteOff,
+    excluded,
     notifiedTabs: notification.notified,
     failedNotifications: notification.failed
   }

@@ -185,14 +185,14 @@ describe('extension wiring guardrails', () => {
     }
 
     // The popup hands the active tab's exact origin to the shared enable
-    // helper and never requests an origin itself. Its one permission request
-    // is the browser-download takeover set, made through the shared helper.
+    // helper and never requests an origin itself. The all-sites switch is
+    // always on, so the popup requests no permission at all.
     expect(popup).toContain(
       'rememberOptionsTarget(chrome, { tabId: activeTabId, origin: pageOrigin })'
     )
     expect(popup).toContain('requestExactOriginAccess')
-    expect(popup).toContain('enableBrowserDownloadTakeover')
-    expect(popup).not.toContain('chrome.permissions.request')
+    expect(popup).not.toContain('permissions.request')
+    expect(popup).toContain('browserDownloadStateCopy')
     // The options page and popup share one exact-origin request implementation.
     expect(options).toContain('requestExactOriginAccess')
     expect(options).not.toContain('chrome.permissions.request({ origins: [pattern] }')

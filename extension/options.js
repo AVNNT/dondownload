@@ -5,22 +5,16 @@ import {
   readOptionsTarget,
   writeCaptureSettings
 } from './capture-settings.js'
-import {
-  browserDownloadPermissionsGranted,
-  enableBrowserDownloadTakeover
-} from './browser-downloads.js'
+import { requestBrowserDownloadAccess } from './browser-downloads.js'
 import {
   overlayRemovalConfirmed
 } from './overlay-controller.js'
-import {
-  enableAllSitesDetection,
-  requestExactOriginAccess
-} from './site-enable.js'
+import { requestExactOriginAccess } from './site-enable.js'
 import { originFromUrl, originToMatchPattern } from './site-policy.js'
 
 const floatingTrigger = document.getElementById('floating-trigger')
 const handoffNotifications = document.getElementById('handoff-notifications')
-const automaticHandoff = document.getElementById('automatic-handoff')
+const allSitesState = document.getElementById('all-sites-state')
 const handoffMinBytes = document.getElementById('handoff-min-bytes')
 const requestDownloads = document.getElementById('request-downloads')
 const removeDownloads = document.getElementById('remove-downloads')
@@ -32,7 +26,6 @@ const removeNetwork = document.getElementById('remove-network')
 const networkState = document.getElementById('network-state')
 const networkStatus = document.getElementById('network-status')
 const mediaSniffing = document.getElementById('media-sniffing')
-const detectAllSites = document.getElementById('detect-all-sites')
 const sniffingState = document.getElementById('sniffing-state')
 const sniffingStatus = document.getElementById('sniffing-status')
 const siteCookies = document.getElementById('site-cookies')
@@ -55,7 +48,6 @@ let settings = normalizeCaptureSettings(null)
 let downloadsGranted = false
 let networkGranted = false
 let cookiesGranted = false
-let broadHostsGranted = false
 let site = null
 let siteGranted = false
 let siteReady = false
@@ -83,24 +75,24 @@ function saveSettings(message) {
 }
 
 function renderPermissionState() {
-  automaticHandoff.disabled = !downloadsGranted
   handoffMinBytes.disabled = !downloadsGranted
   const minBytes = String(settings.handoffMinBytes)
   handoffMinBytes.value = ['0', '1000000', '10000000'].includes(minBytes)
     ? minBytes
     : '1000000'
+  // The all-sites switch itself is always on; only the optional download
+  // permissions can still be missing, and they never turn the switch off.
+  allSitesState.textContent = 'Active on all sites.'
   if (!downloadsGranted) {
-    automaticHandoff.checked = false
     permissionState.textContent =
-      'Download permissions are not granted. Browser downloads stay in the browser.'
+      'Browser download access is not granted yet, so downloads stay in the browser. The video overlay and media detection on all sites are already active.'
     requestDownloads.hidden = false
     removeDownloads.hidden = true
     return
   }
-  automaticHandoff.checked = settings.automaticFileHandoff === true
   permissionState.textContent = cookiesGranted
-    ? 'Download permissions are granted. Browser downloads can be taken over with your browser sign-in.'
-    : 'Download permissions are granted, but the cookies permission is not, so login-protected files are left in the browser.'
+    ? 'Browser download access is granted. Browser downloads can be taken over with your browser sign-in.'
+    : 'Browser download access is granted, but the cookies permission is not, so login-protected files are left in the browser.'
   requestDownloads.hidden = true
   removeDownloads.hidden = false
 }
@@ -124,20 +116,14 @@ function renderNetworkState() {
 
 function renderSniffingState() {
   mediaSniffing.checked = settings.mediaSniffing === true
-  detectAllSites.checked = settings.detectAllSites === true
+  // Detection on all sites is always on: the broad host access is granted at
+  // install, so there is no switch and no prompt for it.
   if (!networkGranted) {
     sniffingState.textContent =
       'webRequest permission is not granted, so no response can be detected yet.'
-  } else if (settings.detectAllSites === true && broadHostsGranted) {
-    sniffingState.textContent =
-      'Media detection is on for all normal http/https sites.'
   } else {
     sniffingState.textContent =
-      'Media detection is limited to exact origins you enabled.'
-  }
-  if (settings.detectAllSites === true && !broadHostsGranted) {
-    sniffingState.textContent =
-      'All-site detection needs the broad host permission. Turn it on again and accept the prompt.'
+      'Media detection is on for all normal http/https sites.'
   }
 
   const origin = site === null ? null : site.origin
@@ -278,35 +264,9 @@ async function loadSettings() {
   } catch {
     cookiesGranted = false
   }
-  try {
-    broadHostsGranted =
-      (await chrome.permissions.contains({
-        origins: ['http://*/*', 'https://*/*']
-      })) === true
-  } catch {
-    broadHostsGranted = false
-  }
-  if (!broadHostsGranted && settings.detectAllSites === true) {
-    settings.detectAllSites = false
-    void writeCaptureSettings(chrome, settings)
-  }
   if (!cookiesGranted && settings.cookieOptInOrigins.length > 0) {
     settings.cookieOptInOrigins = []
     void writeCaptureSettings(chrome, settings)
-  }
-  if (!downloadsGranted) {
-    const changed = settings.automaticFileHandoff === true
-    settings.automaticFileHandoff = false
-    if (changed) void writeCaptureSettings(chrome, settings)
-  }
-  // The switch is only honest when the whole optional permission set (downloads,
-  // cookies and site access) is present, exactly like the popup.
-  if (settings.automaticFileHandoff === true) {
-    const complete = await browserDownloadPermissionsGranted(chrome)
-    if (!complete) {
-      settings.automaticFileHandoff = false
-      void writeCaptureSettings(chrome, settings)
-    }
   }
   if (!networkGranted) {
     const changed = settings.networkObservation === true
@@ -492,19 +452,6 @@ handoffNotifications.addEventListener('change', () => {
   saveSettings('Hand-off feedback preference saved.')
 })
 
-automaticHandoff.addEventListener('change', () => {
-  if (!downloadsGranted) {
-    automaticHandoff.checked = false
-    return
-  }
-  settings.automaticFileHandoff = automaticHandoff.checked
-  saveSettings(
-    automaticHandoff.checked
-      ? 'Browser download takeover is on.'
-      : 'Browser download takeover is off. Downloads stay in the browser.'
-  )
-})
-
 handoffMinBytes.addEventListener('change', () => {
   settings.handoffMinBytes = Number(handoffMinBytes.value)
   settings.handoffMinBytes = normalizeCaptureSettings(settings).handoffMinBytes
@@ -616,51 +563,6 @@ mediaSniffing.addEventListener('change', () => {
   }
 })
 
-detectAllSites.addEventListener('change', () => {
-  if (!detectAllSites.checked) {
-    settings.detectAllSites = false
-    saveSettings('All-site media detection is off; broad host access was removed.')
-    renderSniffingState()
-    setStatus(sniffingStatus, 'success', 'All-site media detection is off.')
-    try {
-      chrome.permissions.remove({
-        origins: ['http://*/*', 'https://*/*']
-      })
-    } catch {
-      // The preference already prevents sniffing; removal is best effort.
-    }
-    return
-  }
-  setStatus(sniffingStatus, '', '')
-  enableAllSitesDetection(chrome, (result) => {
-    if (!result.ok) {
-      settings.detectAllSites = false
-      detectAllSites.checked = false
-      renderSniffingState()
-      setStatus(
-        sniffingStatus,
-        'error',
-        result.error || 'All-site detection stays off.'
-      )
-      return
-    }
-    settings.detectAllSites = true
-    settings.mediaSniffing = true
-    broadHostsGranted = true
-    void chrome.permissions
-      .contains({ permissions: ['webRequest'] })
-      .then((granted) => {
-        networkGranted = granted === true
-        renderSniffingState()
-      })
-      .catch(() => {
-        renderSniffingState()
-      })
-    renderSniffingState()
-    setStatus(sniffingStatus, 'success', 'All-site media detection is on.')
-  })
-})
-
 siteCookies.addEventListener('change', () => {
   if (site === null) {
     siteCookies.checked = false
@@ -686,27 +588,26 @@ siteCookies.addEventListener('change', () => {
 
 requestDownloads.addEventListener('click', () => {
   // This must remain a direct user-gesture request with no preceding await.
-  // One call asks for downloads, cookies and the broad host permission.
+  // Site access is already granted at install, so only the optional downloads,
+  // cookies and webRequest permissions are asked for here.
   requestDownloads.disabled = true
   setStatus(handoffStatus, '', '')
-  enableBrowserDownloadTakeover(chrome, (result) => {
+  requestBrowserDownloadAccess(chrome, (result) => {
     requestDownloads.disabled = false
     if (!result.ok) {
       downloadsGranted = false
-      settings.automaticFileHandoff = false
       renderPermissionState()
       setStatus(handoffStatus, 'error', result.error || 'Downloads stay in the browser.')
       return
     }
     downloadsGranted = true
     cookiesGranted = true
-    settings.automaticFileHandoff = true
     renderPermissionState()
     renderSniffingState()
     setStatus(
       handoffStatus,
       'success',
-      'Browser download takeover is on. New downloads go to DonDownload.'
+      'Browser download access is granted. New downloads go to DonDownload.'
     )
   })
 })
@@ -720,7 +621,6 @@ removeDownloads.addEventListener('click', () => {
         return
       }
       downloadsGranted = false
-      settings.automaticFileHandoff = false
       renderPermissionState()
       saveSettings('Downloads permission removed. Browser downloads stay in the browser.')
     })

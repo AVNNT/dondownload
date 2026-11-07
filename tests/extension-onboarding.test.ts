@@ -15,7 +15,6 @@ import {
   siteHostLabel
 } from '../extension/onboarding'
 import {
-  enableAllSitesDetection,
   enableRecommendedCapture,
   recommendedCapturePermissions,
   requestExactOriginAccess,
@@ -232,31 +231,14 @@ describe('popup exact-site enable', () => {
     expect(await siteAccessGranted((globalThis as any).chrome, 'https://example.com')).toBe(false)
   })
 
-  it('enables all-site detection by requesting the optional grants and saving the existing option', async () => {
-    const fake = installFakeChrome()
-    const result = await new Promise<any>((resolve) => {
-      enableAllSitesDetection(fake.chrome, resolve)
-    })
-
-    expect(fake.permissionRequests).toEqual([
-      {
-        permissions: ['webRequest'],
-        origins: ['http://*/*', 'https://*/*']
-      }
-    ])
-    expect(result).toEqual({ ok: true })
-    const saved = fake.local.dondownloadCaptureSettings as any
-    expect(saved.detectAllSites).toBe(true)
-    expect(saved.mediaSniffing).toBe(true)
-  })
 })
 
 describe('welcome recommended capture setup', () => {
-  it('requests the all-sites host grant plus optional downloads, then saves both options', async () => {
+  it('requests only the optional permissions, then keeps the always-on options', async () => {
     const fake = installFakeChrome()
+    // Site access is a required manifest permission, so it is never requested.
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'webRequest', 'cookies'],
-      origins: ['http://*/*', 'https://*/*']
+      permissions: ['downloads', 'webRequest', 'cookies']
     })
 
     const result = await new Promise<any>((resolve) => {
@@ -264,10 +246,7 @@ describe('welcome recommended capture setup', () => {
     })
 
     expect(fake.permissionRequests).toEqual([
-      {
-        permissions: ['downloads', 'webRequest', 'cookies'],
-        origins: ['http://*/*', 'https://*/*']
-      }
+      { permissions: ['downloads', 'webRequest', 'cookies'] }
     ])
     expect(result).toEqual({ ok: true })
     const saved = fake.local.dondownloadCaptureSettings as any
@@ -282,21 +261,23 @@ describe('welcome recommended capture setup', () => {
       optional_permissions: ['webRequest', 'cookies']
     })
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['webRequest', 'cookies'],
-      origins: ['http://*/*', 'https://*/*']
+      permissions: ['webRequest', 'cookies']
     })
   })
 
-  it('describes browser download takeover as media-inclusive and one switch', () => {
-    const copy = browserDownloadStateCopy({ enabled: true, minBytes: 1_000_000 })
+  it('describes the switch as always active on all sites', () => {
+    const copy = browserDownloadStateCopy({ minBytes: 1_000_000 })
     expect(copy.enabled).toBe(true)
+    expect(copy.state).toBe('Active on all sites')
     expect(copy.hint).toContain('browser cookies')
     expect(copy.hint).not.toMatch(/non-media|opt-in only/i)
-    const off = browserDownloadStateCopy({ enabled: false })
-    expect(off.state).toBe('Off')
-    expect(off.hint).toContain('downloads, cookies, media detection and site access')
+    // There is no off state left to describe.
+    expect(browserDownloadStateCopy({ enabled: false }).state).toBe(
+      'Active on all sites'
+    )
 
-    // The popup and options page both describe the same one-switch takeover.
+    // The popup and options page both show the always-on switch, with no
+    // toggle left to turn it off.
     const welcome = readFileSync(
       path.join(process.cwd(), 'extension', 'welcome.html'),
       'utf8'
@@ -307,14 +288,18 @@ describe('welcome recommended capture setup', () => {
       'utf8'
     )
     expect(options).toContain('Use DonDownload on all sites')
-    expect(options).toContain('Download browser files with DonDownload')
+    expect(options).toContain('Active on all sites')
     expect(options).toContain('Only files larger than')
     expect(options).toContain('handoff-min-bytes')
+    expect(options).not.toContain('automatic-handoff')
+    expect(options).not.toContain('detect-all-sites')
     const popupHtml = readFileSync(
       path.join(process.cwd(), 'extension', 'popup.html'),
       'utf8'
     )
-    expect(popupHtml).toContain('takeover-toggle')
+    expect(popupHtml).toContain('takeover-state')
+    expect(popupHtml).toContain('Active on all sites')
+    expect(popupHtml).not.toContain('takeover-toggle')
   })
 
   it('writes nothing before the grant succeeds and nothing on denial', async () => {

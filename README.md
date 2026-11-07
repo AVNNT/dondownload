@@ -116,13 +116,14 @@ The `extension/` folder is a Chromium-compatible Manifest V3 extension (verified
 locally with Helium 0.20.3.1 / Chromium 156.0.8078.79) that sends an explicitly
 chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
 
-- Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The
-  optional 2B overlay adds `scripting`, `storage` (session-only pending state)
-  plus declared `optional_host_permissions`, but there are still no required
-  host permissions and no always-on content scripts. `downloads` and
-  `webRequest` are optional permissions requested only from the options page on
-  a user gesture; there are no required `downloads`, `webRequest`,
-  `notifications`, `cookies`, history or `tabs` permissions.
+- Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The 2B
+  overlay adds `scripting`, `storage` (session-only pending state) and the
+  required `host_permissions` for `http://*/*` and `https://*/*`, so
+  "Use DonDownload on all sites" is always on and there is no static
+  `content_scripts` entry. `downloads`, `webRequest` and `cookies` are optional
+  permissions requested only from the options or welcome page on a user
+  gesture; there are no required `downloads`, `webRequest`, `notifications`,
+  `cookies`, history or `tabs` permissions.
 - The popup has an explicit **Download with DonDownload** action for the active
   page, lists progressive sources reported by that tab's own content script,
   and links to the separate settings page.
@@ -390,15 +391,16 @@ capture paths. Earlier Helium-only checks remain historical evidence.
 
 ### Permission and privacy design
 
-- **No always-on all-sites content script.** The manifest has no
-  `content_scripts` entry and no `<all_urls>` access.
-- The manifest declares `optional_host_permissions` for `http://*/*` and
-  `https://*/*`. This is only a declaration required by Chromium before it will
-  let the extension *ask*; it grants nothing by itself.
-- The popup asks for **one exact origin** (for example
-  `https://example.com/*`) from a user click on **Enable on this site**. Chrome
-  or the Chromium fork may show its normal per-site permission prompt. If the
-  request is denied, no overlay is injected and nothing on the page changes.
+- **No `<all_urls>` access and no static `content_scripts` entry.** The manifest
+  has no `content_scripts` block; the overlay is a runtime registration.
+- The manifest declares `host_permissions` for `http://*/*` and `https://*/*`,
+  so site access is granted at install. "Use DonDownload on all sites" is
+  therefore always on: there is no switch to turn on and no prompt to accept.
+  The worker keeps one persistent all-sites registration in place on install,
+  on startup and on every service-worker wake.
+- The per-site flow still exists. **Enable on this site** in the popup keeps the
+  exact origin in `chrome.storage.session` and re-registers it, so a site can be
+  enabled or disabled one at a time even though the broad grant is present.
 - `scripting` is used only to register a content-script registration whose
   `matches` array contains that exact origin and to inject the ordered overlay
   files into the current tab after the grant (`overlay-core.js`,
@@ -451,9 +453,9 @@ capture paths. Earlier Helium-only checks remain historical evidence.
 - The required permissions contain **no** `downloads`, `webRequest`,
   `webRequestBlocking`, `cookies`, history, `tabs` or notifications permission.
   `downloads`, `webRequest` and `cookies` are optional and requested only from
-  the options page on a direct user gesture. Media detection runs **only** on
-  exact origins the user enabled, or on all sites only after the separate
-  all-sites switch and broad optional host grant. It observes response metadata
+  the options page or the welcome page on a direct user gesture. Media detection
+  runs on every normal http/https site, because that host access is granted at
+  install. It observes response metadata
   (URL, status, Content-Type/Length/Range), never request headers, bodies,
   credentials, DRM data or MSE segment content.
 - On an enabled site the worker lists detected video/audio files and HLS/DASH
@@ -619,7 +621,7 @@ mapping and unregister planning) run on Windows.
 
 The 2B overlay tests run hermetically without a browser. They cover the exact
 per-site permission policy (including preserving a non-default localhost port),
-the absence of required host/all-sites access, video geometry/detection and
+the always-on all-sites registration, video geometry/detection and
 observer pruning, trigger and panel placement, Shadow DOM/observer/reduced-motion
 wiring, click propagation guards, the keyboard path and typing guard,
 disable/revoke messaging, and the truthful "format/quality unavailable" panel
