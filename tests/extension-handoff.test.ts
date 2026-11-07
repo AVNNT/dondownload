@@ -257,7 +257,8 @@ function nativeMessage(fake: ReturnType<typeof createFake>, index = 0) {
 
 /**
  * A browser that holds downloads in chrome.downloads.onDeterminingFilename. The
- * fake also exposes onCreated so a test can prove it was not registered.
+ * fake also exposes onCreated, which is registered as well: the held event does
+ * not fire for every download, so the created event must always be listened to.
  */
 function installHeld(fake: ReturnType<typeof createFake>) {
   let heldListener: ((item: unknown, suggest: () => void) => boolean) | null = null
@@ -278,6 +279,7 @@ function installHeld(fake: ReturnType<typeof createFake>) {
   return {
     installed,
     held: () => heldListener!,
+    created: () => createdListener!,
     createdRegistered: () => createdListener !== null
   }
 }
@@ -1005,8 +1007,9 @@ describe('downloads are intercepted before the Save As dialog', () => {
 
     const held = installHeld(fake)
     expect(held.installed).toBe(true)
-    // onCreated is only the fallback for a browser without onDeterminingFilename.
-    expect(held.createdRegistered()).toBe(false)
+    // onCreated is registered as well as the held event: a download the browser
+    // never holds still has to reach the decision (and the Gofile capture).
+    expect(held.createdRegistered()).toBe(true)
 
     const suggests: number[] = []
     expect(held.held()(fileItem(), () => {

@@ -27,3 +27,6 @@ export function readGofileCapture(): {
   downloads: GofileCaptureRecord[]
 }
 export function captureGofileDownload(chromeApi: unknown, item: unknown): boolean
+export function updateGofileCapture(delta: unknown): boolean
+export function installGofileCaptureListeners(chromeApi: unknown): boolean
+export function resetGofileCaptureListenersForTests(): void

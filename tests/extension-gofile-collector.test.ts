@@ -136,6 +136,13 @@ function makeDocument(body: FakeElement, url: string) {
       if (selector === 'a[href]') {
         return collect((node) => node.tag === 'a' && node.getAttribute('href') !== null)
       }
+      if (selector === '.fm-row[data-type]') {
+        return collect(
+          (node) =>
+            (node.getAttribute('class') ?? '').split(/\s+/).includes('fm-row') &&
+            node.getAttribute('data-type') !== null
+        )
+      }
       const actionMatch = /^\[data-action="([^"]+)"\]$/.exec(selector)
       if (actionMatch) {
         return collect((node) => node.getAttribute('data-action') === actionMatch[1])
@@ -199,30 +206,89 @@ function shareBody(rows: FakeElement[]): FakeElement {
 }
 
 /**
- * One row exactly as the real gofile.io frontend renders it: the name is a
- * button with its own `data-action`, the size is its own cell, the download
- * control is a `data-action="download"` button, and there is no download URL
- * anywhere in the DOM.
+ * One file row exactly as the real gofile.io frontend renders it
+ * (`div.fm-row[data-type="file"]`): a `[data-action="toggle-select"]` control, a
+ * `[data-action="open-file"]` cell whose own text is the name followed by the
+ * timestamp and the size, then `[data-action="preview"]`,
+ * `[data-action="download"]` and `[data-action="item-menu"]` controls. There is
+ * no download URL anywhere in the DOM.
  */
-function buttonRow(
+function fileRow(
   name: string,
   size: string,
-  options: { nameAction?: string | null; onClick?: () => void } = {}
-): { row: FakeElement; download: FakeElement } {
-  const nameAttrs: Record<string, string> = { type: 'button' }
-  if (options.nameAction !== null) nameAttrs['data-action'] = options.nameAction ?? 'copy'
-  const nameCell = element('button', nameAttrs, [], name)
-  const sizeCell = element('div', { class: 'item-size' }, [], size)
-  const download = element('button', { type: 'button', 'data-action': 'download' }, [], 'Download')
+  options: { onClick?: () => void; date?: string; rowId?: string } = {}
+): { row: FakeElement; download: FakeElement; nameCell: FakeElement } {
+  const toggle = element(
+    'button',
+    { type: 'button', 'data-action': 'toggle-select', 'aria-label': `Select ${name}` },
+    [],
+    ''
+  )
+  const nameText = element('p', { class: 'truncate text-sm font-medium text-white' }, [], name)
+  const dateCell = element(
+    'span',
+    { class: 'inline-flex items-center gap-1' },
+    [],
+    options.date ?? 'Nov 7, 2026, 11:17 AM'
+  )
+  const sizeCell = element('span', {}, [], size)
+  const meta = element('p', { class: 'mt-0.5 flex flex-wrap' }, [dateCell, sizeCell])
+  const nameCell = element(
+    'button',
+    { type: 'button', 'data-action': 'open-file', class: 'flex min-w-0 flex-1' },
+    [
+      element('span', { 'aria-hidden': 'true' }, [
+        element('span', { class: 'relative inline-flex' }, [])
+      ]),
+      element('div', { class: 'min-w-0 flex-1' }, [nameText, meta])
+    ]
+  )
+  const preview = element(
+    'button',
+    { type: 'button', 'data-action': 'preview' },
+    [],
+    'Preview'
+  )
+  const download = element(
+    'button',
+    { type: 'button', 'data-action': 'download', title: 'Download' },
+    [],
+    'Download'
+  )
   if (options.onClick) download.click = options.onClick
-  const row = element('div', { class: 'item' }, [nameCell, sizeCell, download])
-  return { row, download }
+  const menu = element(
+    'button',
+    { type: 'button', 'data-action': 'item-menu', 'aria-label': `Actions for ${name}` },
+    [],
+    ''
+  )
+  const row = element(
+    'div',
+    {
+      class: 'fm-row group/row relative flex items-start',
+      'data-id': options.rowId ?? `row-${name}`,
+      'data-type': 'file'
+    },
+    [toggle, nameCell, element('div', { class: 'flex shrink-0' }, [preview, download, menu])]
+  )
+  return { row, download, nameCell }
 }
 
-/** A folder row: the only anchor the real frontend renders inside a row. */
+/** A folder row: `div.fm-row[data-type="folder"]` with one navigate link. */
 function folderRow(code: string, name: string): FakeElement {
   const link = element('a', { href: `/d/${code}`, 'data-action': 'navigate' }, [], name)
-  return element('div', { class: 'item' }, [link])
+  return element('div', { class: 'fm-row', 'data-type': 'folder' }, [link])
+}
+
+/** The breadcrumb / "Go to parent folder" control, outside every row. */
+function parentLink(code: string): FakeElement {
+  const link = element(
+    'a',
+    { href: `/d/${code}`, 'data-action': 'navigate' },
+    [],
+    'Go to parent folder'
+  )
+  return element('div', { class: 'fm-breadcrumb' }, [link])
 }
 
 /* ------------------------------ pure helpers ------------------------------ */
@@ -323,15 +389,18 @@ describe('gofile collector DOM reading', () => {
     expect(rows.files.map((file) => file.name)).toEqual(['Real.mp4'])
   })
 
-  it('reports rendered subfolder links of the same share only', () => {
+  it('reports rendered subfolder rows of the same share only', () => {
     const body = shareBody([
-      anchor('https://store3.gofile.io/download/web/f2/Real.mp4', 'Real.mp4', '2 MB'),
-      anchor('https://gofile.io/d/AbCd1234?folder=folder-1', 'Season 1'),
-      anchor('https://gofile.io/d/Other999?folder=folder-2', 'Other share')
+      fileRow('Real.mp4', '2 MB').row,
+      folderRow('Folder01', 'Season 1'),
+      // A folder row naming this very listing is the parent, not a subfolder.
+      folderRow('AbCd1234', 'This share'),
+      // The breadcrumb / parent control is a navigate link outside every row.
+      parentLink('AbCd1234')
     ])
     const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
     expect(rows.folders).toEqual([
-      { url: 'https://gofile.io/d/AbCd1234?folder=folder-1', name: 'Season 1' }
+      { url: 'https://gofile.io/d/Folder01', name: 'Season 1' }
     ])
   })
 })
@@ -341,8 +410,8 @@ describe('gofile collector DOM reading', () => {
 describe('gofile collector on the real button-shaped frontend', () => {
   it('reads name and size from a download-button row with no URL', () => {
     const body = shareBody([
-      buttonRow('Fancam 01.mp4', '1.4 GB').row,
-      buttonRow('Fancam 01.funscript', '12.5 MB').row
+      fileRow('Fancam 01.mp4', '1.4 GB').row,
+      fileRow('Fancam 01.funscript', '12.5 MB').row
     ])
     const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
 
@@ -356,10 +425,35 @@ describe('gofile collector on the real button-shaped frontend', () => {
     ])
   })
 
+  it('never takes the name from a preview or download control', () => {
+    const body = shareBody([fileRow('Real name.mp4', '14044 B').row])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+    expect(rows.files.map((file) => file.name)).toEqual(['Real name.mp4'])
+    expect(rows.files[0]?.size).toBe(14044)
+  })
+
+  it('reads the name from the open-file cell, never its timestamp or size', () => {
+    // The real cell text is "name Nov 7, 2026, 11:17 AM 52.0 B".
+    const body = shareBody([
+      fileRow('dondownload-e2e-clip.funscript', '52.0 B').row,
+      fileRow('dondownload-e2e-clip.mp4', '14.0 KB').row
+    ])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+    expect(rows.files).toEqual([
+      { name: 'dondownload-e2e-clip.funscript', size: 52, url: null },
+      { name: 'dondownload-e2e-clip.mp4', size: 14 * 1024, url: null }
+    ])
+  })
+
   it('reads the name from a plain cell when the name is not a button', () => {
-    const nameCell = element('span', { class: 'item-name' }, [], 'Plain name.mkv')
+    const nameCell = element('span', { class: 'fm-row-name' }, [], 'Plain name.mkv')
     const download = element('button', { 'data-action': 'download' }, [], 'Download')
-    const row = element('div', {}, [nameCell, element('div', {}, [], '900 KB'), download])
+    const row = element('div', { class: 'fm-row', 'data-type': 'file' }, [
+      nameCell,
+      element('div', {}, [], '900 KB'),
+      element('button', { 'data-action': 'preview' }, [], 'Preview'),
+      download
+    ])
     const rows = collector.readRows(
       makeDocument(shareBody([row]), SHARE_URL),
       'AbCd1234'
@@ -367,9 +461,9 @@ describe('gofile collector on the real button-shaped frontend', () => {
     expect(rows.files).toEqual([{ name: 'Plain name.mkv', size: 900 * 1024, url: null }])
   })
 
-  it('reads a folder link rendered as a navigate anchor inside a row', () => {
+  it('reads a folder link rendered as a navigate anchor inside a folder row', () => {
     const body = shareBody([
-      buttonRow('Root.mp4', '1 MB').row,
+      fileRow('Root.mp4', '1 MB').row,
       folderRow('Folder01', 'Season 1')
     ])
     const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
@@ -380,11 +474,29 @@ describe('gofile collector on the real button-shaped frontend', () => {
     ])
   })
 
+  it('keeps two rows that share a name when their sizes differ', () => {
+    const body = shareBody([
+      fileRow('clip.mp4', '14044 B', { rowId: 'a' }).row,
+      fileRow('clip.mp4', '99 MB', { rowId: 'b' }).row
+    ])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+    expect(rows.files.map((file) => file.size)).toEqual([14044, 99 * 1024 * 1024])
+  })
+
+  it('reads one row once, whatever the frontend re-renders', () => {
+    const body = shareBody([
+      fileRow('clip.mp4', '14044 B', { rowId: 'same' }).row,
+      fileRow('clip.mp4', '14044 B', { rowId: 'same' }).row
+    ])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+    expect(rows.files).toHaveLength(1)
+  })
+
   it('clicks every download button once when a capture is requested', async () => {
     const clicks: string[] = []
     const body = shareBody([
-      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row,
-      buttonRow('B.mp4', '2 MB', { onClick: () => clicks.push('B.mp4') }).row
+      fileRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row,
+      fileRow('B.mp4', '2 MB', { onClick: () => clicks.push('B.mp4') }).row
     ])
     const doc = makeDocument(body, SHARE_URL)
     const { win } = makeWindow(SHARE_URL)
@@ -402,14 +514,9 @@ describe('gofile collector on the real button-shaped frontend', () => {
 
   it('does not click a row whose download URL the page already exposed', async () => {
     const clicks: string[] = []
-    const anchorRow = anchor(
-      'https://store3.gofile.io/download/web/f1/Linked.mp4',
-      'Linked.mp4',
-      '1 MB'
-    )
+    // A page that renders real download anchors exposes the URL directly.
     const body = shareBody([
-      anchorRow,
-      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row
+      anchor('https://store3.gofile.io/download/web/f1/Linked.mp4', 'Linked.mp4', '1 MB')
     ])
     const doc = makeDocument(body, SHARE_URL)
     const { win } = makeWindow(SHARE_URL)
@@ -420,21 +527,20 @@ describe('gofile collector on the real button-shaped frontend', () => {
       clickDelayMs: 1
     })
 
-    expect(clicks).toEqual(['A.mp4'])
+    expect(clicks).toEqual([])
     expect(result.files).toEqual([
       {
         name: 'Linked.mp4',
         size: 1024 * 1024,
         url: 'https://store3.gofile.io/download/web/f1/Linked.mp4'
-      },
-      { name: 'A.mp4', size: 1024 * 1024, url: null }
+      }
     ])
   })
 
   it('never clicks anything without a capture request', async () => {
     const clicks: string[] = []
     const body = shareBody([
-      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row
+      fileRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row
     ])
     const doc = makeDocument(body, SHARE_URL)
     const { win } = makeWindow(SHARE_URL)
@@ -548,10 +654,67 @@ describe('gofile collector collection', () => {
     expect(result.status).toBe('not-found')
   })
 
-  it('follows rendered subfolders two levels deep and stops there', async () => {
+  it('follows rendered subfolder rows two levels deep and stops there', async () => {
     const root = shareBody([
-      anchor('https://store3.gofile.io/download/web/f1/Root.mp4', 'Root.mp4', '1 MB'),
-      anchor('https://gofile.io/d/AbCd1234?folder=one', 'Folder one')
+      fileRow('Root.mp4', '1 MB').row,
+      folderRow('FolderOne', 'Folder one'),
+      // The parent/breadcrumb control is never followed.
+      parentLink('AbCd1234')
+    ])
+    const doc = makeDocument(root, SHARE_URL)
+    const { win } = makeWindow(SHARE_URL)
+    const clicked: string[] = []
+    const restored: string[] = []
+
+    const result = await collector.collectShare(doc, win, {
+      waitMs: 200,
+      folderWaitMs: 200,
+      pollMs: 5,
+      restoreStart: (url: string) => {
+        restored.push(url)
+        ;(win.location as { href: string }).href = url
+        root.children = [
+          fileRow('Root.mp4', '1 MB').row,
+          folderRow('FolderOne', 'Folder one')
+        ]
+      },
+      clickFolder: (target: unknown) => {
+        const href = (target as FakeElement).getAttribute('href') ?? ''
+        clicked.push(href)
+        // The page navigates its own client-side route when a folder is opened.
+        ;(win.location as { href: string }).href = `https://gofile.io${href}`
+        if (href.endsWith('FolderOne')) {
+          root.children = [
+            fileRow('One-A.mp4', '1 MB').row,
+            fileRow('One-B.mp4', '1 MB').row,
+            folderRow('FolderTwo', 'Folder two')
+          ]
+        } else if (href.endsWith('FolderTwo')) {
+          root.children = [
+            fileRow('Two-A.mp4', '1 MB').row,
+            folderRow('FolderThree', 'Folder three')
+          ]
+        } else {
+          root.children = [fileRow('Deep.mp4', '1 MB').row]
+        }
+      }
+    })
+
+    expect(clicked).toEqual(['/d/FolderOne', '/d/FolderTwo'])
+    expect(restored).toEqual([SHARE_URL])
+    expect(result.status).toBe('ok')
+    expect(result.files.map((file) => file.name)).toEqual([
+      'Root.mp4',
+      'One-A.mp4',
+      'One-B.mp4',
+      'Two-A.mp4'
+    ])
+  })
+
+  it('never follows the parent-folder link and never leaves the share', async () => {
+    const root = shareBody([
+      fileRow('Root.mp4', '1 MB').row,
+      parentLink('AbCd1234')
     ])
     const doc = makeDocument(root, SHARE_URL)
     const { win } = makeWindow(SHARE_URL)
@@ -562,38 +725,13 @@ describe('gofile collector collection', () => {
       folderWaitMs: 200,
       pollMs: 5,
       clickFolder: (target: unknown) => {
-        const href = (target as FakeElement).getAttribute('href') ?? ''
-        clicked.push(href)
-        if (href.endsWith('folder=one')) {
-          root.children = [
-            anchor('https://store3.gofile.io/download/web/f2/One-A.mp4', 'One-A.mp4', '1 MB'),
-            anchor('https://store3.gofile.io/download/web/f3/One-B.mp4', 'One-B.mp4', '1 MB'),
-            anchor('https://gofile.io/d/AbCd1234?folder=two', 'Folder two')
-          ]
-        } else if (href.endsWith('folder=two')) {
-          root.children = [
-            anchor('https://store3.gofile.io/download/web/f4/Two-A.mp4', 'Two-A.mp4', '1 MB'),
-            anchor('https://gofile.io/d/AbCd1234?folder=three', 'Folder three')
-          ]
-        } else {
-          root.children = [
-            anchor('https://store3.gofile.io/download/web/f5/Deep.mp4', 'Deep.mp4', '1 MB')
-          ]
-        }
+        clicked.push((target as FakeElement).getAttribute('href') ?? '')
       }
     })
 
-    expect(clicked).toEqual([
-      'https://gofile.io/d/AbCd1234?folder=one',
-      'https://gofile.io/d/AbCd1234?folder=two'
-    ])
-    expect(result.status).toBe('ok')
-    expect(result.files.map((file) => file.name)).toEqual([
-      'Root.mp4',
-      'One-A.mp4',
-      'One-B.mp4',
-      'Two-A.mp4'
-    ])
+    expect(clicked).toEqual([])
+    expect(result.folders).toBe(0)
+    expect(result.files.map((file) => file.name)).toEqual(['Root.mp4'])
   })
 
   it('caps the file list at 500 entries', async () => {

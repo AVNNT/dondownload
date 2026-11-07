@@ -4,12 +4,14 @@ import {
   armGofileCapture,
   captureGofileDownload,
   disarmGofileCapture,
+  installGofileCaptureListeners,
   isArmedGofileDownload,
   isGofileCaptureArmed,
   isGofileHostUrl,
   readGofileCapture,
   recordGofileCapture,
-  resetGofileCaptureForTests
+  resetGofileCaptureForTests,
+  resetGofileCaptureListenersForTests
 } from '../extension/gofile-capture'
 
 const SHARE_URL = 'https://gofile.io/d/AbCd1234'
@@ -177,5 +179,116 @@ describe('Gofile capture versus the automatic hand-off', () => {
     disarmGofileCapture()
     await expect(onCreated(downloadItem({ id: 42 }))).resolves.toBe('left-running')
     expect(handoff).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Gofile capture listeners', () => {
+  /** A browser whose downloads API exposes the two events the capture needs. */
+  function fakeEventChrome() {
+    const calls = { cancelled: [] as number[], erased: [] as number[] }
+    let created: ((item: unknown) => void) | null = null
+    let changed: ((delta: unknown) => void) | null = null
+    const chrome = {
+      runtime: { lastError: undefined },
+      downloads: {
+        onCreated: {
+          addListener(listener: (item: unknown) => void) {
+            created = listener
+          }
+        },
+        onChanged: {
+          addListener(listener: (delta: unknown) => void) {
+            changed = listener
+          }
+        },
+        cancel(id: number, callback: () => void) {
+          calls.cancelled.push(id)
+          callback()
+        },
+        erase(query: { id: number }, callback: () => void) {
+          calls.erased.push(query.id)
+          callback()
+        }
+      }
+    }
+    return {
+      chrome,
+      calls,
+      fireCreated: (item: unknown) => created?.(item),
+      fireChanged: (delta: unknown) => changed?.(delta),
+      registered: () => created !== null && changed !== null
+    }
+  }
+
+  afterEach(() => {
+    resetGofileCaptureListenersForTests()
+  })
+
+  it('listens on onCreated without any onDeterminingFilename', () => {
+    resetGofileCaptureListenersForTests()
+    const fake = fakeEventChrome()
+    expect(installGofileCaptureListeners(fake.chrome)).toBe(true)
+    expect(fake.registered()).toBe(true)
+    // A second call adds no second listener.
+    expect(installGofileCaptureListeners(fake.chrome)).toBe(true)
+  })
+
+  it('records and cancels a download the created event reports', () => {
+    vi.useFakeTimers()
+    resetGofileCaptureListenersForTests()
+    const fake = fakeEventChrome()
+    installGofileCaptureListeners(fake.chrome)
+    armGofileCapture({ tabId: 7, pageUrl: SHARE_URL })
+
+    fake.fireCreated(downloadItem())
+    expect(fake.calls.cancelled).toEqual([41])
+    vi.advanceTimersByTime(1_000)
+    expect(fake.calls.erased).toEqual([41])
+    expect(readGofileCapture().downloads).toEqual([
+      { url: DOWNLOAD_URL, filename: 'Fancam 01.mp4' }
+    ])
+  })
+
+  it('folds the final URL and file name an onChanged delta reports', () => {
+    resetGofileCaptureListenersForTests()
+    const fake = fakeEventChrome()
+    installGofileCaptureListeners(fake.chrome)
+    armGofileCapture({ tabId: 7, pageUrl: SHARE_URL })
+    // The created event reports the URL but no decided file name yet.
+    fake.fireCreated(downloadItem({ filename: '' }))
+    expect(readGofileCapture().downloads).toEqual([{ url: DOWNLOAD_URL, filename: null }])
+
+    fake.fireChanged({
+      id: 41,
+      finalUrl: { current: 'https://store1.gofile.io/download/web/f9/Fancam%2001.mp4' },
+      filename: { current: 'C:\\Temp\\Fancam 01.mp4' }
+    })
+    expect(readGofileCapture().downloads).toEqual([
+      {
+        url: 'https://store1.gofile.io/download/web/f9/Fancam%2001.mp4',
+        filename: 'Fancam 01.mp4'
+      }
+    ])
+  })
+
+  it('never lets a delta pull a foreign URL into the record', () => {
+    resetGofileCaptureListenersForTests()
+    const fake = fakeEventChrome()
+    installGofileCaptureListeners(fake.chrome)
+    armGofileCapture({ tabId: 7, pageUrl: SHARE_URL })
+    fake.fireCreated(downloadItem())
+    fake.fireChanged({ id: 41, finalUrl: { current: 'https://evil.example/f1/a.mp4' } })
+    expect(readGofileCapture().downloads).toEqual([
+      { url: DOWNLOAD_URL, filename: 'Fancam 01.mp4' }
+    ])
+  })
+
+  it('ignores a delta for a download it never recorded', () => {
+    resetGofileCaptureListenersForTests()
+    const fake = fakeEventChrome()
+    installGofileCaptureListeners(fake.chrome)
+    armGofileCapture({ tabId: 7, pageUrl: SHARE_URL })
+    fake.fireChanged({ id: 77, finalUrl: { current: DOWNLOAD_URL } })
+    expect(readGofileCapture().downloads).toEqual([])
   })
 })

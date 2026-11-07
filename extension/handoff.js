@@ -388,8 +388,9 @@ function runHeldDownload(chromeApi, item, suggest, onCreated) {
   const settle = (outcome) => {
     clearTimeout(timer)
     // A taken-over download was cancelled and erased above; releasing the held
-    // decision afterwards only resolves the browser's pending callback.
-    if (outcome === 'cancelled') rememberHandled(item)
+    // decision afterwards only resolves the browser's pending callback. A
+    // captured one was cancelled by the Gofile row capture.
+    if (outcome === 'cancelled' || outcome === 'captured') rememberHandled(item)
     release()
   }
   Promise.resolve()
@@ -406,9 +407,13 @@ function runHeldDownload(chromeApi, item, suggest, onCreated) {
  * permission, so the worker calls this unconditionally on every start; calling
  * it again only ever adds one listener per worker generation.
  *
- * onDeterminingFilename is used whenever the browser has it, because it runs
- * before the browser starts the download. onCreated stays as the fallback for a
- * browser without it.
+ * onDeterminingFilename is used when the browser has it, because it runs before
+ * the browser starts the download. onCreated is registered *as well*, never
+ * instead: the held event does not fire for every download (a page- or
+ * extension-initiated one can skip it, and a browser driving downloads through
+ * its own automation surface skips it too), and the Gofile row capture depends
+ * on onCreated. Both paths share the same handled-id set, so one download is
+ * never decided twice.
  */
 export function installDownloadsListener(chromeApi, onCreated) {
   const downloads = chromeApi && chromeApi.downloads
@@ -416,19 +421,21 @@ export function installDownloadsListener(chromeApi, onCreated) {
   const holdsFilenames =
     downloads.onDeterminingFilename &&
     typeof downloads.onDeterminingFilename.addListener === 'function'
-  if (!holdsFilenames && !downloads.onCreated) return false
+  const hasCreated = downloads.onCreated && typeof downloads.onCreated.addListener === 'function'
+  if (!holdsFilenames && !hasCreated) return false
   if (downloadsListenerInstalled) return true
   try {
     if (holdsFilenames) {
       downloads.onDeterminingFilename.addListener((item, suggest) =>
         runHeldDownload(chromeApi, item, suggest, onCreated)
       )
-    } else if (downloads.onCreated) {
+    }
+    if (hasCreated) {
       downloads.onCreated.addListener((item) => {
         if (wasHandled(item)) return
         Promise.resolve(onCreated(item))
           .then((outcome) => {
-            if (outcome === 'cancelled') rememberHandled(item)
+            if (outcome === 'cancelled' || outcome === 'captured') rememberHandled(item)
           })
           .catch(() => undefined)
       })

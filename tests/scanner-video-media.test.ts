@@ -3,6 +3,7 @@ import {
   extractVideoMedia,
   heightFromLabel
 } from '../src/main/scanner/extract/videoMedia'
+import { normalizeScanUrl } from '../src/main/scanner/extract/url'
 
 const HANIME1_URL = 'https://hanime1.me/watch?v=1234'
 
@@ -112,6 +113,37 @@ describe('video page media extraction', () => {
       kind: 'file',
       height: 720
     })
+  })
+
+  it('keeps the full Pornhub HLS URL whose path carries an .mp4 segment', () => {
+    const hls =
+      'https://hv-h.phncdn.com/hls/videos/202310/23/440000000/1080P_4000K_65036195.mp4/master.m3u8?h=abc&e=1700000000&f=1'
+    const mp4 =
+      'https://ev-h.phncdn.com/videos/202310/23/440000000/240P_1000K_65036195.mp4?validfrom=1&hash=x'
+    const page = `<!doctype html>
+<html>
+  <body>
+    <script>
+      var flashvars_1 = {
+        "mediaDefinitions": [
+          {"format":"hls","videoUrl":"${hls}","quality":"1080"},
+          {"format":"mp4","videoUrl":"${mp4}","quality":"240"}
+        ]
+      };
+    </script>
+  </body>
+</html>`
+    const result = extractVideoMedia(page, 'https://www.pornhub.example/view_video.php?viewkey=1')
+
+    // The extractor normalizes each URL (sorted query parameters), so the whole
+    // path and its query are compared after the same normalization.
+    const normalized = (value: string): string => normalizeScanUrl(value)
+    expect(result.sources.map((source) => normalized(source.url)).sort()).toEqual(
+      [hls, mp4].map(normalized).sort()
+    )
+    const byUrl = new Map(result.sources.map((source) => [normalized(source.url), source]))
+    expect(byUrl.get(normalized(hls))).toMatchObject({ kind: 'hls', height: 1080 })
+    expect(byUrl.get(normalized(mp4))).toMatchObject({ kind: 'file', height: 240 })
   })
 
   it('reads Eporner-style sources arrays with labels', () => {

@@ -213,14 +213,39 @@ function collectJsonLdValues(
   }
 }
 
+/**
+ * True when the LAST extension of the URL's path is a media extension. A URL
+ * such as `.../1080P_4000K_65036195.mp4/master.m3u8` carries a media extension
+ * in an earlier segment too, so only the last segment decides.
+ */
+function hasMediaExtension(value: string): boolean {
+  let pathname: string
+  try {
+    pathname = new URL(value, 'https://placeholder.invalid/').pathname.toLowerCase()
+  } catch {
+    return false
+  }
+  const segments = pathname.split('/')
+  const last = segments[segments.length - 1] ?? ''
+  const dot = last.lastIndexOf('.')
+  if (dot === -1 || dot === last.length - 1) return false
+  const extension = last.slice(dot + 1)
+  return extension === 'm3u8' || extension === 'mpd' || extension === 'mp4' || extension === 'webm'
+}
+
 function scriptUrls(text: string): string[] {
   const matches: string[] = []
   // Bundlers commonly escape slashes as `\/` inside inline JSON/scripts.
   const normalized = text.replace(/\\\//g, '/')
-  const pattern = /(?:https?:\/\/|\/)[^\s"'<>]+?\.(?:m3u8|mpd|mp4|webm)(?:\?[^\s"'<>]*)?/gi
+  // The URL is captured whole, up to the first delimiter, and filtered by its
+  // last path extension afterwards: stopping the pattern at the first media
+  // extension truncated `.../x.mp4/master.m3u8` to the mp4 segment.
+  const pattern = /(?:https?:\/\/|\/)[^\s"'<>\\]+/gi
   for (const match of normalized.matchAll(pattern)) {
-    const value = match[0].replace(/[),.;]+$/, '')
-    if (value.length > 0 && value.length <= 4096) matches.push(value)
+    const value = match[0].replace(/[),.;\]}]+$/, '')
+    if (value.length === 0 || value.length > 4096) continue
+    if (!hasMediaExtension(value)) continue
+    matches.push(value)
     if (matches.length >= 200) break
   }
   return matches
