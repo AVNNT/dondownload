@@ -116,8 +116,59 @@ describe('video resolver', () => {
     expect(JSON.stringify(resolution)).not.toContain('format_url')
   })
 
-  it('maps DRM, sign-in and unsupported failures to distinct states', async () => {
-    const drm = await resolveOne(async () => {
+  it('keeps a resolution label when the analysis reports no frame size', async () => {
+    // hanime1 through yt-dlp's generic html5 extractor: every format has
+    // height null. The label and the original format ids still name the
+    // rendition, so the card must not fall back to no resolution at all.
+    const resolution = await resolveOne(async () =>
+      analysis({
+        options: [
+          option({
+            optionId: 'opt_html5',
+            label: 'html5-1080',
+            width: null,
+            height: null,
+            formatIds: ['html5-0']
+          }),
+          option({
+            optionId: 'opt_html5_url',
+            label: 'Source quality (MP4)',
+            width: null,
+            height: null,
+            formatIds: ['html5-1']
+          })
+        ],
+        bestVideoOptionId: 'opt_html5'
+      })
+    )
+
+    expect(resolution).toMatchObject({
+      status: 'ready',
+      height: 1080,
+      bestResolution: '1080p'
+    })
+  })
+
+  it('never invents a resolution from a bitrate or an unknown number', async () => {
+    const resolution = await resolveOne(async () =>
+      analysis({
+        options: [
+          option({
+            optionId: 'opt_unknown',
+            label: 'Source quality (MP4) · 4200 kbps',
+            width: null,
+            height: null,
+            formatIds: ['html5-0']
+          })
+        ],
+        bestVideoOptionId: 'opt_unknown'
+      })
+    )
+
+    expect(resolution).toMatchObject({ height: null, bestResolution: null })
+  })
+
+  it('maps DRM, sign-in and unsupported failures to distinct states', async () => {    const drm = await resolveOne(async () => {
       throw new AppError('MEDIA_DRM_PROTECTED', 'drm')
     })
     expect(drm.status).toBe('protected')

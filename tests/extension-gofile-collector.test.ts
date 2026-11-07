@@ -125,12 +125,22 @@ function makeDocument(body: FakeElement, url: string) {
     baseURI: url,
     body,
     querySelectorAll(selector: string): FakeElement[] {
-      if (selector !== 'a[href]') return []
       const found: FakeElement[] = []
-      walk(body, (node) => {
-        if (node.tag === 'a' && node.getAttribute('href') !== null) found.push(node)
-      })
-      return found
+      const collect = (predicate: (node: FakeElement) => boolean): FakeElement[] => {
+        found.length = 0
+        walk(body, (node) => {
+          if (predicate(node)) found.push(node)
+        })
+        return found
+      }
+      if (selector === 'a[href]') {
+        return collect((node) => node.tag === 'a' && node.getAttribute('href') !== null)
+      }
+      const actionMatch = /^\[data-action="([^"]+)"\]$/.exec(selector)
+      if (actionMatch) {
+        return collect((node) => node.getAttribute('data-action') === actionMatch[1])
+      }
+      return []
     },
     querySelector(selector: string): FakeElement | null {
       if (selector !== 'input[type="password"]' && selector !== 'input[type=password]') {
@@ -186,6 +196,33 @@ const SHARE_URL = 'https://gofile.io/d/AbCd1234'
 
 function shareBody(rows: FakeElement[]): FakeElement {
   return element('div', {}, rows)
+}
+
+/**
+ * One row exactly as the real gofile.io frontend renders it: the name is a
+ * button with its own `data-action`, the size is its own cell, the download
+ * control is a `data-action="download"` button, and there is no download URL
+ * anywhere in the DOM.
+ */
+function buttonRow(
+  name: string,
+  size: string,
+  options: { nameAction?: string | null; onClick?: () => void } = {}
+): { row: FakeElement; download: FakeElement } {
+  const nameAttrs: Record<string, string> = { type: 'button' }
+  if (options.nameAction !== null) nameAttrs['data-action'] = options.nameAction ?? 'copy'
+  const nameCell = element('button', nameAttrs, [], name)
+  const sizeCell = element('div', { class: 'item-size' }, [], size)
+  const download = element('button', { type: 'button', 'data-action': 'download' }, [], 'Download')
+  if (options.onClick) download.click = options.onClick
+  const row = element('div', { class: 'item' }, [nameCell, sizeCell, download])
+  return { row, download }
+}
+
+/** A folder row: the only anchor the real frontend renders inside a row. */
+function folderRow(code: string, name: string): FakeElement {
+  const link = element('a', { href: `/d/${code}`, 'data-action': 'navigate' }, [], name)
+  return element('div', { class: 'item' }, [link])
 }
 
 /* ------------------------------ pure helpers ------------------------------ */
@@ -299,8 +336,114 @@ describe('gofile collector DOM reading', () => {
   })
 })
 
-/* ------------------------------ share state ------------------------------ */
+/* --------------------------- real button-shaped rows --------------------------- */
 
+describe('gofile collector on the real button-shaped frontend', () => {
+  it('reads name and size from a download-button row with no URL', () => {
+    const body = shareBody([
+      buttonRow('Fancam 01.mp4', '1.4 GB').row,
+      buttonRow('Fancam 01.funscript', '12.5 MB').row
+    ])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+
+    expect(rows.files).toEqual([
+      { name: 'Fancam 01.mp4', size: Math.round(1.4 * 1024 ** 3), url: null },
+      {
+        name: 'Fancam 01.funscript',
+        size: Math.round(12.5 * 1024 ** 2),
+        url: null
+      }
+    ])
+  })
+
+  it('reads the name from a plain cell when the name is not a button', () => {
+    const nameCell = element('span', { class: 'item-name' }, [], 'Plain name.mkv')
+    const download = element('button', { 'data-action': 'download' }, [], 'Download')
+    const row = element('div', {}, [nameCell, element('div', {}, [], '900 KB'), download])
+    const rows = collector.readRows(
+      makeDocument(shareBody([row]), SHARE_URL),
+      'AbCd1234'
+    )
+    expect(rows.files).toEqual([{ name: 'Plain name.mkv', size: 900 * 1024, url: null }])
+  })
+
+  it('reads a folder link rendered as a navigate anchor inside a row', () => {
+    const body = shareBody([
+      buttonRow('Root.mp4', '1 MB').row,
+      folderRow('Folder01', 'Season 1')
+    ])
+    const rows = collector.readRows(makeDocument(body, SHARE_URL), 'AbCd1234')
+
+    expect(rows.files.map((file) => file.name)).toEqual(['Root.mp4'])
+    expect(rows.folders).toEqual([
+      { url: 'https://gofile.io/d/Folder01', name: 'Season 1' }
+    ])
+  })
+
+  it('clicks every download button once when a capture is requested', async () => {
+    const clicks: string[] = []
+    const body = shareBody([
+      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row,
+      buttonRow('B.mp4', '2 MB', { onClick: () => clicks.push('B.mp4') }).row
+    ])
+    const doc = makeDocument(body, SHARE_URL)
+    const { win } = makeWindow(SHARE_URL)
+
+    const result = await collector.collectShare(doc, win, {
+      waitMs: 200,
+      captureDownloads: true,
+      clickDelayMs: 1
+    })
+
+    expect(clicks).toEqual(['A.mp4', 'B.mp4'])
+    expect(result.status).toBe('ok')
+    expect(result.files.map((file) => file.url)).toEqual([null, null])
+  })
+
+  it('does not click a row whose download URL the page already exposed', async () => {
+    const clicks: string[] = []
+    const anchorRow = anchor(
+      'https://store3.gofile.io/download/web/f1/Linked.mp4',
+      'Linked.mp4',
+      '1 MB'
+    )
+    const body = shareBody([
+      anchorRow,
+      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row
+    ])
+    const doc = makeDocument(body, SHARE_URL)
+    const { win } = makeWindow(SHARE_URL)
+
+    const result = await collector.collectShare(doc, win, {
+      waitMs: 200,
+      captureDownloads: true,
+      clickDelayMs: 1
+    })
+
+    expect(clicks).toEqual(['A.mp4'])
+    expect(result.files).toEqual([
+      {
+        name: 'Linked.mp4',
+        size: 1024 * 1024,
+        url: 'https://store3.gofile.io/download/web/f1/Linked.mp4'
+      },
+      { name: 'A.mp4', size: 1024 * 1024, url: null }
+    ])
+  })
+
+  it('never clicks anything without a capture request', async () => {
+    const clicks: string[] = []
+    const body = shareBody([
+      buttonRow('A.mp4', '1 MB', { onClick: () => clicks.push('A.mp4') }).row
+    ])
+    const doc = makeDocument(body, SHARE_URL)
+    const { win } = makeWindow(SHARE_URL)
+    await collector.collectShare(doc, win, { waitMs: 200 })
+    expect(clicks).toEqual([])
+  })
+})
+
+/* ------------------------------ share state ------------------------------ */
 describe('gofile collector share state', () => {
   it('reports a password protected share', () => {
     const body = element('div', {}, [element('input', { type: 'password' })], '')

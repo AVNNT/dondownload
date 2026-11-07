@@ -93,6 +93,50 @@ describe('generic HTML extraction', () => {
   })
 })
 
+describe('relative href resolution', () => {
+  // Real video sites emit root-relative hrefs. `new URL('/video-x/')` throws,
+  // so an unresolved href never matched a host rule and the link was dropped
+  // before `resolveScanUrl` ever saw it.
+  it('keeps an eporner video link written as a root-relative href', () => {
+    const html = `<!doctype html>
+<html><head><title>eporner</title></head>
+<body>
+  <a href="/video-n6g7P51nAb4/slug/">Video title</a>
+  <a href="/cat/all/">All categories</a>
+  <a href="/cat/amateur/">Amateur</a>
+</body></html>`
+    const candidates = extractCandidates(html, 'https://www.eporner.com/')
+    const urls = candidates.map((candidate) => candidate.url)
+    expect(urls).toContain('https://www.eporner.com/video-n6g7P51nAb4/slug/')
+    expect(urls.some((url) => url.includes('/cat/'))).toBe(false)
+  })
+
+  it('keeps a pornhub view_video.php link written as a root-relative href', () => {
+    const html = `<!doctype html>
+<html><head><title>pornhub</title></head>
+<body>
+  <a href="/view_video.php?viewkey=6ad5604c442b5">Video title</a>
+  <a href="/video?c=24">Categories</a>
+</body></html>`
+    const candidates = extractCandidates(html, 'https://www.pornhub.com/')
+    const urls = candidates.map((candidate) => candidate.url)
+    expect(urls).toContain(
+      'https://www.pornhub.com/view_video.php?viewkey=6ad5604c442b5'
+    )
+    expect(urls.some((url) => url.includes('/video?c='))).toBe(false)
+  })
+
+  it('resolves a relative href against a <base href> that appears before it', () => {
+    const html = `<!doctype html>
+<html><head><base href="https://www.eporner.com/" /></head>
+<body><a href="video-abc12345/slug/">Video title</a></body></html>`
+    const candidates = extractCandidates(html, 'https://www.eporner.com/cat/all/')
+    expect(candidates.map((candidate) => candidate.url)).toContain(
+      'https://www.eporner.com/video-abc12345/slug/'
+    )
+  })
+})
+
 describe('URL normalization and dedupe keys', () => {
   it('lowercases the host and removes fragments and tracking parameters', () => {
     const normalized = normalizeScanUrl(

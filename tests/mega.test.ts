@@ -155,8 +155,15 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 const FOLDER_ID = 'Folder01'
+/**
+ * The root folder node's own handle. The live API never reuses the link id for
+ * it, and gives the root a parent handle that is not part of the listing.
+ */
+const ROOT_NODE_ID = 'RootNod1'
+/** Parent handle of the root node; never returned as a node handle. */
+const ROOT_PARENT_ID = 'GoneHand'
 /** Owner handle MEGA puts in front of every node key. */
-const ROOT_HANDLE = 'RootHand'
+const ROOT_HANDLE = ROOT_NODE_ID
 const SUBFOLDER_ID = 'SubFold1'
 
 /** A public folder key is 16 random bytes and is used raw as the AES key. */
@@ -179,15 +186,16 @@ function folderNodesResponse(): unknown {
       f: [
         {
           // The root node's attributes are encrypted with the raw folder key.
-          h: FOLDER_ID,
-          p: FOLDER_ID,
+          // Its handle is not the link id and its parent is not in the listing.
+          h: ROOT_NODE_ID,
+          p: ROOT_PARENT_ID,
           t: 2,
           a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"My folder"}'),
           s: 0
         },
         {
           h: NODE_VIDEO_ID,
-          p: FOLDER_ID,
+          p: ROOT_NODE_ID,
           t: 0,
           s: 4_096,
           a: encryptAttributes(
@@ -198,7 +206,7 @@ function folderNodesResponse(): unknown {
         },
         {
           h: NODE_SCRIPT_ID,
-          p: FOLDER_ID,
+          p: ROOT_NODE_ID,
           t: 0,
           s: 512,
           a: encryptAttributes(
@@ -211,7 +219,7 @@ function folderNodesResponse(): unknown {
           // A subfolder: its own 16-byte key, encrypted with the folder key,
           // and attributes encrypted with that raw subfolder key.
           h: SUBFOLDER_ID,
-          p: FOLDER_ID,
+          p: ROOT_NODE_ID,
           t: 1,
           s: 0,
           a: encryptAttributes(SUBFOLDER_KEY_BYTES, '{"n":"Extras"}'),
@@ -550,14 +558,14 @@ describe('MEGA adapter', () => {
         {
           f: [
             {
-              h: FOLDER_ID,
-              p: FOLDER_ID,
+              h: ROOT_NODE_ID,
+              p: ROOT_PARENT_ID,
               t: 2,
               a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"My folder"}')
             },
             {
               h: NODE_VIDEO_ID,
-              p: FOLDER_ID,
+              p: ROOT_NODE_ID,
               t: 0,
               s: 4_096,
               // Attributes encrypted with the folder key instead of the node's
@@ -587,14 +595,14 @@ describe('MEGA adapter', () => {
         {
           f: [
             {
-              h: FOLDER_ID,
-              p: FOLDER_ID,
+              h: ROOT_NODE_ID,
+              p: ROOT_PARENT_ID,
               t: 2,
               a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"Shared"}')
             },
             {
               h: NODE_VIDEO_ID,
-              p: FOLDER_ID,
+              p: ROOT_NODE_ID,
               t: 0,
               s: 4_096,
               a: encryptAttributes(
@@ -620,6 +628,92 @@ describe('MEGA adapter', () => {
         deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey
       )
     ).toBe(true)
+  })
+
+  it('decrypts a listing whose root node is not returned', async () => {
+    // The live API may list only the root's children: their parent handle is
+    // neither the link id nor a returned node handle.
+    const { fetch } = mockFetch(() =>
+      jsonResponse([
+        {
+          f: [
+            {
+              h: NODE_VIDEO_ID,
+              p: ROOT_NODE_ID,
+              t: 0,
+              s: 4_096,
+              a: encryptAttributes(
+                deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey,
+                '{"n":"Fancam 01.mp4"}'
+              ),
+              k: nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)
+            },
+            {
+              h: SUBFOLDER_ID,
+              p: ROOT_NODE_ID,
+              t: 1,
+              s: 0,
+              a: encryptAttributes(SUBFOLDER_KEY_BYTES, '{"n":"Extras"}'),
+              k: nodeKeyField(FOLDER_KEY_BYTES, SUBFOLDER_KEY_BYTES)
+            },
+            {
+              h: NODE_NESTED_ID,
+              p: SUBFOLDER_ID,
+              t: 0,
+              s: 1_024,
+              a: encryptAttributes(
+                deriveMegaFileKey(NESTED_KEY_BYTES).aesKey,
+                '{"n":"Nested 01.mp4"}'
+              ),
+              k: nodeKeyField(SUBFOLDER_KEY_BYTES, NESTED_KEY_BYTES)
+            }
+          ]
+        }
+      ])
+    )
+    const resolution = await resolveMegaFolder(FOLDER_LINK, { fetch })
+
+    expect(resolution.title).toBe('MEGA folder')
+    expect(resolution.entries.map((entry) => entry.name)).toEqual([
+      'Fancam 01.mp4',
+      'Nested 01.mp4'
+    ])
+    expect(resolution.preview.availableCount).toBe(2)
+  })
+
+  it('decrypts a node whose key entry handle prefix differs from its parent', async () => {
+    const { fetch } = mockFetch(() =>
+      jsonResponse([
+        {
+          f: [
+            {
+              h: ROOT_NODE_ID,
+              p: ROOT_PARENT_ID,
+              t: 2,
+              a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"My folder"}')
+            },
+            {
+              h: NODE_VIDEO_ID,
+              p: ROOT_NODE_ID,
+              t: 0,
+              s: 4_096,
+              a: encryptAttributes(
+                deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey,
+                '{"n":"Fancam 01.mp4"}'
+              ),
+              // The owning handle in the key entry is not the parent handle.
+              k: nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES, 'Stranger')
+            }
+          ]
+        }
+      ])
+    )
+    const resolution = await resolveMegaFolder(FOLDER_LINK, { fetch })
+
+    expect(resolution.entries[0]).toMatchObject({
+      name: 'Fancam 01.mp4',
+      availability: 'available'
+    })
   })
 
   it('resolves a folder sub-file link through the folder listing', async () => {
@@ -774,8 +868,8 @@ describe('MEGA adapter', () => {
   it('caps the number of files previewed from one folder', async () => {
     const nodes: Array<Record<string, unknown>> = [
       {
-        h: FOLDER_ID,
-        p: FOLDER_ID,
+        h: ROOT_NODE_ID,
+        p: ROOT_PARENT_ID,
         t: 2,
         a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"Big"}'),
         s: 0
@@ -784,7 +878,7 @@ describe('MEGA adapter', () => {
     for (let index = 0; index < MAX_MEGA_FOLDER_ENTRIES + 1; index += 1) {
       nodes.push({
         h: `Node${String(index).padStart(4, '0')}`,
-        p: FOLDER_ID,
+        p: ROOT_NODE_ID,
         t: 0,
         s: 1,
         a: encryptAttributes(

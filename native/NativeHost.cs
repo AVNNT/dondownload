@@ -29,7 +29,7 @@ using System.Web.Script.Serialization;
 //   { "type": "download-status", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "show-download", "downloadId": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 //   { "type": "scan-page", "url": "https://discuss.example/t/topic/123", "cookie": "..." }
-//   { "type": "scan-gofile", "shareId": "AbCd1234", "status": "ok", "files": [ { "name": "a.mp4", "size": 123, "url": "https://store3.gofile.io/download/web/id/a.mp4" } ], "cookie": "..." }
+//   { "type": "scan-gofile", "shareId": "AbCd1234", "status": "ok", "files": [ { "name": "a.mp4", "size": 123, "url": "https://store3.gofile.io/download/web/id/a.mp4" } ], "unavailable": [ { "name": "b.mp4", "size": 456 } ], "cookie": "..." }
 //   { "type": "scan-video", "pageUrl": "https://example.com/watch?v=1", "title": "Demo", "sources": [ { "url": "https://cdn.example/1080.mp4", "kind": "file", "height": 1080 } ], "cookie": "..." }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1", "cookie": "..." }
 //   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv", "cookie": "..." }
@@ -941,11 +941,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "shareId", "status", "files" },
-            new string[] { "cookie" }))
+            new string[] { "cookie", "unavailable" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only scan-gofile messages containing type, shareId, status, files and an optional cookie are accepted.");
+                "Only scan-gofile messages containing type, shareId, status, files and an optional cookie or unavailable list are accepted.");
         }
 
         string shareId = message["shareId"] as string;
@@ -1011,6 +1011,48 @@ internal static class NativeHost
             files.Add(entry);
         }
 
+        // A rendered row whose download URL the page never exposed still names a
+        // real file the user can see, so it is forwarded as a name plus an
+        // optional size and nothing else.
+        List<object> unavailable = new List<object>();
+        if (message.ContainsKey("unavailable"))
+        {
+            object[] rawRows = message["unavailable"] as object[];
+            if (rawRows == null || rawRows.Length > MaxScanGofileFiles)
+            {
+                return Error("INVALID_MESSAGE", "The Gofile row list is invalid.");
+            }
+            for (int index = 0; index < rawRows.Length; index++)
+            {
+                Dictionary<string, object> raw = rawRows[index] as Dictionary<string, object>;
+                if (raw == null ||
+                    !HasExactKeys(raw, new string[] { "name" }, new string[] { "size" }))
+                {
+                    return Error("INVALID_MESSAGE", "A Gofile row entry is invalid.");
+                }
+
+                string rowName = raw["name"] as string;
+                if (!IsSafeHeaderValue(rowName, MaxGofileNameLength))
+                {
+                    return Error("INVALID_MESSAGE", "A Gofile file name is invalid.");
+                }
+
+                Dictionary<string, object> row = new Dictionary<string, object>();
+                row.Add("name", rowName);
+                if (raw.ContainsKey("size") && raw["size"] != null)
+                {
+                    long rowSize;
+                    if (!TryReadPositiveLong(raw["size"], out rowSize) ||
+                        rowSize > MaxGofileSizeBytes)
+                    {
+                        return Error("INVALID_MESSAGE", "A Gofile file size is invalid.");
+                    }
+                    row.Add("size", rowSize);
+                }
+                unavailable.Add(row);
+            }
+        }
+
         string cookie = null;
         if (message.ContainsKey("cookie"))
         {
@@ -1025,6 +1067,10 @@ internal static class NativeHost
         body.Add("shareId", shareId);
         body.Add("status", status);
         body.Add("files", files.ToArray());
+        if (unavailable.Count > 0)
+        {
+            body.Add("unavailable", unavailable.ToArray());
+        }
         if (cookie != null)
         {
             body.Add("cookie", cookie);

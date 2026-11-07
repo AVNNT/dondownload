@@ -74,8 +74,61 @@ describe('real quality labels', () => {
     expect(fromUrl.options[0]?.dto.label).toContain('1080p MP4')
   })
 
-  it('reads a resolution out of a 640x360 resolution string', () => {
+  it('carries a hinted height when the generic HTML5 extractor reports none', () => {
+    // hanime1 goes through yt-dlp's generic html5 extractor, which reports
+    // `height: null` for every <source>. The format id, note and URL still name
+    // the rendition, so the option keeps a real height instead of nothing.
     const analysis = analyzeFormats([
+      format({
+        format_id: 'html5-0',
+        url: 'https://cdn.example.com/media/xxx-1080p.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a',
+        height: null
+      }),
+      format({
+        format_id: 'html5-720',
+        url: 'https://cdn.example.com/media/xxx.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a',
+        height: null
+      }),
+      format({
+        format_id: 'html5-1',
+        format_note: '480p',
+        url: 'https://cdn.example.com/media/xxx.mp4',
+        vcodec: 'avc1',
+        acodec: 'mp4a',
+        height: null
+      })
+    ])
+
+    expect(analysis.options.map((option) => option.dto.height)).toEqual([
+      1080, 720, 480
+    ])
+    expect(analysis.options.map((option) => option.dto.label)).toEqual([
+      '1080p MP4 · avc1 + mp4a',
+      '720p MP4 · avc1 + mp4a',
+      '480p MP4 · avc1 + mp4a'
+    ])
+  })
+
+  it('keeps the reported height when the extractor provides one', () => {
+    const analysis = analyzeFormats([
+      format({
+        format_id: 'html5-0',
+        url: 'https://cdn.example.com/media/xxx-1080p.mp4',
+        width: 1920,
+        height: 720,
+        vcodec: 'avc1',
+        acodec: 'mp4a'
+      })
+    ])
+    expect(analysis.options[0]?.dto.height).toBe(720)
+    expect(analysis.options[0]?.dto.label).toContain('720p MP4')
+  })
+
+  it('reads a resolution out of a 640x360 resolution string', () => {    const analysis = analyzeFormats([
       format({
         format_id: '1',
         resolution: '640x360',

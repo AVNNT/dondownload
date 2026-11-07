@@ -470,3 +470,12 @@ export function resetDownloadsListenerForTests() {
   downloadsListenerInstalled = false
   handledDownloadIds.clear()
 }
+
+/**
+ * Mark one browser download as already decided. The Gofile row capture uses it
+ * so a late `onChanged` (a cancelled item still reports a total) never sends the
+ * same download through the hand-off a second time.
+ */
+export function rememberDecidedDownload(item) {
+  rememberHandled(item)
+}
