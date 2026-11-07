@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -26,14 +28,10 @@ import type { ScanSession } from '@shared/scanner'
 import { formatBytes, formatSpeed } from '@shared/format'
 import type { Batch } from '@shared/batches'
 import type { DownloadSettings } from '@shared/settings'
-import { BatchSection } from './components/BatchSection'
 import { RuntimeNotice } from './components/RuntimeNotice'
-import { SettingsSection } from './components/SettingsSection'
-import { BrowserExtensionSection } from './components/BrowserExtensionSection'
 import { Toolbar } from './components/Toolbar'
 import { DownloadTable } from './components/DownloadTable'
-import { AddDialog, type AddDialogTab } from './components/AddDialog'
-import { ScanSheet } from './components/ScanSheet'
+import type { AddDialogTab } from './components/AddDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { UndoToast } from './components/UndoToast'
@@ -109,6 +107,54 @@ import {
 } from './lib/shortcuts'
 
 type AppPage = 'library' | 'batches' | 'settings'
+
+/*
+ * Everything outside the downloads library — the Batches and Settings pages and
+ * the Add/Scan overlays — is split into its own chunk and fetched on demand, so
+ * the first paint only pays for the library.
+ */
+const BatchSection = lazy(() =>
+  import('./components/BatchSection').then((module) => ({
+    default: module.BatchSection
+  }))
+)
+const SettingsSection = lazy(() =>
+  import('./components/SettingsSection').then((module) => ({
+    default: module.SettingsSection
+  }))
+)
+const BrowserExtensionSection = lazy(() =>
+  import('./components/BrowserExtensionSection').then((module) => ({
+    default: module.BrowserExtensionSection
+  }))
+)
+const AddDialog = lazy(() =>
+  import('./components/AddDialog').then((module) => ({
+    default: module.AddDialog
+  }))
+)
+const ScanSheet = lazy(() =>
+  import('./components/ScanSheet').then((module) => ({
+    default: module.ScanSheet
+  }))
+)
+
+/** Small placeholder shown while a lazily loaded page or overlay arrives. */
+function LazyFallback({ label }: { label: string }): JSX.Element {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-[120px] items-center justify-center gap-2 px-4 py-6 text-[12px] text-zinc-500"
+    >
+      <span
+        aria-hidden="true"
+        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-700 border-t-accent-400"
+      />
+      {label}
+    </div>
+  )
+}
 
 /** How long a removed row can be brought back with Undo. */
 export const UNDO_REMOVE_MS = 6_000
@@ -439,18 +485,6 @@ export default function App(): JSX.Element {
     setMenu(null)
   }, [page, statusFilter, query, sortKey, sortDirection])
   /* eslint-enable react-hooks/set-state-in-effect */
-
-  useEffect(() => {
-    if (!focusedKey) return
-    const active = document.activeElement
-    if (!(active instanceof HTMLElement) || !active.closest('[role="grid"]')) {
-      return
-    }
-    const target = document.querySelector<HTMLElement>(
-      `[data-row-key="${focusedKey}"]`
-    )
-    if (target && target !== active) target.focus()
-  }, [focusedKey])
 
   const showDetails =
     singleSelected !== null && detailsClosedFor !== singleSelected.key
@@ -875,6 +909,11 @@ export default function App(): JSX.Element {
     },
     [visibleRows]
   )
+
+  /** Stable handler so a memoised row is not re-rendered by a new closure. */
+  const handleFocusRow = useCallback((row: UnifiedRow): void => {
+    setFocusedKey(row.key)
+  }, [])
 
   const handleSelectAll = useCallback((): void => {
     setSelection((current) => {
@@ -1440,7 +1479,7 @@ export default function App(): JSX.Element {
               }
               onRowClick={handleRowClick}
               onToggleRow={handleToggleRow}
-              onFocusRow={(row) => setFocusedKey(row.key)}
+              onFocusRow={handleFocusRow}
               onOpenRow={openRow}
               onShowInFolder={showRowInFolder}
               onPauseRow={pauseRow}
@@ -1491,12 +1530,14 @@ export default function App(): JSX.Element {
                   />
                 </div>
               ) : null}
-              <BatchSection
-                onBack={() => setPage('library')}
-                onAddLinks={() => openAddDialog('direct')}
-                findFolderRow={findBatchFolderRow}
-                onShowRowInFolder={showRowInFolder}
-              />
+              <Suspense fallback={<LazyFallback label="Loading batches…" />}>
+                <BatchSection
+                  onBack={() => setPage('library')}
+                  onAddLinks={() => openAddDialog('direct')}
+                  findFolderRow={findBatchFolderRow}
+                  onShowRowInFolder={showRowInFolder}
+                />
+              </Suspense>
             </div>
           </div>
         ) : null}
@@ -1504,46 +1545,50 @@ export default function App(): JSX.Element {
         {page === 'settings' ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="mx-auto w-full max-w-3xl">
-              <SettingsSection />
-              <BrowserExtensionSection />
+              <Suspense fallback={<LazyFallback label="Loading settings…" />}>
+                <SettingsSection />
+                <BrowserExtensionSection />
+              </Suspense>
             </div>
           </div>
         ) : null}
       </main>
 
       {addRequest ? (
-        addRequest.tab === 'scan' ? (
-          <ScanSheet
-            url={addRequest.url}
-            sessions={
-              addRequest.scanSessionIds === undefined
-                ? null
-                : addRequest.scanSessionIds.flatMap((sessionId) => {
-                    const session = scanSessions.find(
-                      (candidate) => candidate.sessionId === sessionId
-                    )
-                    return session === undefined ? [] : [session]
-                  })
-            }
-            disabled={adding}
-            onClose={() => setAddRequest(null)}
-          />
-        ) : (
-          <AddDialog
-            key={addRequest.nonce}
-            tab={addRequest.tab}
-            initialUrl={addRequest.url}
-            busy={adding}
-            describeDuplicate={describeDuplicate}
-            onResumeDuplicate={resumeDuplicateUrl}
-            defaultConnections={settings?.perHostConnections ?? 8}
-            onScanOpen={openScanSheet}
-            onClose={() => setAddRequest(null)}
-            onAdd={handleAdd}
-            onAnalyze={handleAnalyzeMedia}
-            onQueue={handleQueueMedia}
-          />
-        )
+        <Suspense fallback={<LazyFallback label="Opening…" />}>
+          {addRequest.tab === 'scan' ? (
+            <ScanSheet
+              url={addRequest.url}
+              sessions={
+                addRequest.scanSessionIds === undefined
+                  ? null
+                  : addRequest.scanSessionIds.flatMap((sessionId) => {
+                      const session = scanSessions.find(
+                        (candidate) => candidate.sessionId === sessionId
+                      )
+                      return session === undefined ? [] : [session]
+                    })
+              }
+              disabled={adding}
+              onClose={() => setAddRequest(null)}
+            />
+          ) : (
+            <AddDialog
+              key={addRequest.nonce}
+              tab={addRequest.tab}
+              initialUrl={addRequest.url}
+              busy={adding}
+              describeDuplicate={describeDuplicate}
+              onResumeDuplicate={resumeDuplicateUrl}
+              defaultConnections={settings?.perHostConnections ?? 8}
+              onScanOpen={openScanSheet}
+              onClose={() => setAddRequest(null)}
+              onAdd={handleAdd}
+              onAnalyze={handleAnalyzeMedia}
+              onQueue={handleQueueMedia}
+            />
+          )}
+        </Suspense>
       ) : null}
 
       {menu ? (

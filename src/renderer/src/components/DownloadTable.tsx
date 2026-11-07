@@ -1,16 +1,35 @@
 import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
   type JSX,
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
-  type ReactNode
+  type ReactNode,
+  type UIEvent
 } from 'react'
-import { retryCountdownText, type UnifiedRow } from '../lib/unified'
+import {
+  needsRetryClock,
+  retryCountdownText,
+  type UnifiedRow
+} from '../lib/unified'
 import { useNowUntil } from '../lib/useNow'
 import {
   isSelected,
   type SelectionMode,
   type SelectionState
 } from '../lib/selection'
+import {
+  ROW_HEIGHT,
+  computeWindow,
+  rowIndexFor,
+  scrollTopForIndex
+} from '../lib/virtualList'
 import { canOpenRow, canShowRow } from '../lib/actions'
 import { CATEGORY_ACCENT, CATEGORY_ICON, Icon } from './Icon'
 import type { ThumbnailFallback } from './Thumbnail'
@@ -60,11 +79,150 @@ export function DownloadTable({
   onKeyDown
 }: DownloadTableProps): JSX.Element {
   const selectMode = selection.selected.length > 1
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  /**
+   * True while DOM focus belongs to the list. Rows outside the rendered window
+   * unmount, so the table has to know whether it should pull focus back.
+   */
+  const keyboardFocus = useRef(false)
+
   // Only tick while a visible row is actually waiting for an automatic retry,
   // so the "Retrying in Ns…" text counts down without a permanent timer.
-  const now = useNowUntil(
-    1_000,
-    rows.map((row) => row.retryAt)
+  const retryDeadlines = useMemo(
+    () => rows.map((row) => row.retryAt),
+    [rows]
+  )
+  const now = useNowUntil(1_000, retryDeadlines)
+
+  const rowWindow = useMemo(
+    () =>
+      computeWindow({
+        itemCount: rows.length,
+        scrollTop,
+        viewportHeight
+      }),
+    [rows.length, scrollTop, viewportHeight]
+  )
+
+  // The viewport height changes on window resize and when the details pane or
+  // the selection bar appears, neither of which fires a scroll event.
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+    const measure = (): void => setViewportHeight(scroller.clientHeight)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [])
+
+  // Reveal the focused row before paint, so keyboard navigation and the
+  // `revealRow` IPC always land on a row that is actually rendered. Revealing
+  // stops as soon as the user scrolls somewhere else, so a new snapshot cannot
+  // yank the list back to the focused row.
+  const rowsRef = useRef(rows)
+  useLayoutEffect(() => {
+    rowsRef.current = rows
+  })
+  const programmaticScroll = useRef(0)
+  const userScrolled = useRef(false)
+
+  const revealIndex = useCallback((index: number, itemCount: number): void => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+    const next = scrollTopForIndex(index, {
+      itemCount,
+      scrollTop: scroller.scrollTop,
+      viewportHeight: scroller.clientHeight
+    })
+    if (next === scroller.scrollTop) return
+    programmaticScroll.current = next
+    scroller.scrollTop = next
+    setScrollTop(next)
+  }, [])
+
+  useLayoutEffect(() => {
+    userScrolled.current = false
+    const current = rowsRef.current
+    const index = rowIndexFor(current, focusedKey)
+    if (index < 0) return
+    revealIndex(index, current.length)
+  }, [focusedKey, revealIndex])
+
+  // A row can also be revealed by the same key twice (the IPC targets the row
+  // that is already focused), so keep it visible after the list changes until
+  // the user takes over the scroll position.
+  useLayoutEffect(() => {
+    if (userScrolled.current) return
+    const index = rowIndexFor(rows, focusedKey)
+    if (index < 0) return
+    revealIndex(index, rows.length)
+  }, [rows, focusedKey, revealIndex])
+
+  // Keep DOM focus on the focused row, or on the grid itself while that row is
+  // outside the rendered window, so the next key press still reaches onKeyDown.
+  useEffect(() => {
+    if (!keyboardFocus.current || focusedKey === null) return
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+    const target = findRowElement(scroller, focusedKey)
+    if (target !== null) {
+      // `preventScroll` keeps a wheel scroll from being undone by the focus.
+      if (document.activeElement !== target) target.focus({ preventScroll: true })
+      return
+    }
+    if (document.activeElement !== scroller) {
+      scroller.focus({ preventScroll: true })
+    }
+  }, [focusedKey, rowWindow.start, rowWindow.end])
+
+  // A click outside the list ends the keyboard session, so a later focus change
+  // must not pull focus back into it.
+  useEffect(() => {
+    const onMouseDown = (event: globalThis.MouseEvent): void => {
+      const scroller = scrollerRef.current
+      if (scroller === null) return
+      if (event.target instanceof Node && scroller.contains(event.target)) return
+      keyboardFocus.current = false
+    }
+    document.addEventListener('mousedown', onMouseDown, true)
+    return () => document.removeEventListener('mousedown', onMouseDown, true)
+  }, [])
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>): void => {
+    const top = event.currentTarget.scrollTop
+    if (top !== programmaticScroll.current) userScrolled.current = true
+    setScrollTop(top)
+  }, [])
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>): void => {
+      keyboardFocus.current = true
+      onKeyDown(event)
+    },
+    [onKeyDown]
+  )
+
+  const handleFocus = useCallback((): void => {
+    keyboardFocus.current = true
+  }, [])
+
+  const handleBlur = useCallback(
+    (event: FocusEvent<HTMLDivElement>): void => {
+      const next = event.relatedTarget
+      if (next instanceof Node && !event.currentTarget.contains(next)) {
+        keyboardFocus.current = false
+      }
+    },
+    []
+  )
+
+  const windowRows = useMemo(
+    () => rows.slice(rowWindow.start, rowWindow.end),
+    [rows, rowWindow.start, rowWindow.end]
   )
 
   return (
@@ -73,37 +231,68 @@ export function DownloadTable({
       aria-label="Downloads and media"
       aria-multiselectable="true"
       aria-rowcount={rows.length}
-      onKeyDown={onKeyDown}
-      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-2"
+      tabIndex={-1}
+      ref={scrollerRef}
+      onScroll={handleScroll}
+      onKeyDown={handleKeyDown}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-2 outline-none"
     >
       {rows.length === 0 ? (
         emptyState
       ) : (
-        <div role="presentation" className="divide-y divide-white/[0.06]">
-          {rows.map((row) => (
-            <TableRow
-              key={row.key}
-              row={row}
-              now={now}
-              selected={isSelected(selection, row.key)}
-              open={selection.selected.length === 1 && isSelected(selection, row.key)}
-              selectMode={selectMode}
-              focused={focusedKey === row.key}
-              onRowClick={onRowClick}
-              onToggleRow={onToggleRow}
-              onFocusRow={onFocusRow}
-              onOpenRow={onOpenRow}
-              onShowInFolder={onShowInFolder}
-              onPauseRow={onPauseRow}
-              onResumeRow={onResumeRow}
-              onRetryRow={onRetryRow}
-              onContextMenu={onContextMenu}
-            />
-          ))}
+        <div
+          role="presentation"
+          className="relative"
+          style={{ height: rowWindow.totalHeight }}
+        >
+          <div
+            role="presentation"
+            className="divide-y divide-white/[0.06]"
+            style={{ transform: `translateY(${rowWindow.offsetTop}px)` }}
+          >
+            {windowRows.map((row, offset) => {
+              const index = rowWindow.start + offset
+              return (
+                <TableRow
+                  key={row.key}
+                  row={row}
+                  index={index}
+                  now={needsRetryClock(row) ? now : 0}
+                  selected={isSelected(selection, row.key)}
+                  open={
+                    selection.selected.length === 1 &&
+                    isSelected(selection, row.key)
+                  }
+                  selectMode={selectMode}
+                  focused={focusedKey === row.key}
+                  onRowClick={onRowClick}
+                  onToggleRow={onToggleRow}
+                  onFocusRow={onFocusRow}
+                  onOpenRow={onOpenRow}
+                  onShowInFolder={onShowInFolder}
+                  onPauseRow={onPauseRow}
+                  onResumeRow={onResumeRow}
+                  onRetryRow={onRetryRow}
+                  onContextMenu={onContextMenu}
+                />
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
   )
+}
+
+/** The rendered row element for `key`, if it is inside the window. */
+function findRowElement(container: HTMLElement, key: string): HTMLElement | null {
+  const elements = container.querySelectorAll<HTMLElement>('[data-row-key]')
+  for (const element of elements) {
+    if (element.dataset.rowKey === key) return element
+  }
+  return null
 }
 
 type RowVisual =
@@ -217,25 +406,11 @@ function describeRow(row: UnifiedRow, now: number): RowVisual {
   return { kind: 'queued' }
 }
 
-function TableRow({
-  row,
-  now,
-  selected,
-  open,
-  selectMode,
-  focused,
-  onRowClick,
-  onToggleRow,
-  onFocusRow,
-  onOpenRow,
-  onShowInFolder,
-  onPauseRow,
-  onResumeRow,
-  onRetryRow,
-  onContextMenu
-}: {
+interface TableRowProps {
   row: UnifiedRow
-  /** Clock reading for the retry countdown; refreshed by the table's tick. */
+  /** Index in the full row list, for `aria-rowindex`. */
+  index: number
+  /** Clock reading for the retry countdown; 0 for rows that never show it. */
   now: number
   selected: boolean
   open: boolean
@@ -250,7 +425,53 @@ function TableRow({
   onResumeRow: (row: UnifiedRow) => void
   onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
-}): JSX.Element {
+}
+
+/**
+ * A row only re-renders when its own data, selection or focus state changes.
+ * The ticking clock is compared solely for rows that render a countdown, so a
+ * retry elsewhere in the list cannot re-render every visible row.
+ */
+function areRowPropsEqual(prev: TableRowProps, next: TableRowProps): boolean {
+  if (prev.row !== next.row) return false
+  if (prev.index !== next.index) return false
+  if (prev.selected !== next.selected || prev.open !== next.open) return false
+  if (prev.selectMode !== next.selectMode) return false
+  if (prev.focused !== next.focused) return false
+  if (
+    prev.onRowClick !== next.onRowClick ||
+    prev.onToggleRow !== next.onToggleRow ||
+    prev.onFocusRow !== next.onFocusRow ||
+    prev.onOpenRow !== next.onOpenRow ||
+    prev.onShowInFolder !== next.onShowInFolder ||
+    prev.onPauseRow !== next.onPauseRow ||
+    prev.onResumeRow !== next.onResumeRow ||
+    prev.onRetryRow !== next.onRetryRow ||
+    prev.onContextMenu !== next.onContextMenu
+  ) {
+    return false
+  }
+  return !needsRetryClock(next.row) || prev.now === next.now
+}
+
+const TableRow = memo(function TableRow({
+  row,
+  index,
+  now,
+  selected,
+  open,
+  selectMode,
+  focused,
+  onRowClick,
+  onToggleRow,
+  onFocusRow,
+  onOpenRow,
+  onShowInFolder,
+  onPauseRow,
+  onResumeRow,
+  onRetryRow,
+  onContextMenu
+}: TableRowProps): JSX.Element {
   const visual = describeRow(row, now)
   const percent = Math.round(row.progress)
   const sizeLabel =
@@ -277,6 +498,7 @@ function TableRow({
   return (
     <div
       role="row"
+      aria-rowindex={index + 1}
       aria-selected={selected}
       tabIndex={focused ? 0 : -1}
       data-row-key={row.key}
@@ -292,7 +514,8 @@ function TableRow({
       onDoubleClick={() => onOpenRow(row)}
       onFocus={() => onFocusRow(row)}
       onContextMenu={(event) => onContextMenu(row, event)}
-      className={`${GRID_COLUMNS} group relative h-[58px] cursor-default rounded-lg px-2 outline-none transition-colors ${rowBackground} focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
+      className={`${GRID_COLUMNS} group relative cursor-default rounded-lg px-2 outline-none transition-colors ${rowBackground} focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
+      style={{ height: ROW_HEIGHT }}
     >
       <div role="gridcell" className="relative">
         <RowArt row={row} />
@@ -423,7 +646,7 @@ function TableRow({
       </div>
     </div>
   )
-}
+}, areRowPropsEqual)
 
 function MiddleCell({
   visual,
@@ -586,7 +809,11 @@ function RowIconButton({
   )
 }
 
-function RowArt({ row }: { row: UnifiedRow }): JSX.Element {
+const RowArt = memo(function RowArt({
+  row
+}: {
+  row: UnifiedRow
+}): JSX.Element {
   const fallback: ThumbnailFallback = {
     icon: CATEGORY_ICON[row.category],
     accent: CATEGORY_ACCENT[row.category]
@@ -608,7 +835,7 @@ function RowArt({ row }: { row: UnifiedRow }): JSX.Element {
       <Icon name={CATEGORY_ICON[row.category]} size={18} />
     </span>
   )
-}
+})
 
 function formatClock(epochMs: number | null | undefined): string {
   if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) {

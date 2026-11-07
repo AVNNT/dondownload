@@ -71,18 +71,25 @@ function runPreviewAutomation(): void {
     return false
   }
 
-  const setTextarea = (value: string): boolean => {
-    const area = window.document.querySelector<HTMLTextAreaElement>(
-      'textarea#add-links, textarea'
-    )
-    if (area === null) return false
-    const setter = Object.getOwnPropertyDescriptor(
-      HTMLTextAreaElement.prototype,
-      'value'
-    )?.set
-    setter?.call(area, value)
-    area.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
+  // The Add dialog is a lazily loaded chunk, so the textarea can appear after
+  // the click that opens it. Wait for it the same way clickByText waits.
+  const setTextarea = async (value: string, attempts = 20): Promise<boolean> => {
+    for (let i = 0; i < attempts; i++) {
+      const area = window.document.querySelector<HTMLTextAreaElement>(
+        'textarea#add-links, textarea'
+      )
+      if (area !== null) {
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          'value'
+        )?.set
+        setter?.call(area, value)
+        area.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      }
+      await wait(100)
+    }
+    return false
   }
 
   void (async () => {
@@ -103,14 +110,14 @@ function runPreviewAutomation(): void {
       if (!(await clickByText('Add'))) return
       await wait(250)
       if (state === 'add-opts') {
-        setTextarea('https://example.com/files/ubuntu-24.04.1-desktop-amd64.iso')
+        await setTextarea('https://example.com/files/ubuntu-24.04.1-desktop-amd64.iso')
         await wait(300)
         const details = window.document.querySelector('details')
         if (details !== null && !details.open) details.open = true
       }
       if (state === 'add-links') {
         await wait(200)
-        setTextarea(
+        await setTextarea(
           [
             'https://cdn.example.net/brand-assets-2026.7z',
             'https://www.youtube.com/watch?v=launch-keynote',
@@ -133,14 +140,14 @@ function runPreviewAutomation(): void {
     if (state === 'dup') {
       if (!(await clickByText('Add'))) return
       await wait(250)
-      setTextarea('https://cdn.example.net/brand/brand-assets-2026.7z')
+      await setTextarea('https://cdn.example.net/brand/brand-assets-2026.7z')
       await wait(300)
       await clickByText('Download')
     }
     if (state === 'scan') {
       if (!(await clickByText('Add'))) return
       await wait(250)
-      setTextarea('https://forum.example.org/t/weekly-design-notes/4812')
+      await setTextarea('https://forum.example.org/t/weekly-design-notes/4812')
       await wait(400)
       if (!(await clickByText('Scan'))) return
     }
