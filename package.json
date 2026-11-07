@@ -42,6 +42,7 @@
     "test:extension:real": "node scripts/e2e-extension-chromium.mjs --native --real-sites",
     "test:extension:real:helium": "node scripts/e2e-extension-chromium.mjs --browser=%LOCALAPPDATA%\\imput\\Helium\\Application\\chrome.exe --native --real-sites",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
+    "bench": "node bench/run.mjs",
     "test:gate": "npm test && npm run build"
   },
   "dependencies": {
