@@ -50,6 +50,12 @@ export const DEFAULT_ALLOWED_HOURS_START = '00:00'
 export const DEFAULT_ALLOWED_HOURS_END = '00:00'
 
 /**
+ * Opt-in IDM-style sorting of new downloads into type subfolders. Off keeps
+ * every download in the chosen (or default) directory.
+ */
+export const DEFAULT_SORT_DOWNLOADS_BY_TYPE = false
+
+/**
  * Largest timestamp accepted by an ECMAScript Date, used as a practical bound
  * for an optional scheduled start expressed in epoch milliseconds.
  */
@@ -75,6 +81,8 @@ export interface DownloadSettings {
   allowedHours: AllowedHours
   /** Desktop appearance. Defaults to the existing OLED/black look. */
   theme: AppTheme
+  /** Sort new downloads into type subfolders of the default directory. */
+  sortDownloadsByType: boolean
 }
 
 /**
@@ -112,7 +120,8 @@ export function defaultDownloadSettings(): DownloadSettings {
       start: DEFAULT_ALLOWED_HOURS_START,
       end: DEFAULT_ALLOWED_HOURS_END
     },
-    theme: DEFAULT_THEME
+    theme: DEFAULT_THEME,
+    sortDownloadsByType: DEFAULT_SORT_DOWNLOADS_BY_TYPE
   }
 }
 
@@ -232,7 +241,8 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       'perHostConnections',
       'globalSpeedLimitBps',
       'allowedHours',
-      'theme'
+      'theme',
+      'sortDownloadsByType'
     ],
     'download settings'
   )
@@ -260,7 +270,12 @@ export function parseDownloadSettings(value: unknown): DownloadSettings {
       'download settings'
     ),
     allowedHours: parseAllowedHours(record.allowedHours),
-    theme: parseAppTheme(record.theme)
+    theme: parseAppTheme(record.theme),
+    sortDownloadsByType: booleanValue(
+      record,
+      'sortDownloadsByType',
+      'download settings'
+    )
   }
 }
 

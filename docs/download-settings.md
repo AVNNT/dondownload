@@ -1,6 +1,6 @@
 # Download settings contract and runtime application (Milestone 5A)
 
-Status: shared settings contract, additive SQLite schema v5 persistence, runtime
+Status: shared settings contract, additive SQLite schema v16 persistence, runtime
 settings service, trusted IPC/preload API, startup/live aria2 application and a
 renderer form for global limits. A Windows installer baseline is integrated.
 Scheduling and individual download controls are not implemented; this does not
@@ -46,6 +46,7 @@ previous all-day, unlimited-speed behavior:
 | `allowedHours.enabled` | `false` | boolean | When false, there is no time restriction (all day). |
 | `allowedHours.start` | `"00:00"` | exact `HH:mm` | Local-clock start of the allowed window. |
 | `allowedHours.end` | `"00:00"` | exact `HH:mm` | Local-clock end of the allowed window. |
+| `sortDownloadsByType` | `false` | boolean | Saves new downloads into type subfolders of the default download directory. |
 
 The database also enforces these bounds with CHECK constraints, including
 `id = 1`, integer-only flags and zero-padded 24-hour clock strings.
@@ -90,6 +91,31 @@ these defaults.
 `onBeforeReady` hook applies the persisted values before the first download can
 start. `globalSpeedLimitBps` is always applied (`0` = unlimited). No automatic
 aria2 restart is performed when settings change.
+
+### Sort downloads into folders by type
+
+Off by default. When enabled, a new download that uses the default download
+directory (the user did not pick a folder for it) is saved into a subfolder
+chosen by extension:
+
+| Folder | Extensions |
+| --- | --- |
+| `Video` | mp4 mkv webm mov avi m4v ts flv wmv, plus `.funscript` |
+| `Audio` | mp3 m4a flac wav ogg opus aac wma |
+| `Images` | jpg jpeg png gif webp avif heic bmp svg |
+| `Archives` | zip rar 7z tar gz tgz xz bz2 zst iso |
+| `Documents` | pdf doc docx xls xlsx ppt pptx txt rtf epub md csv odt |
+| `Programs` | exe msi msix apk dmg appimage |
+
+Unknown extensions and files without one stay in the default directory.
+`.funscript` goes to `Video` so a player finds the script next to its video.
+Media jobs also go to `Video` (video output) or `Audio` (audio-only output) when
+sorting is on; with sorting off they keep the existing `Media` folder.
+
+The subfolder is created when missing. The mapping and path resolution live in
+the pure `src/shared/typeFolders.ts` module. Only new downloads are affected:
+existing rows are never moved, and a download with an explicitly picked folder
+is never re-sorted.
 
 ### Runtime application
 
@@ -177,7 +203,7 @@ other secrets have no place in the contract.
   statuses, indexes and the `batch_items` cascade FK are preserved.
 - A failed v5 migration rolls back completely: no new columns, no settings row
   and no version bump. There is no destructive table rebuild in v5.
-- `SCHEMA_VERSION` is `5`. Databases written by a newer schema are still
+- `SCHEMA_VERSION` is `16`. Databases written by a newer schema are still
   refused rather than modified.
 
 ## Verification

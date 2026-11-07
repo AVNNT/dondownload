@@ -51,7 +51,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 15
+export const SCHEMA_VERSION = 16
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -565,6 +565,15 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX batches_created_at_idx ON batches (created_at DESC);
       CREATE INDEX batches_status_idx ON batches (status);
     `
+  },
+  {
+    // Opt-in IDM-style sorting. The additive column defaults to off, so every
+    // existing database keeps downloading straight into the chosen directory.
+    version: 16,
+    sql: `
+      ALTER TABLE download_settings ADD COLUMN sort_downloads_by_type INTEGER
+        NOT NULL DEFAULT 0 CHECK (sort_downloads_by_type IN (0, 1));
+    `
   }
 ]
 
@@ -701,7 +710,8 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
     },
     // The migration default covers old rows; this fallback keeps a malformed
     // row from taking the app down before the shared parser can reject it.
-    theme: text(row, 'theme') ?? DEFAULT_THEME
+    theme: text(row, 'theme') ?? DEFAULT_THEME,
+    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1
   })
 }
 
@@ -950,8 +960,9 @@ export class DownloadDatabase {
         INSERT INTO download_settings (
           id, max_concurrent_downloads, per_host_connections,
           global_speed_limit_bps, allowed_hours_enabled,
-          allowed_hours_start, allowed_hours_end, theme, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+          allowed_hours_start, allowed_hours_end, theme,
+          sort_downloads_by_type, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           max_concurrent_downloads = excluded.max_concurrent_downloads,
           per_host_connections = excluded.per_host_connections,
@@ -960,6 +971,7 @@ export class DownloadDatabase {
           allowed_hours_start = excluded.allowed_hours_start,
           allowed_hours_end = excluded.allowed_hours_end,
           theme = excluded.theme,
+          sort_downloads_by_type = excluded.sort_downloads_by_type,
           updated_at = excluded.updated_at
       `)
       this.mediaToolSettingsSelectStatement = this.db.prepare(
@@ -1307,6 +1319,7 @@ export class DownloadDatabase {
         parsed.allowedHours.start,
         parsed.allowedHours.end,
         parsed.theme,
+        parsed.sortDownloadsByType ? 1 : 0,
         Date.now()
       )
     } catch (error) {

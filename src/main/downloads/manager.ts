@@ -19,6 +19,7 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { evaluateStart, isAllowedAt } from '@shared/schedule'
+import { resolveDownloadDirectory } from '@shared/typeFolders'
 import {
   guessFilenameFromUrl,
   normalizeHttpUrl,
@@ -597,11 +598,14 @@ export class DownloadManager {
     // policy exists in exactly one place.
     const input = parseAddDownloadInput(rawInput)
     const force = input.force === true
-    const outputDirectory =
+    // The default directory is sorted per file type only when the user opts in
+    // and did not pick a custom folder for this download. Custom folders are
+    // always honoured exactly as before.
+    const requestedDirectory =
       directory === undefined ? this.downloadDir : path.resolve(directory)
     if (
       options.allowOutsideRoot !== true &&
-      !this.isInsideDownloadRoot(outputDirectory)
+      !this.isInsideDownloadRoot(requestedDirectory)
     ) {
       throw new AppError(
         'DOWNLOAD_DIR_UNAVAILABLE',
@@ -639,6 +643,24 @@ export class DownloadManager {
       // scheme. This runs before the job is created so an unresolved or unsafe
       // target fails closed with no aria2 job and no partial record.
       const target = await this.resolveDownloadTarget(input)
+
+      const outputDirectory =
+        directory === undefined
+          ? resolveDownloadDirectory(
+              this.downloadDir,
+              input.filename ?? guessFilenameFromUrl(target.url),
+              this.settingsProvider().sortDownloadsByType
+            )
+          : requestedDirectory
+      if (
+        options.allowOutsideRoot !== true &&
+        !this.isInsideDownloadRoot(outputDirectory)
+      ) {
+        throw new AppError(
+          'DOWNLOAD_DIR_UNAVAILABLE',
+          'The download folder is invalid.'
+        )
+      }
 
       const controls = input.controls ?? defaultDownloadControls()
       const now = this.now()

@@ -44,7 +44,8 @@ describe('download settings contract', () => {
         start: '00:00',
         end: '00:00'
       },
-      theme: 'oled'
+      theme: 'oled',
+      sortDownloadsByType: false
     })
     expect(DEFAULT_MAX_CONCURRENT_DOWNLOADS).toBe(3)
     expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(16)
@@ -79,7 +80,8 @@ describe('download settings contract', () => {
         start: '22:00',
         end: '06:00'
       },
-      theme: 'light'
+      theme: 'light',
+      sortDownloadsByType: true
     }
     expect(parseDownloadSettings(custom)).toEqual(custom)
     expect(parseDownloadSettings(validSettings())).toEqual(validSettings())
@@ -98,7 +100,8 @@ describe('download settings contract', () => {
               start: '00:00',
               end: '00:00'
             },
-            theme: 'oled' as const
+            theme: 'oled' as const,
+            sortDownloadsByType: false
           }
           expect(parseDownloadSettings(settings)).toEqual(settings)
         }
@@ -217,6 +220,29 @@ describe('download settings contract', () => {
         perHostConnections: 4,
         globalSpeedLimitBps: 0,
         allowedHours: { enabled: false, start: '00:00', end: '00:00' }
+      })
+    ).toThrow(/missing/)
+  })
+
+  it('accepts only boolean sort-by-type values', () => {
+    expect(
+      parseDownloadSettings(validSettings({ sortDownloadsByType: true }))
+        .sortDownloadsByType
+    ).toBe(true)
+    for (const value of [0, 1, 'true', null, undefined]) {
+      expect(() =>
+        parseDownloadSettings(
+          validSettings({ sortDownloadsByType: value as never })
+        )
+      ).toThrow(/invalid flag/)
+    }
+    expect(() =>
+      parseDownloadSettings({
+        maxConcurrentDownloads: 3,
+        perHostConnections: 16,
+        globalSpeedLimitBps: 0,
+        allowedHours: { enabled: false, start: '00:00', end: '00:00' },
+        theme: 'oled'
       })
     ).toThrow(/missing/)
   })
