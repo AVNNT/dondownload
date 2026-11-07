@@ -60,6 +60,15 @@ import {
   type TaggedCandidate
 } from './extract/discourse'
 import type { ScanImagesRequest } from '@shared/scanImages'
+import type { ScanGofileRequest } from '@shared/scanBridge'
+import {
+  GOFILE_BROWSER_ONLY_REASON,
+  GOFILE_SHARE_EMPTY_REASON,
+  isGofileHostname,
+  gofileStatusReason,
+  type GofileShareStatus
+} from '@shared/gofile'
+import { gofileShareOf, normalizeGofileFiles } from './gofile'
 import { hostnameOf, normalizeScanUrl, pathnameOf } from './extract/url'
 import {
   fetchScanPage,
@@ -260,6 +269,13 @@ interface StoredScanSession {
   title: string | null
   cookieHost: string | null
   cookie: string | null
+  /**
+   * One-job Gofile `accountToken` Cookie reported by the extension for the
+   * share the user opened. Gofile serves downloads from `store<N>.gofile.io`,
+   * so it is kept apart from the exact-host `cookie` slot and is only ever
+   * attached to a Gofile host. Never persisted, never published.
+   */
+  gofileCookie: string | null
   status: ScanSessionStatus
   message: string | null
   signinRequired: boolean
@@ -580,6 +596,211 @@ export class ScanSessionManager {
     return initial
   }
 
+  /**
+   * Fill a session from the rows the user's own signed-in Gofile tab rendered.
+   *
+   * Nothing is fetched here: the extension read the live DOM, so the desktop
+   * only turns the reported files into normal cards. When a scan of a forum
+   * topic (or any page) already shows a card for this exact share, the files
+   * replace that card inside the same session so the rest of the scan — post
+   * numbers, funscript sets and the batch the user is building — stays
+   * together. Otherwise the share gets its own session.
+   */
+  startGofile(input: ScanGofileRequest): ScanSession {
+    this.assertOpen()
+    const share = gofileShareOf(`https://gofile.io/d/${input.shareId}`)
+    if (share === null) {
+      throw new ValidationError('The Gofile share identifier is invalid.')
+    }
+    this.pruneExpired()
+
+    const files = normalizeGofileFiles(input.files)
+    const reason = gofileStatusReason(input.status)
+
+    const existing = this.sessionForGofileShare(share.id)
+    if (existing !== null) {
+      this.mergeGofileShare(existing, share.id, files, input.status, input.cookie)
+      this.touch(existing)
+      this.publish(existing, true)
+      return this.fullSnapshot(existing)
+    }
+
+    const session = this.createSession(share.canonicalUrl, {
+      origin: 'extension'
+    })
+    session.mode = 'gofile'
+    session.status = 'done'
+    session.started = true
+    session.settled = true
+    session.message = null
+    session.gofileCookie =
+      typeof input.cookie === 'string' && input.cookie.length > 0
+        ? input.cookie
+        : null
+
+    if (files.length === 0) {
+      // A share that could not be listed keeps one truthful card with the
+      // fixed reason instead of an empty session.
+      const id = this.newOpaqueId('item')
+      session.items.set(id, {
+        id,
+        category: 'other',
+        kind: 'page-link',
+        name: `Gofile share ${share.id}`,
+        hostname: 'gofile.io',
+        sizeBytes: null,
+        verified: false,
+        status: 'unavailable',
+        postNumber: null,
+        author: null,
+        url: share.canonicalUrl,
+        fallbackUrl: null,
+        videoIdentity: null,
+        videoAnalysis: null,
+        browserMatchPending: false,
+        unavailableReason: reason ?? GOFILE_BROWSER_ONLY_REASON
+      })
+      session.order.push(id)
+    } else {
+      for (const file of files) {
+        if (session.items.size >= MAX_SCAN_ITEMS) {
+          session.limited = true
+          break
+        }
+        const created = this.addResolvedFileItem(session, {
+          url: file.url,
+          name: file.name,
+          size: file.size,
+          mimeType: null,
+          postNumber: null,
+          author: null
+        })
+        if (created !== null) this.ensureGofileFileItem(created)
+      }
+      if (session.limited) {
+        session.status = 'limited'
+        session.message = safeMessage(
+          `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+        )
+      }
+    }
+
+    this.touch(session)
+    const initial = this.fullSnapshot(session)
+    for (const item of initial.items) {
+      session.emitted.set(item.id, JSON.stringify(item))
+    }
+    return initial
+  }
+
+  /** The live session that already shows a card for this exact share. */
+  private sessionForGofileShare(shareId: string): StoredScanSession | null {
+    for (const session of this.sessions.values()) {
+      if (session.expiresAt <= this.now()) continue
+      for (const item of session.items.values()) {
+        if (gofileShareOf(item.url)?.id === shareId) return session
+      }
+    }
+    return null
+  }
+
+  /**
+   * Replace the share card of an existing session with one card per file. The
+   * share's post number and author are inherited so funscript pairing keeps
+   * working, and a file that was already listed is upgraded in place.
+   */
+  private mergeGofileShare(
+    session: StoredScanSession,
+    shareId: string,
+    files: readonly { name: string; size: number | null; url: string }[],
+    status: GofileShareStatus,
+    cookie: string | undefined
+  ): void {
+    if (typeof cookie === 'string' && cookie.length > 0) {
+      session.gofileCookie = cookie
+    }
+    const shareItems: StoredScanItem[] = []
+    for (const item of session.items.values()) {
+      if (gofileShareOf(item.url)?.id === shareId) shareItems.push(item)
+    }
+    const postNumber =
+      shareItems.find((item) => item.postNumber !== null)?.postNumber ?? null
+    const author = shareItems.find((item) => item.author !== null)?.author ?? null
+
+    if (files.length === 0) {
+      const reason = gofileStatusReason(status) ?? GOFILE_BROWSER_ONLY_REASON
+      for (const item of shareItems) {
+        item.status = 'unavailable'
+        item.verified = false
+        item.unavailableReason = reason
+      }
+      return
+    }
+
+    let added = 0
+    for (const file of files) {
+      const existing = [...session.items.values()].filter(
+        (item) => item.url === file.url
+      )
+      if (existing.length > 0) {
+        for (const item of existing) {
+          this.applyResolvedFile(item, {
+            name: file.name,
+            size: file.size,
+            mimeType: null
+          })
+          this.ensureGofileFileItem(item)
+        }
+        this.mergeResolvedItems(session, existing)
+        added += 1
+        continue
+      }
+      if (session.items.size >= MAX_SCAN_ITEMS) {
+        session.limited = true
+        break
+      }
+      const created = this.addResolvedFileItem(session, {
+        url: file.url,
+        name: file.name,
+        size: file.size,
+        mimeType: null,
+        postNumber,
+        author
+      })
+      if (created !== null) {
+        this.ensureGofileFileItem(created)
+        added += 1
+      }
+    }
+
+    if (session.limited) {
+      session.limitedMessage ??= `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+    }
+    // The share page itself is not downloadable; its files replace it.
+    if (added > 0) {
+      for (const item of shareItems) this.removeItem(session, item.id)
+      return
+    }
+    for (const item of shareItems) {
+      item.status = 'unavailable'
+      item.unavailableReason = GOFILE_SHARE_EMPTY_REASON
+    }
+  }
+
+  /**
+   * A Gofile row is a real file even when its name carries no extension, so a
+   * card that classified as a page link is kept as a file card instead of
+   * disappearing into the "Other links" group.
+   */
+  private ensureGofileFileItem(item: StoredScanItem): void {
+    if (item.kind === 'file') return
+    item.kind = 'file'
+    item.category = 'other'
+    item.status = 'ready'
+    item.verified = false
+    item.unavailableReason = null
+  }
+
   private createSession(
     url: string,
     options: StartScanOptions
@@ -602,6 +823,7 @@ export class ScanSessionManager {
         typeof options.cookie === 'string' && options.cookie.length > 0
           ? options.cookie
           : null,
+      gofileCookie: null,
       status: 'scanning',
       message: null,
       signinRequired: false,
@@ -927,7 +1149,8 @@ export class ScanSessionManager {
 
   /**
    * Validate that a card may be opened in the user's browser and return the
-   * internal URL. Only a browser-only video page link qualifies.
+   * internal URL. A browser-only video page link and a Gofile share card both
+   * qualify: neither can be resolved without the user's own browser session.
    */
   openInBrowser(
     rawSessionId: unknown,
@@ -947,24 +1170,27 @@ export class ScanSessionManager {
       throw new ValidationError('Invalid scan item identifier.')
     }
     const item = session.items.get(rawItemId)
-    if (
-      !item ||
-      item.category !== 'video' ||
-      item.kind !== 'page-link' ||
-      item.status !== 'browser-only'
-    ) {
+    const gofileShare =
+      item === undefined ? null : gofileShareOf(item.url)
+    const openable =
+      item !== undefined &&
+      item.status === 'browser-only' &&
+      (gofileShare !== null ||
+        (item.category === 'video' && item.kind === 'page-link'))
+    if (!openable) {
       throw new AppError(
         'SCAN_ITEM_NOT_BROWSER_ONLY',
-        'Only a video card that needs your browser can be opened this way.'
+        'Only a card that needs your browser can be opened this way.'
       )
     }
     let pageUrl: string
     try {
-      pageUrl = normalizeScanUrl(item.url)
+      pageUrl =
+        gofileShare === null ? normalizeScanUrl(item.url) : gofileShare.canonicalUrl
     } catch {
-      throw new AppError('SCAN_ITEM_INVALID', 'That video link is not valid.')
+      throw new AppError('SCAN_ITEM_INVALID', 'That link is not valid.')
     }
-    return { url: item.url, pageUrl }
+    return { url: gofileShare === null ? item.url : gofileShare.canonicalUrl, pageUrl }
   }
 
   /**
@@ -1690,16 +1916,20 @@ export class ScanSessionManager {
       candidate.videoHint === true && classification.kind === 'page-link'
         ? 'video'
         : classification.category
+    // A Gofile share is a JavaScript application behind the user's own sign-in.
+    // It is never fetched, probed or queued: the card only offers the browser,
+    // and the extension later reports the rows that tab rendered.
+    const gofileShare = gofileShareOf(normalized)
     const id = this.newOpaqueId('item')
     const item: StoredScanItem = {
       id,
-      category,
-      kind: classification.kind,
+      category: gofileShare === null ? category : 'other',
+      kind: gofileShare === null ? classification.kind : 'page-link',
       name: cleanText(classification.name, MAX_SCAN_NAME_LENGTH),
       hostname: hostnameOf(normalized),
       sizeBytes: null,
       verified: false,
-      status: 'found',
+      status: gofileShare === null ? 'found' : 'browser-only',
       postNumber:
         typeof candidate.postNumber === 'number' ? candidate.postNumber : null,
       author:
@@ -1710,7 +1940,10 @@ export class ScanSessionManager {
       fallbackUrl: null,
       videoIdentity: identity,
       videoAnalysis: null,
-      browserMatchPending: false
+      browserMatchPending: false,
+      ...(gofileShare === null
+        ? {}
+        : { unavailableReason: GOFILE_BROWSER_ONLY_REASON })
     }
     session.items.set(id, item)
     session.order.push(id)
@@ -2574,13 +2807,24 @@ export class ScanSessionManager {
     this.publish(session, true)
   }
 
+  /**
+   * The one-job Cookie for a URL. The exact-host slot only ever leaves for its
+   * own host; the Gofile slot only ever leaves for a Gofile host, because
+   * Gofile serves downloads from `store<N>.gofile.io` while the cookie was read
+   * for `gofile.io`.
+   */
   private cookieFor(session: StoredScanSession, url: string): string | null {
-    if (session.cookie === null || session.cookieHost === null) return null
+    let host: string
     try {
-      return new URL(url).host === session.cookieHost ? session.cookie : null
+      host = new URL(url).host
     } catch {
       return null
     }
+    if (session.gofileCookie !== null && isGofileHostname(host)) {
+      return session.gofileCookie
+    }
+    if (session.cookie === null || session.cookieHost === null) return null
+    return host === session.cookieHost ? session.cookie : null
   }
 
   private touch(session: StoredScanSession): void {

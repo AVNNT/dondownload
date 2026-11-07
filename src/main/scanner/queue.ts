@@ -18,6 +18,7 @@ import { AppError } from '../errors'
 import { probeScanItem, type ProbeScanItemFn } from './probe'
 import { isMegaFileUrl } from './mega'
 import { isPixeldrainFileUrl } from './pixeldrain'
+import { isGofileDownloadUrl } from '@shared/gofile'
 import type {
   ResolvedScriptPairing,
   ResolvedScanTarget,
@@ -186,6 +187,16 @@ function isProviderFileTarget(target: ResolvedScanTarget): boolean {
   return isPixeldrainTarget(target) || isMegaTarget(target)
 }
 
+/**
+ * True for a Gofile download URL the user's own browser tab rendered. The file
+ * is served by `store<N>.gofile.io` and requires the `accountToken` Cookie the
+ * extension read for `gofile.io`, so the probe is skipped (it would only repeat
+ * the request) and the one-job Cookie travels with the exact same URL.
+ */
+function isGofileTarget(target: ResolvedScanTarget): boolean {
+  return target.kind === 'file' && isGofileDownloadUrl(target.url)
+}
+
 function errorCode(error: unknown): string {
   if (
     typeof error === 'object' &&
@@ -349,6 +360,9 @@ export class ScanQueueService {
         if (isProviderFileTarget(target)) {
           return { target, probe: null }
         }
+        if (isGofileTarget(target)) {
+          return { target, probe: null }
+        }
         const probe = await (this.probeItem ?? probeScanItem)(
           {
             url: target.url,
@@ -411,6 +425,26 @@ export class ScanQueueService {
             title: cleanTitle(target.name),
             ...(target.name.length > 0 ? { filename: target.name } : {}),
             scanItemId: target.itemId
+          }
+        })
+        continue
+      }
+
+      if (isGofileTarget(target)) {
+        // The rendered download URL is the final target, so it is handed over
+        // as the resolved URL (no redirect to follow) and the one-job Cookie is
+        // attached for this request only.
+        queued.push({
+          itemId: target.itemId,
+          file: {
+            url: target.url,
+            title: cleanTitle(target.name),
+            ...(target.name.length > 0 ? { filename: target.name } : {}),
+            scanItemId: target.itemId,
+            resolvedUrl: target.url,
+            ...(target.cookie === undefined
+              ? {}
+              : { requestHeaders: { cookie: target.cookie } })
           }
         })
         continue

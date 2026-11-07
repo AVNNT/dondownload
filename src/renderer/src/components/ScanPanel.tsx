@@ -37,6 +37,10 @@ import {
 } from '@shared/funscriptPairing'
 import type { ApiResult, AppErrorInfo } from '@shared/types'
 import { formatBytes } from '@shared/format'
+import {
+  GOFILE_OPEN_IN_BROWSER_ACTION,
+  isGofileHostname
+} from '@shared/gofile'
 import { Icon, type IconName } from './Icon'
 import { createScanAutoStart, type ScanAutoStart } from '../scanAutoStart'
 
@@ -1304,6 +1308,10 @@ export function ScanPanel({
         )
       : null
     const off = item.status === 'protected'
+    // A Gofile share can only be listed by the user's own signed-in browser, so
+    // its card offers that one action instead of a download.
+    const gofileShareCard =
+      item.status === 'browser-only' && isGofileHostname(item.hostname)
     const showScripts =
       sets.length > 0 && item.status !== 'probing' && item.status !== 'signin'
     const scriptPanelOpen = expandedScriptPanel[item.id] === true
@@ -1364,7 +1372,9 @@ export function ScanPanel({
           return (
             <span className="inline-flex items-center gap-1 font-semibold text-amber-300">
               <Icon name="external" size={12} />
-              Plays only in the browser
+              {gofileShareCard
+                ? 'Needs your browser'
+                : 'Plays only in the browser'}
             </span>
           )
         case 'signin':
@@ -1408,10 +1418,15 @@ export function ScanPanel({
             type="button"
             onClick={() => openInBrowser(session, item)}
             disabled={disabled || openingItemId !== null}
+            title={item.unavailableReason ?? undefined}
             className="inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-lg border border-white/10 px-3 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/[0.05] disabled:opacity-50"
           >
             <Icon name="external" size={13} />
-            {openingItemId === item.id ? 'Opening…' : 'Open in browser'}
+            {openingItemId === item.id
+              ? 'Opening…'
+              : gofileShareCard
+                ? GOFILE_OPEN_IN_BROWSER_ACTION
+                : 'Open in browser'}
           </button>
         )
       }

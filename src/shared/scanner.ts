@@ -249,9 +249,11 @@ export interface ScanProgress {
 /**
  * What a session holds. `page` sessions discover content by fetching the page;
  * `images` sessions were filled by the browser extension with the images it
- * found on the live DOM, so the desktop only shows a picker.
+ * found on the live DOM, so the desktop only shows a picker; `gofile` sessions
+ * were filled by the extension with the rows the user's own signed-in Gofile
+ * tab rendered, so the desktop never fetches or scrapes Gofile itself.
  */
-export const SCAN_SESSION_MODES = ['page', 'images'] as const
+export const SCAN_SESSION_MODES = ['page', 'images', 'gofile'] as const
 export type ScanSessionMode = (typeof SCAN_SESSION_MODES)[number]
 
 export interface ScanSession {
