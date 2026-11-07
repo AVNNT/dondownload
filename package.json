@@ -40,6 +40,7 @@
     "test:extension:real": "node scripts/e2e-extension-chromium.mjs --native --real-sites",
     "test:extension:real:helium": "node scripts/e2e-extension-chromium.mjs --browser=%LOCALAPPDATA%\\imput\\Helium\\Application\\chrome.exe --native --real-sites",
     "test:media": "vitest run tests/media-contract.test.ts tests/media-engine.test.ts tests/media-jobs-ipc.test.ts tests/media-jobs-manager.test.ts",
+    "bench": "node bench/run.mjs",
     "test:gate": "npm test && npm run build"
   },
   "dependencies": {
@@ -60,6 +61,7 @@
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.14.0",
+    "jsdom": "^31.0.0",
     "tailwindcss": "^4.3.4",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.72.1",

@@ -37,6 +37,18 @@ import type { ThumbnailFallback } from './Thumbnail'
 import { Thumbnail } from './Thumbnail'
 import { formatBytes, formatEta, formatSpeed } from '@shared/format'
 
+/**
+ * Render counter for the performance benchmark in `bench/`. It is disabled by
+ * default, so the live app pays only one falsy branch per row render and the
+ * benchmark can count exactly which rows React actually committed.
+ */
+export const rowRenderCounter = { enabled: false, renders: 0 }
+
+/** Called by TableRow; a function keeps the counter out of component lint rules. */
+export function recordRowRender(): void {
+  if (rowRenderCounter.enabled) rowRenderCounter.renders += 1
+}
+
 /*
  * Row grid matches the mockup list:
  *   wide  → 40px icon · name · progress/state · 84px size · 104px actions
@@ -478,6 +490,7 @@ const TableRow = memo(function TableRow({
   onRetryRow,
   onContextMenu
 }: TableRowProps): JSX.Element {
+  recordRowRender()
   const visual = describeRow(row, now)
   const percent = Math.round(row.progress)
   const sizeLabel =
