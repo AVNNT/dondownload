@@ -4,6 +4,12 @@ import {
   type ScanItemKind
 } from '@shared/scanner'
 import { pathnameOf } from './extract/url'
+import {
+  hasSingleVideoRules,
+  isKnownVideoHost,
+  isSingleVideoPageUrl,
+  isVideoHostVideoUrl
+} from './videoHosts'
 
 export interface ClassifyScanCandidateInput {
   url: string
@@ -118,27 +124,6 @@ const PAGE_EXTENSIONS = new Set([
 ])
 const SCRIPT_EXTENSIONS = new Set(['funscript'])
 const STREAM_EXTENSIONS = new Set(['m3u8', 'mpd'])
-
-const VIDEO_HOSTS = new Set([
-  'youtube.com',
-  'www.youtube.com',
-  'm.youtube.com',
-  'youtu.be',
-  'vimeo.com',
-  'www.vimeo.com',
-  'dailymotion.com',
-  'www.dailymotion.com',
-  'twitch.tv',
-  'www.twitch.tv',
-  'tiktok.com',
-  'www.tiktok.com',
-  'instagram.com',
-  'www.instagram.com',
-  'facebook.com',
-  'www.facebook.com',
-  'hanime1.me',
-  'www.hanime1.me'
-])
 
 /**
  * Path keywords that strongly suggest a single video/player page. The keyword
@@ -297,9 +282,7 @@ function categoryForContentType(contentType: string): ScanCategory | null {
 }
 
 export function isVideoPageHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '')
-  if (VIDEO_HOSTS.has(host)) return true
-  return host.endsWith('.youtube.com') || host.endsWith('.vimeo.com')
+  return isKnownVideoHost(hostname)
 }
 
 /**
@@ -307,6 +290,9 @@ export function isVideoPageHost(hostname: string): boolean {
  * than an article or a direct file. It is used for video cards that cannot be
  * resolved (browser-only) and for deciding whether a followed link is worth a
  * bounded fetch. It never turns a URL into a direct file.
+ *
+ * Hosts with an explicit single-video rule decide alone, so their listing,
+ * channel, model, category and search pages never look like a video.
  */
 export function isLikelyVideoPageUrl(raw: string): boolean {
   let parsed: URL
@@ -317,6 +303,9 @@ export function isLikelyVideoPageUrl(raw: string): boolean {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
   if (parsed.username !== '' || parsed.password !== '') return false
+  if (hasSingleVideoRules(parsed.hostname)) {
+    return isSingleVideoPageUrl(parsed.href)
+  }
 
   const path = pathnameOf(parsed.href).replace(/\/+$/, '')
   const extension = extensionOfPath(path)
@@ -442,14 +431,14 @@ export function classifyScanCandidate(
   // An unknown host is trusted only for a conservative single-video path.
   if (
     hostname.length > 0 &&
-    (isVideoPageHost(hostname) || isLikelyVideoPageUrl(input.url)) &&
+    (isVideoHostVideoUrl(input.url) || isLikelyVideoPageUrl(input.url)) &&
     (pathExtension === null || !VIDEO_EXTENSIONS.has(pathExtension))
   ) {
     return { category: 'video', kind: 'page-link', name, extension }
   }
 
   if (input.isEmbed === true) {
-    return isVideoPageHost(hostname)
+    return isVideoHostVideoUrl(input.url)
       ? { category: 'video', kind: 'page-link', name, extension }
       : { category: 'page', kind: 'page-link', name, extension }
   }

@@ -1,6 +1,7 @@
 import { Parser } from 'htmlparser2'
 import { isLikelyVideoPageUrl } from './classify'
 import { resolveScanUrl } from './extract/url'
+import { hasSingleVideoRules, isVideoHostVideoUrl } from './videoHosts'
 
 /**
  * Pure, bounded follow policy for phase 2 discovery.
@@ -16,40 +17,6 @@ import { resolveScanUrl } from './extract/url'
  */
 
 export const MAX_FOLLOW_CANDIDATES = 2000
-
-const VIDEO_HOSTS = new Set([
-  'youtube.com',
-  'youtu.be',
-  'm.youtube.com',
-  'music.youtube.com',
-  'vimeo.com',
-  'player.vimeo.com',
-  'dailymotion.com',
-  'dai.ly',
-  'twitch.tv',
-  'clips.twitch.tv',
-  'tiktok.com',
-  'vm.tiktok.com',
-  'instagram.com',
-  'facebook.com',
-  'fb.watch',
-  'streamable.com',
-  'rumble.com',
-  'odysee.com',
-  'bitchute.com',
-  'kick.com',
-  'x.com',
-  'twitter.com',
-  'bilibili.com',
-  'nicovideo.jp',
-  'archive.org',
-  'soundcloud.com',
-  'v.qq.com',
-  'youku.com',
-  'media.ccc.de',
-  'hanime1.me',
-  'www.hanime1.me'
-])
 
 /** Embeds that are never page content worth following. */
 const BLOCKED_IFRAME_HOSTS = new Set([
@@ -232,18 +199,6 @@ function attributeValue(
   return decoded.length > 0 ? decoded : null
 }
 
-export function isKnownVideoHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '')
-  if (VIDEO_HOSTS.has(host)) return true
-  return (
-    host.endsWith('.youtube.com') ||
-    host.endsWith('.vimeo.com') ||
-    host.endsWith('.dailymotion.com') ||
-    host.endsWith('.twitch.tv') ||
-    host.endsWith('.tiktok.com')
-  )
-}
-
 /** Approximate the registrable domain without a full Public Suffix List. */
 export function registrableDomain(hostname: string): string {
   const host = hostname.toLowerCase().replace(/\.$/, '')
@@ -367,7 +322,11 @@ export function scoreFollowLink(input: {
   const host = parsed.hostname.toLowerCase()
   const sameSite =
     registrableDomain(host) === registrableDomain(base.hostname.toLowerCase())
-  const videoHost = isKnownVideoHost(host)
+  const videoHost = isVideoHostVideoUrl(parsed.href)
+  // Hosts with explicit single-video rules never fall back to the loose path
+  // or text heuristics: their listings, channels, models, categories and
+  // search pages are not videos and must not be fetched.
+  if (hasSingleVideoRules(host) && !videoHost) return null
   const likelyVideoPage = isLikelyVideoPageUrl(parsed.href)
   const videoPath = likelyVideoPage || VIDEO_PATH.test(parsed.pathname)
   const directFilePage = isPixeldrainFilePage(parsed)
