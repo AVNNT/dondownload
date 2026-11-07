@@ -118,25 +118,23 @@
       <section class="group" aria-labelledby="handoff-heading">
         <h2 id="handoff-heading">Use DonDownload on all sites</h2>
         <p class="lead">
-          Always on. Access to every normal http/https site is granted when the
-          extension is installed, so there is nothing to switch on and no
-          prompt to accept. A normal browser download (files, installers, PDFs,
-          and direct video/audio files such as MP4, MKV or MP3) is handed to
-          DonDownload, and the video overlay shows on every normal http/https
-          site. The browser's cookies for exactly that download URL are sent
-          with it so login-protected files work; they are kept in memory for
-          that job only and never saved. HTML pages, HLS/DASH playlists and
-          segments, extension downloads and excluded sites are never touched.
-          The browser download is cancelled only after DonDownload returns a
-          durable receipt; any failure leaves it running.
+          Always on. Access to every normal http/https site and to the
+          browser's downloads are granted when the extension is installed, so
+          there is nothing to switch on and no prompt to accept. A normal
+          browser download (files, installers, PDFs, and direct video/audio
+          files such as MP4, MKV or MP3) goes to DonDownload from the first
+          download after install, and the video overlay shows on every normal
+          http/https site. Once the optional cookies permission is granted, the
+          browser's cookies for exactly that download URL are sent with it so
+          login-protected files work; they are kept in memory for that job only
+          and never saved. HTML pages, HLS/DASH playlists and segments,
+          extension downloads and excluded sites are never touched. The browser
+          download is cancelled only after DonDownload returns a durable
+          receipt; any failure leaves it running.
         </p>
         <p id="all-sites-state" class="state" role="status" aria-live="polite">
           Active on all sites.
         </p>
-        <p id="permission-state" class="state" role="status" aria-live="polite"></p>
-        <button id="request-downloads" class="btn primary" type="button">
-          Allow browser download access
-        </button>
         <label class="toggle-row select-row" for="handoff-min-bytes">
           <select id="handoff-min-bytes" class="field">
             <option value="0">any size</option>
@@ -159,9 +157,6 @@
           each file. If a window does appear, the browser kept that download;
           press Cancel and DonDownload still has the file.
         </p>
-        <button id="remove-downloads" class="btn" type="button" hidden>
-          Remove download permission
-        </button>
         <p id="handoff-status" class="status" role="status" aria-live="polite"></p>
       </section>
 

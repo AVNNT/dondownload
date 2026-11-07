@@ -599,7 +599,6 @@ function installLifecycleListeners(details) {
   // overlay into every open tab, so nothing has to be turned on.
   void ensureAllSitesMode(true).catch(() => undefined)
   void pruneOrphanOverlayRegistrations()
-  installDownloadsSupport()
   networkObservation.install()
   void refreshNetworkObservation().catch(() => undefined)
   mediaSniffer.install()
@@ -617,11 +616,10 @@ function installLifecycleListeners(details) {
 }
 
 /**
- * The downloads permission is optional and granted only on a user gesture from
- * the popup or the options page. Until then `chrome.downloads` is absent, so
- * this is a guarded no-op rather than a broken top-level listener. It is called
- * again after a grant and on a message from the granting page, so takeover
- * starts without reloading the extension.
+ * `downloads` is a required manifest permission, so `chrome.downloads` is
+ * always present and this installs the onDeterminingFilename listener on every
+ * worker start. Take-over therefore works right after install, with no grant
+ * and no button.
  */
 function installDownloadsSupport() {
   return installDownloadsListener(chrome, (item, options) =>
@@ -641,11 +639,10 @@ async function toggleOverlayOnActiveTab() {
   }
 }
 
-// Evaluate this at worker start as well as after a grant. Service-worker
-// suspension/recreation re-runs the module, and permissions.onAdded covers a
-// grant that happened while the worker was alive but the API was not yet
-// exposed. Every wake also re-asserts the always-on all-sites registration, so
-// a registration lost to a browser reset comes back without user action.
+// Evaluate this at worker start: `downloads` is required, so the listener is
+// installed unconditionally and hand-off works right after install. Every wake
+// also re-asserts the always-on all-sites registration, so a registration lost
+// to a browser reset comes back without user action.
 installDownloadsSupport()
 void ensureAllSitesMode(false).catch(() => undefined)
 
@@ -662,7 +659,6 @@ chrome.runtime.onStartup.addListener(installLifecycleListeners)
 // closed by the browser's permission prompt. These top-level listeners let the
 // service worker finish the exact-origin registration and injection anyway.
 chrome.permissions.onAdded.addListener((permissions) => {
-  installDownloadsSupport()
   networkObservation.install()
   mediaSniffer.install()
   void refreshNetworkObservation().catch(() => undefined)
@@ -890,20 +886,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'dondownload:handoff-login-clear') {
     clearNeedsLoginBadge()
     refreshActiveBadge()
-    return false
-  }
-
-  if (message.type === 'dondownload:downloads-support') {
-    // The popup/options page asked for the optional permissions in one click.
-    // Install the downloads listener now instead of waiting for the next worker
-    // start, so takeover works immediately after the grant.
-    let listener = false
-    try {
-      listener = installDownloadsSupport()
-    } catch {
-      listener = false
-    }
-    sendResponse({ ok: true, listener })
     return false
   }
 

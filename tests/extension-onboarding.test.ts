@@ -75,7 +75,7 @@ function installFakeChrome(options: { grant?: boolean } = {}): {
       lastError: undefined,
       getManifest() {
         return {
-          optional_permissions: ['downloads', 'webRequest', 'cookies']
+          optional_permissions: ['webRequest', 'cookies']
         }
       },
       sendMessage(message: any, callback: (value: unknown) => void) {
@@ -236,9 +236,10 @@ describe('popup exact-site enable', () => {
 describe('welcome recommended capture setup', () => {
   it('requests only the optional permissions, then keeps the always-on options', async () => {
     const fake = installFakeChrome()
-    // Site access is a required manifest permission, so it is never requested.
+    // Site access and downloads are required manifest permissions, so they are
+    // never requested; only the optional webRequest and cookies are.
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['downloads', 'webRequest', 'cookies']
+      permissions: ['webRequest', 'cookies']
     })
 
     const result = await new Promise<any>((resolve) => {
@@ -246,7 +247,7 @@ describe('welcome recommended capture setup', () => {
     })
 
     expect(fake.permissionRequests).toEqual([
-      { permissions: ['downloads', 'webRequest', 'cookies'] }
+      { permissions: ['webRequest', 'cookies'] }
     ])
     expect(result).toEqual({ ok: true })
     const saved = fake.local.dondownloadCaptureSettings as any
@@ -255,13 +256,13 @@ describe('welcome recommended capture setup', () => {
     expect(saved.automaticFileHandoff).toBe(true)
   })
 
-  it('leaves downloads out when the manifest does not declare it optional', () => {
+  it('leaves cookies out when the manifest does not declare it optional', () => {
     const fake = installFakeChrome()
     fake.chrome.runtime.getManifest = () => ({
-      optional_permissions: ['webRequest', 'cookies']
+      optional_permissions: ['webRequest']
     })
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
-      permissions: ['webRequest', 'cookies']
+      permissions: ['webRequest']
     })
   })
 

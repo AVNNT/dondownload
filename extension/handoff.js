@@ -202,18 +202,6 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
   const downloads = chromeApi && chromeApi.downloads
   if (!downloads) return 'downloads-unavailable'
 
-  let granted
-  try {
-    const permissions = chromeApi && chromeApi.permissions
-    granted =
-      permissions && typeof permissions.contains === 'function'
-        ? (await permissions.contains({ permissions: ['downloads'] })) === true
-        : false
-  } catch {
-    granted = false
-  }
-  if (!granted) return 'permission-required'
-
   const candidateOptions = { minBytes: settings.handoffMinBytes }
   const candidate = automaticHandoffCandidate(
     item,
@@ -341,7 +329,7 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
   return 'cancelled'
 }
 
-/** Register the downloads listeners only when the optional grant is present. */
+/** One listener registration per worker generation. */
 let downloadsListenerInstalled = false
 
 /**
@@ -414,10 +402,9 @@ function runHeldDownload(chromeApi, item, suggest, onCreated) {
 }
 
 /**
- * Register the chrome.downloads listeners. Safe to call again after the
- * optional downloads permission is granted at runtime: the permission may
- * expose `chrome.downloads` only after the grant, and only one listener is ever
- * added per worker generation.
+ * Register the chrome.downloads listeners. `downloads` is a required manifest
+ * permission, so the worker calls this unconditionally on every start; calling
+ * it again only ever adds one listener per worker generation.
  *
  * onDeterminingFilename is used whenever the browser has it, because it runs
  * before the browser starts the download. onCreated stays as the fallback for a

@@ -11,8 +11,8 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage"],
-  "optional_permissions": ["downloads", "webRequest", "cookies"],
+  "permissions": ["activeTab", "contextMenus", "downloads", "nativeMessaging", "scripting", "storage"],
+  "optional_permissions": ["webRequest", "cookies"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
