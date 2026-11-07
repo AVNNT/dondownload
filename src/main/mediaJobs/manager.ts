@@ -967,6 +967,23 @@ export class MediaJobsManager {
     return this.getMediaSnapshot()
   }
 
+  /**
+   * Drop rows that a shared history-cleanup transaction already deleted from
+   * SQLite. Reuses the normal "Remove from list" forget path and publishes one
+   * snapshot. Media files stay on disk.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      if (!this.jobs.has(id)) continue
+      this.forgetJob(id)
+      changed = true
+    }
+    if (!changed) return
+    this.stopFlushIfIdle()
+    this.publish(true)
+  }
+
   /** Drop every in-memory trace of one job. Media files are untouched. */
   private forgetJob(id: string): void {
     this.stopMergeProgressPolling(id)

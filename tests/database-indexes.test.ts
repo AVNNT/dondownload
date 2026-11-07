@@ -85,7 +85,7 @@ describe('v17 history indexes', () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(18)
+    expect(SCHEMA_VERSION).toBe(19)
 
     // Inspect the live connection that DownloadDatabase owns.
     const raw = (database as unknown as { db: DatabaseSync }).db
@@ -97,6 +97,15 @@ describe('v17 history indexes', () => {
     )
     expect(indexNames(raw, 'batches')).toContain(
       'batches_created_at_updated_at_idx'
+    )
+    expect(indexNames(raw, 'downloads')).toContain(
+      'downloads_history_cleanup_idx'
+    )
+    expect(indexNames(raw, 'media_jobs')).toContain(
+      'media_jobs_history_cleanup_idx'
+    )
+    expect(indexNames(raw, 'batches')).toContain(
+      'batches_history_cleanup_idx'
     )
 
     expect(raw.prepare('PRAGMA journal_mode').get()).toMatchObject({
@@ -156,6 +165,10 @@ describe('v17 history indexes', () => {
     raw.exec('DROP INDEX downloads_created_at_updated_at_idx')
     raw.exec('DROP INDEX media_jobs_created_at_updated_at_idx')
     raw.exec('DROP INDEX batches_created_at_updated_at_idx')
+    raw.exec('DROP INDEX downloads_history_cleanup_idx')
+    raw.exec('DROP INDEX media_jobs_history_cleanup_idx')
+    raw.exec('DROP INDEX batches_history_cleanup_idx')
+    raw.exec('ALTER TABLE download_settings DROP COLUMN history_retention_days')
     raw.exec('ALTER TABLE downloads DROP COLUMN checksum_algorithm')
     raw.exec('ALTER TABLE downloads DROP COLUMN checksum_ok')
     raw.exec('ALTER TABLE downloads DROP COLUMN checksum_computed')
@@ -164,7 +177,7 @@ describe('v17 history indexes', () => {
     raw.close()
 
     const upgraded = open(filePath)
-    expect(upgraded.schemaVersion).toBe(18)
+    expect(upgraded.schemaVersion).toBe(19)
     const verify = (upgraded as unknown as { db: DatabaseSync }).db
     expect(indexNames(verify, 'downloads')).toContain(
       'downloads_created_at_updated_at_idx'
@@ -174,6 +187,15 @@ describe('v17 history indexes', () => {
     )
     expect(indexNames(verify, 'batches')).toContain(
       'batches_created_at_updated_at_idx'
+    )
+    expect(indexNames(verify, 'downloads')).toContain(
+      'downloads_history_cleanup_idx'
+    )
+    expect(indexNames(verify, 'media_jobs')).toContain(
+      'media_jobs_history_cleanup_idx'
+    )
+    expect(indexNames(verify, 'batches')).toContain(
+      'batches_history_cleanup_idx'
     )
     const downloadColumns = (
       verify.prepare('PRAGMA table_info(downloads)').all() as { name: string }[]

@@ -526,7 +526,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(18)
+    expect(SCHEMA_VERSION).toBe(19)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -543,7 +543,8 @@ describe('download settings persistence', () => {
       allowed_hours_start: '00:00',
       allowed_hours_end: '00:00',
       theme: 'oled',
-      sort_downloads_by_type: 0
+      sort_downloads_by_type: 0,
+      history_retention_days: 30
     })
   })
 
@@ -560,7 +561,8 @@ describe('download settings persistence', () => {
         end: '06:00'
       },
       theme: 'light',
-      sortDownloadsByType: true
+      sortDownloadsByType: true,
+      historyRetentionDays: 7
     }
     first.saveSettings(custom)
     expect(first.loadSettings()).toEqual(custom)
@@ -582,7 +584,8 @@ describe('download settings persistence', () => {
       globalSpeedLimitBps: MAX_SPEED_LIMIT_BPS,
       allowedHours: { enabled: true, start: '00:00', end: '00:00' },
       theme: 'dark',
-      sortDownloadsByType: true
+      sortDownloadsByType: true,
+      historyRetentionDays: 7
     })
     close(second)
 
@@ -615,6 +618,10 @@ describe('download settings persistence', () => {
       {
         ...defaultDownloadSettings(),
         theme: 'system' as never
+      },
+      {
+        ...defaultDownloadSettings(),
+        historyRetentionDays: 14 as never
       }
     ]
 
@@ -657,14 +664,16 @@ describe('download settings persistence', () => {
       "UPDATE download_settings SET theme = 'system'",
       'UPDATE download_settings SET theme = NULL',
       'UPDATE download_settings SET sort_downloads_by_type = 2',
-      'UPDATE download_settings SET sort_downloads_by_type = NULL'
+      'UPDATE download_settings SET sort_downloads_by_type = NULL',
+      'UPDATE download_settings SET history_retention_days = 14',
+      'UPDATE download_settings SET history_retention_days = NULL'
     ]
     for (const sql of invalidUpdates) {
       expect(() => raw.exec(sql)).toThrow()
     }
 
     raw.exec(
-      "UPDATE download_settings SET max_concurrent_downloads = 1, per_host_connections = 16, global_speed_limit_bps = 1073741824, allowed_hours_enabled = 1, allowed_hours_start = '23:59', allowed_hours_end = '23:59', theme = 'light', sort_downloads_by_type = 1"
+      "UPDATE download_settings SET max_concurrent_downloads = 1, per_host_connections = 16, global_speed_limit_bps = 1073741824, allowed_hours_enabled = 1, allowed_hours_start = '23:59', allowed_hours_end = '23:59', theme = 'light', sort_downloads_by_type = 1, history_retention_days = 90"
     )
     expect(rowsOf(raw, 'download_settings')[0]).toMatchObject({
       max_concurrent_downloads: 1,
@@ -674,7 +683,8 @@ describe('download settings persistence', () => {
       allowed_hours_start: '23:59',
       allowed_hours_end: '23:59',
       theme: 'light',
-      sort_downloads_by_type: 1
+      sort_downloads_by_type: 1,
+      history_retention_days: 90
     })
     raw.close()
   })
@@ -698,7 +708,8 @@ describe('download settings persistence', () => {
       'allowed_hours_end',
       'updated_at',
       'theme',
-      'sort_downloads_by_type'
+      'sort_downloads_by_type',
+      'history_retention_days'
     ])
     expect(columns.filter((name) => /url|path|token|secret|cookie|header/i.test(name))).toEqual(
       []
@@ -932,10 +943,14 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     expect(userVersion(verify)).toBe(SCHEMA_VERSION)
     expect(rowsOf(verify, 'download_settings')).toHaveLength(1)
     expect(tableExists(verify, 'download_settings')).toBe(true)
-    // v17 adds one composite history index per list table; the indexes that
-    // already existed before the migration are still present.
+    // v17 adds one composite history index per list table and v19 adds the
+    // cleanup index; the indexes that already existed are still present.
     expect(indexNames(verify, 'downloads')).toEqual(
-      [...downloadIndexes, 'downloads_created_at_updated_at_idx'].sort()
+      [
+        ...downloadIndexes,
+        'downloads_created_at_updated_at_idx',
+        'downloads_history_cleanup_idx'
+      ].sort()
     )
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(fixture.downloads, DOWNLOAD_COLUMNS)
@@ -943,14 +958,22 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
     if (version >= 2) {
       expect(rowsOf(verify, 'media_jobs')).toMatchObject(fixture.media)
       expect(indexNames(verify, 'media_jobs')).toEqual(
-        [...mediaIndexes, 'media_jobs_created_at_updated_at_idx'].sort()
+        [
+          ...mediaIndexes,
+          'media_jobs_created_at_updated_at_idx',
+          'media_jobs_history_cleanup_idx'
+        ].sort()
       )
     }
     if (version >= 3) {
       expect(rowsOf(verify, 'batches')).toMatchObject(fixture.batches)
       expect(rowsOf(verify, 'batch_items')).toEqual(fixture.batchItems)
       expect(indexNames(verify, 'batches')).toEqual(
-        [...batchParentIndexes, 'batches_created_at_updated_at_idx'].sort()
+        [
+          ...batchParentIndexes,
+          'batches_created_at_updated_at_idx',
+          'batches_history_cleanup_idx'
+        ].sort()
       )
       expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
       const foreignKeys = verify
@@ -1017,7 +1040,8 @@ describe('v5 to v8 migration', () => {
       globalSpeedLimitBps: 2048,
       allowedHours: { enabled: true, start: '21:15', end: '05:45' },
       theme: 'oled',
-      sortDownloadsByType: false
+      sortDownloadsByType: false,
+      historyRetentionDays: 30
     })
     const stored = database.loadAll()
     const original = stored.find(
@@ -1072,6 +1096,7 @@ describe('v7 to v8 theme migration', () => {
     legacy.exec(`
       ALTER TABLE download_settings DROP COLUMN theme;
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
+      ALTER TABLE download_settings DROP COLUMN history_retention_days;
       ALTER TABLE downloads DROP COLUMN needs_login;
       ALTER TABLE downloads DROP COLUMN error_detail;
       ALTER TABLE downloads DROP COLUMN checksum_algorithm;
@@ -1098,7 +1123,8 @@ describe('v7 to v8 theme migration', () => {
       globalSpeedLimitBps: 4096,
       allowedHours: { enabled: true, start: '20:00', end: '04:30' },
       theme: 'oled',
-      sortDownloadsByType: false
+      sortDownloadsByType: false,
+      historyRetentionDays: 30
     })
     close(migrated)
 
@@ -1114,6 +1140,7 @@ describe('v7 to v8 theme migration', () => {
       allowed_hours_end: '04:30',
       theme: 'oled',
       sort_downloads_by_type: 0,
+      history_retention_days: 30,
       updated_at: 123
     })
     verify.close()
@@ -1137,6 +1164,7 @@ describe('v13 to v14 per-host connection migration', () => {
       ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       UPDATE download_settings SET per_host_connections = ${perHostConnections};
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
+      ALTER TABLE download_settings DROP COLUMN history_retention_days;
       PRAGMA user_version = 13;
     `)
     legacy.close()
@@ -1250,6 +1278,7 @@ describe('v14 to v15 MEGA folder migration', () => {
       ALTER TABLE downloads DROP COLUMN checksum_computed;
       ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
+      ALTER TABLE download_settings DROP COLUMN history_retention_days;
       PRAGMA user_version = 14;
     `)
     legacy.close()
@@ -1320,6 +1349,7 @@ describe('v15 to v16 sort-by-type migration', () => {
       ALTER TABLE downloads DROP COLUMN checksum_computed;
       ALTER TABLE downloads DROP COLUMN checksum_checked_at;
       ALTER TABLE download_settings DROP COLUMN sort_downloads_by_type;
+      ALTER TABLE download_settings DROP COLUMN history_retention_days;
       PRAGMA user_version = 15;
     `)
     legacy.close()
@@ -1332,7 +1362,8 @@ describe('v15 to v16 sort-by-type migration', () => {
       globalSpeedLimitBps: 4096,
       allowedHours: { enabled: true, start: '21:15', end: '05:45' },
       theme: 'dark',
-      sortDownloadsByType: false
+      sortDownloadsByType: false,
+      historyRetentionDays: 30
     })
     close(migrated)
 
@@ -1349,7 +1380,8 @@ describe('v15 to v16 sort-by-type migration', () => {
       allowed_hours_start: '21:15',
       allowed_hours_end: '05:45',
       theme: 'dark',
-      sort_downloads_by_type: 0
+      sort_downloads_by_type: 0,
+      history_retention_days: 30
     })
     verify.close()
   })
@@ -1372,6 +1404,72 @@ describe('v15 to v16 sort-by-type migration', () => {
       sort_downloads_by_type: 1
     })
     raw.close()
+  })
+})
+
+describe('v18 to v19 history-retention migration', () => {
+  it('adds the 30-day default, keeps values and creates the cleanup indexes', async () => {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    seed.saveSettings({
+      ...defaultDownloadSettings(),
+      maxConcurrentDownloads: 8,
+      perHostConnections: 6,
+      globalSpeedLimitBps: 8192,
+      allowedHours: { enabled: true, start: '23:00', end: '07:00' },
+      theme: 'light',
+      sortDownloadsByType: true,
+      historyRetentionDays: 90
+    })
+    close(seed)
+
+    // Simulate a database created before automatic history cleanup existed.
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      DROP INDEX IF EXISTS downloads_history_cleanup_idx;
+      DROP INDEX IF EXISTS media_jobs_history_cleanup_idx;
+      DROP INDEX IF EXISTS batches_history_cleanup_idx;
+      ALTER TABLE download_settings DROP COLUMN history_retention_days;
+      PRAGMA user_version = 18;
+    `)
+    legacy.close()
+
+    const migrated = open(filePath)
+    expect(migrated.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(migrated.loadSettings()).toEqual({
+      maxConcurrentDownloads: 8,
+      perHostConnections: 6,
+      globalSpeedLimitBps: 8192,
+      allowedHours: { enabled: true, start: '23:00', end: '07:00' },
+      theme: 'light',
+      sortDownloadsByType: true,
+      historyRetentionDays: 30
+    })
+    migrated.saveSettings({
+      ...migrated.loadSettings(),
+      historyRetentionDays: 7
+    })
+    expect(migrated.loadSettings().historyRetentionDays).toBe(7)
+    close(migrated)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(columnNames(verify, 'download_settings')).toContain(
+      'history_retention_days'
+    )
+    expect(rowsOf(verify, 'download_settings')[0]).toMatchObject({
+      history_retention_days: 7
+    })
+    expect(indexNames(verify, 'downloads')).toContain(
+      'downloads_history_cleanup_idx'
+    )
+    expect(indexNames(verify, 'media_jobs')).toContain(
+      'media_jobs_history_cleanup_idx'
+    )
+    expect(indexNames(verify, 'batches')).toContain(
+      'batches_history_cleanup_idx'
+    )
+    verify.close()
   })
 })
 

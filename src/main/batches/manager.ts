@@ -2539,22 +2539,29 @@ export class BatchManager {
     const input: BatchTargetInput = parseBatchTargetInput(rawInput)
     const batch = this.requireBatch(input.batchId)
 
-    this.batches.delete(batch.record.id)
-    this.scanPairings.delete(batch.record.id)
-    for (const item of batch.items.values()) {
-      this.dirtyItems.delete(item.id)
-      this.scanRequestHeaders.delete(item.id)
-      this.scanResolvedUrls.delete(item.id)
-      this.scanFilenames.delete(item.id)
-      this.scanFallbacks.delete(item.id)
-      this.scanSubfolders.delete(item.id)
-      this.scanMediaSelections.delete(item.id)
-      this.scanSniffedMediaSelections.delete(item.id)
-    }
+    this.forgetBatch(batch)
     this.removePersistedBatch(batch.record.id)
     this.stopPollingIfIdle()
     this.publish(true)
     return this.getBatchSnapshot()
+  }
+
+  /**
+   * Drop parents that a shared history-cleanup transaction already deleted from
+   * SQLite. This is the same in-memory path as "Remove batch": items and their
+   * memory-only scanner state are cleared, while child jobs and files stay.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      const batch = this.batches.get(id)
+      if (!batch) continue
+      this.forgetBatch(batch)
+      changed = true
+    }
+    if (!changed) return
+    this.stopPollingIfIdle()
+    this.publish(true)
   }
 
   /**
@@ -3855,6 +3862,22 @@ export class BatchManager {
     } catch {
       this.logPersistenceError('could not be saved')
       this.markItemDirty(item)
+    }
+  }
+
+  /** Drop every in-memory trace of one batch. Child jobs/files stay. */
+  private forgetBatch(batch: ManagedBatch): void {
+    this.batches.delete(batch.record.id)
+    this.scanPairings.delete(batch.record.id)
+    for (const item of batch.items.values()) {
+      this.dirtyItems.delete(item.id)
+      this.scanRequestHeaders.delete(item.id)
+      this.scanResolvedUrls.delete(item.id)
+      this.scanFilenames.delete(item.id)
+      this.scanFallbacks.delete(item.id)
+      this.scanSubfolders.delete(item.id)
+      this.scanMediaSelections.delete(item.id)
+      this.scanSniffedMediaSelections.delete(item.id)
     }
   }
 

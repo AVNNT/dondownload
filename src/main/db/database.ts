@@ -24,12 +24,14 @@ import {
   type BatchRecord
 } from '@shared/batches'
 import {
+  DEFAULT_HISTORY_RETENTION_DAYS,
   DEFAULT_THEME,
   parseDownloadControls,
   parseDownloadSettings,
   type DownloadControls,
   type DownloadSettings
 } from '@shared/settings'
+import type { HistoryCleanupDeletion } from '../history/cleanup'
 import {
   isChecksumAlgorithm,
   isChecksumResult,
@@ -56,7 +58,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 18
+export const SCHEMA_VERSION = 19
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -621,6 +623,25 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE downloads ADD COLUMN checksum_checked_at INTEGER
         CHECK (checksum_checked_at IS NULL OR checksum_checked_at >= 0);
     `
+  },
+  {
+    // Additive only: automatic history cleanup. Existing rows keep every value
+    // and gain the documented 30-day default. The expression indexes cover the
+    // "terminal state + finished/updated time" cleanup predicate so a future
+    // SQL-side sweep stays cheap. No row, file or list entry is touched here.
+    version: 19,
+    sql: `
+      ALTER TABLE download_settings ADD COLUMN history_retention_days INTEGER
+        NOT NULL DEFAULT 30
+        CHECK (history_retention_days IN (0, 7, 30, 90));
+
+      CREATE INDEX IF NOT EXISTS downloads_history_cleanup_idx
+        ON downloads (status, COALESCE(completed_at, updated_at));
+      CREATE INDEX IF NOT EXISTS media_jobs_history_cleanup_idx
+        ON media_jobs (status, COALESCE(completed_at, updated_at));
+      CREATE INDEX IF NOT EXISTS batches_history_cleanup_idx
+        ON batches (status, COALESCE(completed_at, updated_at));
+    `
   }
 ]
 
@@ -777,7 +798,12 @@ function rowToSettings(row: Record<string, unknown>): DownloadSettings {
     // The migration default covers old rows; this fallback keeps a malformed
     // row from taking the app down before the shared parser can reject it.
     theme: text(row, 'theme') ?? DEFAULT_THEME,
-    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1
+    sortDownloadsByType: number(row, 'sort_downloads_by_type', 0) === 1,
+    historyRetentionDays: number(
+      row,
+      'history_retention_days',
+      DEFAULT_HISTORY_RETENTION_DAYS
+    )
   })
 }
 
@@ -1037,8 +1063,8 @@ export class DownloadDatabase {
           id, max_concurrent_downloads, per_host_connections,
           global_speed_limit_bps, allowed_hours_enabled,
           allowed_hours_start, allowed_hours_end, theme,
-          sort_downloads_by_type, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sort_downloads_by_type, history_retention_days, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           max_concurrent_downloads = excluded.max_concurrent_downloads,
           per_host_connections = excluded.per_host_connections,
@@ -1048,6 +1074,7 @@ export class DownloadDatabase {
           allowed_hours_end = excluded.allowed_hours_end,
           theme = excluded.theme,
           sort_downloads_by_type = excluded.sort_downloads_by_type,
+          history_retention_days = excluded.history_retention_days,
           updated_at = excluded.updated_at
       `)
       this.mediaToolSettingsSelectStatement = this.db.prepare(
@@ -1430,6 +1457,7 @@ export class DownloadDatabase {
         parsed.allowedHours.end,
         parsed.theme,
         parsed.sortDownloadsByType ? 1 : 0,
+        parsed.historyRetentionDays,
         Date.now()
       )
     } catch (error) {
@@ -1621,6 +1649,47 @@ export class DownloadDatabase {
         // The transaction may already be closed by SQLite.
       }
       throw databaseError('Could not remove media job history', error)
+    }
+  }
+
+  /**
+   * Remove old list/history rows for every list source in ONE transaction.
+   * Used by the automatic history cleanup so a download row, a media row and a
+   * batch never disappear in separate commits. Files on disk are never touched.
+   */
+  deleteHistoryEntries(input: HistoryCleanupDeletion): void {
+    const downloadIds = input.downloadIds
+    const mediaJobIds = input.mediaJobIds
+    const batchIds = input.batchIds
+    if (
+      downloadIds.length === 0 &&
+      mediaJobIds.length === 0 &&
+      batchIds.length === 0
+    ) {
+      return
+    }
+    this.assertOpen()
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of downloadIds) {
+        this.deleteStatement.run(id)
+      }
+      for (const id of mediaJobIds) {
+        this.mediaDeleteStatement.run(id)
+      }
+      // batch_items cascades from batches; foreign_keys is on.
+      for (const id of batchIds) {
+        this.batchDeleteStatement.run(id)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // The transaction may already be closed by SQLite.
+      }
+      throw databaseError('Could not remove old history', error)
     }
   }
 
