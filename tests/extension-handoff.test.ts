@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  HANDOFF_SUGGEST_TIMEOUT_MS,
   handleCreatedDownload,
   installDownloadsListener,
   resetDownloadsListenerForTests
@@ -40,6 +41,7 @@ function createFake(options: FakeOptions = {}) {
   const session = new Map<string, unknown>()
   const nativeMessages: unknown[] = []
   const cancelled: number[] = []
+  const erased: number[] = []
   const searched: number[] = []
   const cookieUrls: string[] = []
   const injected: Array<{ tabId: number; args: unknown[] }> = []
@@ -173,6 +175,10 @@ function createFake(options: FakeOptions = {}) {
         }
         cancelled.push(id)
         callback()
+      },
+      erase(query: { id: number }, callback: () => void) {
+        erased.push(query.id)
+        callback()
       }
     }
   }
@@ -183,6 +189,7 @@ function createFake(options: FakeOptions = {}) {
     session,
     nativeMessages,
     cancelled,
+    erased,
     searched,
     cookieUrls,
     injected,
@@ -246,6 +253,38 @@ function mediaItem(overrides: Record<string, unknown> = {}) {
 
 function nativeMessage(fake: ReturnType<typeof createFake>, index = 0) {
   return (fake.nativeMessages[index] as { message: Record<string, unknown> }).message
+}
+
+/**
+ * A browser that holds downloads in chrome.downloads.onDeterminingFilename. The
+ * fake also exposes onCreated so a test can prove it was not registered.
+ */
+function installHeld(fake: ReturnType<typeof createFake>) {
+  let heldListener: ((item: unknown, suggest: () => void) => boolean) | null = null
+  let createdListener: ((item: unknown) => void) | null = null
+  fake.chrome.downloads.onDeterminingFilename = {
+    addListener(listener: (item: unknown, suggest: () => void) => boolean) {
+      heldListener = listener
+    }
+  }
+  fake.chrome.downloads.onCreated = {
+    addListener(listener: (item: unknown) => void) {
+      createdListener = listener
+    }
+  }
+  const installed = installDownloadsListener(fake.chrome, (item, options) =>
+    handleCreatedDownload(fake.chrome, item, options)
+  )
+  return {
+    installed,
+    held: () => heldListener!,
+    createdRegistered: () => createdListener !== null
+  }
+}
+
+/** Let the whole hand-off decision settle: every step resolves on a microtask. */
+function flush() {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 describe('automatic browser hand-off is strict and conservative', () => {
@@ -935,5 +974,169 @@ describe('in-page hand-off card', () => {
       'cancelled'
     )
     expect(fake.cancelled).toEqual([42, 43])
+  })
+})
+
+describe('downloads are intercepted before the Save As dialog', () => {
+  it('hands a held download off, then cancels and erases it before releasing the browser', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+    const events: string[] = []
+    const sendNative = fake.chrome.runtime.sendNativeMessage
+    fake.chrome.runtime.sendNativeMessage = (
+      host: string,
+      message: unknown,
+      callback: (value: unknown) => void
+    ) => {
+      events.push('native')
+      sendNative(host, message, callback)
+    }
+    const cancel = fake.chrome.downloads.cancel
+    fake.chrome.downloads.cancel = (id: number, callback: () => void) => {
+      events.push('cancel')
+      cancel(id, callback)
+    }
+    const erase = fake.chrome.downloads.erase
+    fake.chrome.downloads.erase = (query: { id: number }, callback: () => void) => {
+      events.push('erase')
+      erase(query, callback)
+    }
+
+    const held = installHeld(fake)
+    expect(held.installed).toBe(true)
+    // onCreated is only the fallback for a browser without onDeterminingFilename.
+    expect(held.createdRegistered()).toBe(false)
+
+    const suggests: number[] = []
+    expect(held.held()(fileItem(), () => {
+      events.push('suggest')
+      suggests.push(1)
+    })).toBe(true)
+    await flush()
+
+    // The hand-off is sent first, then the browser copy is cancelled and erased,
+    // and only then is the held decision released.
+    expect(events).toEqual(['native', 'cancel', 'erase', 'suggest'])
+    expect(fake.nativeMessages).toHaveLength(1)
+    expect(fake.cancelled).toEqual([42])
+    expect(fake.erased).toEqual([42])
+    expect(suggests).toEqual([1])
+    // A held download is not in the browser's list yet, so nothing is re-read.
+    expect(fake.searched).toEqual([])
+  })
+
+  it('releases a download it will not hand off', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+    const held = installHeld(fake)
+    const suggests: number[] = []
+    expect(
+      held.held()(
+        fileItem({
+          url: 'https://example.com/page.html',
+          filename: 'C:\\Downloads\\page.html',
+          mime: 'text/html'
+        }),
+        () => suggests.push(1)
+      )
+    ).toBe(true)
+    await flush()
+    expect(suggests).toEqual([1])
+    expect(fake.nativeMessages).toEqual([])
+    expect(fake.cancelled).toEqual([])
+    expect(fake.erased).toEqual([])
+  })
+
+  it('releases the download when the master switch is off', async () => {
+    const fake = createFake()
+    await writeCaptureSettings(fake.chrome, { automaticFileHandoff: false })
+    useFake(fake)
+    const held = installHeld(fake)
+    const suggests: number[] = []
+    held.held()(fileItem(), () => suggests.push(1))
+    await flush()
+    expect(suggests).toEqual([1])
+    expect(fake.nativeMessages).toEqual([])
+    expect(fake.cancelled).toEqual([])
+  })
+
+  it('releases the download when the hand-off is not confirmed', async () => {
+    const fake = createFake({
+      nativeResponse: {
+        ok: false,
+        error: { code: 'APP_NOT_RUNNING', message: 'DonDownload is not running.' }
+      }
+    })
+    await seedSettings(fake)
+    useFake(fake)
+    const held = installHeld(fake)
+    const suggests: number[] = []
+    held.held()(fileItem(), () => suggests.push(1))
+    await flush()
+    expect(suggests).toEqual([1])
+    expect(fake.cancelled).toEqual([])
+  })
+
+  it('releases a held download when the decision hangs', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+    let heldListener: ((item: unknown, suggest: () => void) => boolean) | null = null
+    fake.chrome.downloads.onDeterminingFilename = {
+      addListener(listener: (item: unknown, suggest: () => void) => boolean) {
+        heldListener = listener
+      }
+    }
+    const neverSettles = () => new Promise(() => undefined)
+    expect(installDownloadsListener(fake.chrome, neverSettles)).toBe(true)
+    const suggests: number[] = []
+    vi.useFakeTimers()
+    try {
+      expect(
+        heldListener!(fileItem(), () => suggests.push(1))
+      ).toBe(true)
+      await vi.advanceTimersByTimeAsync(HANDOFF_SUGGEST_TIMEOUT_MS - 1)
+      expect(suggests).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(suggests).toEqual([1])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never handles the same download twice', async () => {
+    const fake = createFake()
+    await seedSettings(fake)
+    useFake(fake)
+    const held = installHeld(fake)
+    const suggests: number[] = []
+    held.held()(fileItem(), () => suggests.push(1))
+    await flush()
+    expect(fake.nativeMessages).toHaveLength(1)
+    // A second event for the same id is only released, never handed off again.
+    expect(held.held()(fileItem(), () => suggests.push(2))).toBe(false)
+    await flush()
+    expect(fake.nativeMessages).toHaveLength(1)
+    expect(fake.cancelled).toEqual([42])
+    expect(suggests).toEqual([1, 2])
+  })
+
+  it('shows the in-page card for a held hand-off', async () => {
+    const fake = createFake()
+    await seedSettings(fake, true)
+    useFake(fake)
+    const held = installHeld(fake)
+    held.held()(fileItem(), () => undefined)
+    await flush()
+    expect(fake.cancelled).toEqual([42])
+    expect(fake.injected).toEqual([
+      {
+        tabId: 5,
+        args: [{ downloadId: DOWNLOAD_ID, filename: 'report.zip' }]
+      }
+    ])
+    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
   })
 })
