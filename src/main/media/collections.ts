@@ -70,6 +70,8 @@ export interface CollectionStoreOptions {
   isClosing: () => boolean
   newOpaqueId: (prefix: 'preview' | 'entry') => string
   resolveToolchain: () => Promise<Toolchain>
+  /** Downloads the optional Deno runtime on demand; null when unavailable. */
+  ensureJsRuntime?: (targetUrl: string) => Promise<string | null>
   runCaptured: (
     command: string,
     args: readonly string[],
@@ -96,6 +98,7 @@ export function createCollectionStore(
     isClosing,
     newOpaqueId,
     resolveToolchain,
+    ensureJsRuntime,
     runCaptured,
     assertPublicTarget
   } = options
@@ -153,11 +156,17 @@ export function createCollectionStore(
       throw toolUnavailableError(toolchain.state)
     }
 
+    const denoPath =
+      toolchain.denoPath ??
+      (ensureJsRuntime === undefined
+        ? null
+        : await ensureJsRuntime(normalized).catch(() => null))
+
     let result: CapturedProcessResult
     try {
       result = await runCaptured(
         toolchain.ytdlpPath,
-        buildPlaylistArgs(normalized, toolchain.denoPath),
+        buildPlaylistArgs(normalized, denoPath),
         {
           timeoutMs: timeoutMs,
           maxOutputBytes: MAX_ANALYSIS_OUTPUT_BYTES

@@ -280,7 +280,9 @@ export async function runSmokeTest(
     return `version=${state.version ?? 'unknown'}`
   })
 
-  for (const tool of ['ytdlp', 'ffmpeg', 'deno'] as const) {
+  // Deno is not bundled and is downloaded on demand for YouTube JS
+  // challenges, so its absence is not a smoke failure.
+  for (const tool of ['ytdlp', 'ffmpeg'] as const) {
     await check(`media-tool.${tool}`, async () => {
       const probed = await probeMediaTool(tool)
       return probed.detail

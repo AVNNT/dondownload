@@ -1021,6 +1021,28 @@ function dedupeAndSort<T extends { dedupeKey: string }>(
 
 export const MAX_RESOLUTION_PROBES = 3
 
+/**
+ * `ffmpeg -i <input>` without an output file prints the input's stream table on
+ * stderr and then fails with "At least one output file must be specified". This
+ * reads the frame height of the first video stream from that table, which is the
+ * only header value the resolution probe needs. A table without a sized video
+ * stream (audio-only, attached picture, unreadable header) yields null.
+ */
+export function parseFfmpegStreamHeight(stderr: string): number | null {
+  const pattern = /Stream #\d+:\d+(?:\[[^\]]*\])?(?:\([^)]*\))?: Video: ([^\n]*)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(stderr)) !== null) {
+    const details = match[1] ?? ''
+    const dimensions = /(\d{2,5})x(\d{2,5})/.exec(details)
+    if (dimensions === null) continue
+    const height = Number(dimensions[2])
+    if (Number.isSafeInteger(height) && height >= 144 && height <= 65_535) {
+      return height
+    }
+  }
+  return null
+}
+
 export interface ResolutionProbeTarget {
   formatId: string
   /** Exact public HTTPS stream URL, already verified by the analyzer. */

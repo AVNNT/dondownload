@@ -52,7 +52,9 @@ function copyIsolatedExtension(destination) {
   return manifest
 }
 const FFMPEG = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffmpeg.exe')
-const FFPROBE = path.join(ROOT, 'build', 'vendor', 'ffmpeg', 'ffprobe.exe')
+// FFprobe is no longer staged into build/vendor; these evidence checks use the
+// developer-installed probe from PATH instead.
+const FFPROBE = 'ffprobe'
 const ARIA2 = path.join(ROOT, 'build', 'vendor', 'aria2', 'aria2c.exe')
 
 function browserArgument() {

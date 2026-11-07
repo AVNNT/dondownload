@@ -15,8 +15,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-describe('packaged Deno runtime support', () => {
-  it('locates Deno from the packaged vendor resource directory', async () => {
+describe('optional Deno runtime support', () => {
+  it('locates Deno from a vendor resource directory when one is present', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dondownload-deno-'))
     roots.push(root)
     const denoPath = path.join(root, 'vendor', 'deno', 'deno.exe')
@@ -52,6 +52,26 @@ describe('packaged Deno runtime support', () => {
         `deno:${denoPath}`
       ])
       expect(args[separator + 1]).toMatch(/^https:\/\//)
+    }
+  })
+
+  it('emits exactly the same arguments as a machine without Deno', () => {
+    for (const denoPath of [undefined, null, '']) {
+      const analyze = buildAnalyzeArgs('https://example.com/video', denoPath)
+      const playlist = buildPlaylistArgs('https://example.com/list', denoPath)
+      const download = buildDownloadArgs({
+        sourceUrl: 'https://example.com/video',
+        formatSelector: 'best',
+        outputTemplate: 'video.%(ext)s',
+        mergeOutputFormat: null,
+        ffmpegLocation: null,
+        denoPath
+      })
+
+      for (const args of [analyze, playlist, download]) {
+        expect(args).not.toContain('--js-runtimes')
+        expect(args.filter((arg) => arg.startsWith('deno:'))).toEqual([])
+      }
     }
   })
 })

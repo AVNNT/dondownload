@@ -13,8 +13,8 @@ repository or produced by its build.
 | --- | --- | --- | --- |
 | yt-dlp | `2026.10.26` | Official Windows **one-folder** release `yt-dlp_win.zip` (`yt-dlp.exe` plus `_internal\`), staged into `build\vendor\yt-dlp\`; the WinGet one-file package may still be used for ad-hoc local runs | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe` (one-file); staged onedir copy under `build\vendor\yt-dlp\` |
 | FFmpeg | `9.0.2-essentials_build` (Gyan) | Gyan essentials build staged from `%LOCALAPPDATA%\DonDownload\vendor\` by `scripts/stage-vendor.ps1`; the WinGet `Gyan.FFmpeg` full build is a local fallback source | `C:\Users\PC\AppData\Local\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe` |
-| ffprobe | `9.0.2-essentials_build` (Gyan) | same Gyan essentials build | `C:\Users\PC\AppData\Local\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffprobe.exe` |
-| Deno | `2.9.8` (stable, `x86_64-pc-windows-msvc`) | WinGet package `DenoLand.Deno`, user-scoped | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe` |
+| ffprobe | `9.0.2-essentials_build` (Gyan) | diagnostics only; not staged and not invoked | `C:\Users\PC\AppData\Local\DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffprobe.exe` |
+| Deno | `2.9.8` (stable, `x86_64-pc-windows-msvc`) | not bundled; downloaded on demand from the pinned GitHub release into `<userData>\tools\deno\2.9.8\deno.exe` | `C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe` (local runs only) |
 
 Equivalent install commands:
 
@@ -44,12 +44,20 @@ machine-wide.
   with `--ffmpeg-location`. It is located via `DONDOWNLOAD_FFMPEG_PATH`,
   `<app>\vendor\ffmpeg\`, `<app>\vendor\ffmpeg\bin\`, `<app>\vendor\bin\`, then
   `PATH`.
-- **ffprobe** is not invoked by the application at runtime. It was used by the
-  verification checks to inspect outputs and confirm a full decode.
-- **Deno** is a JavaScript runtime used by yt-dlp for extraction on sites that
-  require it. DonDownload locates an explicit `DONDOWNLOAD_DENO_PATH`, a
-  packaged/app-local vendor copy, or a copy on `PATH`, and passes the located
-  path to yt-dlp. It does not install or update Deno.
+- **ffprobe** is not invoked by the application at runtime and is no longer
+  staged into the installer. The bounded header read that labels a stream
+  without reported dimensions runs `ffmpeg -i <url>` and parses the stream table
+  FFmpeg prints on stderr. Local verification checks may still use a
+  developer-installed ffprobe to inspect outputs.
+- **Deno** is a JavaScript runtime used by yt-dlp for YouTube JS challenges. It
+  is not bundled: DonDownload locates an explicit `DONDOWNLOAD_DENO_PATH`, an
+  app-local vendor copy, a previously downloaded copy under
+  `<userData>\tools\deno\<version>\`, or a copy on `PATH`. When a YouTube
+  analysis or download needs one and none is available, the pinned
+  `deno-x86_64-pc-windows-msvc` release archive is downloaded once, its SHA-256
+  is verified against the checksum published in the same release, and the
+  executable is installed atomically. Without a runtime, yt-dlp runs with
+  exactly the arguments a machine without Deno would use.
 - DonDownload never modifies its bundled vendor copies after installation. The
   Windows installer packaging baseline can include locally staged vendor
   copies; see [installer-packaging.md](installer-packaging.md).

@@ -17,6 +17,8 @@ import type {
   MediaLookupAddress
 } from '../src/main/media/engine'
 import type { MediaSpawn, MediaSpawnOptions } from '../src/main/media/process'
+import type { JsRuntime } from '../src/main/media/jsRuntime'
+import { parseFfmpegStreamHeight } from '../src/main/media/formats'
 import { PROGRESS_TEMPLATE, parseProgressLine } from '../src/main/media/args'
 import { MAX_COLLECTION_ENTRIES, parseCollectionPreview } from '../src/shared/batches'
 import { parseMediaAnalysis } from '../src/shared/media'
@@ -55,7 +57,6 @@ interface SpawnCall {
 interface HarnessOptions {
   toolMode?: 'explicit' | 'path' | 'vendor' | 'missing'
   withFfmpeg?: boolean
-  withFfprobe?: boolean
   ytdlpProbeOk?: boolean
   ffmpegProbeOk?: boolean
   /** False emulates an older yt-dlp that does not list impersonate targets. */
@@ -71,6 +72,8 @@ interface HarnessOptions {
   analysisTtlMs?: number
   collectionTtlMs?: number
   cancellationGraceMs?: number
+  /** Replaces the on-demand Deno runtime manager; no test touches the network. */
+  jsRuntime?: JsRuntime
   analyze?: (call: SpawnCall) => void
   playlist?: (call: SpawnCall) => void
   download?: (
@@ -223,7 +226,6 @@ async function makeHarness(options: HarnessOptions = {}) {
     toolMode === 'vendor'
       ? path.join(root, 'vendor', 'ffmpeg', 'ffmpeg.exe')
       : path.join(toolsDir, 'ffmpeg.exe')
-  const ffprobeFile = path.join(toolsDir, 'ffprobe.exe')
 
   if (toolMode !== 'missing') {
     await fs.mkdir(path.dirname(ytdlpFile), { recursive: true })
@@ -231,10 +233,6 @@ async function makeHarness(options: HarnessOptions = {}) {
     if (withFfmpeg) {
       await fs.mkdir(path.dirname(ffmpegFile), { recursive: true })
       await fs.writeFile(ffmpegFile, 'fake ffmpeg')
-    }
-    if (options.withFfprobe === true) {
-      await fs.mkdir(path.dirname(ffprobeFile), { recursive: true })
-      await fs.writeFile(ffprobeFile, 'fake ffprobe')
     }
   }
 
@@ -246,9 +244,6 @@ async function makeHarness(options: HarnessOptions = {}) {
         : ytdlpFile
     if (withFfmpeg && toolMode === 'explicit') {
       env.DONDOWNLOAD_FFMPEG_PATH = ffmpegFile
-    }
-    if (options.withFfprobe === true && toolMode === 'explicit') {
-      env.DONDOWNLOAD_FFPROBE_PATH = ffprobeFile
     }
   } else if (toolMode === 'path') {
     env.PATH = toolsDir
@@ -325,10 +320,18 @@ async function makeHarness(options: HarnessOptions = {}) {
       return child
     }
 
-    if (args.includes('-show_entries')) {
+    // Bounded header read: `ffmpeg -i <url>` with no output file. FFmpeg
+    // prints the stream table on stderr and exits non-zero.
+    if (args.includes('-i') && !args.includes('--output')) {
       queueMicrotask(() => {
-        child.stdout.write('1080\n')
-        child.close(0)
+        child.stderr.write(
+          "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'https://cdn.example.com/unknown.mp4':\n" +
+            '  Duration: 00:00:19.20, start: 0.000000, bitrate: 1200 kb/s\n' +
+            '  Stream #0:0[0x1](und): Video: h264 (High), yuv420p(tv), 1920x1080 [SAR 1:1 DAR 16:9], 30 fps\n' +
+            '  Stream #0:1[0x2](und): Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s\n' +
+            'At least one output file must be specified\n'
+        )
+        child.close(1)
       })
       return child
     }
@@ -404,7 +407,8 @@ async function makeHarness(options: HarnessOptions = {}) {
     now: options.now,
     analysisTtlMs: options.analysisTtlMs,
     collectionTtlMs: options.collectionTtlMs,
-    cancellationGraceMs: options.cancellationGraceMs
+    cancellationGraceMs: options.cancellationGraceMs,
+    jsRuntime: options.jsRuntime
   })
 
   return {
@@ -1700,10 +1704,113 @@ describe('media engine analysis identity and download request validation', () =>
   })
 })
 
+describe('parseFfmpegStreamHeight', () => {
+  it('reads the first sized video stream from the FFmpeg stream table', () => {
+    const stderr =
+      "Input #0, matroska,webm, from 'https://cdn.example.com/a.mkv':\n" +
+      '  Duration: 00:00:19.20, start: 0.000000, bitrate: 1200 kb/s\n' +
+      '  Stream #0:0(und): Video: vp9 (Profile 0), yuv420p(tv), 2560x1440, 30 fps\n' +
+      '  Stream #0:1(und): Audio: opus, 48000 Hz, stereo, fltp\n' +
+      'At least one output file must be specified\n'
+    expect(parseFfmpegStreamHeight(stderr)).toBe(1440)
+  })
+
+  it('ignores audio-only, attached pictures and unusable headers', () => {
+    expect(
+      parseFfmpegStreamHeight(
+        '  Stream #0:0(und): Audio: aac (LC), 48000 Hz, stereo, fltp\n'
+      )
+    ).toBeNull()
+    expect(
+      parseFfmpegStreamHeight(
+        '  Stream #0:0: Video: mjpeg (Baseline), yuvj420p, no dimensions\n'
+      )
+    ).toBeNull()
+    expect(parseFfmpegStreamHeight('Invalid data found when processing input'))
+      .toBeNull()
+    // A height outside the accepted range keeps the friendly label.
+    expect(
+      parseFfmpegStreamHeight(
+        '  Stream #0:0: Video: h264, yuv420p, 64x64, 30 fps\n'
+      )
+    ).toBeNull()
+  })
+})
+
+describe('optional Deno runtime for YouTube JS challenges', () => {
+  const YOUTUBE_URL = 'https://www.youtube.com/watch?v=abc123'
+
+  function fakeJsRuntime(result: string | null): JsRuntime & {
+    ensureCalls: number
+    locateCalls: number
+  } {
+    const runtime = {
+      ensureCalls: 0,
+      locateCalls: 0,
+      async locate() {
+        runtime.locateCalls += 1
+        return null
+      },
+      async ensure() {
+        runtime.ensureCalls += 1
+        return result
+      }
+    }
+    return runtime
+  }
+
+  it('runs yt-dlp without --js-runtimes when the runtime cannot be provided', async () => {
+    const runtime = fakeJsRuntime(null)
+    const harness = await makeHarness({ jsRuntime: runtime })
+
+    const analysis = await harness.engine.analyze(YOUTUBE_URL)
+    expect(analysis.options.length).toBeGreaterThan(0)
+    expect(runtime.ensureCalls).toBe(1)
+
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    expect(analyzeCall).toBeDefined()
+    // Exactly the arguments a machine without Deno would produce.
+    expect(analyzeCall!.args).not.toContain('--js-runtimes')
+    expect(analyzeCall!.args[analyzeCall!.args.length - 2]).toBe('--')
+  })
+
+  it('passes the downloaded runtime to yt-dlp once it is available', async () => {
+    const denoPath =
+      'C:\\Users\\PC\\AppData\\Roaming\\DonDownload\\tools\\deno\\2.9.8\\deno.exe'
+    const runtime = fakeJsRuntime(denoPath)
+    const harness = await makeHarness({ jsRuntime: runtime })
+
+    await harness.engine.analyze(YOUTUBE_URL)
+
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    const separator = analyzeCall!.args.indexOf('--')
+    expect(analyzeCall!.args.slice(separator - 2, separator)).toEqual([
+      '--js-runtimes',
+      `deno:${denoPath}`
+    ])
+  })
+
+  it('never downloads a runtime for a page that does not need one', async () => {
+    const runtime = fakeJsRuntime('C:/deno/deno.exe')
+    const harness = await makeHarness({ jsRuntime: runtime })
+
+    await harness.engine.analyze(SOURCE_URL)
+
+    expect(runtime.ensureCalls).toBe(0)
+    const analyzeCall = harness.calls.find((call) =>
+      call.args.includes('--dump-single-json')
+    )
+    expect(analyzeCall!.args).not.toContain('--js-runtimes')
+  })
+})
+
 describe('media engine subprocess arguments and progress', () => {
-  it('limits the bounded ffprobe resolution read to network protocols', async () => {
+  it('limits the bounded FFmpeg resolution read to network protocols', async () => {
     const harness = await makeHarness({
-      withFfprobe: true,
       analyzeJson: sampleInfo({
         formats: [
           {
@@ -1721,14 +1828,22 @@ describe('media engine subprocess arguments and progress', () => {
     const analysis = await harness.engine.analyze(SOURCE_URL)
     expect(analysis.options).toHaveLength(1)
 
-    const probe = harness.calls.find((call) =>
-      call.args.includes('-show_entries')
+    const probe = harness.calls.find(
+      (call) => call.args.includes('-i') && !call.args.includes('--output')
     )
     expect(probe).toBeDefined()
+    // The probe must reuse the located FFmpeg executable, never FFprobe.
+    expect(probe!.command).toBe(harness.ffmpegFile)
+    expect(probe!.args).not.toContain('-show_entries')
     const whitelist = probe!.args.indexOf('-protocol_whitelist')
     expect(whitelist).toBeGreaterThanOrEqual(0)
     expect(probe!.args[whitelist + 1]).toBe('http,https,tcp,tls,crypto')
     expect(whitelist).toBeLessThan(probe!.args.indexOf('-i'))
+    expect(probe!.args[probe!.args.indexOf('-i') + 1]).toBe(
+      'https://cdn.example.com/unknown.mp4'
+    )
+    // The height parsed from stderr is applied to the exposed option label.
+    expect(analysis.options[0]?.label).toContain('1080')
   })
 
   it('uses fixed shell-free arguments and avoids config, cookies, credentials and aria2', async () => {

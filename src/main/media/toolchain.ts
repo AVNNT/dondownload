@@ -19,8 +19,11 @@ export interface Toolchain {
   state: MediaToolState
   ytdlpPath: string | null
   ffmpegPath: string | null
-  /** Bundled/located ffprobe, used only for bounded header reads. */
-  ffprobePath: string | null
+  /**
+   * Deno for yt-dlp's YouTube JS challenges. Optional: it is located when it is
+   * already installed and downloaded on demand by the JS runtime manager, so a
+   * missing runtime only means yt-dlp runs without `--js-runtimes`.
+   */
   denoPath: string | null
   /** True only when the active yt-dlp build lists a Chrome impersonate target. */
   impersonate: boolean
@@ -31,6 +34,8 @@ export interface ToolchainResolverOptions {
   platform: NodeJS.Platform
   cwd: string
   managedToolsDir: string | null
+  /** Locates an installed Deno without downloading anything. */
+  jsRuntime?: { locate(): Promise<string | null> } | null
   runCaptured: (
     command: string,
     args: readonly string[],
@@ -46,6 +51,7 @@ export function createToolchainResolver(
   options: ToolchainResolverOptions
 ): ToolchainResolver {
   const { env, platform, cwd, managedToolsDir, runCaptured } = options
+  const jsRuntime = options.jsRuntime ?? null
   // Impersonation support is probed once per yt-dlp path *and* version: the
   // verified updater may swap the executable, and an older build does not know
   // `--list-impersonate-targets` at all.
@@ -108,7 +114,6 @@ export function createToolchainResolver(
         },
         ytdlpPath: null,
         ffmpegPath: null,
-        ffprobePath: null,
         denoPath: null,
         impersonate: false
       }
@@ -129,7 +134,6 @@ export function createToolchainResolver(
         },
         ytdlpPath: null,
         ffmpegPath: null,
-        ffprobePath: null,
         denoPath: null,
         impersonate: false
       }
@@ -140,8 +144,14 @@ export function createToolchainResolver(
       ytdlpProbe.version
     )
     const ffmpeg = await locateMediaTool('ffmpeg', locationOptions)
-    const ffprobe = await locateMediaTool('ffprobe', locationOptions)
-    const deno = await locateMediaTool('deno', locationOptions)
+    let denoPath: string | null = null
+    if (jsRuntime !== null) {
+      try {
+        denoPath = await jsRuntime.locate()
+      } catch {
+        denoPath = null
+      }
+    }
     let ffmpegPath: string | null = null
     let ffmpegVersionValue: string | null = null
     let ffmpegProblem: string | null = null
@@ -165,16 +175,6 @@ export function createToolchainResolver(
       }
     }
 
-    let ffprobePath: string | null = null
-    if (ffprobe.path !== null) {
-      const ffprobeProbe = await probeTool(
-        ffprobe.path,
-        ['-version'],
-        firstLineVersion
-      )
-      if (ffprobeProbe.ok) ffprobePath = ffprobe.path
-    }
-
     const version = ffmpegVersionValue
       ? `yt-dlp ${ytdlpProbe.version ?? 'unknown'}; ffmpeg ${ffmpegVersionValue}`.slice(
           0,
@@ -191,8 +191,7 @@ export function createToolchainResolver(
       },
       ytdlpPath: ytdlp.path,
       ffmpegPath,
-      ffprobePath,
-      denoPath: deno.path,
+      denoPath,
       impersonate
     }
   }
