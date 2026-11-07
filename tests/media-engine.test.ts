@@ -19,7 +19,11 @@ import type {
 import type { MediaSpawn, MediaSpawnOptions } from '../src/main/media/process'
 import type { JsRuntime } from '../src/main/media/jsRuntime'
 import { parseFfmpegStreamHeight } from '../src/main/media/formats'
-import { PROGRESS_TEMPLATE, parseProgressLine } from '../src/main/media/args'
+import {
+  CONCURRENT_FRAGMENTS,
+  PROGRESS_TEMPLATE,
+  parseProgressLine
+} from '../src/main/media/args'
 import { MAX_COLLECTION_ENTRIES, parseCollectionPreview } from '../src/shared/batches'
 import { parseMediaAnalysis } from '../src/shared/media'
 
@@ -1941,7 +1945,7 @@ describe('media engine subprocess arguments and progress', () => {
       '--progress-template',
       PROGRESS_TEMPLATE,
       '--concurrent-fragments',
-      '4',
+      String(CONCURRENT_FRAGMENTS),
       '--format',
       '137+140',
       '--output',
@@ -2063,7 +2067,9 @@ describe('media engine subprocess arguments and progress', () => {
     expect(argValue(download.args, '--format')).toBe('22')
     expect(download.args).not.toContain('--merge-output-format')
     expect(download.args).not.toContain('--hls-prefer-ffmpeg')
-    expect(argValue(download.args, '--concurrent-fragments')).toBe('4')
+    expect(argValue(download.args, '--concurrent-fragments')).toBe(
+      String(CONCURRENT_FRAGMENTS)
+    )
     expect(download.args[download.args.length - 1]).toBe(SOURCE_URL)
   })
 
