@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, DownloadItem } from '../src/shared/types'
-import { BatchManager } from '../src/main/batches/manager'
+import {
+  BatchManager,
+  type BatchPixeldrainPort
+} from '../src/main/batches/manager'
 import { classifyScanCandidate } from '../src/main/scanner/classify'
 import { ScanQueueService } from '../src/main/scanner/queue'
 import type { ProbeScanItemFn } from '../src/main/scanner/probe'
@@ -44,7 +47,13 @@ const readyProbe: ProbeScanItemFn = async (input) => {
   }
 }
 
-function createBatchManager() {
+function createBatchManager(
+  pixeldrain: BatchPixeldrainPort = {
+    parseLink: vi.fn(),
+    resolveFile: vi.fn(),
+    resolveList: vi.fn()
+  }
+) {
   const added: unknown[] = []
   const downloads = {
     add: vi.fn(async (input: unknown): Promise<AppSnapshot> => {
@@ -107,9 +116,9 @@ function createBatchManager() {
       resolveCollectionEntries: vi.fn()
     },
     pixeldrain: {
-      parseLink: vi.fn(),
-      resolveFile: vi.fn(),
-      resolveList: vi.fn()
+      parseLink: vi.fn(pixeldrain.parseLink),
+      resolveFile: vi.fn(pixeldrain.resolveFile),
+      resolveList: vi.fn(pixeldrain.resolveList)
     },
     onUpdate: () => undefined,
     pollIntervalMs: 0
@@ -297,5 +306,80 @@ describe('explicit scan queue selection', () => {
     await expect(
       skippedQueue.queueSelection(started.sessionId, [item.id])
     ).rejects.toMatchObject({ code: 'SCAN_NOTHING_TO_QUEUE' })
+  })
+
+  it('queues a resolved Pixeldrain file with its canonical link and real name', async () => {
+    const fetcher: ScanPageFetcher = async () => {
+      const body =
+        '<p><a href="https://pixeldrain.com/u/Video001">download</a></p>'
+      return {
+        finalUrl: PAGE_URL,
+        status: 200,
+        contentType: 'text/html',
+        contentDisposition: null,
+        body,
+        bytes: Buffer.byteLength(body)
+      }
+    }
+    const sessions = new ScanSessionManager({
+      fetchPage: fetcher,
+      followDepth: 0,
+      pixeldrain: {
+        resolveFile: async () => ({
+          kind: 'file',
+          fileId: 'Video001',
+          name: 'Fancam 01 Wonyoung.mp4',
+          size: 123_456,
+          mimeType: 'video/mp4',
+          sourceUrl: 'https://pixeldrain.com/u/Video001',
+          downloadUrl: 'https://pixeldrain.com/api/file/Video001'
+        }),
+        resolveList: async () => {
+          throw new Error('not a list')
+        }
+      },
+      onUpdate: () => undefined
+    })
+    const { batches, downloads, added } = createBatchManager({
+      parseLink: (value) => {
+        const id = /\/u\/([A-Za-z0-9_-]+)$/.exec(String(value))?.[1]
+        if (id === undefined) throw new Error('not a pixeldrain link')
+        return { kind: 'file', id, sourceUrl: `https://pixeldrain.com/u/${id}` }
+      },
+      resolveFile: async () => ({
+        kind: 'file',
+        fileId: 'Video001',
+        name: 'Fancam 01 Wonyoung.mp4',
+        size: 123_456,
+        mimeType: 'video/mp4',
+        sourceUrl: 'https://pixeldrain.com/u/Video001',
+        downloadUrl: 'https://pixeldrain.com/api/file/Video001'
+      }),
+      resolveList: async () => {
+        throw new Error('not a list')
+      }
+    })
+    const probe = vi.fn(readyProbe)
+    const queue = new ScanQueueService({ sessions, batches, probeItem: probe })
+
+    const started = sessions.start(PAGE_URL)
+    await sessions.waitForScan(started.sessionId)
+    const done = sessions.getSession(started.sessionId)
+    expect(done.items).toHaveLength(1)
+
+    const result = await queue.queueSelection(started.sessionId, [
+      done.items[0]!.id
+    ])
+    await batches.waitForIdle()
+
+    expect(result.queuedItemIds).toEqual([done.items[0]!.id])
+    expect(result.skipped).toEqual([])
+    // The page is HTML, so the generic queue-time probe must not run.
+    expect(probe).not.toHaveBeenCalled()
+    expect(downloads.add).toHaveBeenCalledTimes(1)
+    expect(added[0]).toMatchObject({
+      url: 'https://pixeldrain.com/api/file/Video001',
+      filename: 'Fancam 01 Wonyoung.mp4'
+    })
   })
 })

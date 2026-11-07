@@ -553,6 +553,7 @@ if (unregisterRequested) {
     // Smart Link Scanner. Discovery and probing only; the queue service is the
     // single explicit selection path and revalidates every item first.
     scanner = new ScanSessionManager({
+      pixeldrain: createPixeldrainAdapter(),
       ...(mediaJobs === null
         ? {}
         : {

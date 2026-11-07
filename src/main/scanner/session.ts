@@ -29,6 +29,11 @@ import {
   type PublicTargetLookup
 } from '../net/publicTarget'
 import { AppError } from '../errors'
+import {
+  MAX_PIXELDRAIN_LIST_FILES,
+  type PixeldrainFileResolution,
+  type PixeldrainListResolution
+} from '../hosts/pixeldrain'
 import { classifyScanCandidate } from './classify'
 import {
   extractCandidates,
@@ -60,6 +65,14 @@ import {
   type ScanProbeResult
 } from './probe'
 import { ScanRobotsCache } from './robots'
+import {
+  MAX_SCAN_PIXELDRAIN_REQUESTS,
+  pixeldrainLinkOf,
+  resolvePixeldrainTargets,
+  type ScanPixeldrainOutcome,
+  type ScanPixeldrainPort,
+  type ScanPixeldrainTarget
+} from './pixeldrain'
 import {
   resolveVideoCandidates,
   videoIdentityForUrl,
@@ -108,6 +121,12 @@ export interface ScanSessionOptions {
   probeItem?: ProbeScanItemFn
   /** Metadata-only media analysis; absent keeps video page links unresolved. */
   analyzeMedia?: ScanMediaAnalyzer
+  /**
+   * Public Pixeldrain metadata adapter. When present, a discovered `/u/<id>`
+   * link is resolved to its real file name, size and content type, and a
+   * `/l/<id>` list is expanded into one item per file.
+   */
+  pixeldrain?: ScanPixeldrainPort
   videoCap?: number
   followPages?: number
   followDepth?: number
@@ -334,6 +353,7 @@ export class ScanSessionManager {
   private readonly probeCap: number
   private readonly probeItem: ProbeScanItemFn | undefined
   private readonly analyzeMedia: ScanMediaAnalyzer | undefined
+  private readonly pixeldrain: ScanPixeldrainPort | undefined
   private readonly videoCap: number
   private readonly followPages: number
   private readonly followDepth: number
@@ -358,6 +378,7 @@ export class ScanSessionManager {
     )
     this.probeItem = options.probeItem
     this.analyzeMedia = options.analyzeMedia
+    this.pixeldrain = options.pixeldrain
     this.videoCap = Math.max(
       0,
       Math.min(options.videoCap ?? MAX_SCAN_VIDEO_ANALYSES, MAX_SCAN_VIDEO_ANALYSES)
@@ -1390,6 +1411,9 @@ export class ScanSessionManager {
           ? 'No downloadable content was found on that page.'
           : null
 
+      await this.resolvePixeldrainItems(session)
+      if (session.controller.signal.aborted) return
+
       await this.probeItems(session)
       if (session.controller.signal.aborted) return
 
@@ -1706,6 +1730,277 @@ export class ScanSessionManager {
         this.scheduleEmit(session)
       }
     })
+  }
+
+  /**
+   * Resolve discovered Pixeldrain links through the public metadata adapter so
+   * a `/u/<id>` card gets its real name, size and category, and a `/l/<id>`
+   * list becomes one card per file. Requests are deduped by provider ID,
+   * capped per session and run with bounded concurrency. A provider failure
+   * only marks the affected card; the scan itself keeps going.
+   */
+  private async resolvePixeldrainItems(
+    session: StoredScanSession
+  ): Promise<void> {
+    if (this.pixeldrain === undefined) return
+
+    const targets: ScanPixeldrainTarget[] = []
+    const seen = new Set<string>()
+    for (const id of session.order) {
+      const item = session.items.get(id)
+      if (!item || item.status !== 'found') continue
+      const link = pixeldrainLinkOf(item.url)
+      if (link === null) continue
+      const key = `${link.kind}:${link.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      targets.push({ kind: link.kind, id: link.id, url: link.sourceUrl })
+    }
+    if (targets.length === 0) return
+
+    const selected = targets.slice(0, MAX_SCAN_PIXELDRAIN_REQUESTS)
+    for (const target of selected) {
+      for (const item of this.pixeldrainItems(session, target.kind, target.id)) {
+        item.status = 'probing'
+      }
+    }
+    this.touch(session)
+    this.publish(session, true)
+
+    await resolvePixeldrainTargets(selected, {
+      port: this.pixeldrain,
+      signal: session.controller.signal,
+      shouldStop: () => this.now() >= session.deadline,
+      onResult: (_index, outcome) => {
+        this.applyPixeldrainOutcome(session, outcome)
+        this.touch(session)
+        this.scheduleEmit(session)
+      }
+    })
+
+    // A cancelled or timed-out request leaves its card unresolved instead of
+    // spinning forever.
+    for (const target of selected) {
+      for (const item of this.pixeldrainItems(session, target.kind, target.id)) {
+        if (item.status === 'probing') item.status = 'found'
+      }
+    }
+    this.touch(session)
+    this.publish(session, true)
+  }
+
+  /** Every item that still points at one provider ID. */
+  private pixeldrainItems(
+    session: StoredScanSession,
+    kind: 'file' | 'list',
+    id: string
+  ): StoredScanItem[] {
+    const matches: StoredScanItem[] = []
+    for (const item of session.items.values()) {
+      const link = pixeldrainLinkOf(item.url)
+      if (link !== null && link.kind === kind && link.id === id) {
+        matches.push(item)
+      }
+    }
+    return matches
+  }
+
+  private applyPixeldrainOutcome(
+    session: StoredScanSession,
+    outcome: ScanPixeldrainOutcome
+  ): void {
+    if (outcome.type === 'error') {
+      for (const item of this.pixeldrainItems(session, outcome.kind, outcome.id)) {
+        item.status = 'unavailable'
+        item.verified = false
+        item.unavailableReason = outcome.reason
+      }
+      return
+    }
+    if (outcome.type === 'file') {
+      this.applyPixeldrainFile(session, outcome.resolution)
+      return
+    }
+    this.expandPixeldrainList(session, outcome.resolution)
+  }
+
+  private applyPixeldrainFile(
+    session: StoredScanSession,
+    resolution: PixeldrainFileResolution
+  ): void {
+    const items = this.pixeldrainItems(session, 'file', resolution.fileId)
+    for (const item of items) {
+      this.applyResolvedFile(item, {
+        name: resolution.name,
+        size: resolution.size,
+        mimeType: resolution.mimeType
+      })
+    }
+    this.mergePixeldrainItems(session, items)
+  }
+
+  /**
+   * Collapse several cards that point at the same provider file (for example a
+   * `/u/<id>` link and the same file inside a list) into the first one, keeping
+   * any post context the kept card was missing.
+   */
+  private mergePixeldrainItems(
+    session: StoredScanSession,
+    items: readonly StoredScanItem[]
+  ): void {
+    const keep = items[0]
+    if (keep === undefined) return
+    for (const duplicate of items.slice(1)) {
+      if (keep.postNumber === null && duplicate.postNumber !== null) {
+        keep.postNumber = duplicate.postNumber
+        keep.author = duplicate.author
+      }
+      this.removeItem(session, duplicate.id)
+    }
+  }
+
+  /**
+   * Apply provider metadata to one card. The classification helpers are reused
+   * with the resolved name and content type, so a `.funscript` becomes a script
+   * and a video becomes a video exactly like a normal direct file.
+   */
+  private applyResolvedFile(
+    item: StoredScanItem,
+    resolved: { name: string; size: number | null; mimeType: string | null }
+  ): void {
+    const classification = classifyScanCandidate({
+      url: item.url,
+      nameHint: resolved.name,
+      ...(resolved.mimeType === null ? {} : { contentType: resolved.mimeType })
+    })
+    item.category = classification.category
+    item.kind = classification.kind
+    item.name = cleanText(classification.name, MAX_SCAN_NAME_LENGTH)
+    item.sizeBytes = resolved.size
+    item.verified = classification.kind === 'file'
+    item.status = classification.kind === 'file' ? 'ready' : 'found'
+    item.unavailableReason = null
+  }
+
+  /**
+   * Replace a list card with one card per available file. The list's post
+   * number and author are inherited so per-post funscript pairing still works,
+   * and a file that was already found as a `/u/` link is upgraded in place
+   * instead of being listed twice.
+   */
+  private expandPixeldrainList(
+    session: StoredScanSession,
+    resolution: PixeldrainListResolution
+  ): void {
+    const listItems = this.pixeldrainItems(session, 'list', resolution.listId)
+    const postNumber =
+      listItems.find((item) => item.postNumber !== null)?.postNumber ?? null
+    const author = listItems.find((item) => item.author !== null)?.author ?? null
+    let expanded = 0
+    let limited = false
+
+    for (const entry of resolution.entries.slice(0, MAX_PIXELDRAIN_LIST_FILES)) {
+      if (
+        entry.availability !== 'available' ||
+        entry.fileId === null ||
+        entry.sourceUrl === null
+      ) {
+        continue
+      }
+      const existing = this.pixeldrainItems(session, 'file', entry.fileId)
+      if (existing.length > 0) {
+        for (const item of existing) {
+          this.applyResolvedFile(item, entry)
+        }
+        this.mergePixeldrainItems(session, existing)
+        expanded += 1
+        continue
+      }
+      if (session.items.size >= MAX_SCAN_ITEMS) {
+        limited = true
+        break
+      }
+      const added = this.addResolvedFileItem(session, {
+        url: entry.sourceUrl,
+        name: entry.name,
+        size: entry.size,
+        mimeType: entry.mimeType,
+        postNumber,
+        author
+      })
+      if (added !== null) expanded += 1
+    }
+
+    if (limited) {
+      session.limited = true
+      session.limitedMessage ??= `The scan reached the ${MAX_SCAN_ITEMS}-item limit. Narrow the page selection.`
+    }
+    if (expanded === 0) {
+      for (const item of listItems) {
+        item.status = 'unavailable'
+        item.unavailableReason =
+          'This Pixeldrain list has no downloadable files.'
+      }
+      return
+    }
+    // The list page itself is not downloadable; its files replace it.
+    for (const item of listItems) this.removeItem(session, item.id)
+  }
+
+  private addResolvedFileItem(
+    session: StoredScanSession,
+    input: {
+      url: string
+      name: string
+      size: number | null
+      mimeType: string | null
+      postNumber: number | null
+      author: string | null
+    }
+  ): StoredScanItem | null {
+    let normalized: string
+    try {
+      normalized = normalizeScanUrl(input.url)
+    } catch {
+      return null
+    }
+    const classification = classifyScanCandidate({
+      url: normalized,
+      nameHint: input.name,
+      ...(input.mimeType === null ? {} : { contentType: input.mimeType })
+    })
+    const id = this.newOpaqueId('item')
+    const item: StoredScanItem = {
+      id,
+      category: classification.category,
+      kind: classification.kind,
+      name: cleanText(classification.name, MAX_SCAN_NAME_LENGTH),
+      hostname: hostnameOf(normalized),
+      sizeBytes: input.size,
+      verified: classification.kind === 'file',
+      status: classification.kind === 'file' ? 'ready' : 'found',
+      postNumber: input.postNumber,
+      author: input.author,
+      url: normalized,
+      fallbackUrl: null,
+      videoIdentity: videoIdentityForUrl(normalized),
+      videoAnalysis: null,
+      browserMatchPending: false
+    }
+    session.items.set(id, item)
+    session.order.push(id)
+    return item
+  }
+
+  private removeItem(session: StoredScanSession, itemId: string): void {
+    const item = session.items.get(itemId)
+    if (item === undefined) return
+    session.items.delete(itemId)
+    session.order = session.order.filter((id) => id !== itemId)
+    if (item.category === 'page' && item.kind === 'page-link') {
+      session.otherLinks = Math.max(0, session.otherLinks - 1)
+    }
+    session.removed.add(itemId)
   }
 
   /**
