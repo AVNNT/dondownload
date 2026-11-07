@@ -92,6 +92,7 @@ import {
   scoreFollowLink
 } from './follow'
 import {
+  ScanProbeCache,
   probeScanCandidates,
   type ProbeScanItemFn,
   type ScanProbeResult
@@ -324,6 +325,12 @@ interface StoredScanSession {
   signinRequired: boolean
   items: Map<string, StoredScanItem>
   order: string[]
+  /** O(1) duplicate detection for a page with hundreds of links. */
+  itemsByUrl: Map<string, StoredScanItem>
+  /** Insertion-ordered items sharing one host video identity. */
+  itemsByVideoIdentity: Map<string, StoredScanItem[]>
+  /** Short-lived probe results and in-flight probes for this scan only. */
+  probeCache: ScanProbeCache
   revision: number
   updatedAt: number
   createdAt: number
@@ -616,8 +623,7 @@ export class ScanSessionManager {
         ...(image.height === undefined ? {} : { height: image.height }),
         thumbnailUrl: fallbackUrl ?? url
       }
-      session.items.set(id, item)
-      session.order.push(id)
+      this.registerItem(session, item)
     }
 
     if (session.items.size === 0) {
@@ -687,7 +693,7 @@ export class ScanSessionManager {
       // A share that could not be listed keeps one truthful card with the
       // fixed reason instead of an empty session.
       const id = this.newOpaqueId('item')
-      session.items.set(id, {
+      this.registerItem(session, {
         id,
         category: 'other',
         kind: 'page-link',
@@ -706,7 +712,6 @@ export class ScanSessionManager {
         browserMatchPending: false,
         unavailableReason: reason ?? GOFILE_BROWSER_ONLY_REASON
       })
-      session.order.push(id)
     } else {
       for (const file of files) {
         if (session.items.size >= MAX_SCAN_ITEMS) {
@@ -794,9 +799,8 @@ export class ScanSessionManager {
 
     let added = 0
     for (const file of files) {
-      const existing = [...session.items.values()].filter(
-        (item) => item.url === file.url
-      )
+      const match = session.itemsByUrl.get(file.url)
+      const existing = match === undefined ? [] : [match]
       if (existing.length > 0) {
         for (const item of existing) {
           this.applyResolvedFile(item, {
@@ -868,9 +872,7 @@ export class ScanSessionManager {
   ): StoredScanItem | null {
     const name = cleanText(row.name, MAX_SCAN_NAME_LENGTH)
     const url = `${share.canonicalUrl}#${encodeURIComponent(name)}`
-    for (const item of session.items.values()) {
-      if (item.url === url) return null
-    }
+    if (session.itemsByUrl.has(url)) return null
     const id = this.newOpaqueId('item')
     const item: StoredScanItem = {
       id,
@@ -891,8 +893,7 @@ export class ScanSessionManager {
       browserMatchPending: false,
       unavailableReason: GOFILE_ROW_UNRESOLVED_REASON
     }
-    session.items.set(id, item)
-    session.order.push(id)
+    this.registerItem(session, item)
     return item
   }
 
@@ -997,8 +998,7 @@ export class ScanSessionManager {
       browserMatchPending: false,
       unavailableReason: BROWSER_ONLY_REASON
     }
-    session.items.set(id, item)
-    session.order.push(id)
+    this.registerItem(session, item)
 
     await this.applyVideoMediaSources(session, item, {
       sources: input.sources,
@@ -1061,6 +1061,9 @@ export class ScanSessionManager {
       signinRequired: false,
       items: new Map(),
       order: [],
+      itemsByUrl: new Map(),
+      itemsByVideoIdentity: new Map(),
+      probeCache: new ScanProbeCache(),
       revision: 0,
       updatedAt: this.now(),
       createdAt: this.now(),
@@ -2119,28 +2122,34 @@ export class ScanSessionManager {
       return 'duplicate'
     }
     const identity = videoIdentityForUrl(normalized)
-    for (const item of session.items.values()) {
+    // The identity bucket is insertion-ordered, so its first entry is exactly
+    // the item the former linear scan returned (a URL match always has that
+    // identity and is therefore at or after the bucket head).
+    const existing =
+      (identity === null
+        ? undefined
+        : session.itemsByVideoIdentity.get(identity)?.[0]) ??
+      session.itemsByUrl.get(normalized)
+    if (existing !== undefined) {
       if (
-        item.url === normalized ||
-        (identity !== null && item.videoIdentity === identity)
+        existing.postNumber === null &&
+        typeof candidate.postNumber === 'number'
       ) {
-        if (
-          item.postNumber === null &&
-          typeof candidate.postNumber === 'number'
-        ) {
-          item.postNumber = candidate.postNumber
-          item.author = candidate.author ?? null
-        }
-        if (
-          candidate.videoHint === true &&
-          item.kind === 'page-link' &&
-          item.category === 'page'
-        ) {
-          item.category = 'video'
-          if (item.videoIdentity === null) item.videoIdentity = identity
-        }
-        return 'duplicate'
+        existing.postNumber = candidate.postNumber
+        existing.author = candidate.author ?? null
       }
+      if (
+        candidate.videoHint === true &&
+        existing.kind === 'page-link' &&
+        existing.category === 'page'
+      ) {
+        existing.category = 'video'
+        if (existing.videoIdentity === null && identity !== null) {
+          existing.videoIdentity = identity
+          this.indexVideoIdentity(session, existing)
+        }
+      }
+      return 'duplicate'
     }
     if (session.items.size >= MAX_SCAN_ITEMS) {
       session.limited = true
@@ -2189,12 +2198,51 @@ export class ScanSessionManager {
         ? {}
         : { unavailableReason: GOFILE_BROWSER_ONLY_REASON })
     }
-    session.items.set(id, item)
-    session.order.push(id)
+    this.registerItem(session, item)
     if (item.category === 'page' && item.kind === 'page-link') {
       session.otherLinks += 1
     }
     return 'added'
+  }
+
+  /** Add one item to every session index in one place. */
+  private registerItem(
+    session: StoredScanSession,
+    item: StoredScanItem
+  ): void {
+    session.items.set(item.id, item)
+    session.order.push(item.id)
+    if (!session.itemsByUrl.has(item.url)) {
+      session.itemsByUrl.set(item.url, item)
+    }
+    if (item.videoIdentity !== null) this.indexVideoIdentity(session, item)
+  }
+
+  private indexVideoIdentity(
+    session: StoredScanSession,
+    item: StoredScanItem
+  ): void {
+    const identity = item.videoIdentity
+    if (identity === null) return
+    const bucket = session.itemsByVideoIdentity.get(identity)
+    if (bucket === undefined) session.itemsByVideoIdentity.set(identity, [item])
+    else if (!bucket.includes(item)) bucket.push(item)
+  }
+
+  private unregisterItem(
+    session: StoredScanSession,
+    item: StoredScanItem
+  ): void {
+    if (session.itemsByUrl.get(item.url) === item) {
+      session.itemsByUrl.delete(item.url)
+    }
+    const identity = item.videoIdentity
+    if (identity === null) return
+    const bucket = session.itemsByVideoIdentity.get(identity)
+    if (bucket === undefined) return
+    const next = bucket.filter((entry) => entry !== item)
+    if (next.length === 0) session.itemsByVideoIdentity.delete(identity)
+    else session.itemsByVideoIdentity.set(identity, next)
   }
 
   private async probeItems(session: StoredScanSession): Promise<void> {
@@ -2229,6 +2277,7 @@ export class ScanSessionManager {
       ...(this.lookup === undefined ? {} : { lookup: this.lookup }),
       signal: session.controller.signal,
       cap: this.probeCap,
+      cache: session.probeCache,
       ...(this.probeItem === undefined ? {} : { probe: this.probeItem }),
       onResult: (index, result: ScanProbeResult) => {
         const target = targets[index]
@@ -2684,14 +2733,14 @@ export class ScanSessionManager {
       videoMedia: null,
       browserMatchPending: false
     }
-    session.items.set(id, item)
-    session.order.push(id)
+    this.registerItem(session, item)
     return item
   }
 
   private removeItem(session: StoredScanSession, itemId: string): void {
     const item = session.items.get(itemId)
     if (item === undefined) return
+    this.unregisterItem(session, item)
     session.items.delete(itemId)
     session.order = session.order.filter((id) => id !== itemId)
     if (item.category === 'page' && item.kind === 'page-link') {
@@ -2729,11 +2778,7 @@ export class ScanSessionManager {
     const pending: PendingFollow[] = []
     const knownIdentity = (url: string): boolean => {
       const identity = videoIdentityForUrl(url)
-      if (identity === null) return false
-      for (const item of session.items.values()) {
-        if (item.videoIdentity === identity) return true
-      }
-      return false
+      return identity !== null && session.itemsByVideoIdentity.has(identity)
     }
     const enqueue = (html: string, pageUrl: string, depth: number): void => {
       if (depth > this.followDepth) return

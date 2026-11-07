@@ -211,20 +211,36 @@ function isCdnAssetHost(hostname: string): boolean {
   return CDN_ASSET_HOST_PREFIXES.some((prefix) => host.startsWith(prefix))
 }
 
+// These patterns run once per candidate (hundreds on a large page); keeping
+// them at module scope avoids recompiling the same expression in every call.
+// eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g
+const COLLAPSE_WHITESPACE = /\s+/g
+const PATH_EXTENSION = /\.([a-z0-9]{1,12})$/i
+const TRAILING_SLASHES = /\/+$/
+const CONTENT_DISPOSITION_ENCODED = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i
+const CONTENT_DISPOSITION_PLAIN =
+  /filename\s*=\s*("([^"]*)"|[^;]+)/i
+const QUOTED_VALUE = /^"|"$/g
+const PIXELDRAIN_FILE_PATH = /^\/u\/[A-Za-z0-9_-]{4,64}\/?$/
+const MEGA_FILE_PATH = /^\/(?:embed\/)?file\/[A-Za-z0-9_-]{6,16}$/
+const MEGA_FOLDER_PATH =
+  /^\/folder\/[A-Za-z0-9_-]{6,16}(?:\/file\/[A-Za-z0-9_-]{6,16})?$/
+const EXTENSION_HINT = /\.([a-z0-9]{1,12})$/i
+
 function safeName(value: string, fallback: string): string {
   const cleaned = value
     .normalize('NFKC')
-    // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(CONTROL_CHARACTERS, ' ')
+    .replace(COLLAPSE_WHITESPACE, ' ')
     .trim()
   const bounded = Array.from(cleaned).slice(0, MAX_SCAN_NAME_LENGTH).join('').trim()
   return bounded.length > 0 ? bounded : fallback
 }
 
 function extensionOfPath(path: string): string | null {
-  const trimmed = path.replace(/\/+$/, '')
-  const match = /\.([a-z0-9]{1,12})$/i.exec(trimmed)
+  const trimmed = path.replace(TRAILING_SLASHES, '')
+  const match = PATH_EXTENSION.exec(trimmed)
   return match ? match[1]!.toLowerCase() : null
 }
 
@@ -240,11 +256,11 @@ export function filenameFromContentDisposition(
   value: string | null | undefined
 ): string | null {
   if (typeof value !== 'string' || value.length === 0) return null
-  const encoded = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(value)
-  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(value)
+  const encoded = CONTENT_DISPOSITION_ENCODED.exec(value)
+  const plain = CONTENT_DISPOSITION_PLAIN.exec(value)
   let candidate = encoded?.[1] ?? plain?.[2] ?? plain?.[1] ?? null
   if (candidate === null) return null
-  candidate = candidate.trim().replace(/^"|"$/g, '')
+  candidate = candidate.trim().replace(QUOTED_VALUE, '')
   if (candidate.length === 0 || candidate.length > 1024) return null
   try {
     candidate = decodeURIComponent(candidate)
@@ -505,7 +521,7 @@ export function classifyScanCandidate(
   // batch manager already resolves it to the real download URL at queue time.
   if (
     (hostname === 'pixeldrain.com' || hostname === 'www.pixeldrain.com') &&
-    /^\/u\/[A-Za-z0-9_-]{4,64}\/?$/.test(pathnameOf(input.url))
+    PIXELDRAIN_FILE_PATH.test(pathnameOf(input.url))
   ) {
     return { category: 'other', kind: 'file', name, extension }
   }
@@ -538,7 +554,7 @@ export function classifyScanCandidate(
 
 function extensionOfExtensionHint(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null
-  const match = /\.([a-z0-9]{1,12})$/i.exec(value.trim())
+  const match = EXTENSION_HINT.exec(value.trim())
   return match ? match[1]!.toLowerCase() : null
 }
 
@@ -547,12 +563,9 @@ function extensionOfExtensionHint(value: string | null | undefined): string | nu
  * path at all, so an empty or `/` path is accepted too.
  */
 function isMegaLinkPath(path: string): boolean {
-  const trimmed = path.replace(/\/+$/, '')
+  const trimmed = path.replace(TRAILING_SLASHES, '')
   if (trimmed.length === 0) return true
-  return (
-    /^\/(?:embed\/)?file\/[A-Za-z0-9_-]{6,16}$/.test(trimmed) ||
-    /^\/folder\/[A-Za-z0-9_-]{6,16}(?:\/file\/[A-Za-z0-9_-]{6,16})?$/.test(trimmed)
-  )
+  return MEGA_FILE_PATH.test(trimmed) || MEGA_FOLDER_PATH.test(trimmed)
 }
 
 /** True when the URL carries a non-empty fragment (a MEGA key). */
