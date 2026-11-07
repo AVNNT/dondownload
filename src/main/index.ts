@@ -2,7 +2,6 @@ import { app, BrowserWindow, clipboard, dialog } from 'electron'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
-import { mapDownloadStatus } from '@shared/downloadStatus'
 import { isAllowedAt } from '@shared/schedule'
 import { typeFolderDirectory } from '@shared/typeFolders'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
@@ -42,6 +41,7 @@ import {
   shouldQuitWhenAllWindowsClosed
 } from './lifecycle'
 import { startNativeBridge, type NativeBridge } from './nativeBridge/server'
+import { createHandoffDownloadStatus } from './nativeBridge/handoffStatus'
 import { ScanSessionManager } from './scanner/session'
 import { ScanQueueService } from './scanner/queue'
 import {
@@ -59,6 +59,7 @@ import {
 import { createAppTray, type AppTray } from './tray'
 import {
   createTaskbarProgress,
+  TASKBAR_ACTIVE_PROGRESS_EMPTY,
   type TaskbarProgressController
 } from './taskbar/progress'
 import { createMainWindow } from './window'
@@ -435,14 +436,16 @@ if (unregisterRequested) {
     // shell taskbar. Updates are throttled inside the controller.
     taskbarProgress = createTaskbarProgress({
       enabled: smoke === null,
-      getWindow: () => (mainWindow === null ? null : mainWindow)
+      getWindow: () => (mainWindow === null ? null : mainWindow),
+      // Cheap aggregate readers; no snapshot is built for a publish.
+      read: {
+        downloads: () => manager?.getActiveProgress() ?? TASKBAR_ACTIVE_PROGRESS_EMPTY,
+        mediaJobs: () =>
+          mediaJobs?.getActiveProgress() ?? TASKBAR_ACTIVE_PROGRESS_EMPTY
+      }
     })
     const updateTaskbarProgress = (): void => {
-      if (taskbarProgress === null) return
-      taskbarProgress.update({
-        downloads: manager?.getSnapshot().downloads ?? [],
-        mediaJobs: mediaJobs?.getMediaSnapshot().jobs ?? []
-      })
+      taskbarProgress?.refresh()
     }
 
     manager = new DownloadManager(
@@ -800,22 +803,9 @@ if (unregisterRequested) {
             : { browserMatch: (input) => browserMatchService.handleSniffed(input) }),
           // The in-page card polls the progress of the one download the
           // extension took over. Only the mapped status, two byte counts and a
-          // display-only file name leave the desktop.
-          downloadStatus: (downloadId) => {
-            const record = manager
-              ?.getSnapshot()
-              .downloads.find((download) => download.id === downloadId)
-            if (!record) return null
-            return {
-              status: mapDownloadStatus(record.status),
-              completedBytes: record.completedBytes,
-              totalBytes: record.totalBytes,
-              filename: record.filename,
-              ...(record.errorMessage === null
-                ? {}
-                : { errorMessage: record.errorMessage })
-            }
-          },
+          // display-only file name leave the desktop. One record lookup keeps
+          // the 2 s poll independent of the download history size.
+          downloadStatus: createHandoffDownloadStatus(manager),
           onShowDownload: (downloadId) => {
             showMainWindow()
             mainWindow?.webContents.send(IPC.revealRow, `download:${downloadId}`)

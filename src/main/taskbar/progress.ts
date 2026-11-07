@@ -36,6 +36,27 @@ export interface TaskbarProgressInput {
   mediaJobs?: readonly TaskbarMediaJob[]
 }
 
+/**
+ * Aggregate a manager already computed from its active rows. Building this
+ * summary is O(active), so a publish never has to materialize and sort the
+ * whole download/media history just to move the taskbar bar.
+ */
+export interface TaskbarActiveProgress {
+  activeCount: number
+  /** Active rows that reported a known total size. */
+  sizedCount: number
+  completedBytes: number
+  totalBytes: number
+}
+
+export const TASKBAR_ACTIVE_PROGRESS_EMPTY: TaskbarActiveProgress =
+  Object.freeze({
+    activeCount: 0,
+    sizedCount: 0,
+    completedBytes: 0,
+    totalBytes: 0
+  })
+
 const DOWNLOAD_ACTIVE_STATUSES = new Set(['active'])
 const MEDIA_ACTIVE_STATUSES = new Set(['downloading'])
 
@@ -102,6 +123,32 @@ export function computeTaskbarProgress(
 }
 
 /**
+ * Same aggregate as `computeTaskbarProgress`, from two cheap summaries. The
+ * managers keep these up to date as statuses change, so this is O(1).
+ */
+export function computeTaskbarProgressFromTotals(
+  downloads: TaskbarActiveProgress,
+  mediaJobs: TaskbarActiveProgress = TASKBAR_ACTIVE_PROGRESS_EMPTY
+): TaskbarProgress {
+  const activeCount = downloads.activeCount + mediaJobs.activeCount
+  if (activeCount === 0) return TASKBAR_PROGRESS_IDLE
+
+  const sizedCount = downloads.sizedCount + mediaJobs.sizedCount
+  const total = downloads.totalBytes + mediaJobs.totalBytes
+  if (sizedCount === 0 || total <= 0) {
+    return { mode: 'indeterminate', fraction: 0, activeCount }
+  }
+
+  const completed =
+    Math.max(0, downloads.completedBytes) + Math.max(0, mediaJobs.completedBytes)
+  return {
+    mode: 'normal',
+    fraction: Math.min(1, Math.max(0, completed / total)),
+    activeCount
+  }
+}
+
+/**
  * Convert a taskbar value into the exact argument `setProgressBar` expects.
  * `-1` removes the bar; a number below zero never means "indeterminate".
  */
@@ -114,10 +161,20 @@ export function taskbarProgressValue(progress: TaskbarProgress): number {
 export interface TaskbarProgressController {
   /** Recompute from the latest rows and schedule a throttled update. */
   update: (input: TaskbarProgressInput) => void
+  /**
+   * Recompute from the cheap active-row summaries configured through `read`.
+   * This is the path used on every publish; it never builds a full snapshot.
+   */
+  refresh: () => void
   /** Apply the pending value immediately (used on teardown). */
   flush: () => void
   /** Stop timers and clear the bar. */
   dispose: () => void
+}
+
+export interface TaskbarProgressReader {
+  downloads: () => TaskbarActiveProgress
+  mediaJobs?: () => TaskbarActiveProgress
 }
 
 export interface TaskbarProgressOptions {
@@ -129,7 +186,12 @@ export interface TaskbarProgressOptions {
     isDestroyed: () => boolean
     setProgressBar: (value: number) => void
   } | null
-  /** Minimum delay between two `setProgressBar` calls. Default 500 ms. */
+  /** Cheap aggregate readers for `refresh()`. */
+  read?: TaskbarProgressReader
+  /**
+   * Minimum delay between two `setProgressBar` calls. Default 500 ms, i.e. at
+   * most two shell updates per second no matter how often a publish fires.
+   */
   throttleMs?: number
   /** Disable everything (smoke/E2E runs). */
   enabled?: boolean
@@ -198,9 +260,7 @@ export function createTaskbarProgress(
     apply(value)
   }
 
-  const update = (input: TaskbarProgressInput): void => {
-    if (!enabled || disposed) return
-    const value = taskbarProgressValue(computeTaskbarProgress(input))
+  const schedule = (value: number): void => {
     pending = value
     if (timer !== null) return
     const elapsed = now() - lastAppliedAt
@@ -214,8 +274,26 @@ export function createTaskbarProgress(
     }, throttleMs - elapsed)
   }
 
+  const update = (input: TaskbarProgressInput): void => {
+    if (!enabled || disposed) return
+    schedule(taskbarProgressValue(computeTaskbarProgress(input)))
+  }
+
+  const refresh = (): void => {
+    if (!enabled || disposed || options.read === undefined) return
+    schedule(
+      taskbarProgressValue(
+        computeTaskbarProgressFromTotals(
+          options.read.downloads(),
+          options.read.mediaJobs?.()
+        )
+      )
+    )
+  }
+
   return {
     update,
+    refresh,
     flush,
     dispose: () => {
       if (disposed) return
