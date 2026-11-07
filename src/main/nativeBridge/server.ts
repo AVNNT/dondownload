@@ -1331,7 +1331,9 @@ export async function startNativeBridge(
 
   server.requestTimeout = 5_000
   server.headersTimeout = 5_000
-  server.keepAliveTimeout = 1_000
+  // The native host now keeps one pooled loopback connection open, so the
+  // server must not close it after a second of idleness.
+  server.keepAliveTimeout = 30_000
   server.maxHeadersCount = 20
   server.on('clientError', (_error, socket) => {
     if (!socket.destroyed) {

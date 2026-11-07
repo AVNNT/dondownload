@@ -25,6 +25,14 @@
       }
       state.navigationTimer = 0
     }
+    if (state.mutationTimer) {
+      try {
+        window.clearTimeout(state.mutationTimer)
+      } catch {
+        // Best effort.
+      }
+      state.mutationTimer = 0
+    }
     if (state.mutationObserver) state.mutationObserver.disconnect()
     if (state.resizeObserver) state.resizeObserver.disconnect()
     if (

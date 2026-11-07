@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   HANDOFF_CARD_MESSAGE_TYPES,
+  HANDOFF_CARD_POLL_MS,
   MAX_HANDED_OFF_DOWNLOAD_IDS,
   forgetHandedOffDownloadsForTests,
   handoffCardInjected,
@@ -100,7 +101,20 @@ function createFakeDocument(): FakeNode {
   documentElement = createNode('html')
   const doc = {
     documentElement,
-    createElement: (tagName: string): FakeNode => createNode(tagName)
+    hidden: false,
+    listeners: {} as Record<string, Array<() => void>>,
+    createElement: (tagName: string): FakeNode => createNode(tagName),
+    addEventListener(type: string, listener: () => void) {
+      doc.listeners[type] = [...(doc.listeners[type] ?? []), listener]
+    },
+    removeEventListener(type: string, listener: () => void) {
+      doc.listeners[type] = (doc.listeners[type] ?? []).filter(
+        (entry) => entry !== listener
+      )
+    },
+    dispatch(type: string) {
+      for (const listener of doc.listeners[type] ?? []) listener()
+    }
   }
   ;(globalThis as any).document = doc
   return documentElement
@@ -225,8 +239,8 @@ describe('in-page hand-off card', () => {
       { type: HANDOFF_CARD_MESSAGE_TYPES.STATUS, downloadId: DOWNLOAD_ID }
     ])
 
-    // The card polls once a second while it is visible.
-    vi.advanceTimersByTime(1_000)
+    // The card polls every two seconds while it is visible.
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
     expect(fake.statusMessages).toHaveLength(2)
 
     fake.response = {
@@ -236,7 +250,7 @@ describe('in-page hand-off card', () => {
       totalBytes: 2_600_000,
       filename: 'report.zip'
     }
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
     expect(find(documentElement, 'title')?.textContent).toBe('Downloaded')
     expect(find(documentElement, 'fill')?.className).toBe('fill done')
     expect(find(documentElement, 'fill')?.style.width).toBe('100%')
@@ -248,6 +262,24 @@ describe('in-page hand-off card', () => {
     expect(card()).not.toBeNull()
     vi.advanceTimersByTime(1_000)
     expect(card()).toBeNull()
+  })
+
+  it('pauses polling while the page is hidden and resumes when it is visible', () => {
+    const fake = installFakeChrome()
+    handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
+    expect(fake.statusMessages).toHaveLength(1)
+
+    const doc = (globalThis as any).document
+    doc.hidden = true
+    doc.dispatch('visibilitychange')
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS * 3)
+    expect(fake.statusMessages).toHaveLength(1)
+
+    doc.hidden = false
+    doc.dispatch('visibilitychange')
+    expect(fake.statusMessages).toHaveLength(2)
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
+    expect(fake.statusMessages).toHaveLength(3)
   })
 
   it('says Starting… while the size is unknown', () => {
@@ -275,7 +307,7 @@ describe('in-page hand-off card', () => {
       filename: 'report.zip',
       errorMessage: 'Disk full'
     }
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
     expect(find(documentElement, 'title')?.textContent).toBe('Download failed')
     expect(find(documentElement, 'meta')?.textContent).toBe('Disk full')
     const sent = fake.statusMessages.length
@@ -291,8 +323,8 @@ describe('in-page hand-off card', () => {
       error: { code: 'APP_NOT_RUNNING', message: 'DonDownload is not running.' }
     }
     handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
-    vi.advanceTimersByTime(1_000)
-    vi.advanceTimersByTime(1_000)
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
     expect(find(documentElement, 'meta')?.textContent).toBe(
       'Open DonDownload to see progress'
     )

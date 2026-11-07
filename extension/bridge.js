@@ -41,6 +41,209 @@ const COMPLETE_MEDIA_TYPES = ['video/mp4', 'video/webm']
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
+// ---------------------------------------------------------------------------
+// Native transport
+//
+// One persistent native messaging port per service-worker lifetime keeps a
+// single host process alive instead of spawning one process per message. Every
+// request carries an `id` that the host echoes back, so replies are matched to
+// their caller. Anything the port cannot do falls back to the original one-shot
+// sendNativeMessage path: no connectNative, a failed connect, or a disconnect
+// before the host answered.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// A port that dies without ever answering usually means the host is not
+// registered. Skip the port for a moment instead of paying a failed connect on
+// every request.
+const NATIVE_PORT_RETRY_MS = 30_000
+
+let nativePort = null
+let nativePortDelivered = false
+let nativePortUnavailableUntil = 0
+let nextNativeRequestId = 1
+const pendingNativeRequests = new Map()
+
+function nativeTimeoutError() {
+  return {
+    code: 'NATIVE_TIMEOUT',
+    message: "DonDownload's native helper did not answer in time. Try again."
+  }
+}
+
+function normalizeRequestTimeout(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(value, 600_000)
+    : DEFAULT_REQUEST_TIMEOUT_MS
+}
+
+function handleNativePortMessage(rawMessage) {
+  if (rawMessage === null || typeof rawMessage !== 'object') return
+  nativePortDelivered = true
+  const id = typeof rawMessage.id === 'string' ? rawMessage.id : null
+  if (id === null) return
+  const pending = pendingNativeRequests.get(id)
+  if (!pending) return
+  // The id is transport bookkeeping only; callers see the host's own fields.
+  const response = { ...rawMessage }
+  delete response.id
+  pending.finish({ ok: true, response })
+}
+
+function handleNativePortDisconnect(port) {
+  if (port !== nativePort) return
+  nativePort = null
+  const delivered = nativePortDelivered
+  nativePortDelivered = false
+  // Reading lastError clears Chromium's "unchecked runtime.lastError" warning.
+  const runtimeError = chrome.runtime.lastError
+  const message =
+    runtimeError && typeof runtimeError.message === 'string'
+      ? runtimeError.message
+      : ''
+  if (!delivered) {
+    nativePortUnavailableUntil = Date.now() + NATIVE_PORT_RETRY_MS
+  }
+  for (const pending of Array.from(pendingNativeRequests.values())) {
+    if (message.length > 0) {
+      // The host refused or vanished before answering: report it exactly as the
+      // one-shot path would.
+      pending.finish({ ok: false, error: describeNativeError(message) })
+      continue
+    }
+    // No diagnostic: re-send this request as a single message.
+    pending.finish({ retry: true })
+  }
+}
+
+function ensureNativePort() {
+  if (nativePort !== null) return nativePort
+  if (Date.now() < nativePortUnavailableUntil) return null
+  const runtime = typeof chrome === 'undefined' ? null : chrome.runtime
+  if (!runtime || typeof runtime.connectNative !== 'function') return null
+
+  let port
+  try {
+    port = runtime.connectNative(NATIVE_HOST)
+  } catch {
+    nativePortUnavailableUntil = Date.now() + NATIVE_PORT_RETRY_MS
+    return null
+  }
+  if (
+    !port ||
+    typeof port.postMessage !== 'function' ||
+    !port.onMessage ||
+    typeof port.onMessage.addListener !== 'function' ||
+    !port.onDisconnect ||
+    typeof port.onDisconnect.addListener !== 'function'
+  ) {
+    nativePortUnavailableUntil = Date.now() + NATIVE_PORT_RETRY_MS
+    return null
+  }
+
+  nativePort = port
+  nativePortDelivered = false
+  port.onMessage.addListener((message) => {
+    if (port !== nativePort) return
+    handleNativePortMessage(message)
+  })
+  port.onDisconnect.addListener(() => handleNativePortDisconnect(port))
+  return port
+}
+
+function postOverPort(port, message, timeoutMs) {
+  return new Promise((resolve) => {
+    const id = String(nextNativeRequestId)
+    nextNativeRequestId += 1
+    let settled = false
+    let timer = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      pendingNativeRequests.delete(id)
+      resolve(result)
+    }
+    timer = setTimeout(
+      () => finish({ ok: false, error: nativeTimeoutError() }),
+      timeoutMs
+    )
+    pendingNativeRequests.set(id, { finish })
+    try {
+      port.postMessage({ ...message, id })
+    } catch {
+      finish({ retry: true })
+    }
+  })
+}
+
+/** One host process per message. The fallback and the single-message path. */
+function sendSingleNativeMessage(message, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      resolve(result)
+    }
+    timer = setTimeout(
+      () => finish({ ok: false, error: nativeTimeoutError() }),
+      timeoutMs
+    )
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, message, (response) => {
+        const runtimeError = chrome.runtime.lastError
+        if (runtimeError) {
+          finish({ ok: false, error: describeNativeError(runtimeError.message) })
+          return
+        }
+        finish({ ok: true, response })
+      })
+    } catch (error) {
+      finish({
+        ok: false,
+        error: {
+          code: 'NATIVE_HOST_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not contact DonDownload's native helper."
+        }
+      })
+    }
+  })
+}
+
+/**
+ * Send one native envelope. Resolves with `{ ok: true, response }` or
+ * `{ ok: false, error }` and never rejects.
+ */
+function sendNativeRequest(message, options) {
+  const timeoutMs = normalizeRequestTimeout(options && options.timeoutMs)
+  const port = ensureNativePort()
+  if (port === null) return sendSingleNativeMessage(message, timeoutMs)
+  return postOverPort(port, message, timeoutMs).then((result) =>
+    result.retry === true ? sendSingleNativeMessage(message, timeoutMs) : result
+  )
+}
+
+/**
+ * Test seam: forget the persistent port and every pending request so a test
+ * can start from a clean transport.
+ */
+export function resetNativeBridgeForTests() {
+  for (const pending of Array.from(pendingNativeRequests.values())) {
+    pending.finish({ ok: false, error: nativeTimeoutError() })
+  }
+  pendingNativeRequests.clear()
+  nativePort = null
+  nativePortDelivered = false
+  nativePortUnavailableUntil = 0
+  nextNativeRequestId = 1
+}
+
 /**
  * Validate a page/link URL before it leaves the browser. The native host and
  * the desktop app validate again; this copy exists for clear popup feedback.
@@ -278,61 +481,28 @@ export function sendQueueCapturedSource(rawUrl, rawFilename, rawEvidence) {
     })
   }
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
+  return sendNativeRequest({
+    type: CAPTURED_SOURCE_MESSAGE_TYPE,
+    url: normalized.url,
+    ...(normalized.filename === undefined
+      ? {}
+      : { filename: normalized.filename }),
+    ...(normalized.contentType === undefined
+      ? {}
+      : {
+          contentType: normalized.contentType,
+          expectedBytes: normalized.expectedBytes
+        }),
+    ...(normalized.referer === undefined ? {} : { referer: normalized.referer }),
+    ...(normalized.userAgent === undefined
+      ? {}
+      : { userAgent: normalized.userAgent })
+  }).then((result) => {
+    if (result.ok === false) return result
+    if (!result.response || result.response.ok !== true) {
+      return { ok: false, error: describeResponseError(result.response) }
     }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        {
-          type: CAPTURED_SOURCE_MESSAGE_TYPE,
-          url: normalized.url,
-          ...(normalized.filename === undefined
-            ? {}
-            : { filename: normalized.filename }),
-          ...(normalized.contentType === undefined
-            ? {}
-            : {
-                contentType: normalized.contentType,
-                expectedBytes: normalized.expectedBytes
-              }),
-          ...(normalized.referer === undefined
-            ? {}
-            : { referer: normalized.referer }),
-          ...(normalized.userAgent === undefined
-            ? {}
-            : { userAgent: normalized.userAgent })
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (!response || response.ok !== true) {
-            finish({ ok: false, error: describeResponseError(response) })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
-        ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
-    }
+    return { ok: true }
   })
 }
 
@@ -563,57 +733,26 @@ export function sendQueueSniffedMedia(input) {
   }
   const value = normalized.input
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
+  return sendNativeRequest({
+    type: SNIFFED_MEDIA_MESSAGE_TYPE,
+    url: value.url,
+    pageUrl: value.pageUrl,
+    referer: value.referer,
+    userAgent: value.userAgent,
+    kind: value.kind,
+    title: value.title,
+    ...(value.filename === undefined ? {} : { filename: value.filename }),
+    ...(value.variant === undefined ? {} : { variant: value.variant }),
+    ...(value.cookie === undefined ? {} : { cookie: value.cookie }),
+    ...(value.expectedBytes === undefined
+      ? {}
+      : { expectedBytes: value.expectedBytes })
+  }).then((result) => {
+    if (result.ok === false) return result
+    if (!result.response || result.response.ok !== true) {
+      return { ok: false, error: describeResponseError(result.response) }
     }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        {
-          type: SNIFFED_MEDIA_MESSAGE_TYPE,
-          url: value.url,
-          pageUrl: value.pageUrl,
-          referer: value.referer,
-          userAgent: value.userAgent,
-          kind: value.kind,
-          title: value.title,
-          ...(value.filename === undefined ? {} : { filename: value.filename }),
-          ...(value.variant === undefined ? {} : { variant: value.variant }),
-          ...(value.cookie === undefined ? {} : { cookie: value.cookie }),
-          ...(value.expectedBytes === undefined
-            ? {}
-            : { expectedBytes: value.expectedBytes })
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (!response || response.ok !== true) {
-            finish({ ok: false, error: describeResponseError(response) })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
-        ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
-    }
+    return { ok: true }
   })
 }
 
@@ -741,67 +880,53 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
       resolve(result)
     }
 
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        {
-          type: DURABLE_HANDOFF_MESSAGE_TYPE,
-          url: normalized.url,
-          ...(normalized.filename === undefined
-            ? {}
-            : { filename: normalized.filename }),
-          ...(normalized.expectedBytes === undefined
-            ? {}
-            : { expectedBytes: normalized.expectedBytes }),
-          ...(normalized.expectedContentType === undefined
-            ? {}
-            : { expectedContentType: normalized.expectedContentType }),
-          ...(referer === undefined ? {} : { referer }),
-          ...(userAgent === undefined || userAgent === null
-            ? {}
-            : { userAgent }),
-          ...(cookie === undefined || cookie === null ? {} : { cookie })
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (
-            !response ||
-            response.ok !== true ||
-            response.accepted !== true ||
-            response.durable !== true ||
-            response.operation !== DURABLE_HANDOFF_MESSAGE_TYPE
-          ) {
-            if (response && response.ok === false) {
-              finish({ ok: false, error: describeResponseError(response) })
-              return
-            }
-            finish(invalidDurableResponse())
-            return
-          }
-          const receipt = validReceipt(response.receipt)
-          if (receipt === null) {
-            finish(invalidDurableResponse())
-            return
-          }
-          finish({ ok: true, durable: true, receipt })
+    // The hand-off deadline above stays authoritative, so the transport
+    // deadline is always a little later than it.
+    sendNativeRequest(
+      {
+        type: DURABLE_HANDOFF_MESSAGE_TYPE,
+        url: normalized.url,
+        ...(normalized.filename === undefined
+          ? {}
+          : { filename: normalized.filename }),
+        ...(normalized.expectedBytes === undefined
+          ? {}
+          : { expectedBytes: normalized.expectedBytes }),
+        ...(normalized.expectedContentType === undefined
+          ? {}
+          : { expectedContentType: normalized.expectedContentType }),
+        ...(referer === undefined ? {} : { referer }),
+        ...(userAgent === undefined || userAgent === null ? {} : { userAgent }),
+        ...(cookie === undefined || cookie === null ? {} : { cookie })
+      },
+      { timeoutMs: timeoutMs + 5_000 }
+    ).then((result) => {
+      if (result.ok === false) {
+        finish(result)
+        return
+      }
+      const response = result.response
+      if (
+        !response ||
+        response.ok !== true ||
+        response.accepted !== true ||
+        response.durable !== true ||
+        response.operation !== DURABLE_HANDOFF_MESSAGE_TYPE
+      ) {
+        if (response && response.ok === false) {
+          finish({ ok: false, error: describeResponseError(response) })
+          return
         }
-      )
-    } catch (error) {
-      finish({
-        ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
-    }
+        finish(invalidDurableResponse())
+        return
+      }
+      const receipt = validReceipt(response.receipt)
+      if (receipt === null) {
+        finish(invalidDurableResponse())
+        return
+      }
+      finish({ ok: true, durable: true, receipt })
+    })
   })
 }
 
@@ -811,36 +936,7 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
  * share this one transport.
  */
 function sendNativeEnvelope(message) {
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
-
-    try {
-      chrome.runtime.sendNativeMessage(NATIVE_HOST, message, (response) => {
-        const runtimeError = chrome.runtime.lastError
-        if (runtimeError) {
-          finish({ ok: false, error: describeNativeError(runtimeError.message) })
-          return
-        }
-        finish({ ok: true, response })
-      })
-    } catch (error) {
-      finish({
-        ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
-    }
-  })
+  return sendNativeRequest(message)
 }
 
 function invalidDownloadStatusResponse() {
@@ -1008,56 +1104,26 @@ export function sendShowDownload(rawDownloadId) {
  * sending a synthetic download.
  */
 export function probeNativeConnection() {
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        { type: PROBE_MESSAGE_TYPE },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (
-            !response ||
-            response.ok !== true ||
-            response.operation !== PROBE_MESSAGE_TYPE
-          ) {
-            finish({
-              ok: false,
-              error:
-                response && response.ok === false
-                  ? describeResponseError(response)
-                  : {
-                      code: 'NATIVE_RESPONSE_INVALID',
-                      message: 'The DonDownload helper returned an unexpected response.'
-                    }
-            })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
+  return sendNativeRequest({ type: PROBE_MESSAGE_TYPE }).then((result) => {
+    if (result.ok === false) return result
+    const response = result.response
+    if (
+      !response ||
+      response.ok !== true ||
+      response.operation !== PROBE_MESSAGE_TYPE
+    ) {
+      return {
         ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
+        error:
+          response && response.ok === false
+            ? describeResponseError(response)
+            : {
+                code: 'NATIVE_RESPONSE_INVALID',
+                message: 'The DonDownload helper returned an unexpected response.'
+              }
+      }
     }
+    return { ok: true }
   })
 }
 
@@ -1123,45 +1189,16 @@ export function sendQueueDownload(rawUrl, options = {}) {
     typeof options === 'object' &&
     options.force === true
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
+  return sendNativeRequest(
+    force
+      ? { type: QUEUE_MESSAGE_TYPE, url: normalized.url, force: true }
+      : { type: QUEUE_MESSAGE_TYPE, url: normalized.url }
+  ).then((result) => {
+    if (result.ok === false) return result
+    if (!result.response || result.response.ok !== true) {
+      return { ok: false, error: describeResponseError(result.response) }
     }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        force
-          ? { type: QUEUE_MESSAGE_TYPE, url: normalized.url, force: true }
-          : { type: QUEUE_MESSAGE_TYPE, url: normalized.url },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (!response || response.ok !== true) {
-            finish({ ok: false, error: describeResponseError(response) })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
-        ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
-    }
+    return { ok: true }
   })
 }
 
@@ -1194,60 +1231,26 @@ export function sendScanPage(rawUrl, rawCookie) {
     }
   }
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        {
-          type: SCAN_PAGE_MESSAGE_TYPE,
-          url: normalized.url,
-          ...(cookie === undefined ? {} : { cookie })
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (
-            !response ||
-            response.ok !== true ||
-            response.accepted !== true
-          ) {
-            finish({
-              ok: false,
-              error:
-                response && response.ok === false
-                  ? describeResponseError(response)
-                  : {
-                      code: 'NATIVE_RESPONSE_INVALID',
-                      message: 'The DonDownload helper returned an unexpected response.'
-                    }
-            })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
+  return sendNativeRequest({
+    type: SCAN_PAGE_MESSAGE_TYPE,
+    url: normalized.url,
+    ...(cookie === undefined ? {} : { cookie })
+  }).then((result) => {
+    if (result.ok === false) return result
+    const response = result.response
+    if (!response || response.ok !== true || response.accepted !== true) {
+      return {
         ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
+        error:
+          response && response.ok === false
+            ? describeResponseError(response)
+            : {
+                code: 'NATIVE_RESPONSE_INVALID',
+                message: 'The DonDownload helper returned an unexpected response.'
+              }
+      }
     }
+    return { ok: true }
   })
 }
 
@@ -1306,57 +1309,27 @@ export function sendScanImages(input) {
       ? input.pageTitle.slice(0, MAX_PAGE_TITLE_LENGTH)
       : ''
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
-
-    try {
-      chrome.runtime.sendNativeMessage(
-        NATIVE_HOST,
-        {
-          type: SCAN_IMAGES_MESSAGE_TYPE,
-          pageUrl: page.url,
-          pageTitle: title,
-          images
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          if (runtimeError) {
-            finish({ ok: false, error: describeNativeError(runtimeError.message) })
-            return
-          }
-          if (!response || response.ok !== true || response.accepted !== true) {
-            finish({
-              ok: false,
-              error:
-                response && response.ok === false
-                  ? describeResponseError(response)
-                  : {
-                      code: 'NATIVE_RESPONSE_INVALID',
-                      message: 'The DonDownload helper returned an unexpected response.'
-                    }
-            })
-            return
-          }
-          finish({ ok: true })
-        }
-      )
-    } catch (error) {
-      finish({
+  return sendNativeRequest({
+    type: SCAN_IMAGES_MESSAGE_TYPE,
+    pageUrl: page.url,
+    pageTitle: title,
+    images
+  }).then((result) => {
+    if (result.ok === false) return result
+    const response = result.response
+    if (!response || response.ok !== true || response.accepted !== true) {
+      return {
         ok: false,
-        error: {
-          code: 'NATIVE_HOST_FAILED',
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not contact DonDownload's native helper."
-        }
-      })
+        error:
+          response && response.ok === false
+            ? describeResponseError(response)
+            : {
+                code: 'NATIVE_RESPONSE_INVALID',
+                message: 'The DonDownload helper returned an unexpected response.'
+              }
+      }
     }
+    return { ok: true }
   })
 }
 
@@ -1376,37 +1349,16 @@ function invalidMediaResponse() {
  * with a safe message.
  */
 function sendMediaMessage(message) {
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
+  return sendNativeRequest(message).then((result) => {
+    if (result.ok === false) return result
 
+    let parsed
     try {
-      chrome.runtime.sendNativeMessage(NATIVE_HOST, message, (response) => {
-        const runtimeError = chrome.runtime.lastError
-        if (runtimeError) {
-          finish({ ok: false, error: describeNativeError(runtimeError.message) })
-          return
-        }
-
-        let parsed
-        try {
-          parsed = parseMediaBridgeResponse(response)
-        } catch {
-          finish(invalidMediaResponse())
-          return
-        }
-        finish(parsed)
-      })
-    } catch (error) {
-      finish({
-        ok: false,
-        error: describeNativeError(error instanceof Error ? error.message : '')
-      })
+      parsed = parseMediaBridgeResponse(result.response)
+    } catch {
+      return invalidMediaResponse()
     }
+    return parsed
   })
 }
 

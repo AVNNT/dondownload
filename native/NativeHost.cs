@@ -13,6 +13,14 @@ using System.Web.Script.Serialization;
 // Edge) on stdin/stdout:
 //   4-byte little-endian length, then UTF-8 JSON. One request per frame.
 //
+// The read loop serves both callers: a one-shot sendNativeMessage process that
+// receives a single frame and exits, and a long-lived connectNative port that
+// keeps this process alive and sends many frames. A request may carry an opaque
+// string "id"; the host echoes it on the matching response so the browser can
+// multiplex concurrent requests over one port. The id is transport bookkeeping
+// only: it is removed before the exact-key schema checks and never reaches the
+// desktop bridge.
+//
 // Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
 //   { "type": "probe" }
@@ -57,6 +65,7 @@ internal static class NativeHost
     // One page may report up to 1000 images, each with an optional fallback URL.
     private const int MaxScanImages = 1000;
     private const string StateFileName = "native-bridge.json";
+    private const string RequestIdKey = "id";
     // aria2 may need up to ~12 seconds to start on the first add. The host
     // still fails promptly when the loopback port is closed.
     private const int BridgeTimeoutMilliseconds = 20000;
@@ -67,6 +76,10 @@ internal static class NativeHost
 
     private static readonly Regex TokenPattern =
         new Regex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+    // Browser-generated request ids for the persistent port. Short, opaque and
+    // never interpreted.
+    private static readonly Regex RequestIdPattern =
+        new Regex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.CultureInvariant);
     private static readonly Regex ExtensionOriginPattern =
         new Regex("^chrome-extension://[a-p]{32}/?$", RegexOptions.CultureInvariant);
     private static readonly Regex OpaqueMediaIdPattern =
@@ -224,7 +237,33 @@ internal static class NativeHost
         }
 
         Dictionary<string, object> message = parsed as Dictionary<string, object>;
-        if (message == null || !message.ContainsKey("type"))
+        if (message == null)
+        {
+            return Error("INVALID_MESSAGE", "The native message is missing its operation.");
+        }
+
+        string requestId = null;
+        if (message.ContainsKey(RequestIdKey))
+        {
+            requestId = message[RequestIdKey] as string;
+            message.Remove(RequestIdKey);
+            if (requestId == null || !RequestIdPattern.IsMatch(requestId))
+            {
+                return Error("INVALID_MESSAGE", "The native message request id is invalid.");
+            }
+        }
+
+        Dictionary<string, object> response = DispatchMessage(message);
+        if (requestId != null)
+        {
+            response[RequestIdKey] = requestId;
+        }
+        return response;
+    }
+
+    private static Dictionary<string, object> DispatchMessage(Dictionary<string, object> message)
+    {
+        if (!message.ContainsKey("type"))
         {
             return Error("INVALID_MESSAGE", "The native message is missing its operation.");
         }
@@ -1313,6 +1352,33 @@ internal static class NativeHost
         return Error((string)error["code"], (string)error["message"]);
     }
 
+    // The host talks to exactly one loopback endpoint for its whole lifetime, so
+    // one shared connection pool is enough. Keeping the connection alive avoids
+    // a fresh TCP handshake for every message the browser sends.
+    private static readonly object BridgeServicePointLock = new object();
+    private static ServicePoint bridgeServicePoint;
+    private static int bridgeServicePointPort = -1;
+
+    private static void ConfigureBridgeServicePoint(HttpWebRequest request, int port)
+    {
+        request.ServicePoint.Expect100Continue = false;
+        lock (BridgeServicePointLock)
+        {
+            if (bridgeServicePointPort == port && bridgeServicePoint != null)
+            {
+                return;
+            }
+            bridgeServicePoint = request.ServicePoint;
+            bridgeServicePointPort = port;
+            // A handful of concurrent requests at most; the desktop bridge is
+            // local, so a small pool is plenty.
+            bridgeServicePoint.ConnectionLimit = 4;
+            // Stay below the loopback server's 30s keep-alive timeout so this
+            // side never reuses a connection the server has already closed.
+            bridgeServicePoint.MaxIdleTime = 20000;
+        }
+    }
+
     private static HttpWebRequest CreateBridgeRequest(
         BridgeState state,
         string route,
@@ -1326,11 +1392,11 @@ internal static class NativeHost
         request.Headers[HttpRequestHeader.Authorization] = "Bearer " + state.Token;
         request.AllowAutoRedirect = false;
         request.Proxy = null;
-        request.KeepAlive = false;
+        request.KeepAlive = true;
         request.Timeout = timeoutMilliseconds;
         request.ReadWriteTimeout = timeoutMilliseconds;
-        request.ServicePoint.Expect100Continue = false;
         request.UserAgent = "DonDownload-Native/0.1.0";
+        ConfigureBridgeServicePoint(request, state.Port);
         return request;
     }
 

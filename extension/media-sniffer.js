@@ -683,10 +683,33 @@ export function installMediaSniffer(chromeApi, options = {}) {
   const fetchImpl =
     typeof options.fetch === 'function' ? options.fetch : globalThis.fetch
   const now = typeof options.now === 'function' ? options.now : Date.now
-  const filter = { urls: ['http://*/*', 'https://*/*'] }
+  const urls = ['http://*/*', 'https://*/*']
+  // Top-frame navigations are already ignored by handleHeaders, so the
+  // browser can drop them before this callback runs. Every other resource
+  // type still reaches the classifier, so no detection is lost.
+  const responseFilter = {
+    urls,
+    types: [
+      'sub_frame',
+      'stylesheet',
+      'script',
+      'image',
+      'font',
+      'object',
+      'xmlhttprequest',
+      'ping',
+      'csp_report',
+      'media',
+      'websocket',
+      'webbundle',
+      'other'
+    ]
+  }
+  const navigationFilter = { urls, types: ['main_frame'] }
   let enabled = false
   let permissionGranted = false
   let installed = false
+  let listening = false
   const manifestCache = new Map()
 
   async function fetchManifestInfo(url) {
@@ -731,6 +754,20 @@ export function installMediaSniffer(chromeApi, options = {}) {
     if (!Number.isInteger(details.tabId) || details.tabId < 0) return
     if (details.type === 'main_frame') return
 
+    // The pure classifier is cheap and rejects almost every response, so it
+    // runs before the tab lookup and the async site authorization.
+    const classified = classifyMediaResponse(
+      {
+        url: details.url,
+        statusCode: details.statusCode,
+        contentType: headerValue(details.responseHeaders, 'content-type'),
+        contentRange: headerValue(details.responseHeaders, 'content-range'),
+        contentLength: headerValue(details.responseHeaders, 'content-length')
+      },
+      now()
+    )
+    if (classified === null) return
+
     let tab
     try {
       tab = await chromeApi.tabs.get(details.tabId)
@@ -746,18 +783,6 @@ export function installMediaSniffer(chromeApi, options = {}) {
       allowed = false
     }
     if (!allowed) return
-
-    const classified = classifyMediaResponse(
-      {
-        url: details.url,
-        statusCode: details.statusCode,
-        contentType: headerValue(details.responseHeaders, 'content-type'),
-        contentRange: headerValue(details.responseHeaders, 'content-range'),
-        contentLength: headerValue(details.responseHeaders, 'content-length')
-      },
-      now()
-    )
-    if (classified === null) return
 
     if (classified.segment === true) {
       if (store.markSegment(details.tabId, classified.sourceHost, now())) {
@@ -802,6 +827,49 @@ export function installMediaSniffer(chromeApi, options = {}) {
     notify(details.tabId)
   }
 
+  function headersListener(details) {
+    void handleHeaders(details).catch(() => undefined)
+  }
+
+  function beforeRequestListener(details) {
+    handleBeforeRequest(details)
+  }
+
+  /**
+   * Register the webRequest listeners only while sniffing is both enabled and
+   * permitted, and drop them again as soon as either stops being true. An idle
+   * listener would otherwise wake the service worker for every request on
+   * every site.
+   */
+  function syncListeners() {
+    if (!installed) return
+    const webRequest = chromeApi && chromeApi.webRequest
+    if (
+      !webRequest ||
+      !webRequest.onHeadersReceived ||
+      !webRequest.onBeforeRequest
+    ) {
+      return
+    }
+    const wanted = enabled && permissionGranted
+    if (wanted === listening) return
+    try {
+      if (wanted) {
+        // `responseHeaders` only. Request headers and cookies are never exposed.
+        webRequest.onHeadersReceived.addListener(headersListener, responseFilter, [
+          'responseHeaders'
+        ])
+        webRequest.onBeforeRequest.addListener(beforeRequestListener, navigationFilter)
+      } else {
+        webRequest.onHeadersReceived.removeListener(headersListener)
+        webRequest.onBeforeRequest.removeListener(beforeRequestListener)
+      }
+      listening = wanted
+    } catch {
+      // A listener that could not be registered leaves the sniffer idle.
+    }
+  }
+
   function install() {
     if (installed) return true
     const webRequest = chromeApi && chromeApi.webRequest
@@ -812,23 +880,9 @@ export function installMediaSniffer(chromeApi, options = {}) {
     ) {
       return false
     }
-    try {
-      // `responseHeaders` only. Request headers and cookies are never exposed.
-      webRequest.onHeadersReceived.addListener(
-        (details) => {
-          void handleHeaders(details).catch(() => undefined)
-        },
-        filter,
-        ['responseHeaders']
-      )
-      webRequest.onBeforeRequest.addListener((details) => {
-        handleBeforeRequest(details)
-      }, filter)
-      installed = true
-      return true
-    } catch {
-      return false
-    }
+    installed = true
+    syncListeners()
+    return true
   }
 
   function handleTabUrlChanged(tabId, changedAt = now()) {
@@ -844,9 +898,11 @@ export function installMediaSniffer(chromeApi, options = {}) {
     handleTabUrlChanged,
     setEnabled(value) {
       enabled = value === true
+      syncListeners()
     },
     setPermissionGranted(value) {
       permissionGranted = value === true
+      syncListeners()
     },
     isEnabled() {
       return enabled && permissionGranted

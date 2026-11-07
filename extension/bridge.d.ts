@@ -180,3 +180,10 @@ export function sendAnalyzeMedia(rawUrl: unknown): Promise<AnalyzeMediaResult>
 export function sendQueueMedia(input: unknown): Promise<QueueMediaResult>
 export function sendMediaStatus(jobId: unknown): Promise<QueueMediaResult>
 export function sendCancelMedia(jobId: unknown): Promise<QueueMediaResult>
+
+/**
+ * One persistent native messaging port serves every request for the lifetime of
+ * the service worker. Each request carries an `id` that the host echoes, and a
+ * request that cannot use the port falls back to a one-shot sendNativeMessage.
+ */
+export function resetNativeBridgeForTests(): void

@@ -1389,6 +1389,8 @@ describe('overlay interaction in a minimal DOM', () => {
 
     harness.video.remove()
     harness.mutationObserver.trigger()
+    // The observer pass is trailing-debounced by 120ms.
+    harness.runTimers()
     expect(harness.host.hidden).toBe(true)
     expect(harness.trigger.hidden).toBe(true)
   })
@@ -1544,6 +1546,8 @@ describe('overlay interaction in a minimal DOM', () => {
 
     // Persistent floating icon: no pointer hover, just a playing player.
     harness.mutationObserver.trigger()
+    // The observer pass is trailing-debounced by 120ms.
+    harness.runTimers()
     harness.video.dispatch('playing', pointerEvent(harness.video, [harness.video]))
     expect(harness.host.hidden).toBe(false)
     expect(harness.trigger.hidden).toBe(false)
@@ -1619,6 +1623,8 @@ describe('overlay interaction in a minimal DOM', () => {
     harness.video.rect = { left: 23, top: -2000, width: 844, height: 633 }
     player.rect = { left: 24, top: -2000, width: 844, height: 633 }
     harness.mutationObserver.trigger()
+    // The observer pass is trailing-debounced by 120ms.
+    harness.runTimers()
     expect(harness.host.hidden).toBe(true)
   })
 })
@@ -1774,6 +1780,8 @@ describe('overlay media flow', () => {
     secondVideo.rect = { left: 700, top: 100, width: 400, height: 220 }
     harness.document.body.appendChild(secondVideo)
     harness.mutationObserver.trigger()
+    // The observer pass is trailing-debounced by 120ms.
+    harness.runTimers()
     playVideo(secondVideo, 'https://cdn.example/media/other.webm')
     expect(collectByClass(harness.sourceList, 'source')).toHaveLength(3)
     expect(JSON.stringify(collectText(harness.sourceList))).not.toContain('other.webm')

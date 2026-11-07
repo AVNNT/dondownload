@@ -85,6 +85,7 @@
     floatingEnabled: true,
     settingsListener: null,
     mutationObserver: null,
+    mutationTimer: 0,
     resizeObserver: null,
     runtimeListener: null,
     navigationTimer: 0,
