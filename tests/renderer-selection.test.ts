@@ -7,13 +7,16 @@ import {
 } from '../src/renderer/src/lib/unified'
 import {
   EMPTY_SELECTION,
+  areAllRowsSelected,
   isSelected,
   jumpFocus,
   moveFocus,
   pruneSelection,
+  rowsForSelectedKeys,
   selectAllRows,
   selectSingle,
   selectedRows,
+  selectionKeys,
   updateSelection
 } from '../src/renderer/src/lib/selection'
 import { computeWindow } from '../src/renderer/src/lib/virtualList'
@@ -89,6 +92,23 @@ describe('selection over a virtualised list', () => {
     expect(all.selected).toEqual(list.map((row) => row.key))
     expect(selectedRows(list, all)).toEqual(list)
     expect(all.anchor).toBe(list[0]!.key)
+  })
+
+  it('memoises one key set per selection state for O(1) lookups', () => {
+    const list = rows(10)
+    const all = selectAllRows(list)
+    const keys = selectionKeys(all)
+
+    // Same state object => same Set, so render-path checks do not rebuild it.
+    expect(selectionKeys(all)).toBe(keys)
+    expect(areAllRowsSelected(list, keys)).toBe(true)
+    expect(rowsForSelectedKeys(list, keys)).toEqual(list)
+    expect(isSelected(all, list[7]!.key)).toBe(true)
+
+    expect(areAllRowsSelected(list, selectionKeys(EMPTY_SELECTION))).toBe(false)
+    expect(rowsForSelectedKeys(list, selectionKeys(EMPTY_SELECTION))).toEqual([])
+    // Rebuilt sets with identical contents still work.
+    expect(areAllRowsSelected(list, new Set(all.selected))).toBe(true)
   })
 
   it('toggles a single row without touching the rest', () => {

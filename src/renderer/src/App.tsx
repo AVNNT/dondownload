@@ -53,12 +53,14 @@ import {
 } from './lib/unified'
 import {
   EMPTY_SELECTION,
+  areAllRowsSelected,
   jumpFocus,
   moveFocus,
   pruneSelection,
+  rowsForSelectedKeys,
   selectAllRows,
   selectSingle,
-  selectedRows as pickSelectedRows,
+  selectionKeys,
   updateSelection,
   type SelectionMode,
   type SelectionState
@@ -473,12 +475,13 @@ export default function App(): JSX.Element {
     () => sortRows(filteredRows, sortKey, sortDirection),
     [filteredRows, sortKey, sortDirection]
   )
+  // One Set per selection state; every render-path check below is O(1) per row
+  // instead of scanning `selection.selected` (quadratic when everything is
+  // selected in a 10,000-row list).
+  const selectedKeys = useMemo(() => selectionKeys(selection), [selection])
   const visibleSelection = useMemo(
-    () =>
-      pickSelectedRows(visibleRows, selection).filter((row) =>
-        selection.selected.includes(row.key)
-      ),
-    [visibleRows, selection]
+    () => rowsForSelectedKeys(visibleRows, selectedKeys),
+    [visibleRows, selectedKeys]
   )
   const singleSelected = useMemo(() => {
     if (selection.selected.length !== 1) return null
@@ -490,9 +493,19 @@ export default function App(): JSX.Element {
    * re-rendered by a new snapshot or selection. They read the latest lists
    * through this ref instead of closing over them.
    */
-  const latestLists = useRef({ rows: visibleRows, selection, visibleSelection })
+  const latestLists = useRef({
+    rows: visibleRows,
+    selection,
+    selectedKeys,
+    visibleSelection
+  })
   useLayoutEffect(() => {
-    latestLists.current = { rows: visibleRows, selection, visibleSelection }
+    latestLists.current = {
+      rows: visibleRows,
+      selection,
+      selectedKeys,
+      visibleSelection
+    }
   })
 
   /* eslint-disable react-hooks/set-state-in-effect -- focus and selection are derived from the filtered rows and must be reconciled after a filter change */
@@ -992,20 +1005,18 @@ export default function App(): JSX.Element {
   }, [])
 
   const handleSelectAll = useCallback((): void => {
-    setSelection((current) => {
-      const allSelected =
-        visibleRows.length > 0 &&
-        visibleRows.every((row) => current.selected.includes(row.key))
-      return allSelected ? EMPTY_SELECTION : selectAllRows(visibleRows)
-    })
+    const allSelected = areAllRowsSelected(
+      visibleRows,
+      latestLists.current.selectedKeys
+    )
+    setSelection(allSelected ? EMPTY_SELECTION : selectAllRows(visibleRows))
   }, [visibleRows])
 
   const handleContextMenu = useCallback(
     (row: UnifiedRow, event: MouseEvent): void => {
       event.preventDefault()
-      const currentSelection = latestLists.current.selection
       const currentSelectedRows = latestLists.current.visibleSelection
-      const alreadySelected = currentSelection.selected.includes(row.key)
+      const alreadySelected = latestLists.current.selectedKeys.has(row.key)
       const rows = alreadySelected
         ? currentSelectedRows.length > 0
           ? currentSelectedRows
@@ -1126,8 +1137,7 @@ export default function App(): JSX.Element {
           x: rect ? rect.left + 48 : 40,
           y: rect ? rect.top + 24 : 80,
           rows:
-            visibleSelection.length > 0 &&
-            selection.selected.includes(focusedRow.key)
+            visibleSelection.length > 0 && selectedKeys.has(focusedRow.key)
               ? visibleSelection
               : [focusedRow]
         })
@@ -1143,6 +1153,7 @@ export default function App(): JSX.Element {
       handleToggleRow,
       openRow,
       requestRemove,
+      selectedKeys,
       selection,
       visibleRows,
       visibleSelection
@@ -1285,9 +1296,10 @@ export default function App(): JSX.Element {
   const saveDir = snapshot?.downloads[0]?.dir ?? null
   const menuActions = menu ? buildContextActions(menu.rows) : []
   const selectMode = selection.selected.length > 1
-  const allSelected =
-    visibleRows.length > 0 &&
-    visibleRows.every((row) => selection.selected.includes(row.key))
+  const allSelected = useMemo(
+    () => areAllRowsSelected(visibleRows, selectedKeys),
+    [visibleRows, selectedKeys]
+  )
 
   return (
     <div

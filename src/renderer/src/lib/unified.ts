@@ -375,14 +375,17 @@ function mediaStatus(job: MediaJob): {
 export function downloadToRow(item: DownloadItem): UnifiedRow {
   const status = downloadStatus(item)
   const complete = item.status === 'complete'
+  // Parse the URL once: subtitle and host share the same hostname, and a
+  // 10,000-row rebuild was spending ~9 ms constructing two URL objects each.
+  const hostname = hostnameOf(item.url)
   return {
     key: `download:${item.id}`,
     id: item.id,
     source: 'download',
     title: item.filename,
-    subtitle: hostnameOf(item.url) ?? item.url,
+    subtitle: hostname ?? item.url,
     url: item.url,
-    host: hostnameOf(item.url),
+    host: hostname,
     category: classifyCategory({
       source: 'download',
       filename: item.filename,
@@ -462,14 +465,255 @@ export function mediaJobToRow(job: MediaJob): UnifiedRow {
   }
 }
 
+interface DownloadRowCacheEntry {
+  /** Row inputs owned by the record; every one is verified on a cache hit. */
+  url: string
+  filename: string
+  status: DownloadItem['status']
+  totalBytes: number
+  completedBytes: number
+  speedBps: number
+  etaSeconds: number | null
+  errorMessage: string | null
+  errorDetail: string | null
+  attempts: number
+  maxAttempts: number
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  /** The next fields are owned outside the record and keep no `updatedAt`. */
+  scheduledAt: number | null
+  speedLimitBps: number | null
+  connections: number | null
+  blockReason: DownloadItem['blockReason']
+  retryAt: number | null
+  /** Checksum results are published without touching `updatedAt`. */
+  checksum: string
+  filePath: string | null
+  row: UnifiedRow
+}
+
+interface MediaRowCacheEntry {
+  kind: MediaJob['kind']
+  title: string
+  label: string
+  status: MediaJob['status']
+  completedBytes: number
+  totalBytes: number | null
+  speedBps: number
+  errorMessage: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  thumbnailUrl: string | null
+  /** Merge progress is sampled outside `updatedAt`. */
+  mergeCompletedBytes: number | null
+  mergeTotalBytes: number | null
+  row: UnifiedRow
+}
+
+/**
+ * Row identity cache.
+ *
+ * Every backend snapshot re-creates the source items, so without this cache
+ * `buildUnifiedRows` rebuilt 10,000 row objects per poll even when nothing had
+ * changed, and fresh rows forced memoised table rows to re-diff. The caches
+ * below keep the SAME row object for unchanged data:
+ *
+ *  - a WeakMap keyed by the source item object, for callers that rebuild from
+ *    the identical object (fixtures, tests, repeated builds of one snapshot);
+ *  - a Map keyed by `${kind}:${id}` plus a full field comparison, because IPC
+ *    snapshots deliver fresh item objects for identical data. The entry stores
+ *    `updatedAt` together with every other field the row (or its embedded
+ *    source item) projects, so a cached row is only reused when all of them are
+ *    equal — including the fields that change without bumping `updatedAt`.
+ *
+ * The Map is bounded: identity reuse is an optimisation, so dropping it
+ * wholesale on overflow is safe and keeps memory flat.
+ */
+const MAX_CACHED_ROWS = 50_000
+
+const DOWNLOAD_ROW_BY_ITEM = new WeakMap<DownloadItem, DownloadRowCacheEntry>()
+const DOWNLOAD_ROWS_BY_KEY = new Map<string, DownloadRowCacheEntry>()
+const MEDIA_ROW_BY_ITEM = new WeakMap<MediaJob, MediaRowCacheEntry>()
+const MEDIA_ROWS_BY_KEY = new Map<string, MediaRowCacheEntry>()
+
+function checksumVersion(checksum: DownloadItem['checksum']): string {
+  if (checksum === null || checksum === undefined) return ''
+  return `${checksum.algorithm}:${checksum.ok === null ? '?' : checksum.ok ? '1' : '0'}:${checksum.checkedAt}:${checksum.computed}`
+}
+
+function downloadEntryOf(
+  item: DownloadItem,
+  row: UnifiedRow
+): DownloadRowCacheEntry {
+  return {
+    url: item.url,
+    filename: item.filename,
+    status: item.status,
+    totalBytes: item.totalBytes,
+    completedBytes: item.completedBytes,
+    speedBps: item.speedBps,
+    etaSeconds: item.etaSeconds,
+    errorMessage: item.errorMessage,
+    errorDetail: item.errorDetail ?? null,
+    attempts: item.attempts,
+    maxAttempts: item.maxAttempts,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    completedAt: item.completedAt,
+    scheduledAt: item.scheduledAt ?? null,
+    speedLimitBps: item.speedLimitBps ?? null,
+    connections: item.connections ?? null,
+    blockReason: item.blockReason ?? null,
+    retryAt: item.retryAt ?? null,
+    checksum: checksumVersion(item.checksum),
+    filePath: item.filePath,
+    row
+  }
+}
+
+function sameDownload(entry: DownloadRowCacheEntry, item: DownloadItem): boolean {
+  return (
+    entry.url === item.url &&
+    entry.filename === item.filename &&
+    entry.status === item.status &&
+    entry.totalBytes === item.totalBytes &&
+    entry.completedBytes === item.completedBytes &&
+    entry.speedBps === item.speedBps &&
+    entry.etaSeconds === item.etaSeconds &&
+    entry.errorMessage === item.errorMessage &&
+    entry.errorDetail === (item.errorDetail ?? null) &&
+    entry.attempts === item.attempts &&
+    entry.maxAttempts === item.maxAttempts &&
+    entry.createdAt === item.createdAt &&
+    entry.updatedAt === item.updatedAt &&
+    entry.completedAt === item.completedAt &&
+    entry.scheduledAt === (item.scheduledAt ?? null) &&
+    entry.speedLimitBps === (item.speedLimitBps ?? null) &&
+    entry.connections === (item.connections ?? null) &&
+    entry.blockReason === (item.blockReason ?? null) &&
+    entry.retryAt === (item.retryAt ?? null) &&
+    entry.checksum === checksumVersion(item.checksum) &&
+    entry.filePath === item.filePath
+  )
+}
+
+function mediaEntryOf(job: MediaJob, row: UnifiedRow): MediaRowCacheEntry {
+  const merge = job.mergeProgress
+  return {
+    kind: job.kind,
+    title: job.title,
+    label: job.label,
+    status: job.status,
+    completedBytes: job.completedBytes,
+    totalBytes: job.totalBytes,
+    speedBps: job.speedBps,
+    errorMessage: job.errorMessage,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt,
+    thumbnailUrl: job.thumbnailUrl ?? null,
+    mergeCompletedBytes: merge?.completedBytes ?? null,
+    mergeTotalBytes: merge?.totalBytes ?? null,
+    row
+  }
+}
+
+function sameMedia(entry: MediaRowCacheEntry, job: MediaJob): boolean {
+  const merge = job.mergeProgress
+  return (
+    entry.kind === job.kind &&
+    entry.title === job.title &&
+    entry.label === job.label &&
+    entry.status === job.status &&
+    entry.completedBytes === job.completedBytes &&
+    entry.totalBytes === job.totalBytes &&
+    entry.speedBps === job.speedBps &&
+    entry.errorMessage === job.errorMessage &&
+    entry.createdAt === job.createdAt &&
+    entry.updatedAt === job.updatedAt &&
+    entry.completedAt === job.completedAt &&
+    entry.thumbnailUrl === (job.thumbnailUrl ?? null) &&
+    entry.mergeCompletedBytes === (merge?.completedBytes ?? null) &&
+    entry.mergeTotalBytes === (merge?.totalBytes ?? null)
+  )
+}
+
+function cachedRow<T extends object, E extends { row: UnifiedRow }>(options: {
+  item: T
+  key: string
+  byItem: WeakMap<T, E>
+  byKey: Map<string, E>
+  same: (entry: E, item: T) => boolean
+  entryOf: (item: T, row: UnifiedRow) => E
+  build: (item: T) => UnifiedRow
+}): UnifiedRow {
+  const { item, key, byItem, byKey, same, entryOf, build } = options
+
+  const known = byItem.get(item)
+  if (known !== undefined && same(known, item)) return known.row
+
+  const shared = byKey.get(key)
+  if (shared !== undefined && same(shared, item)) {
+    byItem.set(item, shared)
+    return shared.row
+  }
+
+  const row = build(item)
+  const entry = entryOf(item, row)
+  byItem.set(item, entry)
+  if (byKey.size >= MAX_CACHED_ROWS && !byKey.has(key)) byKey.clear()
+  byKey.set(key, entry)
+  return row
+}
+
+/** The array returned by the previous build, reused when nothing changed. */
+let previousRows: UnifiedRow[] | null = null
+
 export function buildUnifiedRows(
   downloads: readonly DownloadItem[],
   mediaJobs: readonly MediaJob[]
 ): UnifiedRow[] {
-  return [
-    ...downloads.map(downloadToRow),
-    ...mediaJobs.map(mediaJobToRow)
-  ]
+  const rows: UnifiedRow[] = []
+  const total = downloads.length + mediaJobs.length
+  let unchanged = previousRows !== null && previousRows.length === total
+
+  for (const item of downloads) {
+    const row = cachedRow({
+      item,
+      key: `download:${item.id}`,
+      byItem: DOWNLOAD_ROW_BY_ITEM,
+      byKey: DOWNLOAD_ROWS_BY_KEY,
+      same: sameDownload,
+      entryOf: downloadEntryOf,
+      build: downloadToRow
+    })
+    if (unchanged && previousRows !== null && previousRows[rows.length] !== row) {
+      unchanged = false
+    }
+    rows.push(row)
+  }
+
+  for (const job of mediaJobs) {
+    const row = cachedRow({
+      item: job,
+      key: `media:${job.id}`,
+      byItem: MEDIA_ROW_BY_ITEM,
+      byKey: MEDIA_ROWS_BY_KEY,
+      same: sameMedia,
+      entryOf: mediaEntryOf,
+      build: mediaJobToRow
+    })
+    if (unchanged && previousRows !== null && previousRows[rows.length] !== row) {
+      unchanged = false
+    }
+    rows.push(row)
+  }
+
+  if (unchanged && previousRows !== null) return previousRows
+  previousRows = rows
+  return rows
 }
 
 /**
