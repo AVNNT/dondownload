@@ -40,6 +40,7 @@
   var WAIT_MS = 15000
   var FOLDER_WAIT_MS = 5000
   var POLL_MS = 200
+  var OBSERVER_DEBOUNCE_MS = 50
   var MAX_ANCESTOR_DEPTH = 6
   var MAX_ROW_NODES = 400
   var MAX_ROW_TEXT = 400
@@ -670,6 +671,7 @@
       var timer = null
       var pollTimer = null
       var observer = null
+      var checkTimer = null
 
       function cleanup() {
         if (timer !== null && win && typeof win.clearTimeout === 'function') {
@@ -678,9 +680,13 @@
         if (pollTimer !== null && win && typeof win.clearTimeout === 'function') {
           win.clearTimeout(pollTimer)
         }
+        if (checkTimer !== null && win && typeof win.clearTimeout === 'function') {
+          win.clearTimeout(checkTimer)
+        }
         if (observer && typeof observer.disconnect === 'function') observer.disconnect()
         timer = null
         pollTimer = null
+        checkTimer = null
         observer = null
       }
 
@@ -695,6 +701,21 @@
         var rows = readRows(doc, shareId)
         if (rows.files.length >= minFiles) finish(rows)
         return rows
+      }
+
+      // The page can mutate hundreds of times while a share renders. Reading
+      // rows on every observer batch is unnecessary; one check per quiet
+      // window finds the same rows and keeps the collector cheap.
+      function scheduleCheck() {
+        if (settled || checkTimer !== null) return
+        if (!win || typeof win.setTimeout !== 'function') {
+          check()
+          return
+        }
+        checkTimer = win.setTimeout(function () {
+          checkTimer = null
+          if (!settled) check()
+        }, OBSERVER_DEBOUNCE_MS)
       }
 
       var initial = check()
@@ -712,7 +733,7 @@
       if (win && typeof win.MutationObserver === 'function') {
         try {
           observer = new win.MutationObserver(function () {
-            check()
+            scheduleCheck()
           })
           var target = doc && doc.body ? doc.body : doc
           if (target && typeof observer.observe === 'function') {

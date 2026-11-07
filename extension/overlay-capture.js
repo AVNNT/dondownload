@@ -247,6 +247,16 @@
       }
       ns.schedulePrefetch()
     }
+    // `timeupdate` fires about four times a second while playing. The overlay
+    // only needs to re-check at human-visible speed, so coalesce the stream
+    // instead of running the capture/trigger work on every tick.
+    var lastTimeupdateCheck = 0
+    var checkTimeupdate = function () {
+      var at = Date.now()
+      if (at - lastTimeupdateCheck < 500) return
+      lastTimeupdateCheck = at
+      check()
+    }
     // `play` and `loadedmetadata` arrive before the first rendered frame, so
     // the icon no longer waits for `playing`/`timeupdate`. The rest keep the
     // state accurate without polling the player.
@@ -255,7 +265,7 @@
     listen('loadedmetadata', check)
     listen('loadeddata', check)
     listen('canplay', check)
-    listen('timeupdate', check)
+    listen('timeupdate', checkTimeupdate)
     listen('pause', check)
     listen('ended', check)
     listen('error', check)

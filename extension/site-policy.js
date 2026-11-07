@@ -7,6 +7,7 @@
 // origin of the active tab from a user click.
 
 export const OVERLAY_SCRIPT_PREFIX = 'dondownload-overlay-'
+export const OVERLAY_BOOTSTRAP_FILE = 'overlay-bootstrap.js'
 export const OVERLAY_CORE_FILE = 'overlay-core.js'
 export const OVERLAY_RUNTIME_FILE = 'overlay-runtime.js'
 export const OVERLAY_UI_FILE = 'overlay-ui.js'
@@ -33,7 +34,10 @@ export const OVERLAY_MESSAGE_TYPES = Object.freeze({
   DISABLE: 'dondownload:overlay-disable',
   DISABLE_SITE: 'dondownload:overlay-disable-site',
   DISABLED: 'dondownload:overlay-disabled',
-  READY: 'dondownload:overlay-ready'
+  READY: 'dondownload:overlay-ready',
+  // The lightweight all-sites bootstrap asks the worker to load the full
+  // overlay files only for a tab that actually uses the feature.
+  ENSURE: 'dondownload:overlay-ensure'
 })
 
 const SUPPORTED_PROTOCOLS = new Set(['http:', 'https:'])
@@ -156,16 +160,19 @@ export const OVERLAY_ALL_SITES_MATCHES = Object.freeze([
 
 /**
  * The single persistent registration used when the user turns on "Use
- * DonDownload on all sites". It has the same script list and timing as the
- * per-origin registration, so the content script behaves identically. The
- * content script itself checks excluded origins at runtime (the exclusion list
- * is a user setting, not a match pattern).
+ * DonDownload on all sites". It injects only the tiny bootstrap: the full
+ * overlay files are loaded later, on demand, for a page that actually has or
+ * hovers a video. Ordinary pages therefore pay for one small script instead of
+ * the whole overlay, and no MutationObserver or timer runs there.
+ *
+ * The per-origin registration still uses the full file list because the user
+ * explicitly enabled that exact site.
  */
 export function overlayAllSitesRegistration() {
   return {
     id: OVERLAY_ALL_SITES_ID,
     matches: [...OVERLAY_ALL_SITES_MATCHES],
-    js: [...OVERLAY_SCRIPT_FILES],
+    js: [OVERLAY_BOOTSTRAP_FILE],
     runAt: 'document_idle',
     allFrames: false,
     persistAcrossSessions: true,

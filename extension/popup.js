@@ -83,6 +83,28 @@ let lastCaptureResponse = null
 let draftTimer = null
 let draftDirty = false
 const queuedKeys = new Set()
+const OVERLAY_ENSURE_MESSAGE = 'dondownload:overlay-ensure'
+
+/**
+ * All-sites pages start with the tiny overlay bootstrap, so the popup asks it
+ * to load the full overlay before sending a message that only the full runtime
+ * understands. On per-origin pages the full overlay already answers ENSURE
+ * immediately. A failed ENSURE still falls through to the original message so
+ * the popup keeps its existing error copy.
+ */
+function sendToPage(message, callback) {
+  if (activeTabId === null) {
+    callback(null, true)
+    return
+  }
+  const tabId = activeTabId
+  chrome.tabs.sendMessage(tabId, { type: OVERLAY_ENSURE_MESSAGE }, () => {
+    void chrome.runtime.lastError
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      callback(response, chrome.runtime.lastError)
+    })
+  })
+}
 
 function setStatus(kind, message) {
   statusElement.className = kind ? `status ${kind}` : 'status'
@@ -356,11 +378,9 @@ function queueSource(source, button) {
   if (queuedKeys.has(key)) return
   setStatus('', '')
   setSending(true)
-  chrome.tabs.sendMessage(
-    activeTabId,
+  sendToPage(
     { type: 'dondownload:capture-download', url: source.url },
-    (response) => {
-      const runtimeError = chrome.runtime.lastError
+    (response, runtimeError) => {
       setSending(false)
       if (runtimeError) {
         setStatus('error', 'The page is no longer available. Reopen the popup and try again.')
@@ -517,15 +537,13 @@ function queueOption(analysis, option, button) {
   if (!key || queuedKeys.has(key)) return
   button.disabled = true
   button.textContent = 'Adding…'
-  chrome.tabs.sendMessage(
-    activeTabId,
+  sendToPage(
     {
       type: 'dondownload:media-page-queue',
       analysisId: analysis.analysisId,
       optionId: option.optionId
     },
-    (response) => {
-      const runtimeError = chrome.runtime.lastError
+    (response, runtimeError) => {
       if (runtimeError) {
         button.disabled = false
         button.textContent = 'Download'
@@ -649,11 +667,9 @@ function queryCapturedSources() {
     renderCapture(null)
     return
   }
-  chrome.tabs.sendMessage(
-    activeTabId,
+  sendToPage(
     { type: 'dondownload:capture-query' },
-    (response) => {
-      const runtimeError = chrome.runtime.lastError
+    (response, runtimeError) => {
       if (runtimeError) {
         renderCapture(null)
         return
@@ -692,11 +708,9 @@ function requestAnalysis() {
   findQualitiesButton.textContent = 'Finding qualities…'
   pollAttempts = 0
   setStatus('', 'Finding qualities…')
-  chrome.tabs.sendMessage(
-    activeTabId,
+  sendToPage(
     { type: 'dondownload:media-page-analyze' },
-    (response) => {
-      const runtimeError = chrome.runtime.lastError
+    (response, runtimeError) => {
       findQualitiesButton.disabled = false
       if (runtimeError) {
         setStatus(
