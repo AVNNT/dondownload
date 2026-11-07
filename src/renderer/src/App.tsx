@@ -645,26 +645,19 @@ export default function App(): JSX.Element {
   )
 
   /**
-   * Quick speed-limit presets from the toolbar. This deliberately uses the
-   * same `updateSettings` path as the Settings page, so validation, persistence
-   * and the live aria2 apply all happen exactly once.
+   * Quick speed-limit presets from the toolbar. Main merges this partial value
+   * with the current settings inside its serialized update, so a stale toolbar
+   * snapshot can never revert a concurrent change to another field.
    */
-  const changeSpeedLimit = useCallback(
-    async (bps: number): Promise<void> => {
-      if (!settings) return
-      try {
-        const result = await window.donDownload.updateSettings({
-          ...settings,
-          globalSpeedLimitBps: bps
-        })
-        if (result.ok) setSettings(result.value)
-        else setBanner(result.error)
-      } catch {
-        setToast('Could not change the speed limit')
-      }
-    },
-    [settings]
-  )
+  const changeSpeedLimit = useCallback(async (bps: number): Promise<void> => {
+    try {
+      const result = await window.donDownload.setSpeedLimit(bps)
+      if (result.ok) setSettings(result.value)
+      else setBanner(result.error)
+    } catch {
+      setToast('Could not change the speed limit')
+    }
+  }, [])
 
   const copyText = useCallback(async (text: string): Promise<void> => {
     try {

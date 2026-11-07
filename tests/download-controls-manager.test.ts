@@ -62,6 +62,17 @@ class FakeAria2 {
     if (tracked) tracked.status = status
   }
 
+  /** Report the final aria2 file path, as Content-Disposition can change it. */
+  setFile(gid: string, filePath: string, length = 100): void {
+    const tracked = this.tracked.get(gid)
+    if (!tracked) return
+    tracked.totalLength = String(length)
+    tracked.completedLength = String(length)
+    tracked.files = [
+      { path: filePath, length: String(length), completedLength: String(length) }
+    ]
+  }
+
   /** Report an aria2 failure for one GID, as aria2 does for a broken transfer. */
   fail(gid: string, errorCode: number, errorMessage: string): void {
     const tracked = this.tracked.get(gid)
@@ -1317,6 +1328,74 @@ describe('sort downloads into folders by type', () => {
       path.join(downloadDir, 'Video'),
       downloadDir
     ])
+  })
+
+  it('moves a completed header-named file into its type folder', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/download?id=42'
+
+    await manager.add({ url })
+    const pending = itemByUrl(manager, url)
+    expect(pending.dir).toBe(downloadDir)
+
+    // aria2 learns the real name only from Content-Disposition.
+    await mkdir(downloadDir, { recursive: true })
+    const source = path.join(downloadDir, 'clip.mkv')
+    await writeFile(source, 'video')
+    aria2.setFile(pending.gid, source)
+    aria2.setStatus(pending.gid, 'complete')
+    await manager.refreshPolicy()
+
+    const targetDirectory = path.join(downloadDir, 'Video')
+    await vi.waitFor(() => {
+      expect(itemByUrl(manager, url)).toMatchObject({
+        dir: targetDirectory,
+        filename: 'clip.mkv',
+        filePath: path.join(targetDirectory, 'clip.mkv')
+      })
+    })
+    await expect(stat(path.join(targetDirectory, 'clip.mkv'))).resolves.toMatchObject(
+      { size: 5 }
+    )
+    await expect(stat(source)).rejects.toThrow()
+    expect(database.loadAll()[0]?.record).toMatchObject({
+      dir: targetDirectory,
+      filename: 'clip.mkv'
+    })
+  })
+
+  it('picks the type folder from sortFilename while keeping the temporary name', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = {
+      value: { ...defaultDownloadSettings(), sortDownloadsByType: true }
+    }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await manager.add({
+      url: 'https://mega.example/encrypted',
+      filename: 'movie.mp4.megaenc',
+      sortFilename: 'movie.mp4'
+    })
+
+    const item = itemByUrl(manager, 'https://mega.example/encrypted')
+    expect(item.dir).toBe(path.join(downloadDir, 'Video'))
+    expect(item.filename).toBe('movie.mp4.megaenc')
   })
 
   it('never re-sorts a download that uses an explicitly picked folder', async () => {

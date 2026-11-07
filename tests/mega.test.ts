@@ -1294,7 +1294,7 @@ describe('scan MEGA resolution', () => {
  * ------------------------------------------------------------------------- */
 
 interface FakeDownloads {
-  addCalls: Array<{ url: string; filename?: string }>
+  addCalls: Array<{ url: string; filename?: string; sortFilename?: string }>
   children: Map<string, DownloadItem>
   adopted: Array<{ id: string; filePath: string }>
   add: (input: unknown) => Promise<AppSnapshot>
@@ -1306,7 +1306,11 @@ interface FakeDownloads {
 }
 
 function fakeDownloads(): FakeDownloads {
-  const addCalls: Array<{ url: string; filename?: string }> = []
+  const addCalls: Array<{
+    url: string
+    filename?: string
+    sortFilename?: string
+  }> = []
   const children = new Map<string, DownloadItem>()
   const adopted: Array<{ id: string; filePath: string }> = []
   let sequence = 0
@@ -1315,10 +1319,17 @@ function fakeDownloads(): FakeDownloads {
     children,
     adopted,
     add: async (input: unknown): Promise<AppSnapshot> => {
-      const record = input as { url: string; filename?: string }
+      const record = input as {
+        url: string
+        filename?: string
+        sortFilename?: string
+      }
       addCalls.push({
         url: record.url,
-        ...(record.filename === undefined ? {} : { filename: record.filename })
+        ...(record.filename === undefined ? {} : { filename: record.filename }),
+        ...(record.sortFilename === undefined
+          ? {}
+          : { sortFilename: record.sortFilename })
       })
       const id = randomUUID()
       sequence += 1
@@ -1499,6 +1510,8 @@ describe('MEGA batch path', () => {
     expect(downloads.addCalls[0]!.url).toBe(DOWNLOAD_URL)
     // The transfer writes the still-encrypted body to a temporary path.
     expect(downloads.addCalls[0]!.filename).toBe('Fancam 01.mp4.megaenc')
+    // Sorting must use the real pre-suffix name, not `.megaenc`.
+    expect(downloads.addCalls[0]!.sortFilename).toBe('Fancam 01.mp4')
 
     const batch = manager.getBatchSnapshot().batches[0]!
     const item = batch.items[0]!

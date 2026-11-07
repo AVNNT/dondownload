@@ -348,6 +348,16 @@ export function registerIpc(context: IpcContext): void {
     return updated
   })
 
+  // Quick actions send one value only; the manager merges it with the current
+  // settings inside its serialized update instead of trusting a stale snapshot.
+  invoke<DownloadSettings>(IPC.setSpeedLimit, (_event, input) => {
+    const manager = settings()
+    if (typeof input !== 'number' || !Number.isFinite(input)) {
+      throw new AppError('INVALID_INPUT', 'The speed limit is invalid.')
+    }
+    return manager.setGlobalSpeedLimit(input)
+  })
+
   // Desktop-only settings are separate from aria2's download settings so a
   // notification, clipboard or zoom change never rewrites live engine options.
   const desktopSettings = (): DesktopSettingsManager => {

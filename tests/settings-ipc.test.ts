@@ -30,7 +30,11 @@ import type { SettingsManager } from '../src/main/settings/manager'
 import { themeWindowColors } from '../src/main/settings/theme'
 import { ValidationError } from '../src/shared/validation'
 
-const SETTINGS_CHANNELS = [IPC.getSettings, IPC.updateSettings]
+const SETTINGS_CHANNELS = [
+  IPC.getSettings,
+  IPC.updateSettings,
+  IPC.setSpeedLimit
+]
 
 function settings(
   overrides: Partial<DownloadSettings> = {}
@@ -44,6 +48,10 @@ function createSettingsManager() {
     getSettings: vi.fn(() => current),
     update: vi.fn(async (input: unknown) => {
       current = input as DownloadSettings
+      return current
+    }),
+    setGlobalSpeedLimit: vi.fn(async (bps: number) => {
+      current = { ...current, globalSpeedLimitBps: bps }
       return current
     })
   }
@@ -165,6 +173,35 @@ describe('settings IPC security and results', () => {
 
     const reloaded = await handler(IPC.getSettings)(event)
     expect(reloaded).toEqual({ ok: true, value: next })
+  })
+
+  it('routes a speed-only quick action without a full settings snapshot', async () => {
+    const settingsManager = createSettingsManager()
+    const fakeWindow = register(settingsManager)
+    const event = trustedEvent(fakeWindow)
+
+    const updated = await handler(IPC.setSpeedLimit)(event, 5_000_000)
+
+    expect(updated).toEqual({
+      ok: true,
+      value: settings({ globalSpeedLimitBps: 5_000_000 })
+    })
+    expect(settingsManager.setGlobalSpeedLimit).toHaveBeenCalledWith(5_000_000)
+    expect(settingsManager.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-numeric speed-only payload', async () => {
+    const settingsManager = createSettingsManager()
+    const fakeWindow = register(settingsManager)
+
+    const result = await handler(IPC.setSpeedLimit)(
+      trustedEvent(fakeWindow),
+      'fast'
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('INVALID_INPUT')
+    expect(settingsManager.setGlobalSpeedLimit).not.toHaveBeenCalled()
   })
 
   it('applies a saved theme to the native title bar in the same update', async () => {

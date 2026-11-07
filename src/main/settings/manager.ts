@@ -78,6 +78,13 @@ export class SettingsManager {
   private readonly onChanged: ((settings: DownloadSettings) => void) | null
   private current: DownloadSettings
   private startupApply: Promise<void> | null = null
+  /**
+   * Serializes every settings mutation. The live apply and the persisted row
+   * must move together: two overlapping updates would otherwise each build
+   * their payload from the same stale snapshot, and a failed rollback could
+   * overwrite options the other update already applied.
+   */
+  private updateChain: Promise<void> = Promise.resolve()
 
   constructor(options: SettingsManagerOptions) {
     this.store = options.store
@@ -125,18 +132,43 @@ export class SettingsManager {
    * for a value edited on the Settings page.
    */
   async setGlobalSpeedLimit(globalSpeedLimitBps: number): Promise<DownloadSettings> {
-    return this.update({
-      ...this.getSettings(),
-      globalSpeedLimitBps
-    })
+    // Merge inside the serialized critical section so a concurrent update to
+    // another field is never reverted by a stale full snapshot.
+    return this.enqueueUpdate(() =>
+      this.applyUpdate(
+        parseDownloadSettings({
+          ...this.current,
+          globalSpeedLimitBps
+        })
+      )
+    )
   }
 
   /**
    * Validate and persist one complete settings object. Unknown/missing keys and
    * out-of-range values are rejected by the shared parser before persistence.
+   * Updates are serialized so the live options and the saved row always
+   * represent the same, latest snapshot.
    */
   async update(rawInput: unknown): Promise<DownloadSettings> {
     const next = parseDownloadSettings(rawInput)
+    return this.enqueueUpdate(() => this.applyUpdate(next))
+  }
+
+  private enqueueUpdate(
+    run: () => Promise<DownloadSettings>
+  ): Promise<DownloadSettings> {
+    const result = this.updateChain.then(run)
+    // Keep the chain alive after a rejected update; the caller still observes
+    // the rejection through `result`.
+    this.updateChain = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
+  private async applyUpdate(next: DownloadSettings): Promise<DownloadSettings> {
     if (!this.store) {
       throw new AppError(
         'SETTINGS_UNAVAILABLE',

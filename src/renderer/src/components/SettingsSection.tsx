@@ -36,6 +36,7 @@ import {
   hoursConflict,
   parseSpeedLimitMb,
   settingsPayload,
+  shouldApplyExternalSpeed,
   speedInputValue,
   speedLimitHelper,
   toggleAllowedHours
@@ -210,6 +211,8 @@ export function SettingsSection(): JSX.Element {
   /** Serializes desktop-preference saves. */
   const desktopChainRef = useRef<Promise<void>>(Promise.resolve())
   const desktopQueuedRef = useRef(false)
+  /** Latest speed text, readable by the long-lived settings listener. */
+  const speedInputRef = useRef('')
   const speedTimerRef = useRef<number | null>(null)
   const savedFadeTimerRef = useRef<number | null>(null)
   const desktopSavedFadeTimerRef = useRef<number | null>(null)
@@ -271,7 +274,9 @@ export function SettingsSection(): JSX.Element {
         draftRef.current = result.value
         setSettings(result.value)
         setDraft(result.value)
-        setSpeedInput(speedInputValue(result.value.globalSpeedLimitBps))
+        const text = speedInputValue(result.value.globalSpeedLimitBps)
+        speedInputRef.current = text
+        setSpeedInput(text)
       } else {
         setLoadError(result.error.message)
       }
@@ -285,19 +290,28 @@ export function SettingsSection(): JSX.Element {
       const previous = savedRef.current
       savedRef.current = next
       setSettings(next)
-      if (
-        draftRef.current !== null &&
-        (previous === null ||
-          draftRef.current.globalSpeedLimitBps ===
-            previous.globalSpeedLimitBps)
-      ) {
+      // The draft is only updated after the 600 ms debounce, so the field text
+      // (not the draft) is the source of truth for an unsaved speed edit.
+      if (!shouldApplyExternalSpeed(speedInputRef.current, previous, next)) {
+        return
+      }
+      if (draftRef.current !== null) {
         draftRef.current = {
           ...draftRef.current,
           globalSpeedLimitBps: next.globalSpeedLimitBps
         }
         setDraft(draftRef.current)
-        setSpeedInput(speedInputValue(next.globalSpeedLimitBps))
       }
+      const text = speedInputValue(next.globalSpeedLimitBps)
+      speedInputRef.current = text
+      setSpeedInput(text)
+      // A pending debounce would otherwise save the old text after this
+      // external value and revert it. Any prior error no longer applies.
+      if (speedTimerRef.current !== null) {
+        window.clearTimeout(speedTimerRef.current)
+        speedTimerRef.current = null
+      }
+      setSpeedError(null)
     })
     return () => {
       cancelled = true
@@ -482,6 +496,7 @@ export function SettingsSection(): JSX.Element {
   }, [clearSpeedTimer, commitDownloads, speedInput])
 
   const handleSpeedInput = (value: string): void => {
+    speedInputRef.current = value
     setSpeedInput(value)
     const parsed = parseSpeedLimitMb(value)
     setSpeedError(parsed.ok ? null : parsed.hint)
