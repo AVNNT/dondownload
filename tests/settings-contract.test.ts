@@ -4,19 +4,23 @@ import {
   DEFAULT_ALLOWED_HOURS_END,
   DEFAULT_ALLOWED_HOURS_START,
   DEFAULT_GLOBAL_SPEED_LIMIT_BPS,
+  DEFAULT_HISTORY_RETENTION_DAYS,
   DEFAULT_MAX_CONCURRENT_DOWNLOADS,
   DEFAULT_PER_HOST_CONNECTIONS,
   DEFAULT_THEME,
+  HISTORY_RETENTION_DAYS,
   MAX_EPOCH_MS,
   MAX_SPEED_LIMIT_BPS,
   defaultDownloadSettings,
   isAppTheme,
   isClockTime,
+  isHistoryRetentionDays,
   parseAllowedHours,
   parseAppTheme,
   parseClockTime,
   parseDownloadControls,
   parseDownloadSettings,
+  parseHistoryRetentionDays,
   parsePerDownloadConnections,
   parsePerDownloadSpeedLimitBps,
   parseScheduledAt,
@@ -45,7 +49,8 @@ describe('download settings contract', () => {
         end: '00:00'
       },
       theme: 'oled',
-      sortDownloadsByType: false
+      sortDownloadsByType: false,
+      historyRetentionDays: 30
     })
     expect(DEFAULT_MAX_CONCURRENT_DOWNLOADS).toBe(3)
     expect(DEFAULT_PER_HOST_CONNECTIONS).toBe(16)
@@ -53,6 +58,8 @@ describe('download settings contract', () => {
     expect(DEFAULT_ALLOWED_HOURS_START).toBe('00:00')
     expect(DEFAULT_ALLOWED_HOURS_END).toBe('00:00')
     expect(DEFAULT_THEME).toBe('oled')
+    expect(DEFAULT_HISTORY_RETENTION_DAYS).toBe(30)
+    expect(HISTORY_RETENTION_DAYS).toEqual([0, 7, 30, 90])
     expect(APP_THEMES).toEqual(['oled', 'dark', 'light'])
     expect(MAX_SPEED_LIMIT_BPS).toBe(1024 * 1024 * 1024)
   })
@@ -81,7 +88,8 @@ describe('download settings contract', () => {
         end: '06:00'
       },
       theme: 'light',
-      sortDownloadsByType: true
+      sortDownloadsByType: true,
+      historyRetentionDays: 7
     }
     expect(parseDownloadSettings(custom)).toEqual(custom)
     expect(parseDownloadSettings(validSettings())).toEqual(validSettings())
@@ -101,7 +109,8 @@ describe('download settings contract', () => {
               end: '00:00'
             },
             theme: 'oled' as const,
-            sortDownloadsByType: false
+            sortDownloadsByType: false,
+            historyRetentionDays: 30 as const
           }
           expect(parseDownloadSettings(settings)).toEqual(settings)
         }
@@ -245,6 +254,35 @@ describe('download settings contract', () => {
         theme: 'oled'
       })
     ).toThrow(/missing/)
+  })
+
+  it('accepts only Never, 7, 30 and 90 day history retention values', () => {
+    for (const days of HISTORY_RETENTION_DAYS) {
+      expect(isHistoryRetentionDays(days)).toBe(true)
+      expect(parseHistoryRetentionDays(days)).toBe(days)
+      expect(
+        parseDownloadSettings(validSettings({ historyRetentionDays: days }))
+          .historyRetentionDays
+      ).toBe(days)
+    }
+    expect(DEFAULT_HISTORY_RETENTION_DAYS).toBe(30)
+    for (const value of [-1, 1, 14, 365, 7.5, '30', null, undefined]) {
+      expect(isHistoryRetentionDays(value)).toBe(false)
+      expect(() => parseHistoryRetentionDays(value)).toThrow(
+        /Invalid history retention/
+      )
+      expect(() =>
+        parseDownloadSettings(
+          validSettings({ historyRetentionDays: value as never })
+        )
+      ).toThrow(/Invalid history retention/)
+    }
+    expect(() =>
+      parseDownloadSettings({
+        ...validSettings(),
+        historyRetentionDays: undefined
+      })
+    ).toThrow(/invalid history retention/i)
   })
 })
 

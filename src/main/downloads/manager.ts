@@ -1081,6 +1081,23 @@ export class DownloadManager {
     return this.getSnapshot()
   }
 
+  /**
+   * Drop rows that a shared history-cleanup transaction already deleted from
+   * SQLite. This is the same per-record cleanup as "Remove from list": every
+   * in-memory map is cleared and one snapshot is published. Files stay on disk.
+   */
+  forgetHistoryEntries(ids: readonly string[]): void {
+    let changed = false
+    for (const id of ids) {
+      if (!this.records.has(id)) continue
+      this.forgetRecord(id)
+      changed = true
+    }
+    if (!changed) return
+    this.stopPollingIfIdle()
+    this.publish(true)
+  }
+
   async showInFolder(rawId: unknown): Promise<null> {
     const record = this.getRecord(rawId)
     if (record.status !== 'complete' || !record.filePath) {

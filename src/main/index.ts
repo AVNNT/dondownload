@@ -19,6 +19,7 @@ import { BatchManager } from './batches/manager'
 import { ChecksumService } from './checksum/service'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
+import { HistoryCleanupService } from './history/cleanup'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMegaAdapter } from './hosts/mega'
 import { createMediaEngine } from './media/engine'
@@ -85,6 +86,7 @@ let aria2: Aria2Service | null = null
 let manager: DownloadManager | null = null
 let mediaJobs: MediaJobsManager | null = null
 let batches: BatchManager | null = null
+let historyCleanup: HistoryCleanupService | null = null
 let settingsManager: SettingsManager | null = null
 let desktopSettingsManager: DesktopSettingsManager | null = null
 let clipboardWatcher: ClipboardWatcher | null = null
@@ -383,6 +385,9 @@ if (unregisterRequested) {
       // and every renderer surface also refresh from the same committed
       // snapshot, so a tray/toolbar preset never leaves another view stale.
       onChanged: (next) => {
+        // The retention choice takes effect immediately; "Never" makes this a
+        // no-op. Running transfers are never touched.
+        historyCleanup?.runNow()
         void manager?.refreshPolicy()
         refreshTray()
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -590,6 +595,19 @@ if (unregisterRequested) {
         }
       }
     })
+
+    // Automatic history cleanup. It starts only after a short delay so the
+    // first window paints first, then sweeps every six hours. Only list rows
+    // are removed; downloaded files always stay on disk. A settings change
+    // calls runNow() directly (see `onChanged` above).
+    historyCleanup = new HistoryCleanupService({
+      downloads: manager,
+      mediaJobs,
+      batches,
+      store: database,
+      settings: () => settings.getSettings()
+    })
+    historyCleanup.start()
 
     // Smart Link Scanner. Discovery and probing only; the queue service is the
     // single explicit selection path and revalidates every item first.
@@ -1059,6 +1077,9 @@ if (unregisterRequested) {
 
     cleanupStarted = true
     void (async () => {
+      // Stop the history timer before the database closes.
+      historyCleanup?.stop()
+      historyCleanup = null
       // Stop accepting browser requests before stopping aria2, so a late
       // native message cannot restart the engine during shutdown.
       try {

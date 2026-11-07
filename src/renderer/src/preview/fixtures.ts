@@ -1925,7 +1925,8 @@ function seedSettings(): DownloadSettings {
       end: '06:00'
     },
     theme: 'dark',
-    sortDownloadsByType: false
+    sortDownloadsByType: false,
+    historyRetentionDays: 30
   }
 }
 

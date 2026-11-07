@@ -9,6 +9,7 @@ import {
 } from 'react'
 import {
   APP_THEMES,
+  HISTORY_RETENTION_DAYS,
   MAX_MAX_CONCURRENT_DOWNLOADS,
   MAX_PER_HOST_CONNECTIONS,
   MIN_MAX_CONCURRENT_DOWNLOADS,
@@ -821,6 +822,31 @@ export function SettingsSection(): JSX.Element {
                   commitDownloads({ sortDownloadsByType: checked })
                 }
               />
+            </SettingRow>
+
+            <SettingRow
+              title="Remove finished entries from the list after"
+              description="Finished downloads and media leave the list automatically."
+              hint="Files stay on disk."
+            >
+              <select
+                aria-label="Remove finished entries from the list after"
+                value={draft.historyRetentionDays}
+                onChange={(event) =>
+                  commitDownloads({
+                    historyRetentionDays: Number(
+                      event.currentTarget.value
+                    ) as DownloadSettings['historyRetentionDays']
+                  })
+                }
+                className={SELECT}
+              >
+                {HISTORY_RETENTION_DAYS.map((days) => (
+                  <option key={days} value={days}>
+                    {days === 0 ? 'Never' : `${days} days`}
+                  </option>
+                ))}
+              </select>
             </SettingRow>
 
             <SettingRow

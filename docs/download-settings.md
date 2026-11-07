@@ -1,10 +1,12 @@
 # Download settings contract and runtime application (Milestone 5A)
 
-Status: shared settings contract, additive SQLite schema v16 persistence, runtime
+Status: shared settings contract, additive SQLite schema v19 persistence, runtime
 settings service, trusted IPC/preload API, startup/live aria2 application and a
 renderer form for global limits. A Windows installer baseline is integrated.
 Scheduling and individual download controls are not implemented; this does not
-change existing download, media or batch history and adds no torrent/VPN behavior.
+change existing download, media or batch history and adds no torrent/VPN
+behavior. Automatic history cleanup removes old finished list rows only; files
+on disk are never deleted.
 
 ## Scope
 
@@ -47,6 +49,7 @@ previous all-day, unlimited-speed behavior:
 | `allowedHours.start` | `"00:00"` | exact `HH:mm` | Local-clock start of the allowed window. |
 | `allowedHours.end` | `"00:00"` | exact `HH:mm` | Local-clock end of the allowed window. |
 | `sortDownloadsByType` | `false` | boolean | Saves new downloads into type subfolders of the default download directory. |
+| `historyRetentionDays` | `30` | `0`, `7`, `30`, `90` | Remove old finished list entries after this many days; `0` means Never. Files stay on disk. |
 
 The database also enforces these bounds with CHECK constraints, including
 `id = 1`, integer-only flags and zero-padded 24-hour clock strings.
@@ -116,6 +119,39 @@ The subfolder is created when missing. The mapping and path resolution live in
 the pure `src/shared/typeFolders.ts` module. Only new downloads are affected:
 existing rows are never moved, and a download with an explicitly picked folder
 is never re-sorted.
+
+### Automatic history cleanup
+
+`historyRetentionDays` keeps the download list small without touching files on
+disk. The choices are Never (`0`), 7, 30 and 90 days; the default is 30. The
+Settings page shows it as "Remove finished entries from the list after" with the
+hint "Files stay on disk."
+
+Eligibility is deliberately narrow:
+
+- Downloads: `complete`, `error` and `interrupted` rows whose
+  `completedAt ?? updatedAt` is strictly older than the cutoff. An `error` or
+  `interrupted` row with a pending automatic retry is kept.
+- Media jobs: `complete`, `error`, `cancelled` and `interrupted` rows with the
+  same timestamp rule.
+- Active, queued, waiting, paused, scheduled and retrying rows are never
+  removed.
+- A child row referenced by a batch is kept while that batch still has any
+  unfinished item.
+- A batch is removed only when every item is terminal and the batch's own
+  finished time is older than the cutoff. Its child rows are evaluated
+  separately and keep their files.
+
+The cleanup reuses the existing "Remove from list" / "Clear download list" path:
+every list source is deleted in one SQLite transaction and the managers then
+clear their in-memory maps through the same forget helpers, so snapshots,
+thumbnails and caches stay consistent. Nothing is deleted from the filesystem.
+
+It runs once about 30 seconds after startup (so first paint is not delayed),
+then every 6 hours, and immediately after a committed settings change. "Never"
+disables all runs. Schema 19 adds the setting column and expression indexes on
+`(status, COALESCE(completed_at, updated_at))` for downloads, media jobs and
+batches so the state + timestamp predicate stays cheap.
 
 ### Runtime application
 
@@ -203,7 +239,7 @@ other secrets have no place in the contract.
   statuses, indexes and the `batch_items` cascade FK are preserved.
 - A failed v5 migration rolls back completely: no new columns, no settings row
   and no version bump. There is no destructive table rebuild in v5.
-- `SCHEMA_VERSION` is `16`. Databases written by a newer schema are still
+- `SCHEMA_VERSION` is `19`. Databases written by a newer schema are still
   refused rather than modified.
 
 ## Verification
