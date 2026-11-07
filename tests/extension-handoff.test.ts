@@ -556,6 +556,161 @@ describe('download-manager takeover rules', () => {
     expect(fake.cancelled).toEqual([])
   })
 
+  it('always hands off a .funscript whatever its size', async () => {
+    // A 3 KB .funscript is far below the 1 MB minimum, but it is always wanted.
+    const small = fileItem({
+      id: 90,
+      url: 'https://example.com/scripts/session.funscript',
+      filename: 'C:\\Downloads\\session.funscript',
+      mime: 'application/octet-stream',
+      totalBytes: 3_000
+    })
+    expect(automaticHandoffCandidate(small, [])).toMatchObject({
+      ok: true,
+      alwaysHandoff: true,
+      expectedBytes: 3_000
+    })
+
+    const fake = createFake({
+      searchItem: {
+        url: 'https://example.com/scripts/session.funscript',
+        filename: 'C:\\Downloads\\session.funscript',
+        mime: 'application/octet-stream',
+        totalBytes: 3_000
+      }
+    })
+    await seedSettings(fake)
+    useFake(fake)
+    expect(await handleCreatedDownload(fake.chrome, small)).toBe('cancelled')
+    expect(nativeMessage(fake)).toEqual({
+      type: 'handoff-download',
+      url: 'https://example.com/scripts/session.funscript',
+      filename: 'session.funscript',
+      expectedBytes: 3_000,
+      expectedContentType: 'application/octet-stream',
+      userAgent: expect.any(String)
+    })
+    expect(fake.cancelled).toEqual([90])
+
+    // An unknown size is no reason to wait for the browser's total.
+    const unknown = fileItem({
+      id: 91,
+      url: 'https://example.com/scripts/unknown.funscript',
+      filename: 'C:\\Downloads\\unknown.funscript',
+      mime: 'application/octet-stream',
+      totalBytes: -1
+    })
+    expect(automaticHandoffCandidate(unknown, [])).toMatchObject({
+      ok: true,
+      alwaysHandoff: true
+    })
+    const unknownFake = createFake({
+      searchItem: {
+        url: 'https://example.com/scripts/unknown.funscript',
+        filename: 'C:\\Downloads\\unknown.funscript',
+        mime: 'application/octet-stream',
+        totalBytes: -1
+      }
+    })
+    await seedSettings(unknownFake)
+    useFake(unknownFake)
+    expect(await handleCreatedDownload(unknownFake.chrome, unknown)).toBe(
+      'cancelled'
+    )
+    expect(nativeMessage(unknownFake)).not.toHaveProperty('expectedBytes')
+
+    // A Discourse short-url redirects to the real upload and the browser
+    // decides the file name, so the original URL, the final URL and the file
+    // name are all checked.
+    const shortUrl = fileItem({
+      id: 92,
+      url: 'https://discuss.eroscripts.com/uploads/short-url/rZhOEUUGfIsDdGDg8tMWl9W93ng.funscript',
+      finalUrl: 'https://discuss.eroscripts.com/uploads/default/original/3X/ab/cd/9f8e',
+      filename: 'C:\\Downloads\\x.funscript',
+      mime: 'application/octet-stream',
+      totalBytes: 0
+    })
+    expect(automaticHandoffCandidate(shortUrl, [])).toMatchObject({
+      ok: true,
+      alwaysHandoff: true,
+      url: 'https://discuss.eroscripts.com/uploads/default/original/3X/ab/cd/9f8e',
+      filename: 'x.funscript'
+    })
+    // Only the original URL names the file: still a candidate.
+    const shortUrlOnly = fileItem({
+      id: 93,
+      url: 'https://discuss.eroscripts.com/uploads/short-url/rZhOEUUGfIsDdGDg8tMWl9W93ng.funscript',
+      finalUrl: 'https://discuss.eroscripts.com/uploads/default/original/3X/ab/cd/9f8e',
+      filename: 'C:\\Downloads\\9f8e',
+      mime: 'application/octet-stream',
+      totalBytes: 0
+    })
+    expect(automaticHandoffCandidate(shortUrlOnly, [])).toMatchObject({
+      ok: true,
+      alwaysHandoff: true
+    })
+
+    // Everything else keeps the minimum: a 3 KB .txt stays in the browser.
+    const text = fileItem({
+      id: 94,
+      url: 'https://example.com/files/notes.txt',
+      filename: 'C:\\Downloads\\notes.txt',
+      mime: 'text/plain',
+      totalBytes: 3_000
+    })
+    expect(automaticHandoffCandidate(text, [])).toEqual({
+      ok: false,
+      reason: 'below-minimum'
+    })
+    expect(await handleCreatedDownload(fake.chrome, text)).toBe(
+      'ignored:below-minimum'
+    )
+
+    // A .funscript that is really an HTML page is still a page.
+    const page = fileItem({
+      id: 95,
+      url: 'https://example.com/scripts/login.funscript',
+      filename: 'C:\\Downloads\\login.funscript',
+      mime: 'text/html',
+      totalBytes: 3_000
+    })
+    expect(automaticHandoffCandidate(page, [])).toEqual({
+      ok: false,
+      reason: 'page-or-manifest'
+    })
+
+    // The bridge must not re-reject the same file as too small.
+    const bridge = createFake()
+    useFake(bridge)
+    const sent = await sendDurableHandoff(
+      'https://example.com/scripts/small.funscript',
+      'small.funscript',
+      {
+        expectedBytes: 3_000,
+        expectedContentType: 'application/json',
+        minBytes: 1_000_000
+      }
+    )
+    expect(sent.ok).toBe(true)
+    expect(nativeMessage(bridge)).toMatchObject({
+      url: 'https://example.com/scripts/small.funscript',
+      filename: 'small.funscript',
+      expectedBytes: 3_000,
+      expectedContentType: 'application/json'
+    })
+    const rejected = await sendDurableHandoff(
+      'https://example.com/files/notes.txt',
+      'notes.txt',
+      { expectedBytes: 3_000, minBytes: 1_000_000 }
+    )
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: { code: 'HANDOFF_TOO_SMALL' }
+    })
+
+    expect(fake.cancelled).toEqual([90])
+  })
+
   it('does not require the extension file allowlist for a browser download', async () => {
     const iso = fileItem({
       id: 80,

@@ -664,6 +664,11 @@ export function sendDurableHandoff(rawUrl, rawFilename, options = {}) {
     allowAnyFile: true,
     ...(Number.isSafeInteger(options && options.minBytes)
       ? { requireMinimumBytes: options.minBytes }
+      : {}),
+    // An always-hand-off type (a `.funscript`) is below the threshold by
+    // nature and must not be re-rejected here.
+    ...(options && options.ignoreMinimumBytes === true
+      ? { ignoreMinimumBytes: true }
       : {})
   })
   if (!normalized.ok) {

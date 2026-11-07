@@ -130,6 +130,8 @@ export function sendDurableHandoff(
     cookie?: string
     /** Minimum known size for an automatic browser download. */
     minBytes?: number
+    /** The candidate already decided this file ignores the size threshold. */
+    ignoreMinimumBytes?: boolean
   }
 ): Promise<DurableHandoffResult>
 export function sendQueueDownload(

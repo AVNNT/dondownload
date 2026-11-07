@@ -28,6 +28,15 @@ export const MANIFEST_OR_SEGMENT_EXTENSIONS = Object.freeze([
 /** Minimum browser-reported size for an automatic hand-off (1 MB). */
 export const DEFAULT_HANDOFF_MIN_BYTES = 1_000_000
 
+/**
+ * File types that are always handed off, whatever their size. A `.funscript` is
+ * a few KB of JSON, so the user's "only files larger than" threshold would
+ * otherwise leave it in the browser. Every other candidate check still applies:
+ * a page, a manifest, an unsafe or paused item, an excluded site and an
+ * extension-created download all stay in the browser.
+ */
+export const ALWAYS_HANDOFF_EXTENSIONS = Object.freeze(['funscript'])
+
 const MAX_URL_LENGTH = 4096
 const MAX_FILENAME_LENGTH = 180
 const SUPPORTED_PROTOCOLS = new Set(['http:', 'https:'])
@@ -76,6 +85,12 @@ export function isPageOrManifestFile(value) {
   const extension = extensionOf(value)
   if (extension === null) return false
   return PAGE_EXTENSIONS.has(extension) || isSegmentOrManifest(extension)
+}
+
+/** True when the URL path or file name names an always-hand-off type. */
+export function isAlwaysHandoffFile(value) {
+  const extension = extensionOf(value)
+  return extension !== null && ALWAYS_HANDOFF_EXTENSIONS.includes(extension)
 }
 
 /**
@@ -150,7 +165,9 @@ function isPageOrManifestContentType(mediaType) {
  * `options.allowAnyFile` is the automatic browser-download path: the browser
  * already decided the transfer is a download, so the extension allowlist does
  * not apply. Pages, manifests and segments are still rejected, and a
- * `requireMinimumBytes` threshold (when set) must be met by the known size.
+ * `requireMinimumBytes` threshold (when set) must be met by the known size —
+ * unless the file is an `ALWAYS_HANDOFF_EXTENSIONS` type or the caller passes
+ * `ignoreMinimumBytes`.
  */
 export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}, options = {}) {
   if (typeof rawUrl !== 'string') {
@@ -251,10 +268,22 @@ export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}, opti
     options.requireMinimumBytes > 0
       ? options.requireMinimumBytes
       : 0
+  // An always-hand-off type ignores the size threshold: the caller has already
+  // proven the file name or URL path names one, and the desktop preflight still
+  // proves the resource before anything is cancelled.
+  const alwaysHandoff =
+    options.ignoreMinimumBytes === true ||
+    isAlwaysHandoffFile(pathname) ||
+    isAlwaysHandoffFile(filename)
   // An unknown size is not "too small": the caller decides whether the URL
   // names a real file (see automaticHandoffCandidate) and the desktop preflight
   // proves the size before anything is cancelled.
-  if (minimumBytes > 0 && expectedBytes !== undefined && expectedBytes < minimumBytes) {
+  if (
+    !alwaysHandoff &&
+    minimumBytes > 0 &&
+    expectedBytes !== undefined &&
+    expectedBytes < minimumBytes
+  ) {
     return {
       ok: false,
       code: 'HANDOFF_TOO_SMALL',
@@ -277,7 +306,9 @@ export function normalizeHandoffFile(rawUrl, rawFilename, rawExpected = {}, opti
  *
  * `options.minBytes` is the user's "only files larger than" threshold. The
  * browser's exact total must be known and at least that large; an unknown size
- * always stays in the browser.
+ * always stays in the browser. An `ALWAYS_HANDOFF_EXTENSIONS` file (a
+ * `.funscript`) ignores that threshold and is a candidate even when the size is
+ * small or still unknown.
  */
 export function automaticHandoffCandidate(item, excludedOrigins, options = {}) {
   if (!item || typeof item !== 'object') {
@@ -335,6 +366,20 @@ export function automaticHandoffCandidate(item, excludedOrigins, options = {}) {
   if (isPageOrManifestFile(rawFilename)) {
     return { ok: false, reason: 'page-or-manifest' }
   }
+  // A Discourse short-url ends in the real file name but redirects to the
+  // upload, and the browser decides the file name, so all three are checked.
+  let originalPathname = ''
+  if (typeof item.url === 'string') {
+    try {
+      originalPathname = new URL(item.url).pathname
+    } catch {
+      originalPathname = ''
+    }
+  }
+  const alwaysHandoff =
+    isAlwaysHandoffFile(pathname) ||
+    isAlwaysHandoffFile(originalPathname) ||
+    isAlwaysHandoffFile(rawFilename)
   const minBytes =
     Number.isSafeInteger(options.minBytes) && options.minBytes >= 0
       ? options.minBytes
@@ -346,7 +391,11 @@ export function automaticHandoffCandidate(item, excludedOrigins, options = {}) {
       expectedBytes: item.totalBytes,
       expectedContentType: item.mime
     },
-    { allowAnyFile: true, requireMinimumBytes: minBytes }
+    {
+      allowAnyFile: true,
+      requireMinimumBytes: minBytes,
+      ignoreMinimumBytes: alwaysHandoff
+    }
   )
   if (!normalized.ok) {
     // A known small file (or an unknown total) stays in the browser.
@@ -365,8 +414,9 @@ export function automaticHandoffCandidate(item, excludedOrigins, options = {}) {
     // The browser has not reported a total yet. The hand-off still goes ahead
     // when the URL or media type names a real file (a media type, a known
     // download extension or a direct media extension); the desktop preflight
-    // then proves the size before the browser copy is cancelled.
-    if (!looksLikeRealFile(pathname, rawFilename, item.mime)) {
+    // then proves the size before the browser copy is cancelled. An
+    // always-hand-off type needs no size at all.
+    if (!alwaysHandoff && !looksLikeRealFile(pathname, rawFilename, item.mime)) {
       return { ok: false, reason: 'size-unavailable' }
     }
   }
@@ -380,6 +430,7 @@ export function automaticHandoffCandidate(item, excludedOrigins, options = {}) {
     ...(normalized.expectedContentType === undefined
       ? {}
       : { expectedContentType: normalized.expectedContentType }),
+    ...(alwaysHandoff ? { alwaysHandoff: true } : {}),
     origin
   }
 }
