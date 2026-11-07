@@ -46,6 +46,43 @@ const GRID_COLUMNS =
   'grid grid-cols-[40px_minmax(0,1fr)_190px_36px] items-center gap-4 ' +
   'lg:grid-cols-[40px_minmax(240px,1.1fr)_minmax(220px,1fr)_84px_104px]'
 
+/**
+ * Row-render counter for the perf benchmark (`tests/bench`). It is a single
+ * integer add per rendered row and is not read by the UI.
+ */
+export const rowRenderStats = { renders: 0 }
+
+export function resetRowRenderStats(): void {
+  rowRenderStats.renders = 0
+}
+
+export function noteRowRender(): void {
+  rowRenderStats.renders += 1
+}
+
+/** rAF-throttled scroll, with a timer fallback for environments without rAF. */
+function scheduleFrame(callback: () => void): number {
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    return window.requestAnimationFrame(callback)
+  }
+  return window.setTimeout(callback, 16)
+}
+
+function cancelFrame(id: number): void {
+  if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(id)
+    return
+  }
+  window.clearTimeout(id)
+}
+
+/** Cached Intl formatters: constructing them per row render is costly. */
+const CLOCK_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit'
+})
+const DATE_FORMAT = new Intl.DateTimeFormat(undefined)
+
 interface DownloadTableProps {
   rows: readonly UnifiedRow[]
   selection: SelectionState
@@ -130,6 +167,9 @@ export function DownloadTable({
   })
   const programmaticScroll = useRef(0)
   const userScrolled = useRef(false)
+  /** Pending rAF from the scroll handler; null when no frame is queued. */
+  const scrollFrame = useRef<number | null>(null)
+  const latestScrollTop = useRef(0)
 
   const revealIndex = useCallback((index: number, itemCount: number): void => {
     const scroller = scrollerRef.current
@@ -140,6 +180,13 @@ export function DownloadTable({
       viewportHeight: scroller.clientHeight
     })
     if (next === scroller.scrollTop) return
+    // A queued frame still carries the pre-reveal offset; drop it so the
+    // programmatic reveal is not undone on the next frame.
+    if (scrollFrame.current !== null) {
+      cancelFrame(scrollFrame.current)
+      scrollFrame.current = null
+    }
+    latestScrollTop.current = next
     programmaticScroll.current = next
     scroller.scrollTop = next
     setScrollTop(next)
@@ -193,10 +240,26 @@ export function DownloadTable({
     return () => document.removeEventListener('mousedown', onMouseDown, true)
   }, [])
 
+  /**
+   * Wheel/trackpad scrolling fires far more often than the screen refreshes.
+   * Keep the latest offset in a ref and commit at most once per animation
+   * frame, instead of re-rendering the table for every scroll event.
+   */
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>): void => {
     const top = event.currentTarget.scrollTop
+    latestScrollTop.current = top
     if (top !== programmaticScroll.current) userScrolled.current = true
-    setScrollTop(top)
+    if (scrollFrame.current !== null) return
+    scrollFrame.current = scheduleFrame(() => {
+      scrollFrame.current = null
+      setScrollTop(latestScrollTop.current)
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrame.current !== null) cancelFrame(scrollFrame.current)
+    }
   }, [])
 
   const handleKeyDown = useCallback(
@@ -478,12 +541,26 @@ const TableRow = memo(function TableRow({
   onRetryRow,
   onContextMenu
 }: TableRowProps): JSX.Element {
-  const visual = describeRow(row, now)
+  noteRowRender()
+  // Formatting is the expensive part of a row render (bytes, speed, ETA). A
+  // selection change re-renders every visible row, so cache the derived text
+  // on the row object and clock reading rather than formatting it again.
+  const visual = useMemo(() => describeRow(row, now), [row, now])
   const percent = Math.round(row.progress)
-  const sizeLabel =
-    row.sizeBytes !== null
-      ? `${row.source === 'media' ? '≈ ' : ''}${formatBytes(row.sizeBytes)}`
-      : '—'
+  const sizeLabel = useMemo(
+    () =>
+      row.sizeBytes !== null
+        ? `${row.source === 'media' ? '≈ ' : ''}${formatBytes(row.sizeBytes)}`
+        : '—',
+    [row.sizeBytes, row.source]
+  )
+  const bytesTitle = useMemo(
+    () =>
+      row.sizeBytes !== null
+        ? `${formatBytes(row.completedBytes)} of ${formatBytes(row.sizeBytes)}`
+        : undefined,
+    [row.completedBytes, row.sizeBytes]
+  )
 
   const downloading =
     row.source === 'download'
@@ -496,7 +573,7 @@ const TableRow = memo(function TableRow({
   const showable = canShowRow(row)
 
   const rowBackground = open
-    ? 'bg-accent-400/[0.08] shadow-[inset_0_0_0_1px_rgb(96_165_250_/_0.35)]'
+    ? 'bg-accent-400/[0.08] ring-1 ring-inset ring-accent-400/35'
     : selected
       ? 'bg-accent-400/[0.08]'
       : 'hover:bg-white/[0.04]'
@@ -521,7 +598,7 @@ const TableRow = memo(function TableRow({
       onFocus={() => onFocusRow(row)}
       onContextMenu={(event) => onContextMenu(row, event)}
       className={`${GRID_COLUMNS} group relative cursor-default rounded-lg px-2 outline-none transition-colors ${rowBackground} focus-visible:bg-accent-400/[0.06] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60`}
-      style={{ height: ROW_HEIGHT }}
+      style={{ height: ROW_HEIGHT, contain: 'content' }}
     >
       <div role="gridcell" className="relative">
         <RowArt row={row} />
@@ -575,11 +652,7 @@ const TableRow = memo(function TableRow({
       <div
         role="gridcell"
         className="hidden text-right text-[12.5px] tabular-nums text-zinc-400 lg:block"
-        title={
-          row.sizeBytes !== null
-            ? `${formatBytes(row.completedBytes)} of ${formatBytes(row.sizeBytes)}`
-            : undefined
-        }
+        title={bytesTitle}
       >
         {sizeLabel}
       </div>
@@ -681,10 +754,10 @@ function MiddleCell({
         </div>
         <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
           <div
-            className={`h-full rounded-full transition-[width] duration-500 ${
+            className={`h-full w-full origin-left rounded-full transition-transform duration-500 ${
               visual.paused ? 'bg-zinc-500' : 'bg-accent-400'
             }`}
-            style={{ width: `${percent}%` }}
+            style={{ transform: `scaleX(${percent / 100})` }}
           />
         </div>
       </div>
@@ -716,8 +789,8 @@ function MiddleCell({
         >
           {visual.percent === null ? null : (
             <div
-              className="h-full rounded-full bg-amber-400 transition-[width] duration-500"
-              style={{ width: `${visual.percent}%` }}
+              className="h-full w-full origin-left rounded-full bg-amber-400 transition-transform duration-500"
+              style={{ transform: `scaleX(${visual.percent / 100})` }}
             />
           )}
         </div>
@@ -738,8 +811,8 @@ function MiddleCell({
         </div>
         <div className="h-1 overflow-hidden rounded-full bg-zinc-700/50">
           <div
-            className="h-full rounded-full bg-zinc-500"
-            style={{ width: `${percent}%` }}
+            className="h-full w-full origin-left rounded-full bg-zinc-500"
+            style={{ transform: `scaleX(${percent / 100})` }}
           />
         </div>
       </div>
@@ -862,10 +935,7 @@ function formatClock(epochMs: number | null | undefined): string {
     return 'later'
   }
   try {
-    return new Date(epochMs).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit'
-    })
+    return CLOCK_FORMAT.format(new Date(epochMs))
   } catch {
     return 'later'
   }
@@ -881,7 +951,7 @@ function relativeWhen(epochMs: number | null): string {
   const days = Math.floor(hours / 24)
   if (days < 7) return `${days} d ago`
   try {
-    return new Date(epochMs).toLocaleDateString()
+    return DATE_FORMAT.format(new Date(epochMs))
   } catch {
     return ''
   }

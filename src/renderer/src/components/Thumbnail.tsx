@@ -46,7 +46,11 @@ export function Thumbnail({
       src={src}
       alt=""
       title={title}
+      // The virtualised list only mounts rows inside the window, so lazy
+      // loading never queues an off-screen thumbnail. Async decoding keeps a
+      // decoded image from blocking the row's first paint.
       loading="lazy"
+      decoding="async"
       referrerPolicy="no-referrer"
       draggable={false}
       onError={() => setFailed(true)}

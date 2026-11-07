@@ -472,13 +472,34 @@ export function buildUnifiedRows(
   ]
 }
 
+/**
+ * Lower-case haystack for a row, built once per row object.
+ *
+ * Filtering runs on every snapshot and every keystroke, so rebuilding four
+ * lower-case strings for each of 10,000 rows dominated the cost. Rows are
+ * immutable per snapshot, which makes a WeakMap keyed on object identity safe:
+ * a row that is replaced by a newer snapshot gets a fresh key, and rows that
+ * are dropped are collected with the map entry.
+ */
+const SEARCH_KEYS = new WeakMap<UnifiedRow, string>()
+
+/** Separator that cannot appear in a title or URL, so fields never merge. */
+const SEARCH_KEY_SEPARATOR = '\u0000'
+
+export function searchKeyFor(row: UnifiedRow): string {
+  const cached = SEARCH_KEYS.get(row)
+  if (cached !== undefined) return cached
+  const key = [row.title, row.url, row.host, row.subtitle]
+    .map((field) => (field === null ? '' : field.toLowerCase()))
+    .join(SEARCH_KEY_SEPARATOR)
+  SEARCH_KEYS.set(row, key)
+  return key
+}
+
 export function matchesSearch(row: UnifiedRow, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return true
-  const fields = [row.title, row.url, row.host, row.subtitle]
-  return fields.some(
-    (field) => field !== null && field.toLowerCase().includes(needle)
-  )
+  return searchKeyFor(row).includes(needle)
 }
 
 export interface RowFilter {
@@ -584,6 +605,17 @@ export function statusCounts(
   return counts
 }
 
+/**
+ * Collators are expensive to construct, and sorting 10,000 rows calls
+ * `compare` tens of thousands of times. Build them once per process instead of
+ * once per comparison (the old `localeCompare` path did an implicit lookup).
+ */
+const NAME_COLLATOR = new Intl.Collator(undefined, {
+  sensitivity: 'base',
+  numeric: true
+})
+const LABEL_COLLATOR = new Intl.Collator()
+
 const STATUS_SORT_ORDER: Record<RowStatusGroup, number> = {
   active: 0,
   queued: 1,
@@ -604,10 +636,7 @@ export function sortRows(
         comparison = left.createdAt - right.createdAt
         break
       case 'name':
-        comparison = left.title.localeCompare(right.title, undefined, {
-          sensitivity: 'base',
-          numeric: true
-        })
+        comparison = NAME_COLLATOR.compare(left.title, right.title)
         break
       case 'size':
         comparison =
@@ -622,7 +651,7 @@ export function sortRows(
           STATUS_SORT_ORDER[left.statusGroup] -
           STATUS_SORT_ORDER[right.statusGroup]
         if (comparison === 0) {
-          comparison = left.statusLabel.localeCompare(right.statusLabel)
+          comparison = LABEL_COLLATOR.compare(left.statusLabel, right.statusLabel)
         }
         break
     }
