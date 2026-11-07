@@ -11,10 +11,7 @@ import {
 } from './scan-draft.js'
 import { rememberOptionsTarget, readCaptureSettings, readNeedsLoginState, clearNeedsLoginState, needsLoginCopy, readOptInCookieHeader } from './capture-settings.js'
 import {
-  browserDownloadPermissionsGranted,
-  browserDownloadStateCopy,
-  disableBrowserDownloadTakeover,
-  enableBrowserDownloadTakeover
+  browserDownloadStateCopy
 } from './browser-downloads.js'
 import {
   popupConnectionLine,
@@ -68,10 +65,8 @@ const handoffLoginText = document.getElementById('handoff-login-text')
 const handoffLoginButton = document.getElementById('handoff-login-button')
 const connectionDot = document.getElementById('connection-dot')
 const connectionLabel = document.getElementById('connection-label')
-const takeoverToggle = document.getElementById('takeover-toggle')
 const takeoverState = document.getElementById('takeover-state')
 const takeoverHint = document.getElementById('takeover-hint')
-const takeoverStatus = document.getElementById('takeover-status')
 
 let pageUrl = null
 let pageOrigin = null
@@ -261,73 +256,22 @@ function clearNeedsLogin() {
   }
 }
 
-function setTakeoverStatus(kind, message) {
-  takeoverStatus.className = kind ? `status ${kind}` : 'status'
-  takeoverStatus.textContent = message
-}
-
-function renderTakeover(enabled, minBytes) {
-  const copy = browserDownloadStateCopy({ enabled, minBytes })
-  takeoverToggle.checked = copy.enabled
-  takeoverState.textContent = copy.state
-  takeoverHint.textContent = copy.hint
-}
-
 /**
- * Show the current switch state on open. The switch counts as on only when the
- * setting is saved AND every optional permission it needs is still granted.
+ * The "Use DonDownload on all sites" switch is always on, so the card only
+ * shows the active state and the current size threshold. Nothing here can turn
+ * it off and no permission is requested from the popup.
  */
-async function refreshTakeover() {
+async function renderTakeover() {
   let settings
   try {
     settings = await readCaptureSettings(chrome)
   } catch {
-    settings = { automaticFileHandoff: false, handoffMinBytes: 1_000_000 }
+    settings = { handoffMinBytes: 1_000_000 }
   }
-  const granted = await browserDownloadPermissionsGranted(chrome)
-  renderTakeover(settings.automaticFileHandoff === true && granted, settings.handoffMinBytes)
+  const copy = browserDownloadStateCopy({ minBytes: settings.handoffMinBytes })
+  takeoverState.textContent = copy.state
+  takeoverHint.textContent = copy.hint
 }
-
-takeoverToggle.addEventListener('change', () => {
-  if (takeoverToggle.checked) {
-    // Direct user gesture: permissions.request runs synchronously inside this
-    // click, so all three optional grants are asked for in one prompt.
-    takeoverToggle.disabled = true
-    setTakeoverStatus('', '')
-    enableBrowserDownloadTakeover(chrome, (result) => {
-      takeoverToggle.disabled = false
-      if (!result.ok) {
-        renderTakeover(false, 1_000_000)
-        setTakeoverStatus('error', result.error || 'Downloads stay in the browser.')
-        return
-      }
-      void refreshTakeover()
-      setTakeoverStatus(
-        'success',
-        'On. New browser downloads go to DonDownload and the video overlay shows on every site.'
-      )
-    })
-    return
-  }
-  takeoverToggle.disabled = true
-  setTakeoverStatus('', '')
-  void disableBrowserDownloadTakeover(chrome)
-    .then((saved) => {
-      takeoverToggle.disabled = false
-      if (!saved) {
-        setTakeoverStatus('error', 'The setting could not be saved in this browser profile.')
-        void refreshTakeover()
-        return
-      }
-      void refreshTakeover()
-      setTakeoverStatus('success', 'Off. Browser downloads stay in the browser and the overlay is limited to sites you enable one by one.')
-    })
-    .catch(() => {
-      takeoverToggle.disabled = false
-      setTakeoverStatus('error', 'The setting could not be saved in this browser profile.')
-      void refreshTakeover()
-    })
-})
 
 function clearCaptureList() {
   while (captureList.children.length > 0) {
@@ -1344,5 +1288,5 @@ chrome.runtime.onMessage.addListener((message) => {
 window.addEventListener('unload', clearPolling)
 
 void checkNativeConnection()
-void refreshTakeover()
+void renderTakeover()
 loadActiveTab()

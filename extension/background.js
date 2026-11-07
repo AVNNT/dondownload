@@ -30,6 +30,7 @@ import {
   handleHandoffCardMessage
 } from './handoff-card.js'
 import { WELCOME_PAGE, shouldOpenWelcome } from './onboarding.js'
+import { ensureAllSitesActive } from './browser-downloads.js'
 import {
   CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
@@ -541,15 +542,8 @@ async function handleContentDisable(message, sender) {
   return disableOverlayForOrigin(chrome, message.origin, sender.tab.id)
 }
 
-async function reconcileOverlayRegistrations() {
-  try {
-    // The all-sites registration is decided by the settings and the broad host
-    // grant, so a leftover from a previous session is removed when it is no
-    // longer wanted, and created when it is.
-    await reconcileOverlayMode(chrome, { injectOpenTabs: true })
-  } catch {
-    // Reconciliation is best effort and never blocks the manual capture path.
-  }
+/** Drop per-origin registrations whose exact origin grant is gone. */
+async function pruneOrphanOverlayRegistrations() {
   try {
     const registrations = await chrome.scripting.getRegisteredContentScripts()
     for (const registration of registrations) {
@@ -580,9 +574,31 @@ async function reconcileOverlayRegistrations() {
   }
 }
 
+/**
+ * Re-assert the always-on all-sites mode in this worker: a stored "off" from an
+ * older version is migrated, the downloads listener is installed and the one
+ * all-sites content-script registration exists. `injectOpenTabs` additionally
+ * adds the overlay to tabs that are already open.
+ */
+function ensureAllSitesMode(injectOpenTabs) {
+  return ensureAllSitesActive(chrome, {
+    injectOpenTabs,
+    reconcile: async () => {
+      const result = await reconcileOverlayMode(chrome, { injectOpenTabs })
+      return {
+        overlay: result.registered === true,
+        injected: Array.isArray(result.injected) ? result.injected.length : 0
+      }
+    }
+  })
+}
+
 function installLifecycleListeners(details) {
   installContextMenu()
-  void reconcileOverlayRegistrations()
+  // Install and startup re-assert the always-on all-sites mode and inject the
+  // overlay into every open tab, so nothing has to be turned on.
+  void ensureAllSitesMode(true).catch(() => undefined)
+  void pruneOrphanOverlayRegistrations()
   installDownloadsSupport()
   networkObservation.install()
   void refreshNetworkObservation().catch(() => undefined)
@@ -626,8 +642,10 @@ async function toggleOverlayOnActiveTab() {
 // Evaluate this at worker start as well as after a grant. Service-worker
 // suspension/recreation re-runs the module, and permissions.onAdded covers a
 // grant that happened while the worker was alive but the API was not yet
-// exposed.
+// exposed. Every wake also re-asserts the always-on all-sites registration, so
+// a registration lost to a browser reset comes back without user action.
 installDownloadsSupport()
+void ensureAllSitesMode(false).catch(() => undefined)
 
 if (chrome.commands && chrome.commands.onCommand) {
   chrome.commands.onCommand.addListener((command) => {
@@ -733,9 +751,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'dondownload:overlay-all-sites') {
-    // The popup/options page just turned all-sites mode on or off. Register or
-    // remove the one broad registration and inject into open tabs now.
-    void reconcileOverlayMode(chrome, { injectOpenTabs: true })
+    // Install, startup, every worker wake and the options page all ask for the
+    // always-on registration through this one message.
+    void reconcileOverlayMode(chrome, {
+      injectOpenTabs: message.injectOpenTabs === true
+    })
       .then(sendResponse)
       .catch(() =>
         sendResponse(

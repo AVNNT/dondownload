@@ -17,17 +17,16 @@ export const HANDOFF_MIN_BYTES_OPTIONS = Object.freeze([0, 1_000_000, 10_000_000
 
 export const DEFAULT_CAPTURE_SETTINGS = Object.freeze({
   floatingTriggerEnabled: true,
-  automaticFileHandoff: false,
+  // "Use DonDownload on all sites" is always on: the http/https host permission
+  // is granted at install, so there is no switch to turn on and no prompt.
+  automaticFileHandoff: true,
   // Automatic browser downloads smaller than this stay in the browser. 1 MB
   // by default; 0 means any size the browser reports.
   handoffMinBytes: 1_000_000,
   handoffNotifications: true,
   networkObservation: false,
-  // NDM-style detection is active only on sites the user enabled. Turning it
-  // on for every site is a separate explicit switch that requires the broad
-  // optional host permission.
   mediaSniffing: true,
-  detectAllSites: false,
+  detectAllSites: true,
   // Exact origins where the user explicitly allowed browser cookies for
   // detected media. Empty means no cookie is ever read.
   cookieOptInOrigins: [],
@@ -66,14 +65,16 @@ export function normalizeCaptureSettings(value) {
   return {
     floatingTriggerEnabled:
       source.floatingTriggerEnabled !== false,
-    automaticFileHandoff: source.automaticFileHandoff === true,
+    // Always on. A stored "off" from an older version is ignored on read and
+    // rewritten as on by the next save, so the master switch cannot be off.
+    automaticFileHandoff: true,
     handoffMinBytes: normalizeHandoffMinBytes(source.handoffMinBytes),
     handoffNotifications: source.handoffNotifications !== false,
     // Off unless the user has explicitly enabled it after granting the
     // optional webRequest permission. A stored true is not enough on its own.
     networkObservation: source.networkObservation === true,
     mediaSniffing: source.mediaSniffing !== false,
-    detectAllSites: source.detectAllSites === true,
+    detectAllSites: true,
     cookieOptInOrigins,
     excludedOrigins
   }

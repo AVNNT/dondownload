@@ -56,10 +56,11 @@ existing native host and authenticated loopback bridge:
 
 ## Security model
 
-- Detection is limited to exact origins the user enabled, unless the user turns
-  on **Detect media on all sites**. That switch requests the broad optional
-  `http://*/*` and `https://*/*` host permission; turning it off removes the
-  broad grant and the preference.
+- Detection runs on every normal http/https site. The broad `http://*/*` and
+  `https://*/*` patterns are required manifest permissions granted at install,
+  so no prompt can be denied and no setting narrows them. The floating trigger
+  stays a per-site overlay preference, and excluded origins are skipped at
+  runtime.
 - `webRequest` remains optional and is requested only from an options-page
   gesture. Only response headers and public response metadata are read; request
   headers, bodies, credentials and DRM data are never exposed.

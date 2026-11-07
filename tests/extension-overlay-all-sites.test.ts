@@ -141,21 +141,22 @@ const YT = { id: 1, url: 'https://www.youtube.com/watch?v=abc' }
 const TWITCH = { id: 2, url: 'https://www.twitch.tv/videos/123' }
 
 describe('all-sites overlay registration', () => {
-  it('is wanted only when the flags and the broad host grant are present', async () => {
+  it('is on by default and only needs the broad host grant', async () => {
     const fake = createFake()
     expect(await allSitesHostsGranted(fake.chrome)).toBe(false)
-
-    await allSitesOn(fake)
+    // The switch is always on, so the default settings already want it.
     expect(await allSitesOverlayWantedFromSettings(fake.chrome)).toBe(false)
 
     fake.granted.add('http://*/*')
     fake.granted.add('https://*/*')
     expect(await allSitesOverlayWantedFromSettings(fake.chrome)).toBe(true)
 
-    await writeCaptureSettings(fake.chrome, {
-      detectAllSites: true,
-      floatingTriggerEnabled: false
-    })
+    // A stored "off" from an older version is ignored.
+    await writeCaptureSettings(fake.chrome, { detectAllSites: false })
+    expect(await allSitesOverlayWantedFromSettings(fake.chrome)).toBe(true)
+
+    // The floating trigger stays a per-site overlay preference.
+    await writeCaptureSettings(fake.chrome, { floatingTriggerEnabled: false })
     expect(await allSitesOverlayWantedFromSettings(fake.chrome)).toBe(false)
   })
 
@@ -216,7 +217,7 @@ describe('all-sites overlay registration', () => {
     expect(injectedTabs).toEqual([YT.id])
   })
 
-  it('unregisters the broad registration when a setting flag goes off', async () => {
+  it('keeps the broad registration on even when a stored detectAllSites is off', async () => {
     const fake = createFake({
       granted: ['http://*/*', 'https://*/*'],
       tabs: [YT]
@@ -229,6 +230,23 @@ describe('all-sites overlay registration', () => {
       detectAllSites: false,
       floatingTriggerEnabled: true
     })
+    const result = await reconcileOverlayMode(fake.chrome)
+
+    expect(result.mode).toBe('all-sites')
+    expect(result.registered).toBe(true)
+    expect(fake.registrations.has(OVERLAY_ALL_SITES_ID)).toBe(true)
+  })
+
+  it('unregisters the broad registration when the floating trigger is off', async () => {
+    const fake = createFake({
+      granted: ['http://*/*', 'https://*/*'],
+      tabs: [YT]
+    })
+    await allSitesOn(fake)
+    await reconcileOverlayMode(fake.chrome)
+    expect(fake.registrations.has(OVERLAY_ALL_SITES_ID)).toBe(true)
+
+    await writeCaptureSettings(fake.chrome, { floatingTriggerEnabled: false })
     const result = await reconcileOverlayMode(fake.chrome)
 
     expect(result.mode).toBe('per-origin')
@@ -253,11 +271,22 @@ describe('all-sites overlay registration', () => {
     expect(fake.registrations.has(OVERLAY_ALL_SITES_ID)).toBe(false)
   })
 
-  it('does not register anything without the settings asking for it', async () => {
+  it('registers on the default settings because the switch is always on', async () => {
     const fake = createFake({
       granted: ['http://*/*', 'https://*/*'],
       tabs: [YT]
     })
+
+    const result = await reconcileOverlayMode(fake.chrome, { injectOpenTabs: true })
+
+    expect(result.mode).toBe('all-sites')
+    expect(result.registered).toBe(true)
+    expect(fake.registrations.has(OVERLAY_ALL_SITES_ID)).toBe(true)
+    expect(result.injected).toEqual([YT.id])
+  })
+
+  it('does not register anything when the broad host grant is missing', async () => {
+    const fake = createFake({ tabs: [YT] })
 
     const result = await reconcileOverlayMode(fake.chrome, { injectOpenTabs: true })
 

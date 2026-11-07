@@ -42,6 +42,8 @@ interface FakeOptions {
   unregisterFails?: boolean
   permissionRemoveFails?: boolean
   sendMessageFailsFor?: number[]
+  /** Required manifest host patterns, as the real manifest now declares them. */
+  hostPermissions?: string[]
 }
 
 interface FakeChrome {
@@ -50,6 +52,7 @@ interface FakeChrome {
     tabs: Map<number, FakeTab>
     registrations: Map<string, Registration>
     session: Record<string, unknown>
+    local: Map<string, unknown>
     registerCalls: Registration[][]
     updateCalls: Registration[][]
     unregisterCalls: string[]
@@ -67,6 +70,7 @@ function createFakeChrome(options: FakeOptions = {}): FakeChrome {
     tabs: new Map((options.tabs ?? [{ id: 7, url: 'http://127.0.0.1:34526/' }]).map((tab) => [tab.id, tab])),
     registrations: new Map(),
     session: {},
+    local: new Map(),
     registerCalls: [],
     updateCalls: [],
     unregisterCalls: [],
@@ -79,16 +83,32 @@ function createFakeChrome(options: FakeOptions = {}): FakeChrome {
   const verified = options.verified !== false
   const registrationSticks = options.registrationSticks !== false
 
+  // Required manifest host patterns behave like Chrome: they cover narrower
+  // origins, so `contains` is true and `remove` refuses.
+  const requiredHosts = options.hostPermissions ?? []
+  const covers = (pattern: string, origin: string) => {
+    if (pattern === origin) return true
+    const scheme = pattern.slice(0, pattern.indexOf('://'))
+    return pattern === `${scheme}://*/*` && origin.startsWith(`${scheme}://`)
+  }
+  const grantedOrigin = (origin: string) =>
+    [...state.granted].some((pattern) => covers(pattern, origin)) ||
+    requiredHosts.some((pattern) => covers(pattern, origin))
+  const requiredOrigin = (origin: string) =>
+    requiredHosts.some((pattern) => covers(pattern, origin))
+
   const api = {
     permissions: {
       async contains({ origins }: { origins: string[] }) {
-        return origins.every((origin) => state.granted.has(origin))
+        return origins.every((origin) => grantedOrigin(origin))
       },
       async remove({ origins }: { origins: string[] }) {
         let removed = false
         for (const origin of origins) {
           state.removedPermissions.push(origin)
           if (options.permissionRemoveFails) continue
+          // A required host permission cannot be revoked.
+          if (requiredOrigin(origin)) continue
           removed = state.granted.delete(origin) || removed
         }
         return removed
@@ -148,6 +168,11 @@ function createFakeChrome(options: FakeOptions = {}): FakeChrome {
         return { ok: true }
       }
     },
+    runtime: {
+      getManifest() {
+        return { host_permissions: options.hostPermissions ?? [] }
+      }
+    },
     storage: {
       session: {
         async get(key: string) {
@@ -158,6 +183,16 @@ function createFakeChrome(options: FakeOptions = {}): FakeChrome {
         },
         async remove(key: string) {
           delete state.session[key]
+        }
+      },
+      local: {
+        async get(key: string) {
+          return state.local.has(key) ? { [key]: state.local.get(key) } : {}
+        },
+        async set(values: Record<string, unknown>) {
+          for (const [name, value] of Object.entries(values)) {
+            state.local.set(name, value)
+          }
         }
       }
     }
@@ -548,5 +583,62 @@ describe('popup overlay status copy', () => {
     const status = describeOverlayStatus({ available: false, granted: false, ready: false })
     expect(status.state).toBe('unavailable')
     expect(status.hint).toContain('This page was not changed')
+  })
+})
+
+describe('per-site off with the always-on broad grant', () => {
+  const BROAD = ['http://*/*', 'https://*/*']
+
+  function excludedOrigins(fake: FakeChrome) {
+    const stored = fake.state.local.get('dondownloadCaptureSettings') as
+      | { excludedOrigins?: string[] }
+      | undefined
+    return stored?.excludedOrigins ?? []
+  }
+
+  it('turns one site off by excluding it, because the broad grant cannot be revoked', async () => {
+    const fake = createFakeChrome({ granted: [PATTERN], hostPermissions: BROAD })
+    await enableOverlayForTab(fake.api, ORIGIN, 7)
+
+    const result = await disableOverlayForOrigin(fake.api, ORIGIN, 7)
+
+    expect(result).toMatchObject({
+      ok: true,
+      granted: false,
+      registrationRemoved: true,
+      permissionRemoved: true,
+      excluded: true
+    })
+    expect(overlayRemovalConfirmed(result)).toBe(true)
+    expect(excludedOrigins(fake)).toEqual([ORIGIN])
+    // The broad grant itself is untouched.
+    expect(fake.state.granted.has(PATTERN)).toBe(true)
+  })
+
+  it('keeps the site off when the popup re-syncs it', async () => {
+    const fake = createFakeChrome({ granted: [PATTERN], hostPermissions: BROAD })
+    await disableOverlayForOrigin(fake.api, ORIGIN, 7)
+
+    const synced = await syncOverlayForTab(fake.api, ORIGIN, 7)
+
+    expect(synced).toMatchObject({
+      ok: true,
+      granted: false,
+      registered: false,
+      injected: false,
+      reason: 'EXCLUDED'
+    })
+    expect(fake.state.fileInjections).toHaveLength(0)
+  })
+
+  it('lifts the exclusion on an explicit enable', async () => {
+    const fake = createFakeChrome({ granted: [PATTERN], hostPermissions: BROAD })
+    await disableOverlayForOrigin(fake.api, ORIGIN, 7)
+    expect(excludedOrigins(fake)).toEqual([ORIGIN])
+
+    const enabled = await enableOverlayForTab(fake.api, ORIGIN, 7)
+
+    expect(enabled).toMatchObject({ ok: true, granted: true, registered: true })
+    expect(excludedOrigins(fake)).toEqual([])
   })
 })

@@ -1,36 +1,29 @@
 // Shared "Use DonDownload on all sites" master switch (Neat Download Manager
-// style). The popup and the options page both use it so the permission set, the
-// setting write and the service-worker notification exist in exactly one place.
+// style). The switch itself is always on: the broad http/https host permission
+// is a required manifest permission granted at install, so no page has to be
+// requested and no UI can turn it off.
 //
-// Turning it on asks for every optional grant in ONE permissions.request call:
-// `downloads` (observe and cancel browser downloads), `cookies` (read the
-// browser's cookies for exactly the download URL), `webRequest` (detect media
-// responses) and the broad http/https host permission (overlay + detection on
-// every site). The call must run synchronously inside the click handler because
-// Chrome requires the user gesture.
+// What is left here is the one place that
+// - migrates a stored "off" value from an older version to on,
+// - asks the service worker to install the downloads listener, and
+// - asks it to register the one all-sites overlay (and optionally inject it
+//   into already-open tabs).
 //
-// Turning it on sets automaticFileHandoff, detectAllSites, mediaSniffing and
-// floatingTriggerEnabled, then asks the service worker to register the one
-// all-sites overlay and inject it into already-open tabs, so the overlay shows
-// on the open video tab without a reload. Turning it off clears
-// automaticFileHandoff and detectAllSites and keeps the granted permissions and
-// per-site enables.
+// The optional `downloads`, `cookies` and `webRequest` permissions stay
+// optional, so the hand-off itself only runs once they are granted. The options
+// page asks for them from a button; the switch never depends on them.
 
 import {
+  CAPTURE_SETTINGS_KEY,
   readCaptureSettings,
   writeCaptureSettings
 } from './capture-settings.js'
 
-export const BROWSER_DOWNLOAD_HOST_ORIGINS = Object.freeze([
-  'http://*/*',
-  'https://*/*'
-])
-
-/** The message the popup/options page sends after the switch changes. */
+/** The message the popup/options page sends to (re)register the overlay. */
 export const ALL_SITES_OVERLAY_MESSAGE = 'dondownload:overlay-all-sites'
 
 /**
- * The full optional permission set for the one switch. A permission the loaded
+ * The optional permission set the hand-off still needs. A permission the loaded
  * manifest does not declare as optional is left out so the request stays valid
  * if the manifest is tightened later.
  */
@@ -47,39 +40,21 @@ export function browserDownloadPermissions(chromeApi) {
   }
   return {
     permissions:
-      optional === null ? wanted : wanted.filter((name) => optional.has(name)),
-    origins: [...BROWSER_DOWNLOAD_HOST_ORIGINS]
+      optional === null ? wanted : wanted.filter((name) => optional.has(name))
   }
 }
 
 /**
- * True when the whole permission set is granted. The host patterns are checked
- * separately because `permissions.contains` treats a broad pattern as covering
- * a narrower one only in one direction; asking for the exact patterns keeps the
- * answer honest.
+ * Ask for the optional hand-off permissions. Must be called directly from a
+ * user gesture: `permissions.request` runs before any await. Site access is not
+ * requested because it is granted at install.
  */
-export async function browserDownloadPermissionsGranted(chromeApi) {
-  const details = browserDownloadPermissions(chromeApi)
-  try {
-    return (await chromeApi.permissions.contains(details)) === true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Turn the master switch on. Must be called directly from a user gesture:
- * `permissions.request` runs before any await.
- */
-export function enableBrowserDownloadTakeover(chromeApi, onResult) {
+export function requestBrowserDownloadAccess(chromeApi, onResult) {
   let details
   try {
     details = browserDownloadPermissions(chromeApi)
   } catch {
-    onResult({
-      ok: false,
-      error: 'The permissions could not be requested.'
-    })
+    onResult({ ok: false, error: 'The permissions could not be requested.' })
     return
   }
   try {
@@ -89,43 +64,21 @@ export function enableBrowserDownloadTakeover(chromeApi, onResult) {
         onResult({
           ok: false,
           error:
-            'The permissions were not granted. Downloads stay in the browser and no overlay is added.'
+            'The permissions were not granted. Browser downloads stay in the browser.'
         })
         return
       }
       void (async () => {
-        try {
-          const settings = await readCaptureSettings(chromeApi)
-          settings.automaticFileHandoff = true
-          settings.detectAllSites = true
-          settings.mediaSniffing = true
-          settings.floatingTriggerEnabled = true
-          const saved = await writeCaptureSettings(chromeApi, settings)
-          if (!saved) {
-            onResult({
-              ok: false,
-              error:
-                'The permissions were granted, but the setting could not be saved in this browser profile.'
-            })
-            return
-          }
-          const [support, overlay] = await Promise.all([
-            notifyDownloadsSupport(chromeApi),
-            requestOverlayReconcile(chromeApi)
-          ])
-          onResult({
-            ok: true,
-            listener: support.listener,
-            overlay: overlay.overlay,
-            injected: overlay.injected
-          })
-        } catch {
-          onResult({
-            ok: false,
-            error:
-              'The permissions were granted, but the setting could not be saved in this browser profile.'
-          })
-        }
+        const [support, overlay] = await Promise.all([
+          notifyDownloadsSupport(chromeApi),
+          requestOverlayReconcile(chromeApi)
+        ])
+        onResult({
+          ok: true,
+          listener: support.listener,
+          overlay: overlay.overlay,
+          injected: overlay.injected
+        })
       })()
     })
   } catch {
@@ -134,27 +87,9 @@ export function enableBrowserDownloadTakeover(chromeApi, onResult) {
 }
 
 /**
- * Turn the master switch off. The granted permissions and the per-site enables
- * stay; only automatic browser download takeover and all-sites detection stop.
- */
-export async function disableBrowserDownloadTakeover(chromeApi) {
-  try {
-    const settings = await readCaptureSettings(chromeApi)
-    settings.automaticFileHandoff = false
-    settings.detectAllSites = false
-    const saved = await writeCaptureSettings(chromeApi, settings)
-    if (!saved) return false
-    await requestOverlayReconcile(chromeApi)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Ask the service worker to install the downloads listener right after a grant.
- * The worker also reacts to permissions.onAdded, so this is a fast path for the
- * case where the API became visible only after the popup requested it.
+ * Ask the service worker to install the downloads listener. The worker also
+ * reacts to permissions.onAdded, so this is a fast path for the case where the
+ * API became visible only after the options page requested it.
  */
 export function notifyDownloadsSupport(chromeApi) {
   return new Promise((resolve) => {
@@ -173,15 +108,18 @@ export function notifyDownloadsSupport(chromeApi) {
 }
 
 /**
- * Ask the service worker to register (or remove) the all-sites overlay and
+ * Ask the service worker to register the all-sites overlay and, when asked,
  * inject it into open tabs. The worker also reconciles on settings change and
  * permissions.onAdded, so this is the fast path that avoids a page reload.
  */
-export function requestOverlayReconcile(chromeApi) {
+export function requestOverlayReconcile(chromeApi, options = {}) {
   return new Promise((resolve) => {
     try {
       chromeApi.runtime.sendMessage(
-        { type: ALL_SITES_OVERLAY_MESSAGE },
+        {
+          type: ALL_SITES_OVERLAY_MESSAGE,
+          injectOpenTabs: options.injectOpenTabs === true
+        },
         (response) => {
           void chromeApi.runtime.lastError
           resolve({
@@ -200,9 +138,59 @@ export function requestOverlayReconcile(chromeApi) {
   })
 }
 
-/** Popup copy for the current switch state. */
+/**
+ * Re-assert the always-on mode. Called on install, on startup and on every
+ * service-worker wake: it rewrites a stored "off" from an older version, makes
+ * sure the downloads listener is installed and that the one all-sites content
+ * script registration exists.
+ *
+ * `options.reconcile` lets the service worker reconcile in-process instead of
+ * messaging itself; UI pages leave it out and go through the worker message.
+ */
+export async function ensureAllSitesActive(chromeApi, options = {}) {
+  await migrateAlwaysOnSettings(chromeApi)
+  const reconcile =
+    typeof options.reconcile === 'function'
+      ? options.reconcile
+      : () => requestOverlayReconcile(chromeApi, options)
+  const [support, overlay] = await Promise.all([
+    notifyDownloadsSupport(chromeApi),
+    reconcile()
+  ])
+  return {
+    ok: true,
+    listener: support.listener,
+    overlay: overlay.overlay,
+    injected: overlay.injected
+  }
+}
+
+/**
+ * Write the always-on flags once when a profile still stores them as off. The
+ * read path already normalizes them, so this only makes the stored value match
+ * and never fails the caller.
+ */
+async function migrateAlwaysOnSettings(chromeApi) {
+  try {
+    const local = chromeApi.storage && chromeApi.storage.local
+    if (!local) return
+    const stored = await local.get(CAPTURE_SETTINGS_KEY)
+    const current = stored && stored[CAPTURE_SETTINGS_KEY]
+    if (
+      current &&
+      current.automaticFileHandoff === true &&
+      current.detectAllSites === true
+    ) {
+      return
+    }
+    await writeCaptureSettings(chromeApi, await readCaptureSettings(chromeApi))
+  } catch {
+    // A profile that refuses the write still reads the switch as on.
+  }
+}
+
+/** Popup/options copy for the always-on switch. */
 export function browserDownloadStateCopy(state) {
-  const enabled = state && state.enabled === true
   const minBytes =
     state && Number.isSafeInteger(state.minBytes) ? state.minBytes : 1_000_000
   const minimum =
@@ -212,10 +200,8 @@ export function browserDownloadStateCopy(state) {
         ? '10 MB'
         : '1 MB'
   return {
-    enabled,
-    state: enabled ? 'On' : 'Off',
-    hint: enabled
-      ? `On. New browser downloads of ${minimum} or larger go to DonDownload with your browser cookies and sign-in, and the video overlay shows on every site. The browser copy is cancelled only after the app confirms it saved the download.`
-      : 'Off. Browser downloads stay in the browser and the overlay is limited to sites you enable one by one. Turning this on asks once for the downloads, cookies, media detection and site access permissions.'
+    enabled: true,
+    state: 'Active on all sites',
+    hint: `Active on all sites. New browser downloads of ${minimum} or larger go to DonDownload with your browser cookies and sign-in, and the video overlay shows on every site. The browser copy is cancelled only after the app confirms it saved the download.`
   }
 }
