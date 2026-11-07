@@ -48,8 +48,13 @@ const MAX_NODE_ID_LENGTH = 32
 
 const MEGA_HOST_LINK = /^https:\/\/(?:www\.)?mega\.(?:nz|io|co\.nz)(?=[/?#]|$)/i
 const MEGA_ID = /^[A-Za-z0-9_-]{6,16}$/
-/** A public MEGA key is 32 bytes of unpadded base64url. */
-const MEGA_KEY = /^[A-Za-z0-9_-]{43}$/
+/**
+ * A public file link key is 32 bytes of unpadded base64url (43 characters);
+ * a public folder link key is 16 bytes (22 characters) and is used raw as an
+ * AES-128 key.
+ */
+const MEGA_FILE_KEY = /^[A-Za-z0-9_-]{43}$/
+const MEGA_FOLDER_KEY = /^[A-Za-z0-9_-]{22}$/
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the security intent here
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 
@@ -247,11 +252,24 @@ function decodeBase64Url(value: string): Buffer {
   )
 }
 
-/** Decode a 32-byte public MEGA key. Throws MEGA_INVALID_LINK when malformed. */
+/** Decode a 32-byte public MEGA file key. Throws MEGA_INVALID_LINK when malformed. */
 export function decodeMegaKey(value: string): Buffer {
-  if (typeof value !== 'string' || !MEGA_KEY.test(value)) throw invalidLink()
+  if (typeof value !== 'string' || !MEGA_FILE_KEY.test(value)) throw invalidLink()
   const decoded = decodeBase64Url(value)
   if (decoded.length !== 32) throw invalidLink()
+  return decoded
+}
+
+/**
+ * Decode a 16-byte public MEGA folder key. A folder key is used raw as an
+ * AES-128 key, so it never goes through `deriveMegaFileKey`.
+ */
+export function decodeMegaFolderKey(value: string): Buffer {
+  if (typeof value !== 'string' || !MEGA_FOLDER_KEY.test(value)) {
+    throw invalidLink()
+  }
+  const decoded = decodeBase64Url(value)
+  if (decoded.length !== 16) throw invalidLink()
   return decoded
 }
 
@@ -309,22 +327,46 @@ export function decryptMegaAttributes(aesKey: Buffer, attributes: string): strin
 }
 
 /**
- * Decrypt one folder node key. A node key is 32 bytes: the first 16 are the
- * file key encrypted with the folder key under AES-128-ECB (no padding), the
- * last 16 are the node's MAC and are kept as-is.
+ * Decrypt one folder node key with the folder key.
+ *
+ * A node key is AES-128-ECB (no padding) over the whole field: 32 bytes for a
+ * file node (the complete file key, both blocks) and 16 bytes for a subfolder
+ * node (that folder's own key). Every block is decrypted, never only the first.
  */
 export function decryptMegaNodeKey(
-  folderKey: MegaFileKey,
+  folderKey: Buffer,
   nodeKey: Buffer
 ): Buffer {
-  if (nodeKey.length !== 32) throw invalidResponse()
-  const decipher = createDecipheriv('aes-128-ecb', folderKey.aesKey, null)
+  if (folderKey.length !== 16) throw invalidResponse()
+  if (nodeKey.length === 0 || nodeKey.length % 16 !== 0) throw invalidResponse()
+  const decipher = createDecipheriv('aes-128-ecb', folderKey, null)
   decipher.setAutoPadding(false)
-  const head = Buffer.concat([
-    decipher.update(nodeKey.subarray(0, 16)),
-    decipher.final()
-  ])
-  return Buffer.concat([head, nodeKey.subarray(16)])
+  return Buffer.concat([decipher.update(nodeKey), decipher.final()])
+}
+
+/**
+ * Candidate encrypted keys of one node `k` field.
+ *
+ * The field is `<handle>:<base64urlKey>`; a node shared with several owners
+ * carries one such entry per owner, separated by `/`. The owning handle is not
+ * needed to decrypt, so only the key part of each entry is kept.
+ */
+function nodeKeyCandidates(raw: string): Buffer[] {
+  const candidates: Buffer[] = []
+  for (const part of raw.split('/')) {
+    const separator = part.indexOf(':')
+    const encoded = separator === -1 ? part : part.slice(separator + 1)
+    if (encoded.length === 0) continue
+    let decoded: Buffer
+    try {
+      decoded = decodeBase64Url(encoded)
+    } catch {
+      continue
+    }
+    if (decoded.length === 0 || decoded.length % 16 !== 0) continue
+    candidates.push(decoded)
+  }
+  return candidates
 }
 
 /* -------------------------------- links -------------------------------- */
@@ -342,8 +384,12 @@ function isMegaId(value: unknown): value is string {
   return typeof value === 'string' && MEGA_ID.test(value)
 }
 
-function isMegaKey(value: unknown): value is string {
-  return typeof value === 'string' && MEGA_KEY.test(value)
+function isMegaFileKey(value: unknown): value is string {
+  return typeof value === 'string' && MEGA_FILE_KEY.test(value)
+}
+
+function isMegaFolderKey(value: unknown): value is string {
+  return typeof value === 'string' && MEGA_FOLDER_KEY.test(value)
 }
 
 /**
@@ -392,11 +438,13 @@ export function parseMegaLink(value: unknown): MegaLink {
   const legacy = /^(!|F!)([A-Za-z0-9_-]+)!([A-Za-z0-9_-]+)$/.exec(fragment)
   if (legacy !== null) {
     const [, marker, id, key] = legacy
-    if (!isMegaId(id) || !isMegaKey(key)) throw invalidLink()
+    if (!isMegaId(id)) throw invalidLink()
     if (marker === '!') {
+      if (!isMegaFileKey(key)) throw invalidLink()
       if (parsed.pathname !== '/' && parsed.pathname !== '') throw invalidLink()
       return { kind: 'file', id, key, sourceUrl: fileSourceUrl(id, key) }
     }
+    if (!isMegaFolderKey(key)) throw invalidLink()
     return {
       kind: 'folder',
       id,
@@ -410,13 +458,13 @@ export function parseMegaLink(value: unknown): MegaLink {
   const subFile = /^([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)$/.exec(fragment)
   const key = subFile === null ? fragment : subFile[1] ?? ''
   const subFileId = subFile === null ? null : subFile[2] ?? null
-  if (!isMegaKey(key)) throw invalidLink()
   if (subFileId !== null && !isMegaId(subFileId)) throw invalidLink()
 
   const path = parsed.pathname.replace(/\/+$/, '')
   const fileMatch = /^\/(?:embed\/)?file\/([A-Za-z0-9_-]+)$/.exec(path)
   if (fileMatch !== null) {
     if (subFileId !== null) throw invalidLink()
+    if (!isMegaFileKey(key)) throw invalidLink()
     const id = fileMatch[1]!
     if (!isMegaId(id)) throw invalidLink()
     return { kind: 'file', id, key, sourceUrl: fileSourceUrl(id, key) }
@@ -424,6 +472,7 @@ export function parseMegaLink(value: unknown): MegaLink {
 
   const folderMatch = /^\/folder\/([A-Za-z0-9_-]+)$/.exec(path)
   if (folderMatch !== null) {
+    if (!isMegaFolderKey(key)) throw invalidLink()
     const id = folderMatch[1]!
     if (!isMegaId(id)) throw invalidLink()
     return {
@@ -784,10 +833,13 @@ function newOpaqueEntryId(): string {
 
 interface MegaNode {
   id: string
+  /** Parent node handle, or null when the response omitted it. */
+  parentId: string | null
   size: number
   /** 0 file, 1 folder, 2 root, 3 incoming share. */
   type: number
   attributes: string
+  /** Raw `k` field: `<handle>:<base64urlKey>`, entries separated by `/`. */
   key: string | null
 }
 
@@ -803,14 +855,177 @@ function parseNode(raw: unknown): MegaNode | null {
     : 0
   const attributes = typeof raw.a === 'string' ? raw.a : ''
   const key = typeof raw.k === 'string' && raw.k.length > 0 ? raw.k : null
-  return { id, size, type, attributes, key }
+  const parentId =
+    typeof raw.p === 'string' &&
+    raw.p.length <= MAX_NODE_ID_LENGTH &&
+    MEGA_ID.test(raw.p)
+      ? raw.p
+      : null
+  return { id, parentId, size, type, attributes, key }
 }
 
-async function fetchFolderNodes(
+/** One decrypted node: its own key plus its decrypted display name. */
+interface DecryptedNode {
+  /** AES-128-CTR material of a file node; null for a folder node. */
+  fileKey: MegaFileKey | null
+  /** Raw 16-byte key of a folder node; null for a file node. */
+  folderKey: Buffer | null
+  name: string
+}
+
+/**
+ * Decrypt one node with its parent folder key.
+ *
+ * The node's own key is AES-128-ECB under the parent folder key: 32 bytes for a
+ * file node, which become AES-128-CTR material through `deriveMegaFileKey`, and
+ * 16 bytes for a subfolder node, which is that folder's raw AES-128 key. The
+ * node's attributes are always decrypted with the node's own key, never with the
+ * parent folder key. A `k` field may carry one entry per owning handle, so the
+ * first entry whose key decrypts the attributes wins.
+ */
+function decryptNode(
+  node: MegaNode,
+  parentFolderKey: Buffer
+): DecryptedNode | null {
+  if (node.key === null) return null
+  const wantsFolderKey = node.type === 1
+  let fallbackFolderKey: Buffer | null = null
+
+  for (const candidate of nodeKeyCandidates(node.key)) {
+    if (candidate.length !== (wantsFolderKey ? 16 : 32)) continue
+    let key: Buffer
+    try {
+      key = decryptMegaNodeKey(parentFolderKey, candidate)
+    } catch {
+      continue
+    }
+
+    if (wantsFolderKey) {
+      // A subfolder key is used raw; its attributes prove which entry is the
+      // right one, but a folder without attributes still yields a usable key.
+      try {
+        return {
+          fileKey: null,
+          folderKey: key,
+          name: parseAttributeName(decryptMegaAttributes(key, node.attributes))
+        }
+      } catch {
+        fallbackFolderKey ??= key
+        continue
+      }
+    }
+
+    let fileKey: MegaFileKey
+    try {
+      fileKey = deriveMegaFileKey(key)
+    } catch {
+      continue
+    }
+    try {
+      return {
+        fileKey,
+        folderKey: null,
+        name: parseAttributeName(
+          decryptMegaAttributes(fileKey.aesKey, node.attributes)
+        )
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return fallbackFolderKey === null
+    ? null
+    : { fileKey: null, folderKey: fallbackFolderKey, name: '' }
+}
+
+interface MegaFolderFile {
+  node: MegaNode
+  /** Null when no candidate key decrypted the node. */
+  decrypted: DecryptedNode | null
+}
+
+interface MegaFolderListing {
+  title: string
+  /** File nodes in response order. Subfolders are keys, not entries. */
+  files: MegaFolderFile[]
+}
+
+/**
+ * Walk one folder listing and decrypt every node.
+ *
+ * A node key is encrypted with its parent folder's key, so a node can only be
+ * opened once its parent folder is known; the response order is not guaranteed,
+ * so the walk repeats until nothing new resolves. Subfolder nodes are never
+ * entries: their key only unlocks that folder's own attributes and children.
+ */
+function buildFolderListing(
   folderId: string,
-  folderKey: MegaFileKey,
+  folderKey: Buffer,
+  rawNodes: readonly unknown[]
+): MegaFolderListing {
+  const nodes: MegaNode[] = []
+  for (const raw of rawNodes) {
+    const node = parseNode(raw)
+    if (node !== null) nodes.push(node)
+  }
+
+  // Folder handle -> raw 16-byte key. The link key is the root folder's key and
+  // is used raw both for the root attributes and for its direct children.
+  const folderKeys = new Map<string, Buffer>()
+  folderKeys.set(folderId, folderKey)
+
+  let title = 'MEGA folder'
+  for (const node of nodes) {
+    if (node.type !== 2) continue
+    folderKeys.set(node.id, folderKey)
+    if (node.attributes.length === 0) continue
+    try {
+      title = parseAttributeName(
+        decryptMegaAttributes(folderKey, node.attributes)
+      )
+    } catch {
+      title = 'MEGA folder'
+    }
+  }
+
+  const decrypted = new Map<string, DecryptedNode>()
+  let pending = nodes.filter((node) => node.type === 0 || node.type === 1)
+  while (pending.length > 0) {
+    const unresolved: MegaNode[] = []
+    let progressed = false
+    for (const node of pending) {
+      const parentKey =
+        node.parentId === null ? undefined : folderKeys.get(node.parentId)
+      if (parentKey === undefined) {
+        unresolved.push(node)
+        continue
+      }
+      const opened = decryptNode(node, parentKey)
+      if (opened === null) {
+        unresolved.push(node)
+        continue
+      }
+      decrypted.set(node.id, opened)
+      if (opened.folderKey !== null) folderKeys.set(node.id, opened.folderKey)
+      progressed = true
+    }
+    if (!progressed) break
+    pending = unresolved
+  }
+
+  const files = nodes
+    .filter((node) => node.type === 0)
+    .map((node) => ({ node, decrypted: decrypted.get(node.id) ?? null }))
+
+  return { title: parseFolderTitle(title), files }
+}
+
+async function fetchFolderListing(
+  folderId: string,
+  folderKey: Buffer,
   options: MegaRequestOptions
-): Promise<{ title: string; nodes: MegaNode[] }> {
+): Promise<MegaFolderListing> {
   const record = await megaApiCall(
     [{ a: 'f', c: 1, r: 1, ca: 1 }],
     folderId,
@@ -822,36 +1037,18 @@ async function fetchFolderNodes(
   if (!Array.isArray(rawNodes)) throw invalidResponse()
   if (rawNodes.length > MAX_MEGA_FOLDER_NODES) throw tooManyFiles()
 
-  const nodes: MegaNode[] = []
-  let title = 'MEGA folder'
-  for (const raw of rawNodes) {
-    const node = parseNode(raw)
-    if (node === null) continue
-    // The root node's attributes are encrypted with the folder key itself.
-    if (node.type === 2 && node.attributes.length > 0) {
-      try {
-        title = parseAttributeName(
-          decryptMegaAttributes(folderKey.aesKey, node.attributes)
-        )
-      } catch {
-        title = 'MEGA folder'
-      }
-      continue
-    }
-    nodes.push(node)
-  }
-  return { title: parseFolderTitle(title), nodes }
+  return buildFolderListing(folderId, folderKey, rawNodes)
 }
 
-/** Decrypt one folder node into a download-ready entry. */
+/** Build one download-ready entry from an already decrypted file node. */
 function toFolderEntry(
   folderId: string,
-  folderKey: MegaFileKey,
   folderKeyText: string,
-  node: MegaNode,
+  file: MegaFolderFile,
   position: number
 ): MegaFolderEntry {
   const entryId = newOpaqueEntryId()
+  const { node, decrypted } = file
   const unavailable = (reason: string): MegaFolderEntry => ({
     entryId,
     position,
@@ -866,19 +1063,7 @@ function toFolderEntry(
   })
 
   if (node.key === null) return unavailable('This MEGA entry has no key.')
-  let fileKey: Buffer
-  try {
-    fileKey = decryptMegaNodeKey(folderKey, decodeBase64Url(node.key))
-  } catch {
-    return unavailable('This MEGA entry could not be decrypted.')
-  }
-
-  let key: MegaFileKey
-  let name: string
-  try {
-    key = deriveMegaFileKey(fileKey)
-    name = parseAttributeName(decryptMegaAttributes(key.aesKey, node.attributes))
-  } catch {
+  if (decrypted === null || decrypted.fileKey === null) {
     return unavailable('This MEGA entry could not be decrypted.')
   }
 
@@ -886,10 +1071,10 @@ function toFolderEntry(
     entryId,
     position,
     nodeId: node.id,
-    name: truncateEntryTitle(name),
+    name: truncateEntryTitle(decrypted.name),
     size: node.size,
     sourceUrl: folderSourceUrl(folderId, folderKeyText, node.id),
-    key,
+    key: decrypted.fileKey,
     availability: 'available',
     errorCode: null,
     errorReason: null
@@ -964,34 +1149,30 @@ export async function resolveMegaFile(
 
   if (link.subFileId === null) throw invalidLink()
 
-  const folderKey = deriveMegaFileKey(decodeMegaKey(link.key))
-  const { nodes } = await fetchFolderNodes(link.id, folderKey, options)
-  const node = nodes.find((candidate) => candidate.id === link.subFileId)
-  if (node === undefined) throw new MegaError('MEGA_NOT_FOUND')
-  if (node.key === null) throw new MegaError('MEGA_UNAVAILABLE')
-
-  let key: MegaFileKey
-  let name: string
-  try {
-    key = deriveMegaFileKey(decryptMegaNodeKey(folderKey, decodeBase64Url(node.key)))
-    name = parseAttributeName(decryptMegaAttributes(key.aesKey, node.attributes))
-  } catch {
+  // A folder key is 16 bytes and is used raw as the AES-128 folder key.
+  const folderKey = decodeMegaFolderKey(link.key)
+  const { files } = await fetchFolderListing(link.id, folderKey, options)
+  const file = files.find((candidate) => candidate.node.id === link.subFileId)
+  if (file === undefined) throw new MegaError('MEGA_NOT_FOUND')
+  if (file.decrypted === null || file.decrypted.fileKey === null) {
     throw new MegaError('MEGA_UNAVAILABLE')
   }
+  const key = file.decrypted.fileKey
+  const name = file.decrypted.name
 
   const record = await megaApiCall(
-    [{ a: 'g', g: 1, ssl: 2, n: node.id }],
+    [{ a: 'g', g: 1, ssl: 2, n: file.node.id }],
     link.id,
     responseByteLimit(FILE_INFO_MAX_RESPONSE_BYTES, options),
     options
   )
   const downloadUrl = parseDownloadUrl(record)
   const size =
-    typeof record.s === 'number' ? parseSize(record.s) : node.size
+    typeof record.s === 'number' ? parseSize(record.s) : file.node.size
 
   return {
     kind: 'file',
-    fileId: node.id,
+    fileId: file.node.id,
     folderId: link.id,
     name,
     size,
@@ -1003,8 +1184,9 @@ export async function resolveMegaFile(
 
 /**
  * Resolve a public folder into internal entries plus a renderer-safe preview.
- * Only plain files are listed; nested folders are skipped because a public link
- * has no path selector. Nothing is queued and nothing is downloaded here.
+ * Only plain files are listed; subfolders are walked for their keys but never
+ * become entries, because a public link has no path selector. Nothing is queued
+ * and nothing is downloaded here.
  */
 export async function resolveMegaFolder(
   value: unknown,
@@ -1013,14 +1195,13 @@ export async function resolveMegaFolder(
   const link = parseMegaLink(value)
   if (link.kind !== 'folder' || link.subFileId !== null) throw invalidLink()
 
-  const folderKey = deriveMegaFileKey(decodeMegaKey(link.key))
-  const { title, nodes } = await fetchFolderNodes(link.id, folderKey, options)
+  const folderKey = decodeMegaFolderKey(link.key)
+  const { title, files } = await fetchFolderListing(link.id, folderKey, options)
 
-  const files = nodes.filter((node) => node.type === 0)
   if (files.length > MAX_MEGA_FOLDER_ENTRIES) throw tooManyFiles()
 
-  const entries: MegaFolderEntry[] = files.map((node, position) =>
-    toFolderEntry(link.id, folderKey, link.key, node, position)
+  const entries: MegaFolderEntry[] = files.map((file, position) =>
+    toFolderEntry(link.id, link.key, file, position)
   )
 
   return {

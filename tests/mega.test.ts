@@ -1,4 +1,4 @@
-import { createCipheriv, randomUUID } from 'node:crypto'
+import { createCipheriv, randomBytes, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -21,6 +21,7 @@ import {
   MEGA_API_ORIGIN,
   MegaError,
   createMegaAdapter,
+  decodeMegaFolderKey,
   decodeMegaKey,
   decryptMegaAttributes,
   decryptMegaNodeKey,
@@ -95,15 +96,28 @@ function encryptAttributes(aesKey: Buffer, json: string): string {
   )
 }
 
-/** Encrypt a node's own 32-byte key with the folder key (AES-128-ECB). */
-function encryptNodeKey(folderKey: MegaFileKey, nodeKey: Buffer): Buffer {
-  const cipher = createCipheriv('aes-128-ecb', folderKey.aesKey, null)
+/**
+ * Encrypt a node's own key with its parent folder key the way MEGA stores it:
+ * AES-128-ECB, no padding, over the whole field (32 bytes for a file key, 16
+ * bytes for a subfolder key).
+ */
+function encryptNodeKey(parentFolderKey: Buffer, nodeKey: Buffer): Buffer {
+  const cipher = createCipheriv('aes-128-ecb', parentFolderKey, null)
   cipher.setAutoPadding(false)
-  const head = Buffer.concat([
-    cipher.update(nodeKey.subarray(0, 16)),
-    cipher.final()
-  ])
-  return Buffer.concat([head, nodeKey.subarray(16)])
+  return Buffer.concat([cipher.update(nodeKey), cipher.final()])
+}
+
+/**
+ * The `k` field MEGA returns for a node: `<handle>:<base64urlKey>`. The handle
+ * is the owner's, the key is the node's own key encrypted with the parent
+ * folder key.
+ */
+function nodeKeyField(
+  parentFolderKey: Buffer,
+  nodeKey: Buffer,
+  handle = ROOT_HANDLE
+): string {
+  return `${handle}:${encryptNodeKey(parentFolderKey, nodeKey).toString('base64url')}`
 }
 
 function encryptCtr(key: MegaFileKey, plain: Buffer): Buffer {
@@ -141,30 +155,34 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 const FOLDER_ID = 'Folder01'
-const FOLDER_KEY_BYTES = wordsToKey([
-  0x01020304, 0x05060708, 0x090a0b0c, 0x0d0e0f10, 0x11121314, 0x15161718,
-  0x191a1b1c, 0x1d1e1f20
-])
+/** Owner handle MEGA puts in front of every node key. */
+const ROOT_HANDLE = 'RootHand'
+const SUBFOLDER_ID = 'SubFold1'
+
+/** A public folder key is 16 random bytes and is used raw as the AES key. */
+const FOLDER_KEY_BYTES = randomBytes(16)
 const FOLDER_KEY_TEXT = FOLDER_KEY_BYTES.toString('base64url')
-const FOLDER_KEY = deriveMegaFileKey(FOLDER_KEY_BYTES)
+/** A subfolder key is another raw 16-byte key, encrypted with the folder key. */
+const SUBFOLDER_KEY_BYTES = randomBytes(16)
 
 const NODE_VIDEO_ID = 'NodeVid1'
 const NODE_SCRIPT_ID = 'NodeScr1'
-const VIDEO_KEY_BYTES = FILE_KEY_BYTES
-const SCRIPT_KEY_BYTES = wordsToKey([
-  0x21222324, 0x25262728, 0x292a2b2c, 0x2d2e2f30, 0x31323334, 0x35363738,
-  0x393a3b3c, 0x3d3e3f40
-])
+const NODE_NESTED_ID = 'NodeNst1'
+/** File keys are 32 random bytes. */
+const VIDEO_KEY_BYTES = randomBytes(32)
+const SCRIPT_KEY_BYTES = randomBytes(32)
+const NESTED_KEY_BYTES = randomBytes(32)
 
 function folderNodesResponse(): unknown {
   return [
     {
       f: [
         {
+          // The root node's attributes are encrypted with the raw folder key.
           h: FOLDER_ID,
           p: FOLDER_ID,
           t: 2,
-          a: encryptAttributes(FOLDER_KEY.aesKey, '{"n":"My folder"}'),
+          a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"My folder"}'),
           s: 0
         },
         {
@@ -176,7 +194,7 @@ function folderNodesResponse(): unknown {
             deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey,
             '{"n":"Fancam 01.mp4"}'
           ),
-          k: encryptNodeKey(FOLDER_KEY, VIDEO_KEY_BYTES).toString('base64url')
+          k: nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)
         },
         {
           h: NODE_SCRIPT_ID,
@@ -187,7 +205,29 @@ function folderNodesResponse(): unknown {
             deriveMegaFileKey(SCRIPT_KEY_BYTES).aesKey,
             '{"n":"Fancam 01.funscript"}'
           ),
-          k: encryptNodeKey(FOLDER_KEY, SCRIPT_KEY_BYTES).toString('base64url')
+          k: nodeKeyField(FOLDER_KEY_BYTES, SCRIPT_KEY_BYTES)
+        },
+        {
+          // A subfolder: its own 16-byte key, encrypted with the folder key,
+          // and attributes encrypted with that raw subfolder key.
+          h: SUBFOLDER_ID,
+          p: FOLDER_ID,
+          t: 1,
+          s: 0,
+          a: encryptAttributes(SUBFOLDER_KEY_BYTES, '{"n":"Extras"}'),
+          k: nodeKeyField(FOLDER_KEY_BYTES, SUBFOLDER_KEY_BYTES)
+        },
+        {
+          // A file one level down: its key is encrypted with the subfolder key.
+          h: NODE_NESTED_ID,
+          p: SUBFOLDER_ID,
+          t: 0,
+          s: 1_024,
+          a: encryptAttributes(
+            deriveMegaFileKey(NESTED_KEY_BYTES).aesKey,
+            '{"n":"Nested 01.mp4"}'
+          ),
+          k: nodeKeyField(SUBFOLDER_KEY_BYTES, NESTED_KEY_BYTES)
         }
       ]
     }
@@ -277,12 +317,40 @@ describe('MEGA link parsing', () => {
       `https://mega.nz/account#${FILE_KEY_TEXT}`,
       `https://mega.nz/file/FileId01#${FILE_KEY_TEXT}/file/NodeVid1`,
       `https://mega.nz/#!FileId01!${FILE_KEY_TEXT}extra`,
-      `https://mega.nz/file/FileId01#${'A'.repeat(400)}`
+      `https://mega.nz/file/FileId01#${'A'.repeat(400)}`,
+      // A 22-character folder key is not a file key.
+      `https://mega.nz/file/FileId01#${FOLDER_KEY_TEXT}`,
+      `https://mega.nz/#!FileId01!${FOLDER_KEY_TEXT}`
     ]
     for (const value of invalid) {
       expect(() => parseMegaLink(value), value).toThrow(MegaError)
     }
     expect(() => parseMegaLink(undefined)).toThrow(MegaError)
+  })
+
+  it('requires a 22-character key for a folder link', () => {
+    // Real folder links carry 16 bytes, i.e. 22 base64url characters.
+    expect(FOLDER_KEY_TEXT).toHaveLength(22)
+    expect(parseMegaLink(FOLDER_LINK)).toMatchObject({
+      kind: 'folder',
+      key: FOLDER_KEY_TEXT
+    })
+    // A 43-character file key is not a folder key.
+    for (const value of [
+      `https://mega.nz/folder/${FOLDER_ID}#${FILE_KEY_TEXT}`,
+      `https://mega.nz/folder/${FOLDER_ID}#${FILE_KEY_TEXT}/file/${NODE_VIDEO_ID}`,
+      `https://mega.nz/#F!${FOLDER_ID}!${FILE_KEY_TEXT}`
+    ]) {
+      expect(() => parseMegaLink(value), value).toThrow(MegaError)
+    }
+    // Neither is a truncated or padded variant.
+    for (const length of [21, 23, 24]) {
+      const key = FOLDER_KEY_TEXT.slice(0, 21) + 'A'.repeat(length - 21)
+      expect(
+        () => parseMegaLink(`https://mega.nz/folder/${FOLDER_ID}#${key}`),
+        key
+      ).toThrow(MegaError)
+    }
   })
 })
 
@@ -313,11 +381,45 @@ describe('MEGA key handling', () => {
     )
   })
 
-  it('decrypts a folder node key with the folder key', () => {
-    const nodeKey = encryptNodeKey(FOLDER_KEY, VIDEO_KEY_BYTES)
+  it('decodes a 43-character file key and a 22-character folder key', () => {
+    expect(FILE_KEY_TEXT).toHaveLength(43)
+    expect(decodeMegaKey(FILE_KEY_TEXT).length).toBe(32)
+    expect(FOLDER_KEY_TEXT).toHaveLength(22)
+    expect(decodeMegaFolderKey(FOLDER_KEY_TEXT).equals(FOLDER_KEY_BYTES)).toBe(
+      true
+    )
+    // The two key lengths are not interchangeable.
+    expect(() => decodeMegaKey(FOLDER_KEY_TEXT)).toThrow(MegaError)
+    expect(() => decodeMegaFolderKey(FILE_KEY_TEXT)).toThrow(MegaError)
+  })
+
+  it('decrypts a folder node key with the raw folder key', () => {
+    const nodeKey = encryptNodeKey(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)
     expect(nodeKey.length).toBe(32)
-    const decrypted = decryptMegaNodeKey(FOLDER_KEY, nodeKey)
+    // Both blocks are decrypted, not only the first one.
+    const decrypted = decryptMegaNodeKey(FOLDER_KEY_BYTES, nodeKey)
+    expect(decrypted.length).toBe(32)
     expect(decrypted.equals(VIDEO_KEY_BYTES)).toBe(true)
+    expect(decrypted.subarray(16).equals(VIDEO_KEY_BYTES.subarray(16))).toBe(
+      true
+    )
+    // The folder key is used raw: it is never XOR-derived first.
+    const xorDerived = deriveMegaFileKey(
+      Buffer.concat([FOLDER_KEY_BYTES, FOLDER_KEY_BYTES])
+    ).aesKey
+    expect(decryptMegaNodeKey(xorDerived, nodeKey).equals(VIDEO_KEY_BYTES)).toBe(
+      false
+    )
+  })
+
+  it('decrypts a subfolder node key to that folder key', () => {
+    const nodeKey = encryptNodeKey(FOLDER_KEY_BYTES, SUBFOLDER_KEY_BYTES)
+    expect(nodeKey.length).toBe(16)
+    expect(
+      decryptMegaNodeKey(FOLDER_KEY_BYTES, nodeKey).equals(
+        SUBFOLDER_KEY_BYTES
+      )
+    ).toBe(true)
   })
 
   it('round-trips a small buffer through the streamed CTR decryption', async () => {
@@ -409,24 +511,115 @@ describe('MEGA adapter', () => {
     expect(resolution.kind).toBe('folder')
     expect(resolution.folderId).toBe(FOLDER_ID)
     expect(resolution.title).toBe('My folder')
-    expect(resolution.entries).toHaveLength(2)
+    // Two files in the root folder plus one inside the subfolder.
     expect(resolution.entries.map((entry) => entry.name)).toEqual([
       'Fancam 01.mp4',
-      'Fancam 01.funscript'
+      'Fancam 01.funscript',
+      'Nested 01.mp4'
     ])
     expect(resolution.entries[0]!.sourceUrl).toBe(FOLDER_FILE_LINK)
-    expect(resolution.entries[0]!.key?.aesKey.equals(EXPECTED_AES_KEY)).toBe(
-      true
+    expect(
+      resolution.entries[0]!.key?.aesKey.equals(
+        deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey
+      )
+    ).toBe(true)
+    // The subfolder is a key, not a downloadable entry.
+    expect(resolution.entries.map((entry) => entry.nodeId)).not.toContain(
+      SUBFOLDER_ID
     )
+    // A file one level down is decrypted with the subfolder key.
+    expect(
+      resolution.entries[2]!.key?.aesKey.equals(
+        deriveMegaFileKey(NESTED_KEY_BYTES).aesKey
+      )
+    ).toBe(true)
     // The renderer-safe preview carries no name-to-URL mapping and no key.
     expect(resolution.preview.kind).toBe('mega-folder')
-    expect(resolution.preview.entryCount).toBe(2)
+    expect(resolution.preview.entryCount).toBe(3)
     expect(JSON.stringify(resolution.preview)).not.toContain(FOLDER_KEY_TEXT)
     // The folder listing is requested with the folder ID in the query string.
     expect(calls[0]!.url).toContain(`&n=${FOLDER_ID}`)
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual([
       { a: 'f', c: 1, r: 1, ca: 1 }
     ])
+  })
+
+  it('decrypts node attributes with the node key, not the folder key', async () => {
+    const { fetch } = mockFetch(() =>
+      jsonResponse([
+        {
+          f: [
+            {
+              h: FOLDER_ID,
+              p: FOLDER_ID,
+              t: 2,
+              a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"My folder"}')
+            },
+            {
+              h: NODE_VIDEO_ID,
+              p: FOLDER_ID,
+              t: 0,
+              s: 4_096,
+              // Attributes encrypted with the folder key instead of the node's
+              // own key: the entry must not be listed as available.
+              a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"Wrong key.mp4"}'),
+              k: nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)
+            }
+          ]
+        }
+      ])
+    )
+    const resolution = await resolveMegaFolder(FOLDER_LINK, { fetch })
+
+    expect(resolution.entries).toHaveLength(1)
+    expect(resolution.entries[0]).toMatchObject({
+      availability: 'unavailable',
+      key: null,
+      sourceUrl: null
+    })
+    expect(resolution.preview.availableCount).toBe(0)
+  })
+
+  it('picks the node key entry that decrypts with the folder key', async () => {
+    const decoyKey = randomBytes(32)
+    const { fetch } = mockFetch(() =>
+      jsonResponse([
+        {
+          f: [
+            {
+              h: FOLDER_ID,
+              p: FOLDER_ID,
+              t: 2,
+              a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"Shared"}')
+            },
+            {
+              h: NODE_VIDEO_ID,
+              p: FOLDER_ID,
+              t: 0,
+              s: 4_096,
+              a: encryptAttributes(
+                deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey,
+                '{"n":"Fancam 01.mp4"}'
+              ),
+              // One entry per owning handle: the first one is encrypted with a
+              // different key, the second one with the folder key.
+              k: `${nodeKeyField(randomBytes(16), decoyKey, 'OtherHan')}/${nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)}`
+            }
+          ]
+        }
+      ])
+    )
+    const resolution = await resolveMegaFolder(FOLDER_LINK, { fetch })
+
+    expect(resolution.entries[0]).toMatchObject({
+      name: 'Fancam 01.mp4',
+      availability: 'available'
+    })
+    expect(
+      resolution.entries[0]!.key?.aesKey.equals(
+        deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey
+      )
+    ).toBe(true)
   })
 
   it('resolves a folder sub-file link through the folder listing', async () => {
@@ -446,9 +639,40 @@ describe('MEGA adapter', () => {
       size: 4_096,
       downloadUrl: DOWNLOAD_URL
     })
+    // The CTR decryption uses the node's own derived key and counter.
+    const expected = deriveMegaFileKey(VIDEO_KEY_BYTES)
+    expect(resolution.key.aesKey.equals(expected.aesKey)).toBe(true)
+    expect(resolution.key.iv.equals(expected.iv)).toBe(true)
     expect(calls).toHaveLength(2)
     expect(JSON.parse(String(calls[1]!.init.body))).toEqual([
       { a: 'g', g: 1, ssl: 2, n: NODE_VIDEO_ID }
+    ])
+  })
+
+  it('resolves a sub-file link that lives in a subfolder', async () => {
+    const { fetch, calls } = mockFetch((url) => {
+      if (url.includes('&n=') && calls.length === 1) {
+        return jsonResponse(folderNodesResponse())
+      }
+      return jsonResponse([{ g: DOWNLOAD_URL, s: 1_024 }])
+    })
+    const resolution = await resolveMegaFile(
+      `${FOLDER_LINK}/file/${NODE_NESTED_ID}`,
+      { fetch }
+    )
+
+    expect(resolution).toMatchObject({
+      kind: 'file',
+      fileId: NODE_NESTED_ID,
+      folderId: FOLDER_ID,
+      name: 'Nested 01.mp4',
+      size: 1_024
+    })
+    expect(
+      resolution.key.aesKey.equals(deriveMegaFileKey(NESTED_KEY_BYTES).aesKey)
+    ).toBe(true)
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual([
+      { a: 'g', g: 1, ssl: 2, n: NODE_NESTED_ID }
     ])
   })
 
@@ -553,7 +777,7 @@ describe('MEGA adapter', () => {
         h: FOLDER_ID,
         p: FOLDER_ID,
         t: 2,
-        a: encryptAttributes(FOLDER_KEY.aesKey, '{"n":"Big"}'),
+        a: encryptAttributes(FOLDER_KEY_BYTES, '{"n":"Big"}'),
         s: 0
       }
     ]
@@ -567,7 +791,7 @@ describe('MEGA adapter', () => {
           deriveMegaFileKey(VIDEO_KEY_BYTES).aesKey,
           `{"n":"file-${index}.mp4"}`
         ),
-        k: encryptNodeKey(FOLDER_KEY, VIDEO_KEY_BYTES).toString('base64url')
+        k: nodeKeyField(FOLDER_KEY_BYTES, VIDEO_KEY_BYTES)
       })
     }
     const { fetch } = mockFetch(() => jsonResponse([{ f: nodes }]))
