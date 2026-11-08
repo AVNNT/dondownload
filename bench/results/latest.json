@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-07T18:07:15.764Z",
+  "generatedAt": "2026-11-08T03:37:51.823Z",
   "environment": {
     "node": "v24.19.0",
     "platform": "win32",
@@ -16,9 +16,9 @@
       "insert": {
         "rows": 10000,
         "batches": 20,
-        "totalMs": 64.01,
-        "perRowMs": 0.0064,
-        "rowsPerSecond": 156226.81
+        "totalMs": 80.27,
+        "perRowMs": 0.008,
+        "rowsPerSecond": 124581.25
       },
       "progress": {
         "activeDownloads": 50,
@@ -32,16 +32,16 @@
         "tickMs": {
           "count": 60,
           "min": 0.002,
-          "p50": 0.004,
-          "p95": 0.395,
-          "max": 0.537,
-          "sum": 8.62
+          "p50": 0.002,
+          "p95": 0.362,
+          "max": 0.463,
+          "sum": 8.6
         }
       },
       "queries": {
         "loadAll": {
-          "p50": 30.6,
-          "min": 24.49,
+          "p50": 27.02,
+          "min": 19.15,
           "iterations": 5
         },
         "loadSettings": {
@@ -72,19 +72,19 @@
           "ticks": 60,
           "tickMs": {
             "count": 60,
-            "min": 0.03,
-            "p50": 0.06,
-            "p95": 0.12,
-            "max": 0.33,
-            "sum": 4.15
+            "min": 0.04,
+            "p50": 0.07,
+            "p95": 0.2,
+            "max": 0.58,
+            "sum": 5.62
           },
           "ipcEncodeMs": {
             "count": 60,
             "min": 0.03,
             "p50": 0.04,
-            "p95": 0.06,
-            "max": 0.13,
-            "sum": 2.35
+            "p95": 0.07,
+            "max": 0.18,
+            "sum": 2.46
           },
           "ipcBytes": {
             "count": 60,
@@ -109,19 +109,19 @@
           "ticks": 60,
           "tickMs": {
             "count": 60,
-            "min": 0.12,
-            "p50": 0.15,
-            "p95": 0.25,
-            "max": 0.94,
-            "sum": 10.63
+            "min": 0.14,
+            "p50": 0.16,
+            "p95": 0.28,
+            "max": 1.18,
+            "sum": 12.1
           },
           "ipcEncodeMs": {
             "count": 60,
             "min": 0.1,
             "p50": 0.12,
-            "p95": 0.16,
-            "max": 0.16,
-            "sum": 7.78
+            "p95": 0.18,
+            "max": 0.35,
+            "sum": 7.93
           },
           "ipcBytes": {
             "count": 60,
@@ -156,23 +156,23 @@
           "rows": 1000,
           "mount": {
             "commits": 2,
-            "wallMs": 8.936099999999897,
-            "profilerMs": 7.9539000000027045,
+            "wallMs": 8.934999999999945,
+            "profilerMs": 8.114400000001979,
             "rowRenders": 20
           },
           "updates": {
             "updates": 100,
             "rowsTouched": 50,
             "commits": 100,
-            "wallMs": 182.68309999999997,
-            "totalRenderMs": 99.0142000000169,
+            "wallMs": 188.44550000000004,
+            "totalRenderMs": 104.49200000002202,
             "renderMsPerUpdate": {
               "count": 100,
               "min": 0.93,
-              "p50": 0.98,
-              "p95": 1.07,
-              "max": 1.48,
-              "sum": 99.01
+              "p50": 0.99,
+              "p95": 1.29,
+              "max": 1.49,
+              "sum": 104.49
             },
             "rowRendersPerUpdate": {
               "count": 100,
@@ -188,23 +188,23 @@
           "rows": 5000,
           "mount": {
             "commits": 2,
-            "wallMs": 8.395899999999983,
-            "profilerMs": 7.657500000001164,
+            "wallMs": 9.789599999999837,
+            "profilerMs": 9.19370000000049,
             "rowRenders": 20
           },
           "updates": {
             "updates": 100,
             "rowsTouched": 50,
             "commits": 100,
-            "wallMs": 205.80169999999998,
-            "totalRenderMs": 109.02479999998945,
+            "wallMs": 197.34469999999988,
+            "totalRenderMs": 108.42420000000129,
             "renderMsPerUpdate": {
               "count": 100,
               "min": 0.98,
-              "p50": 1.08,
-              "p95": 1.3,
-              "max": 1.46,
-              "sum": 109.02
+              "p50": 1.03,
+              "p95": 1.41,
+              "max": 2.08,
+              "sum": 108.42
             },
             "rowRendersPerUpdate": {
               "count": 100,
@@ -225,140 +225,170 @@
         "files": [
           {
             "file": "out/main/index.js",
-            "rawBytes": 1097945,
-            "gzipBytes": 276455
+            "rawBytes": 621060,
+            "gzipBytes": 179169
           }
         ],
-        "rawBytes": 1097945,
-        "gzipBytes": 276455
+        "rawBytes": 621060,
+        "gzipBytes": 179169
       },
       "preload": {
         "files": [
           {
             "file": "out/preload/index.js",
-            "rawBytes": 10947,
-            "gzipBytes": 2016
+            "rawBytes": 8953,
+            "gzipBytes": 1917
           }
         ],
-        "rawBytes": 10947,
-        "gzipBytes": 2016
+        "rawBytes": 8953,
+        "gzipBytes": 1917
       },
       "rendererJs": {
         "files": [
           {
-            "file": "out/renderer/assets/index-BUMnDjdb.js",
-            "rawBytes": 723486,
-            "gzipBytes": 144061
+            "file": "out/renderer/assets/index-CP7WO2Eo.js",
+            "rawBytes": 303763,
+            "gzipBytes": 90648
           },
           {
-            "file": "out/renderer/assets/ScanSheet-wGQjwqbR.js",
-            "rawBytes": 111516,
-            "gzipBytes": 22881
+            "file": "out/renderer/assets/ScanSheet-DYRjZoaG.js",
+            "rawBytes": 58392,
+            "gzipBytes": 15137
           },
           {
-            "file": "out/renderer/assets/AddDialog-C05tMvoD.js",
-            "rawBytes": 86226,
-            "gzipBytes": 18504
+            "file": "out/renderer/assets/AddDialog-NtolFeX8.js",
+            "rawBytes": 47058,
+            "gzipBytes": 12657
           },
           {
-            "file": "out/renderer/assets/SettingsSection-D1Ed9c6K.js",
-            "rawBytes": 49588,
-            "gzipBytes": 10845
+            "file": "out/renderer/assets/SettingsSection-BMmmv8m1.js",
+            "rawBytes": 25873,
+            "gzipBytes": 7161
           },
           {
-            "file": "out/renderer/assets/BatchSection-Cc2nvR8M.js",
-            "rawBytes": 34248,
-            "gzipBytes": 7728
+            "file": "out/renderer/assets/BatchSection-2K6d1dVi.js",
+            "rawBytes": 19150,
+            "gzipBytes": 5559
           },
           {
-            "file": "out/renderer/assets/Icon-DATDyKVb.js",
-            "rawBytes": 28965,
-            "gzipBytes": 6430
+            "file": "out/renderer/assets/DetailsPane-cgaxZ9Kv.js",
+            "rawBytes": 10061,
+            "gzipBytes": 3213
           },
           {
-            "file": "out/renderer/assets/BrowserExtensionSection-D58UMxqt.js",
-            "rawBytes": 10298,
-            "gzipBytes": 2383
+            "file": "out/renderer/assets/jsx-runtime-Am8b9ysO.js",
+            "rawBytes": 8276,
+            "gzipBytes": 3117
           },
           {
-            "file": "out/renderer/assets/scanner-ClrLKDIe.js",
-            "rawBytes": 7172,
-            "gzipBytes": 2903
+            "file": "out/renderer/assets/BrowserExtensionSection-r6eYQpm7.js",
+            "rawBytes": 6147,
+            "gzipBytes": 1892
           },
           {
-            "file": "out/renderer/assets/errors-CyqKbdEX.js",
-            "rawBytes": 456,
-            "gzipBytes": 297
+            "file": "out/renderer/assets/ShortcutsDialog-DGLZdGWo.js",
+            "rawBytes": 3569,
+            "gzipBytes": 1503
+          },
+          {
+            "file": "out/renderer/assets/scanner-DBI2YVAw.js",
+            "rawBytes": 3109,
+            "gzipBytes": 1511
+          },
+          {
+            "file": "out/renderer/assets/ContextMenu-1V3CmD2z.js",
+            "rawBytes": 2104,
+            "gzipBytes": 1047
+          },
+          {
+            "file": "out/renderer/assets/ConfirmDialog-BsKbZIJM.js",
+            "rawBytes": 1650,
+            "gzipBytes": 807
+          },
+          {
+            "file": "out/renderer/assets/format-BNa6ur6n.js",
+            "rawBytes": 1192,
+            "gzipBytes": 592
+          },
+          {
+            "file": "out/renderer/assets/useWheelScrollLock-CtcZPWt0.js",
+            "rawBytes": 904,
+            "gzipBytes": 538
+          },
+          {
+            "file": "out/renderer/assets/errors-BS8rp2Mh.js",
+            "rawBytes": 116,
+            "gzipBytes": 128
           }
         ],
-        "rawBytes": 1051955,
-        "gzipBytes": 216032
+        "rawBytes": 491364,
+        "gzipBytes": 145510
       },
       "rendererCss": {
         "files": [
           {
-            "file": "out/renderer/assets/index-CE-7ivpJ.css",
-            "rawBytes": 79571,
-            "gzipBytes": 11923
+            "file": "out/renderer/assets/index-CXXxKEdh.css",
+            "rawBytes": 63514,
+            "gzipBytes": 11212
           }
         ],
-        "rawBytes": 79571,
-        "gzipBytes": 11923
+        "rawBytes": 63514,
+        "gzipBytes": 11212
       },
       "rendererTotal": {
-        "rawBytes": 1131526,
-        "gzipBytes": 227955
+        "rawBytes": 554878,
+        "gzipBytes": 156722
       },
       "largestChunks": [
         {
           "file": "out/main/index.js",
-          "rawBytes": 1097945,
-          "gzipBytes": 276455
+          "rawBytes": 621060,
+          "gzipBytes": 179169
         },
         {
-          "file": "out/renderer/assets/index-BUMnDjdb.js",
-          "rawBytes": 723486,
-          "gzipBytes": 144061
+          "file": "out/renderer/assets/index-CP7WO2Eo.js",
+          "rawBytes": 303763,
+          "gzipBytes": 90648
         },
         {
-          "file": "out/renderer/assets/ScanSheet-wGQjwqbR.js",
-          "rawBytes": 111516,
-          "gzipBytes": 22881
+          "file": "out/renderer/assets/index-CXXxKEdh.css",
+          "rawBytes": 63514,
+          "gzipBytes": 11212
         },
         {
-          "file": "out/renderer/assets/AddDialog-C05tMvoD.js",
-          "rawBytes": 86226,
-          "gzipBytes": 18504
+          "file": "out/renderer/assets/ScanSheet-DYRjZoaG.js",
+          "rawBytes": 58392,
+          "gzipBytes": 15137
         },
         {
-          "file": "out/renderer/assets/index-CE-7ivpJ.css",
-          "rawBytes": 79571,
-          "gzipBytes": 11923
+          "file": "out/renderer/assets/AddDialog-NtolFeX8.js",
+          "rawBytes": 47058,
+          "gzipBytes": 12657
         },
         {
-          "file": "out/renderer/assets/SettingsSection-D1Ed9c6K.js",
-          "rawBytes": 49588,
-          "gzipBytes": 10845
+          "file": "out/renderer/assets/SettingsSection-BMmmv8m1.js",
+          "rawBytes": 25873,
+          "gzipBytes": 7161
         },
         {
-          "file": "out/renderer/assets/BatchSection-Cc2nvR8M.js",
-          "rawBytes": 34248,
-          "gzipBytes": 7728
+          "file": "out/renderer/assets/BatchSection-2K6d1dVi.js",
+          "rawBytes": 19150,
+          "gzipBytes": 5559
         },
         {
-          "file": "out/renderer/assets/Icon-DATDyKVb.js",
-          "rawBytes": 28965,
-          "gzipBytes": 6430
+          "file": "out/renderer/assets/DetailsPane-cgaxZ9Kv.js",
+          "rawBytes": 10061,
+          "gzipBytes": 3213
         },
         {
           "file": "out/preload/index.js",
-          "rawBytes": 10947,
-          "gzipBytes": 2016
+          "rawBytes": 8953,
+          "gzipBytes": 1917
         },
         {
-          "file": "out/renderer/assets/BrowserExtensionSection-D58UMxqt.js",
-          "rawBytes": 10298,
-          "gzipBytes": 2383
+          "file": "out/renderer/assets/jsx-runtime-Am8b9ysO.js",
+          "rawBytes": 8276,
+          "gzipBytes": 3117
         }
       ],
       "statsFile": null
