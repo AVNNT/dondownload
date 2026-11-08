@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 /**
- * Real packaged Electron UI verification. Launches a hidden production window
- * on an isolated smoke userData path, drives the renderer through CDP (not OS
- * input), and downloads a throttled loopback fixture through the real IPC,
- * DownloadManager and aria2 stack.
+ * Real packaged Electron UI verification. Launches the packaged app on an
+ * isolated userData path, drives the renderer through CDP (not OS input), and
+ * downloads a throttled loopback fixture through the real IPC, DownloadManager
+ * and aria2 stack. The window must be visible for delta snapshots, so the
+ * default run shows it; pass --headless only for static checks.
+ *
+ *   npm run build && npx electron-builder --win --dir --x64
+ *   node scripts/electron-ui-verification.mjs
  */
 import { createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdir, readFile, writeFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -22,17 +26,20 @@ const downloadDir = path.join(userData, 'smoke-downloads')
 const screenshotDir = path.join(runDir, 'screenshots')
 const cdpPort = 19335
 const startedAt = new Date().toISOString()
-const fileName = 'controlled-local-fixture.bin'
+// A normal (non-smoke) launch downloads into the real Downloads/DonDownload
+// folder, so a unique name avoids collisions and makes cleanup safe.
+const fileName = `controlled-${startedAt.replace(/[:.]/g, '-')}.bin`
+const fixturePath = `/${fileName}`
 const fileSize = 16 * 1024 * 1024
 const fixtureBytes = 64 * 1024
-const fixtureDelayMs = 700
+const fixtureDelayMs = 800
 
 await mkdir(screenshotDir, { recursive: true })
 
 function sleep(ms) { return delay(ms) }
 
 const fixtureServer = createServer(async (request, response) => {
-  if (request.url !== '/controlled.bin') {
+  if (request.url !== fixturePath) {
     response.writeHead(404).end('not found')
     return
   }
@@ -66,7 +73,7 @@ await new Promise((resolve, reject) => {
   fixtureServer.listen(0, '127.0.0.1', resolve)
 })
 const fixtureAddress = fixtureServer.address()
-const fixtureUrl = `http://127.0.0.1:${fixtureAddress.port}/controlled.bin`
+const fixtureUrl = `http://127.0.0.1:${fixtureAddress.port}${fixturePath}`
 
 class Cdp {
   constructor(url) {
@@ -145,27 +152,41 @@ function record(name, details) {
   console.log(`${name}: ${JSON.stringify(details)}`)
 }
 
+// Delta snapshots are suppressed while the window is hidden, so the live UI
+// checks need a visible window. Pass --headless only for static checks on a
+// machine without a desktop (progress/pause checks will not run there).
+const VISIBLE = !process.argv.includes('--headless')
+
 function appEnvironment() {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
-  env.DONDOWNLOAD_SMOKE_TEST = '1'
-  env.DONDOWNLOAD_INTERACTIVE_SMOKE = '1'
-  env.DONDOWNLOAD_SMOKE_RESULT_PATH = path.join(userData, 'smoke-result.json')
+  if (VISIBLE) {
+    // A normal launch (not the smoke harness) is the only way to get a visible
+    // window, and the delta publishers deliberately send nothing while hidden.
+    delete env.DONDOWNLOAD_SMOKE_TEST
+    delete env.DONDOWNLOAD_INTERACTIVE_SMOKE
+    delete env.DONDOWNLOAD_SMOKE_RESULT_PATH
+  } else {
+    env.DONDOWNLOAD_SMOKE_TEST = '1'
+    env.DONDOWNLOAD_INTERACTIVE_SMOKE = '1'
+    env.DONDOWNLOAD_SMOKE_RESULT_PATH = path.join(userData, 'smoke-result.json')
+  }
   for (const name of ['DONDOWNLOAD_ARIA2_PATH', 'DONDOWNLOAD_YTDLP_PATH', 'DONDOWNLOAD_FFMPEG_PATH', 'DONDOWNLOAD_FFPROBE_PATH', 'DONDOWNLOAD_DENO_PATH']) delete env[name]
   return env
 }
 
 async function startApp() {
   appProcess = spawn(appPath, [
-    '--smoke-test',
     `--user-data-dir=${userData}`,
     `--remote-debugging-port=${cdpPort}`,
     '--remote-debugging-address=127.0.0.1',
-    '--headless'
+    ...(VISIBLE ? [] : ['--smoke-test', '--headless'])
   ], {
     cwd: path.dirname(appPath),
     env: appEnvironment(),
-    windowsHide: true,
+    // windowsHide also keeps BrowserWindow.isVisible() false on Windows, which
+    // suppresses every delta snapshot; the visible mode must not set it.
+    windowsHide: !VISIBLE,
     stdio: ['ignore', 'ignore', 'pipe']
   })
   appProcess.stderr.on('data', chunk => {
@@ -228,7 +249,10 @@ async function setInput(selector, value) {
   const found = await cdp.evaluate(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)})
     if (!element) return false
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    const prototype = element instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value').set
     setter.call(element, ${serialized})
     element.dispatchEvent(new Event('input', { bubbles: true }))
     element.dispatchEvent(new Event('change', { bubbles: true }))
@@ -249,54 +273,65 @@ async function clickButton(label, scopeSelector = 'body') {
   if (!clicked) throw new Error(`Could not click enabled button: ${label}`)
 }
 
-async function selectPage(label) {
-  const selected = await cdp.evaluate(`(() => {
-    const button = [...document.querySelectorAll('nav[aria-label="Sections"] button')]
-      .find(item => item.innerText.trim() === ${JSON.stringify(label)})
-    button?.click()
-    return button !== undefined
+async function clickAriaLabel(label) {
+  const selector = `button[aria-label="${label}"]`
+  const clicked = await cdp.evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(selector)})
+    if (!button || button.disabled) return false
+    button.click()
+    return true
   })()`)
-  if (!selected) throw new Error(`Could not select ${label} page.`)
-  const pageText = {
-    Downloads: 'Quick add',
-    Media: 'MEDIA DOWNLOADS',
-    Batches: 'BATCH DOWNLOADS',
-    Settings: 'Download settings'
-  }[label]
+  if (!clicked) throw new Error(`Could not click button with aria-label: ${label}`)
+}
+
+async function openSettings() {
+  await clickAriaLabel('Settings')
   await waitFor(
-    () => cdp.evaluate(`({
-      current: document.querySelector('nav[aria-label="Sections"] [aria-current="page"]')?.innerText.trim(),
-      text: document.querySelector('main')?.innerText ?? ''
-    })`),
-    state => state?.current === label && state.text.toLowerCase().includes(pageText.toLowerCase())
+    () => cdp.evaluate(`document.querySelector('#settings-heading')?.innerText ?? ''`),
+    text => typeof text === 'string' && text.length > 0
   )
   await cdp.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
-  // Wait for the offscreen compositor to publish the React commit before
-  // capturing pixels; a DOM-ready read alone can race the last painted tab.
+  await sleep(200)
+}
+
+async function backToDownloads() {
+  const clicked = await cdp.evaluate(`(() => {
+    const button = document.querySelector('button[title="Back to downloads"]')
+    if (!button) return false
+    button.click()
+    return true
+  })()`)
+  if (!clicked) throw new Error('Could not click Back to downloads')
+  await waitFor(
+    () => cdp.evaluate(`document.querySelector('button[aria-label="Settings"]')?.getAttribute('aria-current') ?? null`),
+    value => value === null
+  )
+  await cdp.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
   await sleep(200)
 }
 
 async function scrollCardIntoView() {
   const found = await cdp.evaluate(`(() => {
-    const heading = [...document.querySelectorAll('article h3')]
-      .find(item => item.innerText.trim() === ${JSON.stringify(fileName)})
-    heading?.closest('article')?.scrollIntoView({ block: 'center', behavior: 'instant' })
-    return Boolean(heading)
+    const row = [...document.querySelectorAll('div[role="row"]')]
+      .find(item => item.querySelector('p')?.innerText.trim() === ${JSON.stringify(fileName)})
+    row?.scrollIntoView({ block: 'center', behavior: 'instant' })
+    return Boolean(row)
   })()`)
-  if (!found) throw new Error('Could not scroll the real download card into view.')
+  if (!found) throw new Error('Could not scroll the real download row into view.')
 }
 
 async function scrollSettingsIntoView() {
-  await cdp.evaluate(`document.querySelector('#settings-heading')?.closest('section')?.scrollIntoView({ block: 'start', behavior: 'instant' })`)
+  await cdp.evaluate(`document.querySelector('#settings-heading')?.scrollIntoView({ block: 'start', behavior: 'instant' })`)
 }
 
 async function cardState() {
   return cdp.evaluate(`(() => {
-    const card = [...document.querySelectorAll('article')]
-      .find(item => item.querySelector('h3')?.innerText.trim() === ${JSON.stringify(fileName)})
-    if (!card) return null
-    const progress = card.querySelector('[role="progressbar"]')
-    return { text: card.innerText, percent: Number(progress?.getAttribute('aria-valuenow') ?? 0) }
+    const row = [...document.querySelectorAll('div[role="row"]')]
+      .find(item => item.querySelector('p')?.innerText.trim() === ${JSON.stringify(fileName)})
+    if (!row) return null
+    const text = row.innerText
+    const percent = Number((text.match(/(\\d+)%/) || [0, '0'])[1])
+    return { text, percent }
   })()`)
 }
 
@@ -365,48 +400,41 @@ async function run() {
   await cdp.screenshot('01-quick-add.png')
   record('quick-add-screenshot', { path: path.join(screenshotDir, '01-quick-add.png'), actualElectron: true })
 
-  await setInput('#download-url', fixtureUrl)
-  await setInput('#download-filename', fileName)
-  await clickButton('Add download')
-  let active = await waitFor(cardState, state => state && state.percent > 0 && state.text.toLowerCase().includes('downloading'), 20_000)
+  await clickButton('Add')
+  await waitFor(
+    () => cdp.evaluate(`!!document.getElementById('add-links')`),
+    Boolean
+  )
+  await setInput('#add-links', fixtureUrl)
+  // The footer action turns into "Download" once the pasted URL is a direct file.
+  await waitFor(
+    () => cdp.evaluate(`[...document.querySelectorAll('button')].some(item => item.innerText.trim() === 'Download' && !item.disabled)`),
+    Boolean
+  )
+  await clickButton('Download')
+  let active = await waitFor(cardState, state => state && state.percent > 0, 20_000)
   await scrollCardIntoView()
   await cdp.screenshot('02-in-progress.png')
   record('real-download-progress', { filename: fileName, percent: active.percent, cardText: active.text.replace(/\s+/g, ' ').slice(0, 260), screenshot: path.join(screenshotDir, '02-in-progress.png') })
 
-  await clickButton('Pause', 'article')
+  await clickAriaLabel(`Pause ${fileName}`)
   const paused = await waitFor(cardState, state => state && state.text.toLowerCase().includes('paused'))
   await scrollCardIntoView()
   await cdp.screenshot('03-paused.png')
   record('pause-control', { status: 'paused', percent: paused.percent, screenshot: path.join(screenshotDir, '03-paused.png') })
 
-  await clickButton('Resume', 'article')
-  active = await waitFor(cardState, state => state && state.text.toLowerCase().includes('downloading'), 15_000)
+  await clickAriaLabel(`Resume ${fileName}`)
+  active = await waitFor(cardState, state => state && !state.text.toLowerCase().includes('paused'), 15_000)
   await waitFor(async () => cardState(), state => state && state.percent > paused.percent, 15_000)
   record('resume-control', { status: 'downloading', percentAfterResume: (await cardState()).percent })
 
-  await selectPage('Settings')
-  await scrollSettingsIntoView()
-  await cdp.screenshot('04-settings-before-change.png')
-  await setInput('input[aria-label="Global speed limit in MB per second"]', 0.262144)
-  await clickButton('Save settings')
-  const saveMessage = await waitFor(() => cdp.evaluate(`document.querySelector('section[aria-labelledby="settings-heading"] [role="status"]')?.innerText ?? ''`), text => text.includes('Settings saved and applied.'))
-  const liveLimit = await waitFor(getAria2Limit, value => value === '262144', 10_000)
-  await cdp.screenshot('05-settings-saved.png')
-  record('settings-live-engine', { uiMessage: saveMessage, aria2MaxOverallDownloadLimitBps: liveLimit, screenshot: path.join(screenshotDir, '05-settings-saved.png') })
-
-  await selectPage('Media')
-  await cdp.screenshot('08-media.png')
-  record('media-page-screenshot', { path: path.join(screenshotDir, '08-media.png'), actualElectron: true })
-  await selectPage('Batches')
-  await cdp.screenshot('09-batches.png')
-  record('batches-page-screenshot', { path: path.join(screenshotDir, '09-batches.png'), actualElectron: true })
-  await selectPage('Settings')
-  await cdp.screenshot('10-settings.png')
-  record('settings-page-screenshot', { path: path.join(screenshotDir, '10-settings.png'), actualElectron: true })
-  await selectPage('Downloads')
-
-  const completed = await waitFor(cardState, state => state && state.text.toLowerCase().includes('complete'), 120_000)
-  const outputPath = path.join(downloadDir, fileName)
+  const completed = await waitFor(cardState, state => state && state.text.toLowerCase().includes('done'), 180_000)
+  const completedSnapshot = await cdp.evaluate(`window.donDownload.getSnapshot()`)
+  const completedItem = completedSnapshot.ok
+    ? completedSnapshot.value.downloads.find(item => item.filename === fileName)
+    : null
+  if (!completedItem || typeof completedItem.filePath !== 'string') throw new Error(`Completed download has no file path: ${JSON.stringify(completedItem)}`)
+  const outputPath = completedItem.filePath
   const output = await readFile(outputPath)
   if (output.length !== fileSize) throw new Error(`Output size mismatch: expected ${fileSize}, got ${output.length}`)
   const expected = createHash('sha256')
@@ -422,6 +450,31 @@ async function run() {
   record('completed-output', { status: 'complete', percent: completed.percent, bytes: output.length, sha256: hash, path: outputPath, screenshot: path.join(screenshotDir, '06-completed.png') })
   const trace = await finishTrace()
   record('renderer-trace', trace)
+
+  // Settings are checked after the transfer so a live speed-limit change cannot
+  // interfere with the pause/resume timing.
+  await openSettings()
+  await scrollSettingsIntoView()
+  await cdp.screenshot('04-settings-before-change.png')
+  await setInput('input[aria-label="Global speed limit in MB per second"]', 0.262144)
+  // Settings auto-save; wait for the saved status and the live aria2 limit.
+  const saveMessage = await waitFor(
+    () => cdp.evaluate(`[...document.querySelectorAll('[aria-labelledby="settings-heading"] [role="status"]')].map(node => node.innerText.trim()).find(text => text.includes('Saved')) ?? ''`),
+    text => text.includes('Saved')
+  )
+  const liveLimit = await waitFor(getAria2Limit, value => value === '262144', 10_000)
+  await cdp.screenshot('05-settings-saved.png')
+  record('settings-live-engine', { uiMessage: saveMessage, aria2MaxOverallDownloadLimitBps: liveLimit, screenshot: path.join(screenshotDir, '05-settings-saved.png') })
+
+  await backToDownloads()
+  await clickAriaLabel('Batches')
+  await waitFor(
+    () => cdp.evaluate(`document.body.innerText.toLowerCase().includes('batch')`),
+    Boolean
+  )
+  await cdp.screenshot('09-batches.png')
+  record('batches-page-screenshot', { path: path.join(screenshotDir, '09-batches.png'), actualElectron: true })
+  await backToDownloads()
 
   const savedSettings = await cdp.evaluate(`window.donDownload.getSettings()`)
   if (!savedSettings.ok || savedSettings.value.globalSpeedLimitBps !== 262144) throw new Error('Settings IPC snapshot does not contain the saved global speed limit.')
@@ -439,6 +492,8 @@ async function run() {
   await scrollCardIntoView()
   await cdp.screenshot('07-relaunched-persisted.png')
   record('relaunch-persistence', { downloadStatus: persistedItem.status, globalSpeedLimitBps: persisted[1].value.globalSpeedLimitBps, aria2RestoredLimitBps: relaunchedLimit, screenshot: path.join(screenshotDir, '07-relaunched-persisted.png') })
+  // A normal launch downloads into the real Downloads folder; leave no artifact.
+  await rm(outputPath, { force: true }).catch(() => undefined)
 
   await cdp.command('Emulation.setDeviceMetricsOverride', {
     width: 375,
