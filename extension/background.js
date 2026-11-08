@@ -157,16 +157,24 @@ async function authorizeSniffTab(tabId, pageUrl) {
   if (!(await hasWebRequestPermission())) return false
 
   let allowed = false
+  let broadGranted = false
   if (settings.detectAllSites === true) {
     try {
-      allowed =
+      broadGranted =
         (await chrome.permissions.contains({
           origins: ['http://*/*', 'https://*/*']
         })) === true
     } catch {
-      allowed = false
+      broadGranted = false
     }
+  }
+  if (broadGranted) {
+    allowed = true
   } else {
+    // All-sites mode normally relies on the broad host grant. A managed
+    // browser (or a narrowed install) can withhold that grant while the user
+    // still allowed one exact origin, so fall back to the per-site grant and
+    // the overlay tab that was actually enabled there.
     const origin = originFromUrl(pageUrl)
     if (origin !== null) {
       const pattern = originToMatchPattern(origin)
