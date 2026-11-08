@@ -183,12 +183,13 @@ function serveBuffer(
   body: Buffer,
   filename: string,
   throttle: boolean,
-  range: RangeRequestRecord | null
+  range: RangeRequestRecord | null,
+  contentType = 'application/octet-stream'
 ): void {
   const start = range?.start ?? 0
   const end = range?.end ?? body.length - 1
   const headers: Record<string, string | number> = {
-    'content-type': 'application/octet-stream',
+    'content-type': contentType,
     'content-length': end - start + 1,
     'accept-ranges': 'bytes',
     'content-disposition': `attachment; filename="${filename}"`
@@ -240,6 +241,21 @@ function startHttpServer(
         'integration-sample.bin',
         false,
         null
+      )
+      return
+    }
+
+    if (pathname === '/captured-media') {
+      // Extensionless progressive media: the native bridge may queue this only
+      // with the exact response content type and total it observed.
+      serveBuffer(
+        request,
+        response,
+        smallPayload,
+        'captured-sample.mp4',
+        false,
+        null,
+        'video/mp4'
       )
       return
     }
@@ -534,7 +550,12 @@ runIntegration('aria2 HTTP integration', () => {
     // native bridge calls after its public-target check. Public/private target
     // rejection is covered separately with an injected DNS lookup; no target
     // validation is weakened here or in production.
-    const captured = parseCapturedSourceInput({ url, filename })
+    const captured = parseCapturedSourceInput({
+      url: httpServer.url('captured-media'),
+      filename,
+      contentType: 'video/mp4',
+      expectedBytes: payload.length
+    })
     const observedAt = Date.now()
     const added = await manager.add(captured)
     const acceptedMs = Date.now() - observedAt
