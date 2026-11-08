@@ -48,6 +48,17 @@ export default tseslint.config(
     }
   },
   {
+    // Browser/extension fakes in tests deliberately stand in for loosely typed
+    // platform objects (chrome.*, DOM nodes, postMessage envelopes). Typing
+    // every fake would add churn without improving the production types that
+    // those fakes are checked against at the call sites. Production and shared
+    // code keep the warning above.
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off'
+    }
+  },
+  {
     files: ['src/renderer/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     languageOptions: {

@@ -37,6 +37,12 @@ class FakeChild extends EventEmitter {
     super()
   }
 
+  // Narrow the EventEmitter overload to the MediaProcess listener shape so a
+  // FakeChild can stand in for the production child-process surface.
+  override on(event: string, listener: (...args: never[]) => void): this {
+    return super.on(event, listener as (...args: unknown[]) => void)
+  }
+
   kill(_signal?: NodeJS.Signals): boolean {
     this.killed = true
     return true

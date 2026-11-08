@@ -8,7 +8,8 @@ export interface MediaProcess {
   readonly pid?: number
   readonly stdout: NodeJS.ReadableStream | null
   readonly stderr: NodeJS.ReadableStream | null
-  on(event: string, listener: (...args: any[]) => void): unknown
+  // `never[]` accepts any concrete listener (contravariance) without `any`.
+  on(event: string, listener: (...args: never[]) => void): unknown
   kill(signal?: NodeJS.Signals): boolean
   unref?(): void
 }
@@ -48,7 +49,7 @@ export function terminateProcessTree(
 ): void {
   const pid = child.pid
   if (platform === 'win32' && typeof pid === 'number' && pid > 0) {
-    let killer: MediaProcess | null = null
+    let killer: MediaProcess | null
     try {
       killer = spawn(
         'taskkill',
