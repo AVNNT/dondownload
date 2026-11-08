@@ -531,14 +531,12 @@ export default function App(): JSX.Element {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  const downloads = snapshot?.downloads ?? []
-  const mediaJobs = mediaSnapshot?.jobs ?? []
   const aria2 = snapshot?.aria2 ?? null
   const isReady = aria2?.status === 'ready'
 
   const allRows = useMemo(
-    () => buildUnifiedRows(downloads, mediaJobs),
-    // Depend on the snapshot arrays themselves: the `?? []` fallbacks above are
+    () => buildUnifiedRows(snapshot?.downloads ?? [], mediaSnapshot?.jobs ?? []),
+    // Depend on the snapshot arrays themselves: inline `?? []` fallbacks are
     // new arrays on every render and would defeat the memo when data is absent.
     [snapshot?.downloads, mediaSnapshot?.jobs]
   )

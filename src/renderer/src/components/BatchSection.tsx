@@ -255,19 +255,19 @@ export function BatchSection({
   }, [runSnapshotAction, snapshot])
 
   const batches = snapshot?.batches ?? []
-  const counts = useMemo(
-    () => ({
-      all: batches.length,
-      running: batches.filter(
+  // The `?? []` fallback is a new array each render; depend on the snapshot
+  // array so the counts only recompute when the data actually changes.
+  const counts = useMemo(() => {
+    const rows = snapshot?.batches ?? []
+    return {
+      all: rows.length,
+      running: rows.filter(
         (batch) => batch.status === 'queued' || batch.status === 'running'
       ).length,
-      finished: batches.filter((batch) => FINISHED_STATUSES.has(batch.status))
+      finished: rows.filter((batch) => FINISHED_STATUSES.has(batch.status))
         .length
-    }),
-    // The `?? []` fallback is a new array each render; depend on the snapshot
-    // array so the counts only recompute when the data actually changes.
-    [snapshot?.batches]
-  )
+    }
+  }, [snapshot?.batches])
   const filteredBatches =
     filter === 'all'
       ? batches
