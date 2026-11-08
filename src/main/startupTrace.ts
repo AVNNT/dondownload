@@ -24,7 +24,6 @@ export function traceStartup(phase: string, durationMs?: number): void {
   const sinceStart = performance.now() - origin
   const duration =
     durationMs === undefined ? '' : ` (${durationMs.toFixed(1)}ms)`
-  // eslint-disable-next-line no-console -- explicit opt-in diagnostics only
   console.log(
     `[dondownload-startup] +${sinceStart.toFixed(1)}ms ${phase}${duration}`
   )

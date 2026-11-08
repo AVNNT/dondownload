@@ -264,7 +264,9 @@ export function BatchSection({
       finished: batches.filter((batch) => FINISHED_STATUSES.has(batch.status))
         .length
     }),
-    [batches]
+    // The `?? []` fallback is a new array each render; depend on the snapshot
+    // array so the counts only recompute when the data actually changes.
+    [snapshot?.batches]
   )
   const filteredBatches =
     filter === 'all'

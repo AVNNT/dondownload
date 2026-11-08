@@ -538,7 +538,9 @@ export default function App(): JSX.Element {
 
   const allRows = useMemo(
     () => buildUnifiedRows(downloads, mediaJobs),
-    [downloads, mediaJobs]
+    // Depend on the snapshot arrays themselves: the `?? []` fallbacks above are
+    // new arrays on every render and would defeat the memo when data is absent.
+    [snapshot?.downloads, mediaSnapshot?.jobs]
   )
   /** Rows the backend still lists, minus the ones hidden by a pending undo. */
   const listedRows = useMemo(() => {
