@@ -57,23 +57,33 @@ export class Aria2Client {
       throw new AppError('ARIA2_UNREACHABLE', 'Could not read the response from aria2.')
     }
 
-    if (!response.ok) {
-      throw new AppError('ARIA2_RPC_ERROR', `aria2 RPC failed with HTTP ${response.status}.`)
-    }
     if (text.length > 10_000_000) {
       throw new AppError('ARIA2_RPC_ERROR', 'aria2 returned an unexpectedly large response.')
     }
 
+    // aria2 reports JSON-RPC failures (for example an unknown GID) as HTTP 400
+    // with a JSON error body. The message is the only way to tell a lost
+    // transfer apart from a transport problem, so parse the body even when the
+    // HTTP status is an error, and fall back to the status only if it is not
+    // JSON.
     let payload: unknown
     try {
       payload = JSON.parse(text)
     } catch {
-      throw new AppError('ARIA2_RPC_ERROR', 'aria2 returned malformed JSON.')
+      throw new AppError(
+        'ARIA2_RPC_ERROR',
+        response.ok
+          ? 'aria2 returned malformed JSON.'
+          : `aria2 RPC failed with HTTP ${response.status}.`
+      )
     }
 
     const parsed = parseRpcResponse(payload)
     if (!parsed.ok) {
       throw new AppError('ARIA2_RPC_ERROR', parsed.message)
+    }
+    if (!response.ok) {
+      throw new AppError('ARIA2_RPC_ERROR', `aria2 RPC failed with HTTP ${response.status}.`)
     }
 
     return parsed.result as T
