@@ -826,7 +826,7 @@ export function installMediaSniffer(chromeApi, options = {}) {
     }
     const pageUrl = tab && typeof tab.url === 'string' ? tab.url : ''
     if (!/^https?:/i.test(pageUrl)) return
-    let allowed = false
+    let allowed
     try {
       allowed = (await authorizeTab(details.tabId, pageUrl)) === true
     } catch {

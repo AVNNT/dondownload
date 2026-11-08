@@ -383,7 +383,7 @@ function validateResponse(
     throw failure('A compressed response cannot prove the same file size.')
   }
 
-  let totalBytes: number | null = null
+  let totalBytes: number | null
   if (response.status === 206) {
     const range = parseContentRange(response.contentRange ?? undefined)
     // We sent Range: bytes=0-0. Refuse servers that return a different byte

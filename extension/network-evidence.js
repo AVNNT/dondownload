@@ -181,7 +181,7 @@ export function evaluateResponseEvidence(input, now = Date.now()) {
     return { ok: false, reason: 'manifest-or-unsupported-media' }
   }
 
-  let pathname = ''
+  let pathname
   try {
     pathname = new URL(url).pathname
   } catch {
@@ -206,8 +206,8 @@ export function evaluateResponseEvidence(input, now = Date.now()) {
   const range = parseContentRange(input.contentRange)
   const contentLength = parseContentLength(input.contentLength)
 
-  let totalBytes = null
-  let completeFile = false
+  let totalBytes
+  let completeFile
   if (input.statusCode === 206) {
     if (range === null || range.total === null) {
       return { ok: false, reason: 'range-total-unknown' }
@@ -535,7 +535,7 @@ export function installNetworkObservation(chromeApi, options = {}) {
     const mediaOrigin = originFromUrl(url)
     if (mediaOrigin === null) return null
 
-    let pageUrl = ''
+    let pageUrl
     try {
       const tab = await chromeApi.tabs.get(details.tabId)
       pageUrl = tab && typeof tab.url === 'string' ? tab.url : ''

@@ -428,7 +428,7 @@ function displayNameFor(
   }
   if (decoded.length > 0) return safeName(decoded, 'download')
 
-  let host = ''
+  let host: string
   try {
     host = new URL(input.url).hostname
   } catch {
@@ -445,7 +445,7 @@ function displayNameFor(
 export function classifyScanCandidate(
   input: ClassifyScanCandidateInput
 ): ClassifiedScanCandidate {
-  let hostname = ''
+  let hostname: string
   try {
     hostname = new URL(input.url).hostname.toLowerCase()
   } catch {

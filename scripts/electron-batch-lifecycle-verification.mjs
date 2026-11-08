@@ -228,8 +228,8 @@ let retryFile
 let goodFile
 let individualPartial
 let secondBatchId
-let groupPartialFiles = []
-let persistedStates = []
+let groupPartialFiles
+let persistedStates
 
 try {
   if (!(await stat(appPath).catch(() => null))) throw new Error(`Packaged app missing: ${appPath}`)

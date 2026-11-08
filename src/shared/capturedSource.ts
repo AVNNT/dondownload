@@ -179,7 +179,7 @@ export function parseCapturedSourceInput(value: unknown): CapturedSourceInput {
   const expectedBytes = readExpectedBytes(record)
   const requestHeaders = readRequestHeaders(record)
 
-  let pathname = ''
+  let pathname: string
   try {
     pathname = new URL(url).pathname
   } catch {

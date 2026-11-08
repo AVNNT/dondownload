@@ -424,7 +424,7 @@ async function run() {
   record('pause-control', { status: 'paused', percent: paused.percent, screenshot: path.join(screenshotDir, '03-paused.png') })
 
   await clickAriaLabel(`Resume ${fileName}`)
-  active = await waitFor(cardState, state => state && !state.text.toLowerCase().includes('paused'), 15_000)
+  await waitFor(cardState, state => state && !state.text.toLowerCase().includes('paused'), 15_000)
   await waitFor(async () => cardState(), state => state && state.percent > paused.percent, 15_000)
   record('resume-control', { status: 'downloading', percentAfterResume: (await cardState()).percent })
 

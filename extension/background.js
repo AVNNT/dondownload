@@ -123,7 +123,7 @@ async function hasWebRequestPermission() {
   ) {
     return webRequestPermissionCache.value
   }
-  let value = false
+  let value
   try {
     value =
       (await chrome.permissions.contains({ permissions: ['webRequest'] })) ===

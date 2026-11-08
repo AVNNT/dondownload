@@ -1414,7 +1414,7 @@ export class MediaJobsManager {
       return
     }
 
-    let sample: MediaMergeProgress | null = null
+    let sample: MediaMergeProgress | null
     try {
       sample = await readMergeProgress({
         dir: job.record.dir,

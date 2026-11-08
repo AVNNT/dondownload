@@ -631,7 +631,7 @@ export async function startNativeBridge(
       return
     }
 
-    let pathname = ''
+    let pathname: string
     try {
       pathname = new URL(input.url).pathname
     } catch {

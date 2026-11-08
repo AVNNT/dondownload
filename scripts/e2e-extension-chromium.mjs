@@ -432,7 +432,7 @@ async function ensureExtensionLoaded(browser, extensionPath, label) {
   try {
     return await findExtensionWorker(browser, { timeoutMs: 8000 })
   } catch (initialError) {
-    let extensionId = null
+    let extensionId
     try {
       const loaded = await browser.connection.send('Extensions.loadUnpacked', { path: extensionPath })
       extensionId = loaded && loaded.id
@@ -1651,7 +1651,7 @@ function resolveElectronExecutable(tempRoot) {
   const archiveName = `electron-v${version}-win32-x64.zip`
   const candidates = []
   const walk = (directory) => {
-    let entries = []
+    let entries
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true })
     } catch {
@@ -3681,7 +3681,7 @@ async function main() {
       await browserB.connection.send('Target.activateTarget', { targetId: page.targetId })
       const deadline = Date.now() + 15000
       let siteState = ''
-      let siteGranted = false
+      let siteGranted
       while (Date.now() < deadline) {
         siteState = await browserB.connection.evaluate(
           optionsB.sessionId,
@@ -3922,7 +3922,7 @@ async function main() {
     await scenario('3c', 'HLS master is sniffed as one entry with pickable variants and badge count', async () => {
       const page = await createPage(browserB, `${origin}/hls`)
       page.browser = browserB
-      let hlsTab = null
+      let hlsTab
       try {
         hlsTab = await waitForValue(
           () => tabIdForUrl(browserB, optionsB.sessionId, `${origin}/hls`),
@@ -3979,7 +3979,7 @@ async function main() {
         })()`,
         { userGesture: true }
       )
-      let panelText = ''
+      let panelText
       try {
         panelText = await waitForValue(
           () =>
@@ -4030,7 +4030,7 @@ async function main() {
       await enableOverlayForTab(browserB, optionsB.sessionId, origin, tab)
       await browserB.connection.send('Page.reload', {}, page.sessionId)
       await sleep(400)
-      let media = []
+      let media
       try {
         media = await waitForSniffed(
           browserB,
@@ -4121,7 +4121,7 @@ async function main() {
       downloadPage.browser = browserB
 
       const downloadDeadline = Date.now() + 30000
-      let items = []
+      let items
       let item = null
       let filePath = null
       let fileHash = null

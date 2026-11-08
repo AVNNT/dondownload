@@ -82,7 +82,7 @@ export function createToolchainResolver(
     const cached = impersonationSupport.get(key)
     if (cached !== undefined) return cached
 
-    let supported = false
+    let supported: boolean
     try {
       const result = await runCaptured(
         ytdlpPath,

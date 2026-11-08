@@ -134,7 +134,7 @@ export async function authorizeMediaSender(chromeApi, sender) {
     )
   }
 
-  let tracked = false
+  let tracked
   try {
     tracked = await isOverlayTabTracked(chromeApi, origin, tab.id)
   } catch {
@@ -149,7 +149,7 @@ export async function authorizeMediaSender(chromeApi, sender) {
 
   // The broad all-sites grant already covers this origin, so only a per-origin
   // page needs the exact pattern checked here.
-  let granted = false
+  let granted
   try {
     granted =
       allSites ||

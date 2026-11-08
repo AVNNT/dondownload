@@ -375,7 +375,7 @@ export function normalizeCapturedSource(rawUrl, rawFilename, rawEvidence) {
     return { ok: false, code: normalized.code, message: normalized.message }
   }
 
-  let path = ''
+  let path
   try {
     path = new URL(normalized.url).pathname
   } catch {
@@ -612,7 +612,7 @@ export function normalizeSniffedMedia(input) {
     if (!referer.ok) {
       return { ok: false, code: referer.code, message: referer.message }
     }
-    let refererOrigin = null
+    let refererOrigin
     let pageOrigin = null
     try {
       refererOrigin = new URL(referer.url).origin

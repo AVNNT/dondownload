@@ -238,7 +238,7 @@ async function enableUncached(chromeApi, origin, tabId) {
     )
   }
 
-  let granted = false
+  let granted
   try {
     granted = (await chromeApi.permissions.contains({ origins: [pattern] })) === true
   } catch {
@@ -734,7 +734,7 @@ export async function syncOverlayForTab(chromeApi, origin, tabId) {
     return failure('INVALID_ORIGIN', 'The page origin is not supported.')
   }
 
-  let granted = false
+  let granted
   try {
     granted = (await chromeApi.permissions.contains({ origins: [pattern] })) === true
   } catch {
@@ -1051,7 +1051,7 @@ export async function handleOverlayReady(chromeApi, message, sender) {
   const pattern = originToMatchPattern(origin)
   if (pattern === null) return false
 
-  let granted = false
+  let granted
   try {
     granted = (await chromeApi.permissions.contains({ origins: [pattern] })) === true
   } catch {

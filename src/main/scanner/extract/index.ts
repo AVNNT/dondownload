@@ -85,7 +85,7 @@ function attributeValue(
 function looksLikeCandidateUrl(url: string, nameHint: string | null): boolean {
   if (FILE_EXTENSION.test(url)) return true
   if (nameHint !== null && FILE_EXTENSION.test(nameHint)) return true
-  let hostname = ''
+  let hostname: string
   try {
     hostname = new URL(url).hostname.toLowerCase()
   } catch {

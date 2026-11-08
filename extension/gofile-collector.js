@@ -166,7 +166,7 @@
     })
     if (segments.length === 0) return null
     var last = segments[segments.length - 1]
-    var decoded = last
+    var decoded
     try {
       decoded = decodeURIComponent(last)
     } catch {

@@ -202,7 +202,7 @@ async function startFakeApp(
     const chunks: Buffer[] = []
     request.on('data', (chunk: Buffer) => chunks.push(chunk))
     request.on('end', () => {
-      let body: unknown = null
+      let body: unknown
       try {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       } catch {
