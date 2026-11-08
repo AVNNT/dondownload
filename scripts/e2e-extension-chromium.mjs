@@ -35,6 +35,9 @@ import { fileURLToPath } from 'node:url'
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(SCRIPT_DIR, '..')
 const EXTENSION_DIR = path.join(ROOT, 'extension')
+const EXTENSION_VERSION = JSON.parse(
+  fs.readFileSync(path.join(EXTENSION_DIR, 'manifest.json'), 'utf8')
+).version
 
 /**
  * Copy the extension for a harness browser WITHOUT its pinned manifest "key".
@@ -1826,14 +1829,13 @@ async function ensureHandoffEnabled(browser, optionsSession) {
   let setting = stored && stored[CAPTURE_SETTINGS_KEY]
   if (setting && setting.automaticFileHandoff === true) return setting
   // Turn takeover on through the real Allow button. One user gesture asks for
-  // downloads, cookies and the host permission together.
+  // downloads, cookies and the host permission together. Automatic hand-off
+  // itself is always on now, so there is no separate checkbox.
   await browser.connection.evaluate(
     optionsSession,
     `(() => {
       const button = document.getElementById('request-downloads')
       if (button && !button.hidden) button.click()
-      const checkbox = document.getElementById('automatic-handoff')
-      if (checkbox && !checkbox.disabled && !checkbox.checked) checkbox.click()
       return true
     })()`,
     { userGesture: true }
@@ -3510,12 +3512,20 @@ async function main() {
       )
       const workerErrors = describeErrors(browserA.connection, workerA.sessionId)
       const optionsErrors = describeErrors(browserA.connection, optionsA.sessionId)
-      const optionsReady = await browserA.connection.evaluate(
-        optionsA.sessionId,
-        'document.readyState === "complete" && !!document.getElementById("automatic-handoff")',
-        { userGesture: false }
-      )
-      const status = workerErrors.length === 0 && optionsErrors.length === 0 && version === '0.3.0' && optionsReady
+      // The options page loads its settings asynchronously; wait for the DOM
+      // rather than sampling it once during startup.
+      let optionsReady = false
+      const optionsDeadline = Date.now() + 5000
+      while (Date.now() < optionsDeadline) {
+        optionsReady = await browserA.connection.evaluate(
+          optionsA.sessionId,
+          'document.readyState === "complete" && !!document.getElementById("handoff-heading")',
+          { userGesture: false }
+        )
+        if (optionsReady) break
+        await sleep(100)
+      }
+      const status = workerErrors.length === 0 && optionsErrors.length === 0 && version === EXTENSION_VERSION && optionsReady
       return {
         status: status ? 'PASS' : 'FAIL',
         evidence: `worker target present; manifest version=${version}; options ready=${optionsReady}; worker errors=${workerErrors.length}; options errors=${optionsErrors.length}` +
@@ -3532,7 +3542,7 @@ async function main() {
           heading: document.getElementById('shortcut-heading') ? document.getElementById('shortcut-heading').textContent : null,
           shortcutText: (document.body.innerText.match(/chrome:\\/\\/extensions\\/shortcuts/) || [null])[0],
           commands: chrome.runtime.getManifest().commands,
-          optionsUi: Boolean(document.getElementById('automatic-handoff'))
+          optionsUi: Boolean(document.getElementById('handoff-heading'))
         }))()`,
         { userGesture: false }
       )
@@ -4084,26 +4094,15 @@ async function main() {
     })
 
     await scenario('5', 'No native host: hand-off leaves the browser download running and bytes match', async () => {
-      // Enable automatic hand-off through the real options checkbox.
-      const handoffClick = await browserB.connection.evaluate(
+      // Automatic hand-off is always on now, so there is no options checkbox
+      // to click; prove the persisted setting instead.
+      const storedSettings = await readStorage(
+        browserB,
         optionsB.sessionId,
-        `(() => {
-          const checkbox = document.getElementById('automatic-handoff')
-          const before = { disabled: checkbox.disabled, checked: checkbox.checked }
-          if (checkbox.disabled) return { before, clicked: false }
-          checkbox.click()
-          return { before, clicked: true }
-        })()`,
-        { userGesture: true }
+        'local',
+        CAPTURE_SETTINGS_KEY
       )
-      const settingsDeadline = Date.now() + 5000
-      let handoffSetting = null
-      while (Date.now() < settingsDeadline) {
-        const stored = await readStorage(browserB, optionsB.sessionId, 'local', CAPTURE_SETTINGS_KEY)
-        handoffSetting = stored && stored[CAPTURE_SETTINGS_KEY]
-        if (handoffSetting && handoffSetting.automaticFileHandoff === true) break
-        await sleep(150)
-      }
+      const handoffSetting = storedSettings && storedSettings[CAPTURE_SETTINGS_KEY]
 
       const nativeProbe = await browserB.connection.evaluate(
         optionsB.sessionId,
@@ -4151,7 +4150,6 @@ async function main() {
       const completed = item && item.state === 'complete'
       const attempted = Array.isArray(processed) && item && processed.includes(item.id)
       const ok =
-        handoffClick.clicked &&
         handoffSetting &&
         handoffSetting.automaticFileHandoff === true &&
         nativeProbe &&
@@ -4163,7 +4161,7 @@ async function main() {
         pending.length === 0
       return {
         status: ok ? 'PASS' : 'FAIL',
-        evidence: `options click=${JSON.stringify(handoffClick)}; setting=${JSON.stringify(handoffSetting && { automaticFileHandoff: handoffSetting.automaticFileHandoff })}; native probe=${JSON.stringify(nativeProbe)}; download=${JSON.stringify(item && { id: item.id, state: item.state, totalBytes: item.totalBytes, bytesReceived: item.bytesReceived, error: item.error })}; file=${filePath} (${fileSize}B); sha256=${fileHash} expected=${server.fileBinSha256} match=${hashOk}; handoff state processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
+        evidence: `handoff always on=${JSON.stringify(handoffSetting && { automaticFileHandoff: handoffSetting.automaticFileHandoff })}; native probe=${JSON.stringify(nativeProbe)}; download=${JSON.stringify(item && { id: item.id, state: item.state, totalBytes: item.totalBytes, bytesReceived: item.bytesReceived, error: item.error })}; file=${filePath} (${fileSize}B); sha256=${fileHash} expected=${server.fileBinSha256} match=${hashOk}; handoff state processed=${JSON.stringify(processed)} pending=${JSON.stringify(pending)}`
       }
     })
 
