@@ -681,51 +681,11 @@ const TableRow = memo(function TableRow({
       </div>
 
       <div role="gridcell" className="flex items-center justify-end gap-0.5">
-        {downloading ? (
-          <RowIconButton
-            icon="pause"
-            label={`Pause ${row.title}`}
-            onClick={() => onPauseRow(row)}
-            className="flex lg:group-hover:hidden"
-          />
-        ) : null}
-        {cancellable ? (
-          <RowIconButton
-            icon="stop"
-            label={`Cancel ${row.title}`}
-            onClick={() => onCancelRow(row)}
-            className="flex lg:group-hover:hidden"
-          />
-        ) : null}
-        {paused && !retryable ? (
-          <RowIconButton
-            icon="play"
-            label={`Resume ${row.title}`}
-            onClick={() => onResumeRow(row)}
-            className="flex lg:group-hover:hidden"
-          />
-        ) : null}
-        {resumable ? (
-          <button
-            type="button"
-            onClick={() => onResumeRow(row)}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5 lg:group-hover:hidden"
-          >
-            <Icon name="play" size={13} />
-            <span className="hidden lg:inline">Resume</span>
-          </button>
-        ) : null}
-        {retryable ? (
-          <button
-            type="button"
-            onClick={() => onRetryRow(row)}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5 lg:group-hover:hidden"
-          >
-            <Icon name="retry" size={14} />
-            <span className="hidden lg:inline">Retry</span>
-          </button>
-        ) : null}
-
+        {/*
+         * Secondary actions reveal on hover. They come before the quick
+         * actions so those stay pinned to the right edge and do not jump
+         * sideways when the extra icons appear.
+         */}
         <div className="hidden items-center gap-0.5 lg:group-hover:flex">
           {openable ? (
             <RowIconButton
@@ -753,6 +713,50 @@ const TableRow = memo(function TableRow({
             className="flex"
           />
         </div>
+        {downloading ? (
+          <RowIconButton
+            icon="pause"
+            label={`Pause ${row.title}`}
+            onClick={() => onPauseRow(row)}
+            className="flex"
+          />
+        ) : null}
+        {cancellable ? (
+          <RowIconButton
+            icon="stop"
+            label={`Cancel ${row.title}`}
+            onClick={() => onCancelRow(row)}
+            className="flex"
+          />
+        ) : null}
+        {paused && !retryable ? (
+          <RowIconButton
+            icon="play"
+            label={`Resume ${row.title}`}
+            onClick={() => onResumeRow(row)}
+            className="flex"
+          />
+        ) : null}
+        {resumable ? (
+          <button
+            type="button"
+            onClick={() => onResumeRow(row)}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5"
+          >
+            <Icon name="play" size={13} />
+            <span className="hidden lg:inline">Resume</span>
+          </button>
+        ) : null}
+        {retryable ? (
+          <button
+            type="button"
+            onClick={() => onRetryRow(row)}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[12px] font-semibold text-zinc-200 transition hover:bg-white/5"
+          >
+            <Icon name="retry" size={14} />
+            <span className="hidden lg:inline">Retry</span>
+          </button>
+        ) : null}
       </div>
     </div>
   )
