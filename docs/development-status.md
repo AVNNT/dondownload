@@ -16,10 +16,11 @@ under the updated boundary.
 ## Final UX polish checkpoint (2026-11-05)
 
 The media quality selector now defaults to a compact, quality-first view in both
-the extension overlay and desktop Media tab. It offers only available exact
-1080p/720p/480p/360p tiers, plus the best available audio-only option; each row
-shows the server-reported exact/estimated size or “Size unknown”. The separate
-Best quality action uses the verified best-video opaque option ID. Expandable
+the extension overlay and desktop Media tab. It offers every available verified
+height (no 1080p ceiling), plus the best available audio-only option; each row
+shows the server-reported exact/estimated size or “Size unknown”. The verified
+best-video opaque option is selected by default, and output format is
+Auto/MP4/MKV/WebM with incompatible containers disabled. Expandable
 Advanced format options retain every verified option and show codec, container,
 resolution, FPS, merge detail and size. Selections remain tied to the exact
 opaque option ID across the compact and advanced views; nothing is queued by

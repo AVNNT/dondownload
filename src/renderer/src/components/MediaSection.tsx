@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import type { ApiResult, AppErrorInfo } from '@shared/types'
 import type {
   MediaAnalysis,
+  MediaOutputFormat,
   MediaSnapshot,
   MediaToolState
 } from '@shared/media'
@@ -20,6 +21,7 @@ export function MediaSection(): JSX.Element {
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
   const [pendingJobId, setPendingJobId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const analysisRequestRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -65,6 +67,7 @@ export function MediaSection(): JSX.Element {
 
   const handleAnalyze = useCallback(
     async (url: string): Promise<ApiResult<MediaAnalysis>> => {
+      const request = ++analysisRequestRef.current
       setAnalyzing(true)
       setAnalysis(null)
       setAnalysisError(null)
@@ -72,6 +75,7 @@ export function MediaSection(): JSX.Element {
 
       try {
         const result = await window.donDownload.analyzeMedia({ url })
+        if (request !== analysisRequestRef.current) return result
         if (result.ok) {
           setAnalysis(result.value)
           setNow(Date.now())
@@ -81,17 +85,30 @@ export function MediaSection(): JSX.Element {
         return result
       } catch (error) {
         const info = rejectedToError(error)
-        setAnalysisError(info)
+        if (request === analysisRequestRef.current) {
+          setAnalysisError(info)
+        }
         return { ok: false, error: info }
       } finally {
-        setAnalyzing(false)
+        if (request === analysisRequestRef.current) setAnalyzing(false)
       }
     },
     []
   )
 
+  const handleUrlChange = useCallback((): void => {
+    // A changed URL invalidates any request already in flight, even before the
+    // debounce for the new URL fires.
+    analysisRequestRef.current += 1
+    setAnalyzing(false)
+  }, [])
+
   const handleQueue = useCallback(
-    async (optionId: string, maxBytes: number | null): Promise<void> => {
+    async (
+      optionId: string,
+      maxBytes: number | null,
+      outputFormat: MediaOutputFormat
+    ): Promise<void> => {
       if (!analysis || queuingOptionId !== null) return
 
       setQueuingOptionId(optionId)
@@ -102,6 +119,7 @@ export function MediaSection(): JSX.Element {
         const result = await window.donDownload.queueMedia({
           analysisId: analysis.analysisId,
           optionId,
+          outputFormat,
           ...(maxBytes === null ? {} : { maxBytes })
         })
         if (result.ok) {
@@ -214,14 +232,17 @@ export function MediaSection(): JSX.Element {
         notice={notice}
         now={now}
         onAnalyze={handleAnalyze}
-        onQueue={(optionId, maxBytes) => {
-          void handleQueue(optionId, maxBytes)
+        onQueue={(optionId, maxBytes, outputFormat) => {
+          void handleQueue(optionId, maxBytes, outputFormat)
         }}
         onClear={() => {
+          analysisRequestRef.current += 1
+          setAnalyzing(false)
           setAnalysis(null)
           setAnalysisError(null)
           setNotice(null)
         }}
+        onUrlChange={handleUrlChange}
       />
 
       {jobs.length === 0 ? (

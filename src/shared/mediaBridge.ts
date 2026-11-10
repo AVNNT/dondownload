@@ -7,6 +7,7 @@ import {
   type AnalyzeMediaInput,
   type MediaAnalysis,
   type MediaJob,
+  type MediaOutputFormat,
   type MediaQueueInput
 } from './media'
 import { ValidationError } from './validation'
@@ -54,6 +55,7 @@ export type NativeMediaRequest =
       analysisId: string
       optionId: string
       force?: true
+      outputFormat?: MediaOutputFormat
     }
   | { type: 'media-status'; jobId: string }
   | { type: 'cancel-media'; jobId: string }
@@ -140,7 +142,10 @@ function queueFields(record: Record<string, unknown>): MediaQueueRequest {
   return parseMediaQueueInput({
     analysisId: record.analysisId,
     optionId: record.optionId,
-    ...(force ? { force } : {})
+    ...(force ? { force } : {}),
+    ...(record.outputFormat === undefined
+      ? {}
+      : { outputFormat: record.outputFormat })
   })
 }
 
@@ -157,7 +162,7 @@ export function parseMediaAnalyzeRequest(value: unknown): MediaAnalyzeRequest {
 
 export function parseMediaQueueRequest(value: unknown): MediaQueueRequest {
   const record = asPlainObject(value)
-  exactKeys(record, ['analysisId', 'optionId'], ['force'])
+  exactKeys(record, ['analysisId', 'optionId'], ['force', 'outputFormat'])
   return queueFields(record)
 }
 
@@ -183,7 +188,10 @@ export function parseNativeMediaRequest(value: unknown): NativeMediaRequest {
       exactKeys(record, ['type', 'url'])
       return { type, ...analyzeFields(record) }
     case 'queue-media':
-      exactKeys(record, ['type', 'analysisId', 'optionId'], ['force'])
+      exactKeys(record, ['type', 'analysisId', 'optionId'], [
+        'force',
+        'outputFormat'
+      ])
       return { type, ...queueFields(record) }
     case 'media-status':
       exactKeys(record, ['type', 'jobId'])

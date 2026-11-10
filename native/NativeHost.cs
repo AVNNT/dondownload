@@ -16,7 +16,7 @@ using System.Web.Script.Serialization;
 // Supported requests:
 //   { "type": "queue-download", "url": "https://example.com/file.zip" }
 //   { "type": "analyze-media", "url": "https://example.com/watch?v=1" }
-//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true }
+//   { "type": "queue-media", "analysisId": "...", "optionId": "...", "force": true, "outputFormat": "mkv" }
 //   { "type": "media-status", "jobId": "..." }
 //   { "type": "cancel-media", "jobId": "..." }
 //
@@ -266,11 +266,11 @@ internal static class NativeHost
         if (!HasExactKeys(
             message,
             new string[] { "type", "analysisId", "optionId" },
-            new string[] { "force" }))
+            new string[] { "force", "outputFormat" }))
         {
             return Error(
                 "INVALID_MESSAGE",
-                "Only queue-media messages containing type, analysisId, optionId and an optional force flag are accepted.");
+                "Only queue-media messages containing type, analysisId, optionId, an optional force flag and an optional output format are accepted.");
         }
 
         if (!IsOpaqueMediaId(message["analysisId"]))
@@ -293,12 +293,31 @@ internal static class NativeHost
             force = (bool)forceValue;
         }
 
+        string outputFormat = null;
+        if (message.ContainsKey("outputFormat"))
+        {
+            outputFormat = message["outputFormat"] as string;
+            if (outputFormat != "auto" &&
+                outputFormat != "mp4" &&
+                outputFormat != "mkv" &&
+                outputFormat != "webm")
+            {
+                return Error(
+                    "INVALID_MESSAGE",
+                    "The output format must be auto, mp4, mkv or webm.");
+            }
+        }
+
         Dictionary<string, object> body = new Dictionary<string, object>();
         body.Add("analysisId", (string)message["analysisId"]);
         body.Add("optionId", (string)message["optionId"]);
         if (force)
         {
             body.Add("force", true);
+        }
+        if (outputFormat != null)
+        {
+            body.Add("outputFormat", outputFormat);
         }
         return ForwardMedia(QueueMediaOperation, "/queue-media", body);
     }
@@ -787,7 +806,7 @@ internal static class NativeHost
                     "requiresMerge",
                     "filesizeBytes"
                 },
-                new string[] { "estimatedBytes", "sizeIsEstimate" }))
+                new string[] { "estimatedBytes", "sizeIsEstimate", "outputFormats" }))
         {
             return false;
         }
@@ -824,6 +843,33 @@ internal static class NativeHost
             !(record["sizeIsEstimate"] is bool))
         {
             return false;
+        }
+        if (record.ContainsKey("outputFormats"))
+        {
+            object[] outputFormats = record["outputFormats"] as object[];
+            if (outputFormats == null ||
+                outputFormats.Length == 0 ||
+                outputFormats.Length > 4)
+            {
+                return false;
+            }
+            System.Collections.Generic.HashSet<string> seen =
+                new System.Collections.Generic.HashSet<string>();
+            foreach (object value in outputFormats)
+            {
+                string format = value as string;
+                if (format != "auto" &&
+                    format != "mp4" &&
+                    format != "mkv" &&
+                    format != "webm")
+                {
+                    return false;
+                }
+                if (!seen.Add(format))
+                {
+                    return false;
+                }
+            }
         }
 
         if (record["fps"] != null)

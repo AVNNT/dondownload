@@ -181,6 +181,7 @@
   }
 
   var OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
+  var MEDIA_OUTPUT_FORMATS = ['auto', 'mp4', 'mkv', 'webm']
 
   function isNonEmptyText(value, maximum) {
     return (
@@ -212,6 +213,21 @@
     }
     if (!isNonEmptyText(option.label, 240)) return null
     if (!isNonEmptyText(option.container, 32)) return null
+    var outputFormats
+    if (Array.isArray(option.outputFormats) && option.outputFormats.length > 0) {
+      outputFormats = []
+      for (var outputIndex = 0; outputIndex < option.outputFormats.length; outputIndex += 1) {
+        var outputFormat = option.outputFormats[outputIndex]
+        if (
+          MEDIA_OUTPUT_FORMATS.indexOf(outputFormat) === -1 ||
+          outputFormats.indexOf(outputFormat) !== -1
+        ) {
+          outputFormats = undefined
+          break
+        }
+        outputFormats.push(outputFormat)
+      }
+    }
     return {
       kind: option.kind,
       optionId: option.optionId,
@@ -233,7 +249,8 @@
         0,
         Number.MAX_SAFE_INTEGER
       ),
-      sizeIsEstimate: option.sizeIsEstimate === true
+      sizeIsEstimate: option.sizeIsEstimate === true,
+      outputFormats: outputFormats
     }
   }
 
@@ -290,6 +307,86 @@
       bestVideoOptionId: referencedKind(analysis.bestVideoOptionId, 'video'),
       bestAudioOptionId: referencedKind(analysis.bestAudioOptionId, 'audio')
     }
+  }
+
+  function optionById(view, optionId) {
+    if (!view || typeof optionId !== 'string') return null
+    for (var index = 0; index < view.options.length; index += 1) {
+      if (view.options[index].optionId === optionId) return view.options[index]
+    }
+    return null
+  }
+
+  /**
+   * Same quality model as the desktop Media tab: every verified height,
+   * highest first, plus the best audio-only option. There is no 1080p ceiling.
+   */
+  function mediaQualityChoices(view) {
+    if (!view || !Array.isArray(view.videoOptions)) return []
+    var best = optionById(view, view.bestVideoOptionId)
+    var byHeight = Object.create(null)
+    var heights = []
+    for (var index = 0; index < view.videoOptions.length; index += 1) {
+      var option = view.videoOptions[index]
+      if (option.hasAudio !== true || typeof option.height !== 'number') continue
+      if (byHeight[option.height]) continue
+      byHeight[option.height] = option
+      heights.push(option.height)
+    }
+    if (
+      best &&
+      typeof best.height === 'number' &&
+      byHeight[best.height]
+    ) {
+      byHeight[best.height] = best
+    }
+    heights.sort(function (left, right) {
+      return right - left
+    })
+
+    var choices = []
+    for (var heightIndex = 0; heightIndex < heights.length; heightIndex += 1) {
+      var height = heights[heightIndex]
+      var heightOption = byHeight[height]
+      choices.push({
+        option: heightOption,
+        label: height + 'p',
+        best: best ? heightOption.optionId === best.optionId : false
+      })
+    }
+    if (best && typeof best.height !== 'number') {
+      choices.unshift({ option: best, label: 'Best', best: true })
+    }
+    var audio = optionById(view, view.bestAudioOptionId)
+    if (audio && audio.kind === 'audio') {
+      choices.push({ option: audio, label: 'Audio only', best: false })
+    }
+    return choices
+  }
+
+  function outputFormatsForOption(option) {
+    if (
+      option &&
+      Array.isArray(option.outputFormats) &&
+      option.outputFormats.length > 0
+    ) {
+      return option.outputFormats.slice()
+    }
+    // Older payloads have no output list. Auto and MKV are always safe
+    // remux/merge targets; never advertise a container we cannot prove.
+    return ['auto', 'mkv']
+  }
+
+  function normalizeOutputFormat(option, requested) {
+    var formats = outputFormatsForOption(option)
+    return formats.indexOf(requested) === -1 ? 'auto' : requested
+  }
+
+  function mediaOutputFormatLabel(format) {
+    if (format === 'mp4') return 'MP4'
+    if (format === 'mkv') return 'MKV'
+    if (format === 'webm') return 'WebM'
+    return 'Auto'
   }
 
   function formatBytes(value) {
@@ -489,6 +586,10 @@
     isOverlayShortcut: isOverlayShortcut,
     initialMediaState: initialMediaState,
     mediaView: mediaView,
+    mediaQualityChoices: mediaQualityChoices,
+    outputFormatsForOption: outputFormatsForOption,
+    normalizeOutputFormat: normalizeOutputFormat,
+    mediaOutputFormatLabel: mediaOutputFormatLabel,
     formatMediaSize: formatMediaSize,
     describeMediaDetails: describeMediaDetails,
     describeMediaSize: describeMediaSize,

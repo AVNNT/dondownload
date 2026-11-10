@@ -38,6 +38,8 @@
     qualityList: null,
     simpleFieldset: null,
     advancedQualityList: null,
+    outputFormatSelect: null,
+    outputFormatControl: null,
     queueSelectedButton: null,
     disableButton: null,
     status: null,
@@ -54,7 +56,8 @@
       queueToken: 0,
       status: 'idle',
       analysis: null,
-      selectedOptionId: null
+      selectedOptionId: null,
+      outputFormat: 'auto'
     }
   }
 
@@ -176,6 +179,19 @@
     '.quality-detail { color: #8b8b93; display: block; font-size: 10.5px; margin-top: 1px; }',
     '.quality-size { color: #d4d4d8; display: block; font-size: 10.5px; font-variant-numeric: tabular-nums; margin-top: 1px; }',
     '.quality-size.unknown { color: #8b8b93; }',
+    '.output-format { color: #d4d4d8; display: block; font-size: 11.5px; margin: 8px 0 0; }',
+    '.output-format select {',
+    '  background: #0b0b0c;',
+    '  border: 1px solid #2c2c2c;',
+    '  border-radius: 6px;',
+    '  color: #f4f4f5;',
+    '  display: block;',
+    '  font: inherit;',
+    '  font-size: 11.5px;',
+    '  margin-top: 4px;',
+    '  padding: 5px 6px;',
+    '  width: 100%;',
+    '}',
     '.advanced-qualities { border-top: 1px solid #1f1f23; margin-top: 10px; padding-top: 8px; }',
     '.advanced-qualities summary { color: #d4d4d8; cursor: pointer; font-size: 11px; font-weight: 600; }',
     '.options { border-top: 1px solid #1f1f23; margin-top: 12px; padding-top: 10px; }',
@@ -346,6 +362,17 @@
     qualityFieldset.appendChild(createElement('legend', '', 'All verified formats'))
     var advancedQualityList = createElement('div', 'advanced-quality-list')
     qualityFieldset.appendChild(advancedQualityList)
+    var outputFormatControl = createElement('label', 'output-format', 'Output format')
+    var outputFormatSelect = document.createElement('select')
+    outputFormatSelect.className = 'output-format-select'
+    ;['auto', 'mp4', 'mkv', 'webm'].forEach(function (format) {
+      var outputOption = document.createElement('option')
+      outputOption.value = format
+      outputOption.textContent = core.mediaOutputFormatLabel(format)
+      outputFormatSelect.appendChild(outputOption)
+    })
+    outputFormatControl.appendChild(outputFormatSelect)
+
     var queueSelectedButton = createElement(
       'button',
       'action secondary queue-selected',
@@ -358,6 +385,7 @@
     mediaResults.appendChild(mediaMeta)
     mediaResults.appendChild(mediaActions)
     mediaResults.appendChild(simpleFieldset)
+    mediaResults.appendChild(outputFormatControl)
     mediaResults.appendChild(advancedDetails)
     mediaResults.appendChild(queueSelectedButton)
 
@@ -405,6 +433,8 @@
     state.qualityList = qualityList
     state.simpleFieldset = simpleFieldset
     state.advancedQualityList = advancedQualityList
+    state.outputFormatControl = outputFormatControl
+    state.outputFormatSelect = outputFormatSelect
     state.queueSelectedButton = queueSelectedButton
     state.disableButton = disableButton
     state.status = status
@@ -447,6 +477,11 @@
     on(queueSelectedButton, 'click', function (event) {
       stopPlayerEvent(event)
       queueOption(state.media.selectedOptionId)
+    })
+    on(outputFormatSelect, 'change', function (event) {
+      stopPropagationOnly(event)
+      state.media.outputFormat = outputFormatSelect.value
+      updateOutputFormatControl()
     })
     on(disableButton, 'click', function (event) {
       stopPlayerEvent(event)
@@ -502,6 +537,7 @@
   function resetMediaResults() {
     state.media.analysis = null
     state.media.selectedOptionId = null
+    state.media.outputFormat = 'auto'
     if (state.mediaResults) state.mediaResults.hidden = true
     if (state.mediaTitle) state.mediaTitle.textContent = ''
     if (state.mediaMeta) state.mediaMeta.textContent = ''
@@ -515,13 +551,41 @@
     }
     if (state.qualityFieldset) state.qualityFieldset.hidden = true
     if (state.simpleFieldset) state.simpleFieldset.hidden = true
+    if (state.outputFormatControl) state.outputFormatControl.hidden = true
+    if (state.outputFormatSelect) state.outputFormatSelect.value = 'auto'
     if (state.queueSelectedButton) state.queueSelectedButton.disabled = true
     clearQualityList()
+  }
+
+  function updateOutputFormatControl() {
+    if (!state.outputFormatControl || !state.outputFormatSelect) return
+    var option = optionById(state.media.analysis, state.media.selectedOptionId)
+    if (!option) {
+      state.outputFormatControl.hidden = true
+      return
+    }
+    state.outputFormatControl.hidden = false
+    var formats = core.outputFormatsForOption(option)
+    state.media.outputFormat = core.normalizeOutputFormat(
+      option,
+      state.media.outputFormat
+    )
+    state.outputFormatSelect.value = state.media.outputFormat
+    for (
+      var index = 0;
+      index < state.outputFormatSelect.children.length;
+      index += 1
+    ) {
+      var outputOption = state.outputFormatSelect.children[index]
+      if (!outputOption || typeof outputOption.value !== 'string') continue
+      outputOption.disabled = formats.indexOf(outputOption.value) === -1
+    }
   }
 
   function setMediaBusy(busy) {
     if (state.panel) state.panel.setAttribute('aria-busy', busy ? 'true' : 'false')
     if (state.analyzeButton) state.analyzeButton.disabled = busy
+    if (state.outputFormatSelect) state.outputFormatSelect.disabled = busy
     if (state.bestVideoButton) state.bestVideoButton.disabled = busy
     if (state.bestAudioButton) state.bestAudioButton.disabled = busy
     if (state.queueSelectedButton) {
@@ -546,9 +610,8 @@
       return
     }
     state.qualityFieldset.hidden = false
-    if (state.simpleFieldset) {
-      state.simpleFieldset.hidden = view.videoOptions.length === 0 && view.audioOptions.length === 0
-    }
+    var simpleChoices = core.mediaQualityChoices(view)
+    if (state.simpleFieldset) state.simpleFieldset.hidden = simpleChoices.length === 0
 
     var initialId =
       view.bestVideoOptionId !== null
@@ -584,28 +647,22 @@
       bindQualityOption(input, option)
     }
 
-    ;[1080, 720, 480, 360].forEach(function (height) {
-      var option = view.videoOptions.find(function (candidate) {
-        return candidate.hasAudio && candidate.height === height
-      })
-      if (option) {
-        appendOption(
-          state.qualityList,
-          option,
-          height + 'p',
-          false,
-          'dondownload-simple-quality'
-        )
-      }
+    simpleChoices.forEach(function (choice) {
+      appendOption(
+        state.qualityList,
+        choice.option,
+        choice.label,
+        false,
+        'dondownload-simple-quality'
+      )
     })
-    var audioOption = optionById(view, view.bestAudioOptionId)
-    if (audioOption) appendOption(state.qualityList, audioOption, 'Audio only', false, 'dondownload-simple-quality')
 
     view.options.forEach(function (option) {
       appendOption(state.advancedQualityList, option, null, true, 'dondownload-advanced-quality')
     })
 
     if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
+    updateOutputFormatControl()
   }
 
   function bindQualityOption(input, option) {
@@ -622,11 +679,13 @@
         }
       })
       if (state.queueSelectedButton) state.queueSelectedButton.disabled = false
+      updateOutputFormatControl()
     })
   }
 
   function renderAnalysis(view) {
     state.media.analysis = view
+    if (state.analyzeButton) state.analyzeButton.hidden = true
     if (!state.mediaResults) return
     state.mediaResults.hidden = false
     if (state.mediaTitle) state.mediaTitle.textContent = view.title
@@ -671,11 +730,19 @@
 
   function analyzePage() {
     if (state.disabled || !state.analyzeButton) return
-    if (state.media.status === 'analyzing' || state.media.status === 'queueing') return
+    if (
+      state.media.status === 'analyzing' ||
+      state.media.status === 'queueing' ||
+      state.media.status === 'analyzed' ||
+      state.media.status === 'queued'
+    ) {
+      return
+    }
 
     var token = ++state.media.token
     state.media.status = 'analyzing'
     resetMediaResults()
+    state.analyzeButton.hidden = false
     state.analyzeButton.textContent = copy.analyzingLabel
     setMediaBusy(true)
     setMediaStatus('Analyzing this page…', 'info')
@@ -746,7 +813,11 @@
       {
         type: MEDIA_QUEUE,
         analysisId: analysis.analysisId,
-        optionId: option.optionId
+        optionId: option.optionId,
+        outputFormat: core.normalizeOutputFormat(
+          option,
+          state.media.outputFormat
+        )
       },
       function (response, runtimeError) {
         if (token !== state.media.queueToken || state.disabled) return
@@ -842,6 +913,9 @@
     state.panelOpen = true
     state.trigger.setAttribute('aria-expanded', 'true')
     position()
+    // The capture UI has been explicitly opened, so this is the first and only
+    // automatic analysis. Hovering, injection and page load never analyze.
+    analyzePage()
     if (typeof state.panel.focus === 'function') {
       try {
         state.panel.focus({ preventScroll: true })
@@ -1039,6 +1113,8 @@
     state.qualityList = null
     state.simpleFieldset = null
     state.advancedQualityList = null
+    state.outputFormatControl = null
+    state.outputFormatSelect = null
     state.queueSelectedButton = null
     state.disableButton = null
     state.status = null

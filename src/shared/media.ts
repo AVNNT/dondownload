@@ -12,6 +12,20 @@ import { ValidationError } from './validation'
 export const MEDIA_FORMAT_KINDS = ['video', 'audio'] as const
 export type MediaFormatKind = (typeof MEDIA_FORMAT_KINDS)[number]
 
+/**
+ * User-selectable output container. `auto` keeps yt-dlp's natural container;
+ * the others are remux/merge targets only and never imply transcoding.
+ */
+export const MEDIA_OUTPUT_FORMATS = ['auto', 'mp4', 'mkv', 'webm'] as const
+export type MediaOutputFormat = (typeof MEDIA_OUTPUT_FORMATS)[number]
+
+export function isMediaOutputFormat(value: unknown): value is MediaOutputFormat {
+  return (
+    typeof value === 'string' &&
+    (MEDIA_OUTPUT_FORMATS as readonly string[]).includes(value)
+  )
+}
+
 export const MEDIA_JOB_STATUSES = [
   'queued',
   'analyzing',
@@ -92,6 +106,11 @@ export interface MediaFormatOption {
    * rather than an exact single-file size.
    */
   sizeIsEstimate?: boolean
+  /**
+   * Containers this exact option can produce without transcoding, including
+   * `auto`. New analyses always send this; older payloads may omit it.
+   */
+  outputFormats?: MediaOutputFormat[]
 }
 
 export interface MediaAnalysis {
@@ -150,6 +169,8 @@ export interface MediaQueueInput {
   force?: true
   /** Optional hard maximum final output size in bytes; internal persistence only. */
   maxBytes?: number | null
+  /** Requested output container; omitted means `auto`. */
+  outputFormat?: MediaOutputFormat
 }
 
 /**
@@ -174,6 +195,8 @@ export interface MediaJobRecord {
   /** Final output path needed for recovery. Not exposed through MediaJob. */
   filePath: string | null
   maxBytes?: number | null
+  /** In-memory queue choice; persisted rows without it mean `auto`. */
+  outputFormat?: MediaOutputFormat
   createdAt: number
   updatedAt: number
   completedAt: number | null
@@ -392,7 +415,7 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
       'requiresMerge',
       'filesizeBytes'
     ],
-    ['estimatedBytes', 'sizeIsEstimate']
+    ['estimatedBytes', 'sizeIsEstimate', 'outputFormats']
   )
 
   const kind = record.kind
@@ -434,6 +457,25 @@ export function parseMediaFormatOption(value: unknown): MediaFormatOption {
   if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
     throw new ValidationError('An audio option must not contain video.')
   }
+
+  if (record.outputFormats !== undefined) {
+    if (
+      !Array.isArray(record.outputFormats) ||
+      record.outputFormats.length === 0 ||
+      record.outputFormats.length > MEDIA_OUTPUT_FORMATS.length
+    ) {
+      throw new ValidationError('Invalid media output formats.')
+    }
+    const outputFormats: MediaOutputFormat[] = []
+    for (const value of record.outputFormats) {
+      if (!isMediaOutputFormat(value) || outputFormats.includes(value)) {
+        throw new ValidationError('Invalid media output formats.')
+      }
+      outputFormats.push(value)
+    }
+    option.outputFormats = outputFormats
+  }
+
   return option
 }
 
@@ -599,7 +641,11 @@ export function parseAnalyzeMediaInput(value: unknown): AnalyzeMediaInput {
 
 export function parseMediaQueueInput(value: unknown): MediaQueueInput {
   const record = asPlainObject(value)
-  exactKeys(record, ['analysisId', 'optionId'], ['force', 'maxBytes'])
+  exactKeys(record, ['analysisId', 'optionId'], [
+    'force',
+    'maxBytes',
+    'outputFormat'
+  ])
 
   let force = false
   if (Object.prototype.hasOwnProperty.call(record, 'force')) {
@@ -615,10 +661,19 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     else maxBytes = integerValue(record, 'maxBytes', 1, 100 * 1024 ** 3)
   }
 
+  let outputFormat: MediaOutputFormat | undefined
+  if (Object.prototype.hasOwnProperty.call(record, 'outputFormat')) {
+    if (!isMediaOutputFormat(record.outputFormat)) {
+      throw new ValidationError('Choose a supported output format.')
+    }
+    outputFormat = record.outputFormat
+  }
+
   return {
     analysisId: parseMediaAnalysisId(record.analysisId),
     optionId: parseMediaOptionId(record.optionId),
     ...(force ? { force: true as const } : {}),
-    ...(maxBytes === undefined ? {} : { maxBytes })
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+    ...(outputFormat === undefined ? {} : { outputFormat })
   }
 }

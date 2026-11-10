@@ -431,6 +431,15 @@ describe('MediaJobsManager analysis and opaque selection', () => {
       })
     ).rejects.toMatchObject({ code: 'MEDIA_OPTION_INVALID' })
 
+    // An incompatible container is rejected, never replaced by another one.
+    await expect(
+      harness.manager.queueMedia({
+        analysisId: first.analysisId,
+        optionId: VIDEO_OPTION_ID,
+        outputFormat: 'webm'
+      })
+    ).rejects.toMatchObject({ code: 'MEDIA_OUTPUT_FORMAT_UNSUPPORTED' })
+
     // A second analysis exists, but its option is not valid for the first one.
     const otherOptionId = 'option_other_0123456789'
     engine.analysis = analysisFixture({

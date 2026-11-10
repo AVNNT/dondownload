@@ -79,7 +79,12 @@ export interface DownloadArgumentInput {
   outputTemplate: string
   /** Set only for a verified separate-stream merge. */
   mergeOutputFormat: string | null
-  /** Verified FFmpeg executable when a separate-stream merge is selected. */
+  /**
+   * Set only for a verified single-stream container change. This is a remux,
+   * never a transcode; yt-dlp fails if the streams cannot fit the container.
+   */
+  remuxOutputFormat?: string | null
+  /** Verified FFmpeg executable when a merge/remux is selected. */
   ffmpegLocation: string | null
   /** Optional explicitly located Deno runtime for yt-dlp's JS challenges. */
   denoPath?: string | null
@@ -124,9 +129,20 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
     // timestamps before the merge step. Only merge jobs need this: a download
     // without post-processing has no muxer step that can fail this way.
     args.push('--hls-prefer-ffmpeg')
-    if (input.ffmpegLocation !== null) {
-      args.push('--ffmpeg-location', input.ffmpegLocation)
-    }
+  }
+  if (input.remuxOutputFormat !== undefined && input.remuxOutputFormat !== null) {
+    // `--remux-video` changes the container only. yt-dlp reports a normal
+    // post-processing error if the codecs cannot be muxed, so there is no
+    // silent fallback, quality change or transcode.
+    args.push('--remux-video', input.remuxOutputFormat)
+  }
+  if (
+    (input.mergeOutputFormat !== null ||
+      (input.remuxOutputFormat !== undefined &&
+        input.remuxOutputFormat !== null)) &&
+    input.ffmpegLocation !== null
+  ) {
+    args.push('--ffmpeg-location', input.ffmpegLocation)
   }
 
   args.push('--', input.sourceUrl)

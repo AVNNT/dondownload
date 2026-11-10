@@ -740,6 +740,94 @@ describe('media engine format mapping', () => {
     expect(analysis.options.some((option) => option.height === 1080)).toBe(false)
   })
 
+  it('uses exact size, then approximation, then a safe bitrate-duration estimate', async () => {
+    const harness = await makeHarness({
+      analyzeJson: sampleInfo({
+        duration: 100,
+        formats: [
+          {
+            format_id: '137',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'none',
+            width: 1920,
+            height: 1080,
+            tbr: 800
+          },
+          {
+            format_id: '140',
+            ext: 'm4a',
+            vcodec: 'none',
+            acodec: 'mp4a.40.2',
+            abr: 128,
+            tbr: 128
+          },
+          {
+            format_id: '22',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a.40.2',
+            width: 1280,
+            height: 720,
+            tbr: 9_999_999,
+            filesize_approx: 900
+          },
+          {
+            format_id: '18',
+            ext: 'mp4',
+            vcodec: 'avc1',
+            acodec: 'mp4a.40.2',
+            width: 640,
+            height: 360,
+            tbr: 9_999_999,
+            filesize: 500,
+            filesize_approx: 700
+          }
+        ]
+      })
+    })
+
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const merged = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 1080
+    )
+    // 1080 video: 800 kbps * 100 s / 8 = 10,000,000 bytes.
+    // Audio: 128 kbps * 100 s / 8 = 1,600,000 bytes.
+    expect(merged).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 11_600_000,
+      sizeIsEstimate: true,
+      requiresMerge: true
+    })
+
+    const approximate = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 720
+    )
+    expect(approximate).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 900,
+      sizeIsEstimate: true
+    })
+
+    const exact = analysis.options.find(
+      (option) => option.kind === 'video' && option.height === 360
+    )
+    expect(exact).toMatchObject({
+      filesizeBytes: 500,
+      estimatedBytes: 500,
+      sizeIsEstimate: false
+    })
+
+    const audio = analysis.options.find(
+      (option) => option.optionId === analysis.bestAudioOptionId
+    )
+    expect(audio).toMatchObject({
+      filesizeBytes: null,
+      estimatedBytes: 1_600_000,
+      sizeIsEstimate: true
+    })
+  })
+
   it('does not invent a merged display size when one stream size is missing', async () => {
     const harness = await makeHarness({
       analyzeJson: sampleInfo({

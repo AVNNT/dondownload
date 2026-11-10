@@ -1,16 +1,28 @@
 import {
   useEffect,
+  useRef,
   useState,
-  type FormEvent,
   type JSX
 } from 'react'
 import type { ApiResult, AppErrorInfo } from '@shared/types'
 import {
-  normalizeMediaSourceUrl,
+  MEDIA_OUTPUT_FORMATS,
   type MediaAnalysis,
-  type MediaFormatOption
+  type MediaFormatOption,
+  type MediaOutputFormat
 } from '@shared/media'
+import {
+  defaultMediaQualityOptionId,
+  mediaQualityChoices,
+  normalizeOutputFormat,
+  outputFormatsForOption
+} from '@shared/mediaWorkflow'
+import { mediaOutputFormatLabel } from '@shared/mediaOutput'
 import { MEDIA_SIZE_UNKNOWN, formatMediaSize } from '@shared/format'
+import {
+  createMediaAutoAnalyzer,
+  type MediaAutoAnalyzer
+} from '../mediaAutoAnalyze'
 
 interface MediaAnalyzerProps {
   analysis: MediaAnalysis | null
@@ -21,8 +33,13 @@ interface MediaAnalyzerProps {
   notice: string | null
   now: number
   onAnalyze: (url: string) => Promise<ApiResult<MediaAnalysis>>
-  onQueue: (optionId: string, maxBytes: number | null) => void
+  onQueue: (
+    optionId: string,
+    maxBytes: number | null,
+    outputFormat: MediaOutputFormat
+  ) => void
   onClear: () => void
+  onUrlChange?: (rawUrl: string) => void
 }
 
 export function MediaAnalyzer({
@@ -35,94 +52,67 @@ export function MediaAnalyzer({
   now,
   onAnalyze,
   onQueue,
-  onClear
+  onClear,
+  onUrlChange
 }: MediaAnalyzerProps): JSX.Element {
   const [url, setUrl] = useState('')
-  const [localError, setLocalError] = useState<string | null>(null)
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
+  const [outputFormat, setOutputFormat] = useState<MediaOutputFormat>('auto')
   const [maxMiB, setMaxMiB] = useState('')
-  const maxBytes = maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
-  const validMaxBytes = maxBytes === null || (Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 100 * 1024 ** 3)
+  const analyzerRef = useRef<MediaAutoAnalyzer | null>(null)
 
-  const videoOptions = analysis
-    ? analysis.options.filter(
-        (option) => option.kind === 'video' && option.hasAudio
-      )
-    : []
-  const audioOptions = analysis
-    ? analysis.options.filter((option) => option.kind === 'audio')
-    : []
-  const simpleOptions = [
-    ...[1080, 720, 480, 360].flatMap((height) => {
-      const option = videoOptions.find((candidate) => candidate.height === height)
-      return option ? [{ option, label: `${height}p` }] : []
-    }),
-    ...(analysis && analysis.bestAudioOptionId
-      ? analysis.options
-          .filter((option) => option.optionId === analysis.bestAudioOptionId && option.kind === 'audio')
-          .map((option) => ({ option, label: 'Audio only' }))
-      : [])
-  ]
+  const maxBytes =
+    maxMiB.trim() === '' ? null : Math.round(Number(maxMiB) * 1024 * 1024)
+  const validMaxBytes =
+    maxBytes === null ||
+    (Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 100 * 1024 ** 3)
 
-  const bestVideo = analysis
-    ? (analysis.options.find(
-        (option) =>
-          option.optionId === analysis.bestVideoOptionId &&
-          option.kind === 'video' &&
-          option.hasAudio
-      ) ?? null)
-    : null
-  const bestAudio = analysis
-    ? (analysis.options.find(
-        (option) =>
-          option.optionId === analysis.bestAudioOptionId &&
-          option.kind === 'audio'
-      ) ?? null)
-    : null
+  useEffect(() => {
+    const analyzer = createMediaAutoAnalyzer({
+      analyze: onAnalyze,
+      onResult: (result) => {
+        if (result.ok) setUrl('')
+      }
+    })
+    analyzerRef.current = analyzer
+    return () => {
+      analyzer.cancel()
+      analyzerRef.current = null
+    }
+  }, [onAnalyze])
 
-  const defaultOptionId =
-    bestVideo?.optionId ??
-    bestAudio?.optionId ??
-    videoOptions[0]?.optionId ??
-    audioOptions[0]?.optionId ??
-    null
+  useEffect(() => {
+    onUrlChange?.(url)
+    analyzerRef.current?.update(url)
+  }, [url, onUrlChange])
+
+  const qualityChoices = analysis ? mediaQualityChoices(analysis) : []
+  const defaultOptionId = analysis ? defaultMediaQualityOptionId(analysis) : null
   const analysisId = analysis?.analysisId ?? null
 
   useEffect(() => {
     setSelectedOptionId(defaultOptionId)
-  }, [analysisId])
+    setOutputFormat('auto')
+  }, [analysisId, defaultOptionId])
 
   const expired = analysis !== null && now >= analysis.expiresAt
   const remainingMs = analysis ? Math.max(0, analysis.expiresAt - now) : 0
   const selectedOption =
     analysis?.options.find((option) => option.optionId === selectedOptionId) ??
     null
+
+  useEffect(() => {
+    setOutputFormat((current) => normalizeOutputFormat(selectedOption, current))
+  }, [selectedOption])
+
+  const availableOutputFormats = outputFormatsForOption(selectedOption)
+  const selectedOutputFormat = normalizeOutputFormat(
+    selectedOption,
+    outputFormat
+  )
   const busy = analyzing || queuingOptionId !== null
   const controlsDisabled = disabled || expired
-
-  async function handleSubmit(
-    event: FormEvent<HTMLFormElement>
-  ): Promise<void> {
-    event.preventDefault()
-    setLocalError(null)
-
-    let normalizedUrl: string
-    try {
-      normalizedUrl = normalizeMediaSourceUrl(url)
-    } catch (submitError) {
-      setLocalError(
-        submitError instanceof Error
-          ? submitError.message
-          : 'Enter a valid media page URL.'
-      )
-      return
-    }
-
-    const result = await onAnalyze(normalizedUrl)
-    if (result.ok) {
-      setUrl('')
-    }
-  }
+  const typingUrl = url.trim().length > 0
 
   function optionRow(
     option: MediaFormatOption,
@@ -131,8 +121,8 @@ export function MediaAnalyzer({
     radioName = 'media-advanced-option'
   ): JSX.Element {
     const checked = option.optionId === selectedOptionId
-    const isBestVideo = option.optionId === bestVideo?.optionId
-    const isBestAudio = option.optionId === bestAudio?.optionId
+    const best = analysis?.bestVideoOptionId === option.optionId
+    const bestAudio = analysis?.bestAudioOptionId === option.optionId
     const sizeLabel = formatMediaSize(
       option.estimatedBytes ?? option.filesizeBytes,
       option.sizeIsEstimate === true
@@ -161,9 +151,9 @@ export function MediaAnalyzer({
             <span className="truncate text-xs font-medium text-zinc-200">
               {displayLabel}
             </span>
-            {isBestVideo || isBestAudio ? (
+            {best || bestAudio ? (
               <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
-                {isBestVideo ? 'Best' : 'Best audio'}
+                {best ? 'Best' : 'Best audio'}
               </span>
             ) : null}
             <span
@@ -185,24 +175,19 @@ export function MediaAnalyzer({
   }
 
   return (
-    <form
-      onSubmit={(event) => {
-        void handleSubmit(event)
-      }}
-      className="rounded-xl border border-white/10 surface-card p-3"
-    >
+    <div className="rounded-xl border border-white/10 surface-card p-3">
       <div className="flex items-center justify-between gap-3">
         <label
           htmlFor="media-url"
           className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-400"
         >
-          Analyze media page
+          Media page URL
         </label>
         <span className="shrink-0 text-[10px] text-zinc-500">
-          Video and audio
+          {analyzing ? 'Analyzing…' : 'Video and audio'}
         </span>
       </div>
-      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+      <div className="mt-2">
         <input
           id="media-url"
           type="text"
@@ -210,42 +195,20 @@ export function MediaAnalyzer({
           autoComplete="off"
           spellCheck={false}
           value={url}
-          onChange={(event) => {
-            setUrl(event.target.value)
-            setLocalError(null)
-          }}
+          onChange={(event) => setUrl(event.target.value)}
           placeholder="https://example.com/watch?v=..."
-          disabled={disabled || analyzing}
-          aria-describedby={
-            localError ? 'media-url-help media-url-error' : 'media-url-help'
-          }
-          aria-invalid={localError !== null}
-          className="h-10 min-w-0 flex-1 rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
+          disabled={disabled}
+          aria-busy={analyzing}
+          className="h-10 w-full rounded-lg border border-white/10 surface-input px-3 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/15 disabled:opacity-50"
         />
-        <button
-          type="submit"
-          disabled={disabled || busy || url.trim().length === 0}
-          className="h-10 shrink-0 rounded-lg bg-emerald-400 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-        >
-          {analyzing ? 'Analyzing…' : 'Analyze'}
-        </button>
       </div>
-      <p
-        id="media-url-help"
-        className="mt-2 px-1 text-[11px] leading-5 text-zinc-400"
-      >
-        Analyzes the page first. Nothing downloads until you pick an option.
+      <p className="mt-2 px-1 text-[11px] leading-5 text-zinc-400">
+        {analyzing
+          ? 'Reading the page metadata… nothing is queued until you choose an option.'
+          : typingUrl
+            ? 'Analysis starts automatically when the address is complete.'
+            : 'Paste a supported media page URL. It is analyzed automatically; a download is queued only when you choose one.'}
       </p>
-
-      {localError ? (
-        <p
-          id="media-url-error"
-          role="alert"
-          className="mt-2 px-1 text-[11px] leading-5 text-red-400"
-        >
-          {localError}
-        </p>
-      ) : null}
 
       {error ? (
         <div
@@ -279,14 +242,14 @@ export function MediaAnalyzer({
                   ? `${formatDuration(analysis.durationSeconds)} · `
                   : ''}
                 {expired
-                  ? 'Analysis expired — analyze the page again to download.'
+                  ? 'Analysis expired – analyze the page again to download.'
                   : `Analysis expires in ${formatRemaining(remainingMs)}`}
               </p>
             </div>
             <button
               type="button"
               onClick={() => {
-                setLocalError(null)
+                setUrl('')
                 onClear()
               }}
               disabled={busy}
@@ -296,85 +259,93 @@ export function MediaAnalyzer({
             </button>
           </div>
 
-          {bestVideo ? (
-            <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-3">
-              <button
-                type="button"
-                onClick={() => onQueue(bestVideo.optionId, maxBytes)}
-                disabled={controlsDisabled || busy || !validMaxBytes}
-                className="h-9 w-full rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 sm:w-auto"
-              >
-                {queuingOptionId === bestVideo.optionId
-                  ? 'Queueing…'
-                  : 'Best quality · download'}
-              </button>
-              <p className="mt-2 text-[11px] leading-5 text-zinc-400">
-                {bestVideo.label}
-                <span className="text-zinc-500">
-                  {' '}
-                  · includes audio
-                  {bestVideo.requiresMerge ? ' · merges video + audio' : ''}
-                  {' · '}
-                  {formatMediaSize(
-                    bestVideo.estimatedBytes ?? bestVideo.filesizeBytes,
-                    bestVideo.sizeIsEstimate === true
-                  )}
-                </span>
-              </p>
-            </div>
+          {qualityChoices.length > 0 ? (
+            <fieldset className="mt-4">
+              <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
+                Quality
+              </legend>
+              <div className="mt-2 space-y-1.5">
+                {qualityChoices.map(({ option, label }) =>
+                  optionRow(option, label, false, 'media-quality-option')
+                )}
+              </div>
+            </fieldset>
           ) : (
             <p className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-200">
-              {audioOptions.length > 0
-                ? 'No video with audio is available for this page. Choose an audio-only option below.'
-                : 'No downloadable option with audio is available for this page.'}
+              No downloadable option with audio is available for this page.
             </p>
           )}
 
-          {simpleOptions.length > 0 ? (
-            <fieldset className="mt-4">
+          {selectedOption ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="block text-[10px] font-medium text-zinc-400">
+                Output format
+                <select
+                  value={selectedOutputFormat}
+                  onChange={(event) =>
+                    setOutputFormat(event.target.value as MediaOutputFormat)
+                  }
+                  disabled={controlsDisabled || busy}
+                  className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100"
+                >
+                  {MEDIA_OUTPUT_FORMATS.map((format) => (
+                    <option
+                      key={format}
+                      value={format}
+                      disabled={!availableOutputFormats.includes(format)}
+                    >
+                      {mediaOutputFormatLabel(format)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex flex-col justify-end">
+                <p className="text-[10px] leading-4 text-zinc-500">
+                  Only compatible containers are enabled. Auto keeps the
+                  original container; other choices remux or merge without
+                  transcoding.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          <details className="mt-4 border-t border-white/10 pt-3">
+            <summary className="cursor-pointer text-[11px] font-medium text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+              Advanced details
+            </summary>
+            <fieldset className="mt-3">
               <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-                Simple quality
+                All verified formats ({analysis.options.length})
               </legend>
-              <div className="mt-2 space-y-1.5">
-                  {simpleOptions.map(({ option, label }) =>
-                    optionRow(option, label, false, 'media-simple-option')
-                  )}
+              <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto pr-1">
+                {analysis.options.map((option) => optionRow(option))}
               </div>
             </fieldset>
-          ) : null}
-
-          {analysis.options.length > 0 ? (
-            <details className="mt-4 border-t border-white/10 pt-3">
-              <summary className="cursor-pointer text-[11px] font-medium text-zinc-300 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
-                Advanced format options ({analysis.options.length})
-              </summary>
-              <fieldset className="mt-3">
-                <legend className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-                  Verified formats
-                </legend>
-                <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto pr-1">
-                  {analysis.options.map((option) => optionRow(option))}
-                </div>
-              </fieldset>
-            </details>
-          ) : null}
-
-          <label className="mt-4 block max-w-xs text-[10px] font-medium text-zinc-400">
-            Optional maximum output size per job (MiB)
-            <input
-              type="number"
-              min="0.01"
-              max="102400"
-              step="0.01"
-              value={maxMiB}
-              onChange={event => setMaxMiB(event.target.value)}
-              placeholder="No limit"
-              aria-invalid={!validMaxBytes}
-              className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600"
-            />
-            <span className="mt-1 block font-normal text-zinc-500">Unknown and merged sizes are checked during transfer and against the final output. A brief network overrun is possible while progress catches up.</span>
-          </label>
-          {!validMaxBytes ? <p role="alert" className="mt-1 text-[10px] text-red-300">Enter a positive limit up to 102400 MiB.</p> : null}
+            <label className="mt-3 block max-w-xs text-[10px] font-medium text-zinc-400">
+              Optional maximum output size per job (MiB)
+              <input
+                type="number"
+                min="0.01"
+                max="102400"
+                step="0.01"
+                value={maxMiB}
+                onChange={(event) => setMaxMiB(event.target.value)}
+                placeholder="No limit"
+                aria-invalid={!validMaxBytes}
+                className="mt-1 block h-9 w-full rounded-lg border border-white/10 surface-input px-2 text-xs text-zinc-100 placeholder:text-zinc-600"
+              />
+              <span className="mt-1 block font-normal text-zinc-500">
+                Unknown and merged sizes are checked during transfer and against
+                the final output. A brief network overrun is possible while
+                progress catches up.
+              </span>
+            </label>
+            {!validMaxBytes ? (
+              <p role="alert" className="mt-1 text-[10px] text-red-300">
+                Enter a positive limit up to 102400 MiB.
+              </p>
+            ) : null}
+          </details>
 
           {selectedOption ? (
             <div className="mt-4 flex flex-col gap-2 border-t border-white/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
@@ -382,6 +353,8 @@ export function MediaAnalyzer({
                 Selected:{' '}
                 <span className="text-zinc-300">{selectedOption.label}</span>
                 <span className="text-zinc-500">
+                  {' · '}
+                  {mediaOutputFormatLabel(selectedOutputFormat)}
                   {' · '}
                   {formatMediaSize(
                     selectedOption.estimatedBytes ?? selectedOption.filesizeBytes,
@@ -391,9 +364,15 @@ export function MediaAnalyzer({
               </p>
               <button
                 type="button"
-                onClick={() => onQueue(selectedOption.optionId, maxBytes)}
+                onClick={() =>
+                  onQueue(
+                    selectedOption.optionId,
+                    maxBytes,
+                    selectedOutputFormat
+                  )
+                }
                 disabled={controlsDisabled || busy || !validMaxBytes}
-                className="h-9 shrink-0 rounded-lg border border-emerald-400/30 px-4 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-40"
+                className="h-9 shrink-0 rounded-lg bg-emerald-400 px-4 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
               >
                 {queuingOptionId === selectedOption.optionId
                   ? 'Queueing…'
@@ -413,7 +392,7 @@ export function MediaAnalyzer({
           ) : null}
         </div>
       ) : null}
-    </form>
+    </div>
   )
 }
 

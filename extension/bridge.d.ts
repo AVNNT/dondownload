@@ -22,6 +22,7 @@ export interface MediaFormatOptionDto {
   filesizeBytes: number | null
   estimatedBytes?: number | null
   sizeIsEstimate?: boolean
+  outputFormats?: string[]
 }
 
 export interface MediaAnalysisDto {

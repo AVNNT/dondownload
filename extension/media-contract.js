@@ -8,6 +8,12 @@ export const MAX_MEDIA_TITLE_LENGTH = 500
 export const MAX_MEDIA_LABEL_LENGTH = 240
 export const MAX_MEDIA_ERROR_LENGTH = 2000
 export const MAX_MEDIA_OPTIONS = 200
+export const MEDIA_OUTPUT_FORMATS = Object.freeze([
+  'auto',
+  'mp4',
+  'mkv',
+  'webm'
+])
 
 const OPAQUE_MEDIA_ID = /^[A-Za-z0-9_-]{1,128}$/
 const CONTAINER = /^[a-z0-9][a-z0-9._+-]{0,31}$/
@@ -121,6 +127,12 @@ export function isOpaqueMediaId(value) {
   return typeof value === 'string' && OPAQUE_MEDIA_ID.test(value)
 }
 
+export function isMediaOutputFormat(value) {
+  return (
+    typeof value === 'string' && MEDIA_OUTPUT_FORMATS.indexOf(value) !== -1
+  )
+}
+
 export function parseMediaFormatOption(value) {
   const record = asPlainObject(value)
   exactKeys(
@@ -139,7 +151,7 @@ export function parseMediaFormatOption(value) {
       'requiresMerge',
       'filesizeBytes'
     ],
-    ['estimatedBytes', 'sizeIsEstimate']
+    ['estimatedBytes', 'sizeIsEstimate', 'outputFormats']
   )
 
   const kind = record.kind
@@ -180,6 +192,24 @@ export function parseMediaFormatOption(value) {
   }
   if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
     fail('An audio option must not contain video.')
+  }
+
+  if (record.outputFormats !== undefined) {
+    if (
+      !Array.isArray(record.outputFormats) ||
+      record.outputFormats.length === 0 ||
+      record.outputFormats.length > MEDIA_OUTPUT_FORMATS.length
+    ) {
+      fail('Invalid media output formats.')
+    }
+    const outputFormats = []
+    for (const value of record.outputFormats) {
+      if (!isMediaOutputFormat(value) || outputFormats.indexOf(value) !== -1) {
+        fail('Invalid media output formats.')
+      }
+      outputFormats.push(value)
+    }
+    option.outputFormats = outputFormats
   }
   return option
 }

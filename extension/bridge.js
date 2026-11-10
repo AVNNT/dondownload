@@ -3,7 +3,11 @@
 // the same native host. This module never touches the browser's downloads API,
 // network interception, cookies, tabs history or page DOM.
 
-import { isOpaqueMediaId, parseMediaBridgeResponse } from './media-contract.js'
+import {
+  isMediaOutputFormat,
+  isOpaqueMediaId,
+  parseMediaBridgeResponse
+} from './media-contract.js'
 
 export const NATIVE_HOST = 'com.dondownload.bridge'
 export const QUEUE_MESSAGE_TYPE = 'queue-download'
@@ -251,6 +255,7 @@ export function sendAnalyzeMedia(rawUrl) {
 export function sendQueueMedia(input) {
   const analysisId = input && input.analysisId
   const optionId = input && input.optionId
+  const outputFormat = input && input.outputFormat
   if (!isOpaqueMediaId(analysisId) || !isOpaqueMediaId(optionId)) {
     return Promise.resolve({
       ok: false,
@@ -260,11 +265,21 @@ export function sendQueueMedia(input) {
       }
     })
   }
+  if (outputFormat !== undefined && !isMediaOutputFormat(outputFormat)) {
+    return Promise.resolve({
+      ok: false,
+      error: {
+        code: 'INVALID_MEDIA_OPTION',
+        message: 'The selected output format is not valid.'
+      }
+    })
+  }
 
   return sendMediaMessage({
     type: 'queue-media',
     analysisId,
-    optionId
+    optionId,
+    ...(outputFormat === undefined ? {} : { outputFormat })
   }).then((result) => {
     if (result.ok === false) return result
     if (result.operation !== 'queue-media') return invalidMediaResponse()
