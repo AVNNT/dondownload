@@ -1,6 +1,6 @@
 {
   "name": "dondownload",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A fast, focused, Windows-first download manager built on Electron, React and aria2.",
   "license": "MIT",
