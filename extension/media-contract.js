@@ -148,7 +148,7 @@ export function parseMediaFormatOption(value) {
     fail('Invalid media container.')
   }
 
-  return {
+  const option = {
     kind,
     optionId: opaqueId(record.optionId, 'media option identifier'),
     label: textValue(record, 'label', MAX_MEDIA_LABEL_LENGTH),
@@ -162,6 +162,14 @@ export function parseMediaFormatOption(value) {
     requiresMerge: booleanValue(record, 'requiresMerge'),
     filesizeBytes: nullableIntegerValue(record, 'filesizeBytes', 0)
   }
+
+  if (kind === 'video' && !option.hasAudio) {
+    fail('A video option must produce video with audio.')
+  }
+  if (kind === 'audio' && (!option.hasAudio || option.videoCodec !== null)) {
+    fail('An audio option must not contain video.')
+  }
+  return option
 }
 
 export function parseMediaAnalysis(value) {
@@ -194,7 +202,7 @@ export function parseMediaAnalysis(value) {
       : opaqueId(record.bestVideoOptionId, 'best video option identifier')
   if (bestVideoOptionId !== null) {
     const option = byId.get(bestVideoOptionId)
-    if (!option || option.kind !== 'video') {
+    if (!option || option.kind !== 'video' || !option.hasAudio) {
       fail('The best video option is not a video option.')
     }
   }
@@ -205,7 +213,12 @@ export function parseMediaAnalysis(value) {
       : opaqueId(record.bestAudioOptionId, 'best audio option identifier')
   if (bestAudioOptionId !== null) {
     const option = byId.get(bestAudioOptionId)
-    if (!option || option.kind !== 'audio') {
+    if (
+      !option ||
+      option.kind !== 'audio' ||
+      !option.hasAudio ||
+      option.videoCodec !== null
+    ) {
       fail('The best audio option is not an audio option.')
     }
   }
