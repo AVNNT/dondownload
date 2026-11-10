@@ -27,12 +27,18 @@ export const HISTORY_CLEANUP_STARTUP_DELAY_MS = 30_000
 export const HISTORY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /**
- * Download statuses that are finished and can age out of the list. `error` and
- * `interrupted` are included only when no automatic retry is pending (checked
- * separately). Active/queued/waiting/paused rows are never selected.
+ * Download statuses that are finished and can age out of the list. `error`,
+ * `cancelled` and `interrupted` are included only when no automatic retry is
+ * pending (checked separately). Active/queued/waiting/paused rows are never
+ * selected.
  */
 const TERMINAL_DOWNLOAD_STATUSES: ReadonlySet<DownloadItem['status']> =
-  new Set<DownloadItem['status']>(['complete', 'error', 'interrupted'])
+  new Set<DownloadItem['status']>([
+    'complete',
+    'error',
+    'cancelled',
+    'interrupted'
+  ])
 
 /** Media job statuses that are finished and can age out of the list. */
 const TERMINAL_MEDIA_STATUSES: ReadonlySet<MediaJob['status']> =

@@ -13,6 +13,7 @@ export type RowActionId =
   | 'copy-link'
   | 'pause'
   | 'resume'
+  | 'cancel'
   | 'start-now'
   | 'retry'
   | 'analyze-again'
@@ -53,6 +54,27 @@ export function canResumeRow(row: UnifiedRow): boolean {
   )
 }
 
+/**
+ * Cancel is offered while a job is in flight or paused. It stops the work and
+ * keeps the row in the terminal `cancelled` state, so Retry can still restart
+ * it later; Remove is the separate "drop the history entry" action.
+ */
+export function canCancelRow(row: UnifiedRow): boolean {
+  if (row.download !== null) {
+    const status = row.download.status
+    return (
+      status === 'active' ||
+      status === 'queued' ||
+      status === 'waiting' ||
+      status === 'paused'
+    )
+  }
+  return (
+    row.media !== null &&
+    (isActiveMediaJobStatus(row.media.status) || row.media.status === 'paused')
+  )
+}
+
 export function canStartNowRow(row: UnifiedRow): boolean {
   return (
     row.download?.status === 'waiting' &&
@@ -64,7 +86,9 @@ export function canStartNowRow(row: UnifiedRow): boolean {
 export function canRetryRow(row: UnifiedRow): boolean {
   if (row.download !== null) {
     return (
-      row.download.status === 'error' || row.download.status === 'interrupted'
+      row.download.status === 'error' ||
+      row.download.status === 'cancelled' ||
+      row.download.status === 'interrupted'
     )
   }
   // Media retry reuses the already-pinned analysis/format without analyzing.
@@ -162,6 +186,12 @@ export function buildContextActions(rows: readonly UnifiedRow[]): ContextAction[
       danger: false
     },
     {
+      id: 'cancel',
+      label: rows.length > 1 ? 'Cancel selected' : 'Cancel',
+      enabled: some(canCancelRow),
+      danger: false
+    },
+    {
       id: 'start-now',
       label: 'Start now',
       enabled: some(canStartNowRow),
@@ -192,6 +222,7 @@ export function buildContextActions(rows: readonly UnifiedRow[]): ContextAction[
 export type PlannedAction =
   | 'pause'
   | 'resume'
+  | 'cancel'
   | 'start-now'
   | 'retry'
   | 'remove'
@@ -227,6 +258,8 @@ export function planRowAction(
       return planForRow('pause', rows, canPauseRow)
     case 'resume':
       return planForRow('resume', rows, canResumeRow)
+    case 'cancel':
+      return planForRow('cancel', rows, canCancelRow)
     case 'start-now':
       return planForRow('start-now', rows, canStartNowRow)
     case 'retry':
@@ -335,11 +368,13 @@ export function deleteFileConfirmation(title: string): ConfirmationCopy {
 
 export interface ActionApi {
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
+  cancelDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   resumeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   startDownloadNow: (id: string) => Promise<ApiResult<AppSnapshot>>
   retryDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   removeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   pauseMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
+  cancelMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
   resumeMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
   retryMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
   removeMedia: (id: string) => Promise<ApiResult<MediaSnapshot>>
@@ -387,6 +422,14 @@ export async function executeActionPlan(
             row.source === 'download'
               ? await api.resumeDownload(row.id)
               : await api.resumeMedia(row.id),
+            errors
+          )
+          break
+        case 'cancel':
+          collect(
+            row.source === 'download'
+              ? await api.cancelDownload(row.id)
+              : await api.cancelMedia(row.id),
             errors
           )
           break

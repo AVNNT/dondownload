@@ -762,6 +762,9 @@ function statusFromMediaJob(status: MediaJobStatus): BatchItemStatus {
 function statusFromDownload(status: DownloadItem['status']): BatchItemStatus {
   if (status === 'complete') return 'complete'
   if (status === 'error') return 'error'
+  // A user cancel from the main list must settle its batch item too, instead
+  // of leaving the parent batch looking like it is still running.
+  if (status === 'cancelled') return 'cancelled'
   if (status === 'interrupted') return 'interrupted'
   return 'running'
 }
@@ -3185,6 +3188,9 @@ export class BatchManager {
       )
     } else if (nextStatus === 'interrupted') {
       message = BATCH_ITEM_INTERRUPTED_MESSAGE
+    } else if (nextStatus === 'cancelled') {
+      // A user cancel needs no failure text: the item simply stopped.
+      message = null
     }
 
     return this.applyChildState(item, {

@@ -154,6 +154,9 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.pauseDownload, (_event, id) =>
     context.manager.pause(id)
   )
+  invoke<AppSnapshot>(IPC.cancelDownload, (_event, id) =>
+    context.manager.cancel(id)
+  )
   invoke<AppSnapshot>(IPC.resumeDownload, (_event, id) =>
     context.manager.resume(id)
   )

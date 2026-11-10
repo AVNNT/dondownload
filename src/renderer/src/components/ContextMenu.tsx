@@ -9,7 +9,12 @@ interface ContextMenuProps {
   onClose: () => void
 }
 
-const SEPARATOR_BEFORE = new Set<RowActionId>(['pause', 'retry', 'remove'])
+const SEPARATOR_BEFORE = new Set<RowActionId>([
+  'pause',
+  'cancel',
+  'retry',
+  'remove'
+])
 
 export function ContextMenu({
   x,

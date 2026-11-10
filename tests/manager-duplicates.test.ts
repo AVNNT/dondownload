@@ -200,7 +200,7 @@ describe('DownloadManager duplicate policy', () => {
     expect(manager.getSnapshot().downloads).toHaveLength(2)
   })
 
-  it.each<DownloadStatus>(['complete', 'error', 'interrupted'])(
+  it.each<DownloadStatus>(['complete', 'error', 'cancelled', 'interrupted'])(
     'does not let a prior %s record block a new job',
     async (status) => {
       const { database, downloadDir } = await makeWorkspace()

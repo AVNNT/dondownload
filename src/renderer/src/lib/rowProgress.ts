@@ -46,7 +46,7 @@ export function progressLine(row: UnifiedRow, now: number = Date.now()): string 
   if (row.statusGroup === 'failed') {
     const retryText = retryCountdownText(row.retryAt, now)
     if (retryText !== null) return retryText
-    const failure = row.errorMessage ?? 'Failed'
+    const failure = row.errorMessage ?? row.statusLabel
     return sizeKnown || row.completedBytes > 0 ? `${failure} · ${range}` : failure
   }
 

@@ -196,6 +196,7 @@ describe('history cleanup eligibility', () => {
       downloads: [
         download({ id: 'complete' }),
         download({ id: 'error', status: 'error', completedAt: null }),
+        download({ id: 'cancelled', status: 'cancelled' }),
         download({ id: 'interrupted', status: 'interrupted' }),
         download({ id: 'queued', status: 'queued' }),
         download({ id: 'active', status: 'active' }),
@@ -212,6 +213,7 @@ describe('history cleanup eligibility', () => {
     expect(selection.downloadIds).toEqual([
       'complete',
       'error',
+      'cancelled',
       'interrupted'
     ])
   })

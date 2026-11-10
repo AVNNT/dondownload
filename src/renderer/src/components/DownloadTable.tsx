@@ -31,7 +31,7 @@ import {
   rowIndexFor,
   scrollTopForIndex
 } from '../lib/virtualList'
-import { canOpenRow, canShowRow } from '../lib/actions'
+import { canCancelRow, canOpenRow, canShowRow } from '../lib/actions'
 import { CATEGORY_ACCENT, CATEGORY_ICON, Icon } from './Icon'
 import type { ThumbnailFallback } from './Thumbnail'
 import { Thumbnail } from './Thumbnail'
@@ -107,6 +107,7 @@ interface DownloadTableProps {
   onShowInFolder: (row: UnifiedRow) => void
   onPauseRow: (row: UnifiedRow) => void
   onResumeRow: (row: UnifiedRow) => void
+  onCancelRow: (row: UnifiedRow) => void
   onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void
@@ -124,6 +125,7 @@ export function DownloadTable({
   onShowInFolder,
   onPauseRow,
   onResumeRow,
+  onCancelRow,
   onRetryRow,
   onContextMenu,
   onKeyDown
@@ -350,6 +352,7 @@ export function DownloadTable({
                   onShowInFolder={onShowInFolder}
                   onPauseRow={onPauseRow}
                   onResumeRow={onResumeRow}
+                  onCancelRow={onCancelRow}
                   onRetryRow={onRetryRow}
                   onContextMenu={onContextMenu}
                 />
@@ -394,6 +397,7 @@ type RowVisual =
   | { kind: 'done'; when: string }
   | { kind: 'scheduled'; text: string }
   | { kind: 'analyzing' }
+  | { kind: 'cancelled' }
   | { kind: 'failed'; text: string }
   | { kind: 'interrupted'; percent: number }
 
@@ -441,6 +445,8 @@ function describeRow(row: UnifiedRow, now: number): RowVisual {
         }
         return { kind: 'failed', text: download.errorMessage ?? 'Failed' }
       }
+      case 'cancelled':
+        return { kind: 'cancelled' }
       case 'interrupted':
         return { kind: 'interrupted', percent: row.progress }
     }
@@ -478,7 +484,7 @@ function describeRow(row: UnifiedRow, now: number): RowVisual {
       case 'error':
         return { kind: 'failed', text: media.errorMessage ?? 'Failed' }
       case 'cancelled':
-        return { kind: 'failed', text: 'Cancelled' }
+        return { kind: 'cancelled' }
       case 'interrupted':
         return { kind: 'interrupted', percent: row.progress }
     }
@@ -504,6 +510,7 @@ interface TableRowProps {
   onShowInFolder: (row: UnifiedRow) => void
   onPauseRow: (row: UnifiedRow) => void
   onResumeRow: (row: UnifiedRow) => void
+  onCancelRow: (row: UnifiedRow) => void
   onRetryRow: (row: UnifiedRow) => void
   onContextMenu: (row: UnifiedRow, event: MouseEvent) => void
 }
@@ -527,6 +534,7 @@ function areRowPropsEqual(prev: TableRowProps, next: TableRowProps): boolean {
     prev.onShowInFolder !== next.onShowInFolder ||
     prev.onPauseRow !== next.onPauseRow ||
     prev.onResumeRow !== next.onResumeRow ||
+    prev.onCancelRow !== next.onCancelRow ||
     prev.onRetryRow !== next.onRetryRow ||
     prev.onContextMenu !== next.onContextMenu
   ) {
@@ -550,6 +558,7 @@ const TableRow = memo(function TableRow({
   onShowInFolder,
   onPauseRow,
   onResumeRow,
+  onCancelRow,
   onRetryRow,
   onContextMenu
 }: TableRowProps): JSX.Element {
@@ -580,8 +589,9 @@ const TableRow = memo(function TableRow({
       ? row.download?.status === 'active'
       : row.media?.status === 'downloading'
   const paused = row.statusTone === 'paused'
-  const retryable = visual.kind === 'failed'
+  const retryable = visual.kind === 'failed' || visual.kind === 'cancelled'
   const resumable = visual.kind === 'interrupted'
+  const cancellable = canCancelRow(row)
   const openable = canOpenRow(row)
   const showable = canShowRow(row)
 
@@ -676,6 +686,14 @@ const TableRow = memo(function TableRow({
             icon="pause"
             label={`Pause ${row.title}`}
             onClick={() => onPauseRow(row)}
+            className="flex lg:group-hover:hidden"
+          />
+        ) : null}
+        {cancellable ? (
+          <RowIconButton
+            icon="stop"
+            label={`Cancel ${row.title}`}
+            onClick={() => onCancelRow(row)}
             className="flex lg:group-hover:hidden"
           />
         ) : null}
@@ -871,6 +889,17 @@ function MiddleCell({
           className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-700 border-t-accent-400"
         />
         <span className="truncate">Reading the page · finding qualities</span>
+      </div>
+    )
+  }
+
+  if (visual.kind === 'cancelled') {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-zinc-500">
+        <span aria-hidden="true" className="flex shrink-0">
+          <Icon name="x" size={14} />
+        </span>
+        <span className="truncate">Cancelled</span>
       </div>
     )
   }

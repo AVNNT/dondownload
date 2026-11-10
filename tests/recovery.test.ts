@@ -20,6 +20,8 @@ describe('startup recovery policy', () => {
     ['paused', false, 'keep-paused'],
     ['complete', false, 'keep-terminal'],
     ['error', false, 'keep-terminal'],
+    ['cancelled', true, 'keep-terminal'],
+    ['cancelled', false, 'keep-terminal'],
     ['interrupted', false, 'keep-terminal']
   ])(
     'decides %s with aria2 tracking %s -> %s',

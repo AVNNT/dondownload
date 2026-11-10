@@ -11,7 +11,7 @@ import type { DownloadBlockReason, DownloadStatus } from '@shared/types'
  * - Any other transfer that aria2 still tracks is reattached.
  * - A transfer that was active/queued/waiting but is no longer tracked is
  *   marked `interrupted`; the app does not silently re-download it.
- * - Completed/error history is never touched.
+ * - Completed/error/cancelled history is never touched.
  */
 export type RecoveryOutcome =
   | 'reattach'
@@ -68,7 +68,9 @@ export function decideStartupRecovery(
   status: DownloadStatus,
   aria2TracksGid: boolean
 ): RecoveryOutcome {
-  if (status === 'complete' || status === 'error') {
+  // Cancelled is a terminal user choice like complete/error: never reattach it
+  // even if an old aria2 process still happens to know the GID.
+  if (status === 'complete' || status === 'cancelled' || status === 'error') {
     return 'keep-terminal'
   }
   // Paused is a persisted user intent: never let aria2's tracked status

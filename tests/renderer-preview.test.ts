@@ -51,7 +51,8 @@ describe('browser preview fixture adapter', () => {
         'waiting',
         'paused',
         'complete',
-        'error'
+        'error',
+        'cancelled'
       ])
     )
   })
@@ -171,6 +172,37 @@ describe('browser preview fixture adapter', () => {
     expect(done?.status).toBe('complete')
     expect(done?.completedBytes).toBe(done?.totalBytes)
     expect(done?.filePath).toContain(done?.filename)
+  })
+
+  it('cancels a running fixture download and keeps it retryable', async () => {
+    const preview = api()
+    const cancelled = await preview.cancelDownload('preview-download-active')
+    expect(cancelled.ok).toBe(true)
+    if (!cancelled.ok) return
+    const item = cancelled.value.downloads.find(
+      (download) => download.id === 'preview-download-active'
+    )
+    expect(item).toMatchObject({
+      status: 'cancelled',
+      gid: '',
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      completedAt: FIXED_NOW
+    })
+
+    // An explicit cancel is not a failed attempt, so Retry keeps the count.
+    const retried = await preview.retryDownload('preview-download-active')
+    expect(retried.ok).toBe(true)
+    if (!retried.ok) return
+    const again = retried.value.downloads.find(
+      (download) => download.id === 'preview-download-active'
+    )
+    expect(again).toMatchObject({
+      status: 'queued',
+      attempts: 1,
+      completedAt: null
+    })
   })
 
   it('retries a failed download with reset progress and no invented success', async () => {

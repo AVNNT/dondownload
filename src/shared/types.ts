@@ -52,6 +52,7 @@ export type DownloadStatus =
   | 'paused'
   | 'complete'
   | 'error'
+  | 'cancelled'
   | 'interrupted'
 
 export type Aria2RuntimeStatus =
@@ -272,6 +273,11 @@ export interface DonDownloadApi {
   getSnapshot: () => Promise<ApiResult<AppSnapshot>>
   addDownload: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
+  /**
+   * Stop an in-flight download and keep its row in the terminal `cancelled`
+   * state. The partial file stays on disk so Retry can continue it.
+   */
+  cancelDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   resumeDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   /** Explicit user override for a scheduled or allowed-hours-blocked job. */
   startDownloadNow: (id: string) => Promise<ApiResult<AppSnapshot>>

@@ -20,6 +20,7 @@ export type IconName =
   | 'plus'
   | 'pause'
   | 'play'
+  | 'stop'
   | 'trash'
   | 'folder'
   | 'link'
@@ -164,6 +165,11 @@ const ICONS: Record<IconName, JSX.Element> = {
   play: (
     <>
       <path d="m8 5 11 7-11 7z" fill="currentColor" stroke="none" />
+    </>
+  ),
+  stop: (
+    <>
+      <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" />
     </>
   ),
   trash: (

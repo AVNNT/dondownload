@@ -6,6 +6,9 @@ export const IPC = {
   restartAria2: 'app:restart-aria2',
   addDownload: 'download:add',
   pauseDownload: 'download:pause',
+  // Stop an in-flight transfer but keep its row (and partial file) so the user
+  // can Retry later. Distinct from pause, which is resumable, and remove.
+  cancelDownload: 'download:cancel',
   resumeDownload: 'download:resume',
   startDownloadNow: 'download:start-now',
   retryDownload: 'download:retry',

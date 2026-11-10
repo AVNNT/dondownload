@@ -7,6 +7,7 @@ interface DownloadCardProps {
   busy: boolean
   onPause: () => void
   onResume: () => void
+  onCancel: () => void
   onStartNow: () => void
   onRetry: () => void
   onRemove: () => void
@@ -20,6 +21,7 @@ const STATUS_LABEL: Record<DownloadStatus, string> = {
   paused: 'Paused',
   complete: 'Complete',
   error: 'Failed',
+  cancelled: 'Cancelled',
   interrupted: 'Interrupted'
 }
 
@@ -30,6 +32,7 @@ const STATUS_STYLE: Record<DownloadStatus, string> = {
   paused: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
   complete: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
   error: 'border-red-400/30 bg-red-400/10 text-red-300',
+  cancelled: 'border-zinc-600 bg-zinc-800/80 text-zinc-300',
   interrupted: 'border-amber-400/30 bg-amber-400/10 text-amber-300'
 }
 
@@ -40,6 +43,7 @@ const BAR_STYLE: Record<DownloadStatus, string> = {
   paused: 'bg-zinc-500',
   complete: 'bg-emerald-400',
   error: 'bg-red-400',
+  cancelled: 'bg-zinc-500',
   interrupted: 'bg-amber-400'
 }
 
@@ -75,6 +79,7 @@ export const DownloadCard = memo(function DownloadCard({
   busy,
   onPause,
   onResume,
+  onCancel,
   onStartNow,
   onRetry,
   onRemove,
@@ -90,11 +95,17 @@ export const DownloadCard = memo(function DownloadCard({
     item.status === 'waiting' ||
     item.status === 'queued'
   const canResume = item.status === 'paused'
+  const canCancel =
+    item.status === 'active' ||
+    item.status === 'waiting' ||
+    item.status === 'queued' ||
+    item.status === 'paused'
   const canStartNow =
     item.status === 'waiting' &&
     (item.blockReason === 'scheduled' || item.blockReason === 'allowed-hours')
   const canRetry =
     item.status === 'interrupted' ||
+    item.status === 'cancelled' ||
     (item.status === 'error' && item.attempts < item.maxAttempts)
   const scheduledLabel = formatLocalTime(item.scheduledAt)
   const updatedLabel = formatLocalTime(item.updatedAt)
@@ -219,6 +230,9 @@ export const DownloadCard = memo(function DownloadCard({
         ) : null}
         {canResume ? (
           <CardAction disabled={busy} onClick={onResume} label="Resume" />
+        ) : null}
+        {canCancel ? (
+          <CardAction disabled={busy} onClick={onCancel} label="Cancel" />
         ) : null}
         {canRetry ? (
           <CardAction disabled={busy} onClick={onRetry} label="Retry" accent />

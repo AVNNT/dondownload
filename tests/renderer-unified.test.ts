@@ -33,6 +33,7 @@ import {
 import {
   buildContextActions,
   canAnalyzeAgainRow,
+  canCancelRow,
   canOpenRow,
   canPauseRow,
   canResumeRow,
@@ -142,11 +143,13 @@ function fakeApi() {
   const media = mediaFixture()
   return {
     pauseDownload: vi.fn<ActionApi['pauseDownload']>(async () => ok(snapshot)),
+    cancelDownload: vi.fn<ActionApi['cancelDownload']>(async () => ok(snapshot)),
     resumeDownload: vi.fn<ActionApi['resumeDownload']>(async () => ok(snapshot)),
     startDownloadNow: vi.fn<ActionApi['startDownloadNow']>(async () => ok(snapshot)),
     retryDownload: vi.fn<ActionApi['retryDownload']>(async () => ok(snapshot)),
     removeDownload: vi.fn<ActionApi['removeDownload']>(async () => ok(snapshot)),
     pauseMedia: vi.fn<ActionApi['pauseMedia']>(async () => ok(media)),
+    cancelMedia: vi.fn<ActionApi['cancelMedia']>(async () => ok(media)),
     resumeMedia: vi.fn<ActionApi['resumeMedia']>(async () => ok(media)),
     retryMedia: vi.fn<ActionApi['retryMedia']>(async () => ok(media)),
     removeMedia: vi.fn<ActionApi['removeMedia']>(async () => ok(media)),
@@ -237,6 +240,13 @@ describe('unified row status projection', () => {
     const paused = rowFor({ status: 'paused', speedBps: 0 })
     expect(paused.statusGroup).toBe('active')
     expect(isRunningRow(paused)).toBe(false)
+  })
+
+  it('projects a cancelled download as terminal history, separate from failed', () => {
+    const cancelled = rowFor({ status: 'cancelled', speedBps: 0 })
+    expect(cancelled.statusLabel).toBe('Cancelled')
+    expect(cancelled.statusGroup).toBe('failed')
+    expect(isRunningRow(cancelled)).toBe(false)
   })
 
   it('computes aggregate running count and speed across both sources', () => {
@@ -628,6 +638,11 @@ describe('context menu and action plans', () => {
     completedAt: NOW
   })
   const failed = rowFor({ id: 'failed', status: 'error' })
+  const cancelled = rowFor({
+    id: 'cancelled',
+    status: 'cancelled',
+    completedAt: NOW
+  })
   const mediaComplete = mediaRow({ id: 'media-complete', status: 'complete' })
   const mediaFailed = mediaRow({ id: 'media-failed', status: 'error' })
 
@@ -643,6 +658,13 @@ describe('context menu and action plans', () => {
     expect(multi.find((action) => action.id === 'remove')?.label).toBe(
       'Remove selected'
     )
+
+    // Cancel applies only while work can still be stopped; a cancelled row is
+    // terminal and offers Retry instead.
+    expect(buildContextActions([active]).find((a) => a.id === 'cancel')?.enabled).toBe(true)
+    expect(buildContextActions([complete]).find((a) => a.id === 'cancel')?.enabled).toBe(false)
+    expect(buildContextActions([cancelled]).find((a) => a.id === 'cancel')?.enabled).toBe(false)
+    expect(buildContextActions([cancelled]).find((a) => a.id === 'retry')?.enabled).toBe(true)
   })
 
   it('filters bulk pause/resume to compatible rows', () => {
@@ -655,6 +677,9 @@ describe('context menu and action plans', () => {
     ])
     expect(canPauseRow(active)).toBe(true)
     expect(canResumeRow(paused)).toBe(true)
+    expect(canCancelRow(active)).toBe(true)
+    expect(canCancelRow(paused)).toBe(true)
+    expect(canCancelRow(complete)).toBe(false)
     expect(canOpenRow(complete)).toBe(true)
     expect(canAnalyzeAgainRow(mediaFailed)).toBe(true)
   })
@@ -671,6 +696,11 @@ describe('context menu and action plans', () => {
 
     await executeActionPlan(planRowAction('retry', [failed]), api)
     expect(api.retryDownload).toHaveBeenCalledWith('failed')
+
+    await executeActionPlan(planRowAction('cancel', [active, paused, failed]), api)
+    expect(api.cancelDownload).toHaveBeenCalledWith('active')
+    expect(api.cancelDownload).toHaveBeenCalledWith('paused')
+    expect(api.cancelDownload).toHaveBeenCalledTimes(2)
 
     await executeActionPlan(
       planRowAction('remove', [failed, mediaFailed]),

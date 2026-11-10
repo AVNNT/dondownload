@@ -1212,6 +1212,27 @@ export function createPreviewApi(
       return ok(emitDownloads())
     },
 
+    cancelDownload: async (id: string) => {
+      const item = findDownload(id)
+      if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
+      if (
+        item.status === 'active' ||
+        item.status === 'waiting' ||
+        item.status === 'queued' ||
+        item.status === 'paused'
+      ) {
+        item.gid = ''
+        item.status = 'cancelled'
+        item.blockReason = null
+        item.speedBps = 0
+        item.etaSeconds = null
+        item.errorMessage = null
+        item.completedAt = now()
+        item.updatedAt = now()
+      }
+      return ok(emitDownloads())
+    },
+
     resumeDownload: async (id: string) => {
       const item = findDownload(id)
       if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
@@ -1241,10 +1262,16 @@ export function createPreviewApi(
     retryDownload: async (id: string) => {
       const item = findDownload(id)
       if (!item) return fail(PREVIEW_NOT_FOUND_CODE, 'That download is gone.')
-      if (item.status === 'error' || item.status === 'interrupted') {
-        // Recovering an interrupted transfer is not a new user attempt; an
-        // ordinary failed retry is. Both restart from a clean progress state.
-        const interruptedRecovery = item.status === 'interrupted'
+      if (
+        item.status === 'error' ||
+        item.status === 'interrupted' ||
+        item.status === 'cancelled'
+      ) {
+        // Recovering an interrupted or user-cancelled transfer is not a new
+        // failed attempt; an ordinary failed retry is. Both restart from a
+        // clean progress state while aria2 continues the partial file.
+        const interruptedRecovery =
+          item.status === 'interrupted' || item.status === 'cancelled'
         item.gid = nextId('preview-gid')
         item.status = 'queued'
         item.completedBytes = 0
@@ -2129,6 +2156,29 @@ function seedDownloads(anchor: number): DownloadItem[] {
       scheduledAt: null,
       speedLimitBps: null,
       connections: 4,
+      blockReason: null
+    },
+    {
+      id: 'preview-download-cancelled',
+      gid: '',
+      url: 'https://media.example.com/events/conference-keynote.mov',
+      filename: 'conference-keynote.mov',
+      dir: 'Downloads/DonDownload',
+      filePath: null,
+      status: 'cancelled',
+      totalBytes: 620 * mib,
+      completedBytes: 214 * mib,
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 5,
+      createdAt: anchor - 38 * minute,
+      updatedAt: anchor - 20 * minute,
+      completedAt: anchor - 20 * minute,
+      scheduledAt: null,
+      speedLimitBps: null,
+      connections: 6,
       blockReason: null
     },
     {

@@ -719,9 +719,9 @@ Key properties:
   browser bridge share it exactly. Matching is conservative: exact canonical
   HTTP(S) URL equality after the normal validation (which removes fragments).
   Queued, active, waiting and paused records block repeats; complete, error,
-  interrupted and removed records do not. A synchronous per-URL reservation
-  happens before any async aria2 add, so concurrent identical requests cannot
-  both create a job.
+  cancelled, interrupted and removed records do not. A synchronous per-URL
+  reservation happens before any async aria2 add, so concurrent identical
+  requests cannot both create a job.
 - File names are sanitized against path traversal, Windows reserved characters
   and reserved device names. aria2 writes into a single download directory.
 - aria2 is started with an argument array and `shell: false`; user input is
@@ -736,9 +736,10 @@ Key properties:
   hidden after the cap is reached.
 - Download lifecycle/progress is stored in SQLite: URL, file name, directory,
   status, bytes, timestamps, file path and error text. Critical transitions
-  (add, pause, resume, retry, complete, error, remove) are written immediately;
-  progress snapshots are batched at most every 2.5 seconds. Startup reconciliation
-  uses `aria2.tellStatus` only for records that may still be live.
+  (add, pause, cancel, resume, retry, complete, error, remove) are written
+  immediately; progress snapshots are batched at most every 2.5 seconds.
+  Startup reconciliation uses `aria2.tellStatus` only for records that may still
+  be live.
 - History uses the `node:sqlite` built-in shipped with Electron 45's Node 24.22
   runtime (SQLite 3.53). No native addon, `electron-rebuild` step, or asar unpack
   configuration is required. Schema migrations run in transactions and use
@@ -773,10 +774,15 @@ Recovery is intentionally conservative. On launch or after **Retry aria2**:
   explicit **Resume** re-adds that transfer with aria2's `--continue=true`,
   `--allow-overwrite=false` and `--auto-file-renaming=true` options. Existing
   partial or completed files are never deleted or overwritten.
-- **Retry** on an interrupted/failed record likewise re-adds the transfer with
-  continuation enabled. Network failures remain subject to the three-attempt
-  cap; interrupted recovery does not consume that retry budget.
-- Completed and failed history is never changed during reconciliation.
+- **Cancel** stops an in-flight or paused transfer, removes its aria2 job and
+  marks the row **Cancelled**. The history row and the partial file are kept, so
+  **Retry** can continue the same transfer later. A cancelled row is never
+  resumed automatically, even if its old schedule comes due.
+- **Retry** on an interrupted/failed/cancelled record likewise re-adds the
+  transfer with continuation enabled. Network failures remain subject to the
+  three-attempt cap; interrupted recovery and an explicit cancel do not consume
+  that retry budget.
+- Completed, cancelled and failed history is never changed during reconciliation.
 
 A normal quit flushes pending progress, stops aria2, checkpoints WAL and closes
 the database. Choosing **Quit DonDownload** from the tray uses the same orderly

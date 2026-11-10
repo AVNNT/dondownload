@@ -95,6 +95,23 @@ describe('download control IPC', () => {
     expect(startNow).toHaveBeenCalledWith(id)
   })
 
+  it('routes Cancel through the trusted manager method', async () => {
+    const cancel = vi.fn(async () => snapshot)
+    const manager = { cancel } as unknown as DownloadManager
+    const window = fakeWindow()
+    registerIpc({
+      manager,
+      aria2: {} as Aria2Service,
+      getWindow: () => window.window as never
+    })
+    const id = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+    const result = await handler(IPC.cancelDownload)(trustedEvent(window), id)
+
+    expect(result).toEqual({ ok: true, value: snapshot })
+    expect(cancel).toHaveBeenCalledWith(id)
+  })
+
   it('rejects Start Now from an untrusted sender', async () => {
     const startNow = vi.fn(async () => snapshot)
     const manager = { startNow } as unknown as DownloadManager

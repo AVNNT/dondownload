@@ -83,6 +83,7 @@ import {
 import { useDebouncedValue } from './lib/useDebouncedValue'
 import {
   buildContextActions,
+  canCancelRow,
   canCopyLink,
   canPauseRow,
   canResumeRow,
@@ -1342,6 +1343,13 @@ export default function App(): JSX.Element {
     [runPlan]
   )
 
+  const cancelRow = useCallback(
+    (row: UnifiedRow): void => {
+      void runPlan(planRowAction('cancel', [row]))
+    },
+    [runPlan]
+  )
+
   const retryRow = useCallback(
     (row: UnifiedRow): void => {
       void runPlan(planRowAction('retry', [row]))
@@ -1605,6 +1613,14 @@ export default function App(): JSX.Element {
                   }
                 />
                 <SelectionBarButton
+                  icon="x"
+                  label="Cancel"
+                  disabled={!visibleSelection.some(canCancelRow)}
+                  onClick={() =>
+                    void runPlan(planRowAction('cancel', visibleSelection))
+                  }
+                />
+                <SelectionBarButton
                   icon="link"
                   label="Copy links"
                   disabled={!visibleSelection.some(canCopyLink)}
@@ -1684,6 +1700,7 @@ export default function App(): JSX.Element {
               onShowInFolder={showRowInFolder}
               onPauseRow={pauseRow}
               onResumeRow={resumeRow}
+              onCancelRow={cancelRow}
               onRetryRow={retryRow}
               onContextMenu={handleContextMenu}
               onKeyDown={handleTableKeyDown}

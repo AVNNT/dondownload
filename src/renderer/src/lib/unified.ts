@@ -292,6 +292,8 @@ function downloadStatus(item: DownloadItem): {
       return { label: 'Complete', group: 'completed', tone: 'complete' }
     case 'error':
       return { label: 'Failed', group: 'failed', tone: 'failed' }
+    case 'cancelled':
+      return { label: 'Cancelled', group: 'failed', tone: 'paused' }
     case 'interrupted':
       return { label: 'Interrupted', group: 'failed', tone: 'warning' }
   }

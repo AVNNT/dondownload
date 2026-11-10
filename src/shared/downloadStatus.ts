@@ -63,6 +63,7 @@ export function mapDownloadStatus(status: DownloadStatus): HandoffDownloadStatus
     case 'complete':
       return 'done'
     case 'error':
+    case 'cancelled':
     case 'interrupted':
       return 'error'
     case 'queued':

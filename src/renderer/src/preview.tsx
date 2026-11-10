@@ -35,8 +35,9 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * clear-list|details|images|shortcuts|undo, optional ?theme=light|dark|oled, and
- * ?overflow=1 renders a badge with the horizontal-overflow metrics.
+ * cancel-menu|cancelled|clear-list|details|images|shortcuts|undo, optional
+ * ?theme=light|dark|oled, and ?overflow=1 renders a badge with the
+ * horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
   // React StrictMode runs effects twice in dev; the automation must run once.
@@ -164,6 +165,38 @@ function runPreviewAutomation(): void {
       await wait(300)
       window.document
         .querySelector<HTMLElement>('[data-row-key]')
+        ?.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true })
+        )
+    }
+    if (state === 'cancel-menu') {
+      // Open the context menu on the active download fixture row so the Cancel
+      // action is visible in a screenshot.
+      await wait(400)
+      const row = window.document.querySelector<HTMLElement>(
+        '[data-row-key="download:preview-download-active"]'
+      )
+      if (row !== null) {
+        const rect = row.getBoundingClientRect()
+        row.dispatchEvent(
+          new MouseEvent('contextmenu', {
+            bubbles: true,
+            cancelable: true,
+            clientX: Math.round(rect.left + 120),
+            clientY: Math.round(rect.top + 16)
+          })
+        )
+      }
+    }
+    if (state === 'cancelled') {
+      // Cancel the active fixture and select the resulting terminal row.
+      await wait(400)
+      await fixtureApi?.cancelDownload('preview-download-active')
+      await wait(400)
+      window.document
+        .querySelector<HTMLElement>(
+          '[data-row-key="download:preview-download-active"]'
+        )
         ?.dispatchEvent(
           new MouseEvent('click', { bubbles: true, cancelable: true })
         )

@@ -293,7 +293,8 @@ describe('download history persistence', () => {
       'waiting',
       'paused',
       'complete',
-      'error'
+      'error',
+      'cancelled'
     ]
     const records = statuses.map((status, index) =>
       sample({
@@ -331,6 +332,7 @@ describe('download history persistence', () => {
     expect(byFilename.get('paused.bin')?.status).toBe('paused')
     expect(byFilename.get('complete.bin')?.status).toBe('complete')
     expect(byFilename.get('error.bin')?.status).toBe('error')
+    expect(byFilename.get('cancelled.bin')?.status).toBe('cancelled')
     expect(byFilename.get('active.bin')?.errorMessage).toBe(INTERRUPTED_MESSAGE)
     expect(stored).toHaveLength(statuses.length)
     close(reopened)
@@ -436,6 +438,97 @@ describe('v17 to v18 checksum migration', () => {
     const reopened = open(filePath)
     expect(reopened.loadAll()[0]?.record.checksum).toEqual(result)
     close(reopened)
+  })
+})
+
+describe('v19 to v20 cancelled-status migration', () => {
+  it('rebuilds the downloads table without losing rows and accepts cancelled', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+
+    const existing = sample({ status: 'complete', completedAt: Date.UTC(2026, 0, 3) })
+    const raw = new DatabaseSync(filePath)
+    for (const migration of MIGRATIONS) {
+      if (migration.version > 19) break
+      raw.exec(migration.sql)
+      raw.exec(`PRAGMA user_version = ${migration.version}`)
+    }
+    raw
+      .prepare(
+        `INSERT INTO downloads (
+          id, gid, url, filename, explicit_filename, dir, file_path, status,
+          total_bytes, completed_bytes, error_message, attempts, max_attempts,
+          created_at, updated_at, completed_at, scheduled_at, speed_limit_bps,
+          connections, block_reason, needs_login, error_detail,
+          checksum_algorithm, checksum_ok, checksum_computed, checksum_checked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        existing.id,
+        existing.gid,
+        existing.url,
+        existing.filename,
+        'chosen-name.zip',
+        existing.dir,
+        existing.filePath,
+        existing.status,
+        existing.totalBytes,
+        existing.completedBytes,
+        existing.errorMessage,
+        existing.attempts,
+        existing.maxAttempts,
+        existing.createdAt,
+        existing.updatedAt,
+        existing.completedAt,
+        Date.UTC(2026, 0, 3, 1),
+        1024,
+        8,
+        'scheduled',
+        1,
+        'aria2 code 1: test detail',
+        'sha256',
+        1,
+        'a'.repeat(64),
+        Date.UTC(2026, 0, 3, 2)
+      )
+    raw.close()
+
+    const database = open(filePath)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(database.loadAll()[0]).toMatchObject({
+      explicitFilename: 'chosen-name.zip',
+      scheduledAt: Date.UTC(2026, 0, 3, 1),
+      speedLimitBps: 1024,
+      connections: 8,
+      blockReason: 'scheduled',
+      needsLogin: true,
+      record: {
+        id: existing.id,
+        status: 'complete',
+        errorDetail: 'aria2 code 1: test detail',
+        checksum: {
+          algorithm: 'sha256',
+          ok: true,
+          computed: 'a'.repeat(64),
+          checkedAt: Date.UTC(2026, 0, 3, 2)
+        }
+      }
+    })
+
+    const cancelled = sample({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      gid: '',
+      url: 'https://example.com/files/cancelled.bin',
+      filename: 'cancelled.bin',
+      status: 'cancelled',
+      filePath: null,
+      completedAt: Date.UTC(2026, 0, 4)
+    })
+    database.save({ record: cancelled, explicitFilename: null })
+
+    const stored = database.loadAll().find((entry) => entry.record.id === cancelled.id)
+    expect(stored?.record.status).toBe('cancelled')
+    close(database)
   })
 })
 

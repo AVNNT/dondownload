@@ -310,6 +310,7 @@ function TableHarness({
         onShowInFolder={rowNoop}
         onPauseRow={rowNoop}
         onResumeRow={rowNoop}
+        onCancelRow={rowNoop}
         onRetryRow={rowNoop}
         onContextMenu={rowNoop}
         onKeyDown={noop}

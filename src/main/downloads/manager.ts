@@ -364,7 +364,10 @@ export class DownloadManager {
 
     try {
       const candidates = [...this.records.values()].filter(
-        (record) => record.status !== 'complete' && record.status !== 'error'
+        (record) =>
+          record.status !== 'complete' &&
+          record.status !== 'cancelled' &&
+          record.status !== 'error'
       )
       const client = this.aria2.getReadyClient()
 
@@ -908,6 +911,62 @@ export class DownloadManager {
     return this.getSnapshot()
   }
 
+  /**
+   * Stop an in-flight or paused download and keep its row in the terminal
+   * `cancelled` state. Unlike Remove, the history entry survives; unlike Pause,
+   * the job is never resumed implicitly. The partial file stays on disk, so
+   * Retry hands the same URL back to aria2 with continuation enabled.
+   */
+  async cancel(rawId: unknown): Promise<AppSnapshot> {
+    const record = this.getRecord(rawId)
+    if (record.status === 'complete') {
+      throw new AppError('DOWNLOAD_COMPLETE', 'This download has already completed.')
+    }
+    // Cancelling something that is already stopped is a no-op, not an error:
+    // the row may have completed or been removed between the click and here.
+    if (
+      record.status === 'cancelled' ||
+      record.status === 'error' ||
+      record.status === 'interrupted'
+    ) {
+      return this.getSnapshot()
+    }
+
+    this.clearAutoRetry(record.id)
+    this.startNowIds.delete(record.id)
+    this.setBlockReason(record, null)
+
+    // Only a ready aria2 can hold a live GID. Cancelling must never start the
+    // service just to stop it; a stopped aria2 has nothing left to cancel.
+    if (record.gid !== '' && this.aria2.getState().status === 'ready') {
+      const client = await this.aria2.getClient()
+      await this.removeFromAria2(client, record.gid)
+    }
+
+    // A poll tick may have completed or removed the transfer while aria2 was
+    // being reached. Completion/removal wins over the just-clicked Cancel.
+    if (!this.records.has(record.id)) return this.getSnapshot()
+    if (this.records.get(record.id)?.status === 'complete') {
+      return this.getSnapshot()
+    }
+
+    this.updateRecord(record, {
+      // The GID no longer exists in aria2 after the removal above. Clearing it
+      // keeps a later reconcile from reattaching this terminal row.
+      gid: '',
+      status: 'cancelled',
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      errorDetail: null,
+      completedAt: this.now()
+    })
+    this.persistNow(record)
+    this.publish(true)
+    this.stopPollingIfIdle()
+    return this.getSnapshot()
+  }
+
   async resume(rawId: unknown): Promise<AppSnapshot> {
     const record = this.getRecord(rawId)
     if (record.status === 'complete') {
@@ -1003,22 +1062,30 @@ export class DownloadManager {
 
   async retry(rawId: unknown): Promise<AppSnapshot> {
     const record = this.getRecord(rawId)
-    if (record.status !== 'error' && record.status !== 'interrupted') {
+    if (
+      record.status !== 'error' &&
+      record.status !== 'interrupted' &&
+      record.status !== 'cancelled'
+    ) {
       throw new AppError(
         'DOWNLOAD_NOT_FAILED',
-        'Only interrupted or failed downloads can be retried.'
+        'Only interrupted, cancelled or failed downloads can be retried.'
       )
     }
-    // An explicit retry replaces any scheduled automatic retry.
+    // An explicit retry replaces any scheduled automatic retry. A cancelled or
+    // interrupted transfer is not a failed attempt: it keeps the existing
+    // attempt budget instead of consuming another one.
     this.clearAutoRetry(record.id)
-    await this.restartDownload(record, record.status === 'interrupted', false)
+    await this.restartDownload(record, record.status !== 'error', false)
     return this.getSnapshot()
   }
 
   /**
    * Shared body of the explicit Retry action and the automatic retry. A retry
    * re-adds the job with aria2's global --continue so any partial file is
-   * resumed rather than downloaded again.
+   * resumed rather than downloaded again. `interruptedRecovery` marks a
+   * recovery/cancel retry: it keeps the previous attempt count and skips the
+   * failure budget, because neither was a new failed attempt.
    */
   private async restartDownload(
     record: DownloadItem,
@@ -1044,7 +1111,7 @@ export class DownloadManager {
     }
 
     const client = await this.aria2.getClient()
-    await this.removeFromAria2(client, record.gid)
+    if (record.gid !== '') await this.removeFromAria2(client, record.gid)
 
     // Retry is explicit and must not be immediately re-blocked by schedule or
     // allowed hours. It keeps the stored controls for the next restart.
@@ -2122,6 +2189,9 @@ export class DownloadManager {
   }
 
   private applyStatus(record: DownloadItem, rawStatus: unknown): void {
+    // A user cancel is terminal. An observation that was already in flight can
+    // still arrive afterwards; it must never resurrect the row.
+    if (record.status === 'cancelled') return
     const status = parseAria2Status(rawStatus)
     const nextStatus = mapAria2Status(status.status)
 
@@ -2659,6 +2729,9 @@ export class DownloadManager {
         continue
       }
       if (isGidNotFound(result.error)) {
+        // A vanished GID is a stopped transfer, but a user-cancelled row is
+        // already terminal: its own removal is what made the GID disappear.
+        if (record.status === 'cancelled') continue
         this.updateRecord(record, {
           // A vanished aria2 GID is a stopped transfer, not a failed
           // attempt. Keep the partial file/retry budget and expose the

@@ -58,7 +58,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 19
+export const SCHEMA_VERSION = 20
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -67,6 +67,7 @@ const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'paused',
   'complete',
   'error',
+  'cancelled',
   'interrupted'
 ])
 
@@ -641,6 +642,94 @@ export const MIGRATIONS: readonly Migration[] = [
         ON media_jobs (status, COALESCE(completed_at, updated_at));
       CREATE INDEX IF NOT EXISTS batches_history_cleanup_idx
         ON batches (status, COALESCE(completed_at, updated_at));
+    `
+  },
+  {
+    // A download can now be cancelled explicitly when the user no longer wants
+    // it but wants its row (and partial file) to stay for a later Retry.
+    // SQLite cannot widen a CHECK constraint in place, so the downloads table
+    // is rebuilt with the same columns and rows plus `cancelled` in the status
+    // list. No file is touched and every other value is copied verbatim.
+    version: 20,
+    sql: `
+      CREATE TABLE downloads_v20 (
+        id TEXT PRIMARY KEY NOT NULL,
+        gid TEXT NOT NULL,
+        url TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        explicit_filename TEXT,
+        dir TEXT NOT NULL,
+        file_path TEXT,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'queued', 'active', 'waiting', 'paused',
+            'complete', 'error', 'cancelled', 'interrupted'
+          )
+        ),
+        total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+        completed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (completed_bytes >= 0),
+        error_message TEXT,
+        attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+        max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts >= 1),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        scheduled_at INTEGER
+          CHECK (
+            scheduled_at IS NULL OR
+            (scheduled_at >= 0 AND scheduled_at <= 8640000000000000)
+          ),
+        speed_limit_bps INTEGER
+          CHECK (
+            speed_limit_bps IS NULL OR
+            (speed_limit_bps >= 1 AND speed_limit_bps <= 1073741824)
+          ),
+        connections INTEGER
+          CHECK (connections IS NULL OR (connections >= 1 AND connections <= 16)),
+        block_reason TEXT
+          CHECK (
+            block_reason IS NULL OR
+            block_reason IN ('scheduled', 'allowed-hours')
+          ),
+        needs_login INTEGER NOT NULL DEFAULT 0
+          CHECK (needs_login IN (0, 1)),
+        error_detail TEXT,
+        checksum_algorithm TEXT
+          CHECK (
+            checksum_algorithm IS NULL OR
+            checksum_algorithm IN ('md5', 'sha1', 'sha256', 'sha512')
+          ),
+        checksum_ok INTEGER
+          CHECK (checksum_ok IS NULL OR checksum_ok IN (0, 1)),
+        checksum_computed TEXT,
+        checksum_checked_at INTEGER
+          CHECK (checksum_checked_at IS NULL OR checksum_checked_at >= 0)
+      );
+
+      INSERT INTO downloads_v20 (
+        id, gid, url, filename, explicit_filename, dir, file_path, status,
+        total_bytes, completed_bytes, error_message, attempts, max_attempts,
+        created_at, updated_at, completed_at, scheduled_at, speed_limit_bps,
+        connections, block_reason, needs_login, error_detail,
+        checksum_algorithm, checksum_ok, checksum_computed, checksum_checked_at
+      )
+      SELECT
+        id, gid, url, filename, explicit_filename, dir, file_path, status,
+        total_bytes, completed_bytes, error_message, attempts, max_attempts,
+        created_at, updated_at, completed_at, scheduled_at, speed_limit_bps,
+        connections, block_reason, needs_login, error_detail,
+        checksum_algorithm, checksum_ok, checksum_computed, checksum_checked_at
+      FROM downloads;
+
+      DROP TABLE downloads;
+      ALTER TABLE downloads_v20 RENAME TO downloads;
+
+      CREATE INDEX downloads_created_at_idx ON downloads (created_at DESC);
+      CREATE INDEX downloads_status_idx ON downloads (status);
+      CREATE INDEX downloads_created_at_updated_at_idx
+        ON downloads (created_at DESC, updated_at DESC);
+      CREATE INDEX downloads_history_cleanup_idx
+        ON downloads (status, COALESCE(completed_at, updated_at));
     `
   }
 ]

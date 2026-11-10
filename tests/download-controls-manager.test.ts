@@ -619,6 +619,127 @@ describe('allowed hours', () => {
   })
 })
 
+describe('cancelling a download', () => {
+  it('stops an active transfer but keeps a retryable cancelled row and partial file', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/cancel-me.bin'
+
+    await manager.add({ url })
+    const item = itemByUrl(manager, url)
+    aria2.setStatus(item.gid, 'active')
+    await manager.refreshPolicy()
+    expect(itemByUrl(manager, url).status).toBe('active')
+
+    const snapshot = await manager.cancel(item.id)
+    const cancelled = snapshot.downloads.find((entry) => entry.id === item.id)
+    expect(cancelled).toMatchObject({
+      status: 'cancelled',
+      gid: '',
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      completedAt: clock.value
+    })
+    // The transfer is force-removed from aria2, not merely paused.
+    expect(aria2.methods).toContain('aria2.forceRemove')
+    expect(aria2.methods).toContain('aria2.removeDownloadResult')
+    expect(database.loadAll()[0]?.record).toMatchObject({
+      status: 'cancelled',
+      gid: ''
+    })
+
+    // Cancelling is not a failed attempt; Retry continues the same job.
+    await manager.retry(item.id)
+    const retried = itemByUrl(manager, url)
+    expect(retried).toMatchObject({
+      status: 'queued',
+      attempts: item.attempts,
+      completedAt: null
+    })
+    expect(aria2.addUriCalls).toHaveLength(2)
+  })
+
+  it('cancels a scheduled job that was never handed to aria2', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const url = 'https://example.com/never-started.bin'
+
+    await manager.add({
+      url,
+      controls: controls({ scheduledAt: at(13, 0) })
+    })
+    const item = itemByUrl(manager, url)
+    expect(item).toMatchObject({ status: 'waiting', blockReason: 'scheduled' })
+    expect(aria2.addUriCalls).toHaveLength(0)
+
+    await manager.cancel(item.id)
+
+    expect(itemByUrl(manager, url)).toMatchObject({
+      status: 'cancelled',
+      blockReason: null,
+      gid: ''
+    })
+    expect(aria2.methods).toEqual([])
+    expect(database.loadAll()[0]?.blockReason).toBeNull()
+
+    // Its old schedule coming due must not restart a cancelled row.
+    clock.value = at(13, 1)
+    await manager.refreshPolicy()
+    expect(aria2.addUriCalls).toHaveLength(0)
+
+    // Retry is an explicit override: it starts the cancelled job now.
+    await manager.retry(item.id)
+    expect(aria2.addUriCalls).toHaveLength(1)
+    expect(itemByUrl(manager, url).status).toBe('queued')
+  })
+
+  it('cancels a paused job and refuses a completed one', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+    const pausedUrl = 'https://example.com/paused-cancel.bin'
+    const doneUrl = 'https://example.com/already-done.bin'
+
+    await manager.add({ url: pausedUrl })
+    const paused = itemByUrl(manager, pausedUrl)
+    await manager.pause(paused.id)
+    await manager.cancel(paused.id)
+    expect(itemByUrl(manager, pausedUrl).status).toBe('cancelled')
+
+    await manager.add({ url: doneUrl })
+    const done = itemByUrl(manager, doneUrl)
+    aria2.setStatus(done.gid, 'complete')
+    await manager.refreshPolicy()
+    expect(itemByUrl(manager, doneUrl).status).toBe('complete')
+
+    await expect(manager.cancel(done.id)).rejects.toMatchObject({
+      code: 'DOWNLOAD_COMPLETE'
+    })
+    expect(itemByUrl(manager, doneUrl).status).toBe('complete')
+  })
+})
+
 describe('manual pause versus schedule block', () => {
   it('keeps a paused future job paused past its schedule and resumes explicitly', async () => {
     const { database, downloadDir } = await makeWorkspace()

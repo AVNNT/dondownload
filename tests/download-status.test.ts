@@ -50,6 +50,7 @@ describe('download status contract', () => {
       paused: 'paused',
       complete: 'done',
       error: 'error',
+      cancelled: 'error',
       interrupted: 'error'
     }
     for (const [desktop, browser] of Object.entries(expected)) {
