@@ -13,6 +13,7 @@ const BTN_GHOST =
 function browserLabel(browser: BrowserExtensionBrowserStatus): string {
   if (browser.browser === 'Chrome') return 'Chrome'
   if (browser.browser === 'Helium') return 'Helium'
+  if (browser.browser === 'Firefox') return 'Firefox'
   return 'Edge'
 }
 
@@ -117,6 +118,11 @@ export function BrowserExtensionSection(): JSX.Element {
                       Uses the Chrome connection
                     </span>
                   ) : null}
+                  {browser.browser === 'Firefox' ? (
+                    <span className="block text-xs font-normal text-zinc-500">
+                      Separate add-on ID
+                    </span>
+                  ) : null}
                 </span>
                 <ConnectionPill registered={browser.registered} />
               </div>
@@ -165,6 +171,12 @@ export function BrowserExtensionSection(): JSX.Element {
               </dd>
             </div>
             <div className="flex items-center gap-3 px-4 py-3 text-xs">
+              <dt className="shrink-0 text-zinc-500">Firefox add-on</dt>
+              <dd className="min-w-0 flex-1 break-all font-mono text-zinc-400">
+                {status.firefoxAddonId}
+              </dd>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-3 text-xs">
               <dt className="shrink-0 text-zinc-500">Extension folder</dt>
               <dd className="min-w-0 flex-1">
                 <code className="block break-all font-mono text-zinc-400">
@@ -189,6 +201,15 @@ export function BrowserExtensionSection(): JSX.Element {
                 <li>
                   Choose <strong>Load unpacked</strong> and select the folder
                   above. The extension keeps the same fixed ID.
+                </li>
+                <li>
+                  For Firefox, open{' '}
+                  <code className="text-zinc-300">about:debugging#/runtime/this-firefox</code>
+                  , choose <strong>Load Temporary Add-on</strong>, and select{' '}
+                  <code className="text-zinc-300">manifest.json</code> in the
+                  same folder. Then allow site access in{' '}
+                  <code className="text-zinc-300">about:addons</code> →
+                  Permissions.
                 </li>
               </ol>
             </div>

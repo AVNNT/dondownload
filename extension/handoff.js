@@ -28,8 +28,18 @@ import {
   automaticHandoffCandidate,
   originFromPageUrl
 } from './handoff-policy.js'
+import { createBoundedTtlCache } from './bounded-cache.js'
 
 export const HANDOFF_BADGE_CLEAR_MS = 4_000
+
+/**
+ * How long a URL handed off by the Firefox webRequest hold is remembered. A
+ * downloads.onCreated event for the same URL can arrive after the hold (for
+ * example when the safety timer released the browser first), and that copy
+ * must never be sent to DonDownload a second time.
+ */
+export const HELD_REQUEST_URL_TTL_MS = 60_000
+const MAX_HELD_REQUEST_URLS = 50
 
 /**
  * How long a held download waits for the hand-off decision before the browser
@@ -178,6 +188,118 @@ async function completeTakeover(chromeApi, settings, item, receipt) {
 }
 
 /**
+ * URLs the Firefox webRequest hold already sent to DonDownload. The hold runs
+ * before the browser downloads, so a later downloads.onCreated for the same URL
+ * is a race with the safety timer, never a second file.
+ */
+const heldRequestUrls = createBoundedTtlCache({
+  max: MAX_HELD_REQUEST_URLS,
+  ttlMs: HELD_REQUEST_URL_TTL_MS
+})
+
+export function rememberHeldRequestUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) return
+  if (originFromPageUrl(value) === null) return
+  heldRequestUrls.set(value, true)
+}
+
+function isHeldRequestItem(item) {
+  if (!item || typeof item !== 'object') return false
+  return [item.url, item.finalUrl].some(
+    (value) => typeof value === 'string' && heldRequestUrls.has(value)
+  )
+}
+
+/** Test hook: forget every remembered held-request URL. */
+export function resetHeldRequestUrlsForTests() {
+  heldRequestUrls.clear()
+}
+
+function handoffRequestOptions(item, candidate, settings, cookie) {
+  return {
+    expectedBytes: candidate.expectedBytes,
+    expectedContentType: candidate.expectedContentType,
+    minBytes: settings.handoffMinBytes,
+    // The candidate already decided this file ignores the size threshold; the
+    // bridge must not re-reject it as too small.
+    ignoreMinimumBytes: candidate.alwaysHandoff === true,
+    ...(originFromPageUrl(item.referrer) !== null
+      ? { referer: item.referrer }
+      : {}),
+    ...(typeof navigator !== 'undefined' &&
+    typeof navigator.userAgent === 'string'
+      ? { userAgent: navigator.userAgent }
+      : {}),
+    ...(cookie === undefined ? {} : { cookie })
+  }
+}
+
+/**
+ * The shared decision every hand-off path makes before any native call:
+ * candidate policy, cookie URL and the browser cookies for exactly that URL.
+ * The user switched this on and granted the optional cookies permission with
+ * it, so no per-site opt-in is needed. Nothing is stored and nothing is logged.
+ */
+async function prepareHandoffRequest(chromeApi, item, settings) {
+  const candidate = automaticHandoffCandidate(
+    item,
+    settings.excludedOrigins,
+    { minBytes: settings.handoffMinBytes }
+  )
+  if (!candidate.ok) return { ok: false, reason: candidate.reason }
+  const cookieUrl =
+    typeof item.finalUrl === 'string' && item.finalUrl.length > 0
+      ? item.finalUrl
+      : candidate.url
+  const cookie = await readHandoffCookieHeader(chromeApi, cookieUrl)
+  return { ok: true, candidate, cookieUrl, cookie }
+}
+
+async function sendPreparedHandoff(item, settings, prepared) {
+  try {
+    return await sendDurableHandoff(
+      prepared.candidate.url,
+      prepared.candidate.filename,
+      handoffRequestOptions(item, prepared.candidate, settings, prepared.cookie)
+    )
+  } catch {
+    return {
+      ok: false,
+      error: { code: 'HANDOFF_FAILED', message: 'The hand-off failed.' }
+    }
+  }
+}
+
+/**
+ * Record a login wall the preflight reached without a cookie so the popup can
+ * offer this exact origin in one click. Returns the outcome, or null when this
+ * is not a login failure.
+ */
+async function needsLoginOutcome(
+  chromeApi,
+  cookie,
+  handoff,
+  pageOrigin,
+  downloadOrigin,
+  cookieUrl
+) {
+  if (
+    cookie !== undefined ||
+    !handoff ||
+    !handoff.error ||
+    handoff.error.code !== 'HANDOFF_NEEDS_LOGIN'
+  ) {
+    return null
+  }
+  const origin = pageOrigin ?? downloadOrigin
+  const host = hostOf(cookieUrl)
+  if (origin === null || host.length === 0) return null
+  await recordNeedsLoginState(chromeApi, { origin, host })
+  setNeedsLoginBadge(chromeApi, host)
+  return 'needs-login'
+}
+
+/**
  * Handle one chrome.downloads item. Returns a short outcome string for focused
  * tests; callers never need to log it with a URL.
  *
@@ -187,6 +309,9 @@ async function completeTakeover(chromeApi, settings, item, receipt) {
  * an always-hand-off type (a `.funscript`), which is a few KB by nature.
  */
 export async function handleCreatedDownload(chromeApi, item, options = {}) {
+  // The Firefox hold sends the file before the browser starts its download. A
+  // late onCreated for that URL is the same file, never a second hand-off.
+  if (isHeldRequestItem(item)) return 'ignored:held-request'
   // A held item comes from onDeterminingFilename: the browser has not started
   // the transfer and is waiting for suggest(), so there is no live download to
   // re-read and nothing to keep running.
@@ -202,25 +327,11 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
   const downloads = chromeApi && chromeApi.downloads
   if (!downloads) return 'downloads-unavailable'
 
-  const candidateOptions = { minBytes: settings.handoffMinBytes }
-  const candidate = automaticHandoffCandidate(
-    item,
-    settings.excludedOrigins,
-    candidateOptions
-  )
-  if (!candidate.ok) return `ignored:${candidate.reason}`
+  const prepared = await prepareHandoffRequest(chromeApi, item, settings)
+  if (!prepared.ok) return `ignored:${prepared.reason}`
 
-  const downloadOrigin = candidate.origin
+  const downloadOrigin = prepared.candidate.origin
   const pageOrigin = originFromPageUrl(item.referrer)
-  const cookieUrl =
-    typeof item.finalUrl === 'string' && item.finalUrl.length > 0
-      ? item.finalUrl
-      : candidate.url
-  // The user switched this on and granted the optional cookies permission with
-  // it, so the browser's cookies for exactly this download URL are read without
-  // a per-site opt-in. `getAll({ url })` returns cookies for that URL only;
-  // nothing is stored and nothing is logged.
-  const cookie = await readHandoffCookieHeader(chromeApi, cookieUrl)
 
   const claim = await claimHandoffDownload(chromeApi, item.id)
   if (!claim.ok) {
@@ -228,52 +339,22 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
     return `not-claimed:${claim.reason}`
   }
 
-  let handoff
-  try {
-    handoff = await sendDurableHandoff(candidate.url, candidate.filename, {
-      expectedBytes: candidate.expectedBytes,
-      expectedContentType: candidate.expectedContentType,
-      minBytes: settings.handoffMinBytes,
-      // The candidate already decided this file ignores the size threshold; the
-      // bridge must not re-reject it as too small.
-      ignoreMinimumBytes: candidate.alwaysHandoff === true,
-      ...(originFromPageUrl(item.referrer) !== null
-        ? { referer: item.referrer }
-        : {}),
-      ...(typeof navigator !== 'undefined' &&
-      typeof navigator.userAgent === 'string'
-        ? { userAgent: navigator.userAgent }
-        : {}),
-      ...(cookie === undefined ? {} : { cookie })
-    })
-  } catch {
-    handoff = {
-      ok: false,
-      error: { code: 'HANDOFF_FAILED', message: 'The hand-off failed.' }
-    }
-  }
+  const handoff = await sendPreparedHandoff(item, settings, prepared)
 
   // Any failure, malformed receipt, duplicate or timeout leaves the browser
   // download running. Finish the session record so a suspended worker never
   // retries an uncertain transfer.
   if (!handoff || handoff.ok !== true || handoff.durable !== true) {
     await finishHandoffDownload(chromeApi, item.id)
-    if (
-      cookie === undefined &&
-      handoff &&
-      handoff.error &&
-      handoff.error.code === 'HANDOFF_NEEDS_LOGIN'
-    ) {
-      // The preflight reached a login wall without a cookie. Remember it for
-      // the popup so the user can opt this exact origin in with one click.
-      const origin = pageOrigin ?? downloadOrigin
-      const host = hostOf(cookieUrl)
-      if (origin !== null && host.length > 0) {
-        await recordNeedsLoginState(chromeApi, { origin, host })
-        setNeedsLoginBadge(chromeApi, host)
-        return 'needs-login'
-      }
-    }
+    const needsLogin = await needsLoginOutcome(
+      chromeApi,
+      prepared.cookie,
+      handoff,
+      pageOrigin,
+      downloadOrigin,
+      prepared.cookieUrl
+    )
+    if (needsLogin !== null) return needsLogin
     notifyHandoff(chromeApi, settings, '!', 'Hand-off not confirmed; browser download kept')
     return 'left-running'
   }
@@ -314,7 +395,11 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
     currentSettings.excludedOrigins,
     { minBytes: currentSettings.handoffMinBytes }
   )
-  if (!currentSettings.automaticFileHandoff || !currentCandidate.ok || currentCandidate.url !== candidate.url) {
+  if (
+    !currentSettings.automaticFileHandoff ||
+    !currentCandidate.ok ||
+    currentCandidate.url !== prepared.candidate.url
+  ) {
     await finishHandoffDownload(chromeApi, item.id)
     return 'left-running-changed'
   }
@@ -325,6 +410,51 @@ export async function handleCreatedDownload(chromeApi, item, options = {}) {
     notifyHandoff(chromeApi, settings, '!', 'Hand-off saved; browser download kept')
     return 'left-running-cancel-failed'
   }
+  await completeTakeover(chromeApi, settings, item, handoff.receipt)
+  return 'cancelled'
+}
+
+/**
+ * Handle one request held by the Firefox webRequest listener. The browser has
+ * not created a download yet, so there is nothing to claim, re-read, cancel or
+ * erase: the same decision and native hand-off run, and the caller then either
+ * cancels the request ({ cancel: true }) or lets the browser download.
+ *
+ * Returns 'cancelled' only after a durable receipt; every other outcome keeps
+ * the browser copy and uses the same reason strings as handleCreatedDownload.
+ */
+export async function handoffHeldRequest(chromeApi, item) {
+  let settings
+  try {
+    settings = await readCaptureSettings(chromeApi)
+  } catch {
+    return 'settings-unavailable'
+  }
+  if (settings.automaticFileHandoff !== true) return 'disabled'
+
+  const prepared = await prepareHandoffRequest(chromeApi, item, settings)
+  if (!prepared.ok) return `ignored:${prepared.reason}`
+
+  const handoff = await sendPreparedHandoff(item, settings, prepared)
+  if (!handoff || handoff.ok !== true || handoff.durable !== true) {
+    const needsLogin = await needsLoginOutcome(
+      chromeApi,
+      prepared.cookie,
+      handoff,
+      originFromPageUrl(item.referrer),
+      prepared.candidate.origin,
+      prepared.cookieUrl
+    )
+    if (needsLogin !== null) return needsLogin
+    notifyHandoff(chromeApi, settings, '!', 'Hand-off not confirmed; browser download kept')
+    return 'left-running'
+  }
+  await clearNeedsLoginState(chromeApi)
+  clearNeedsLoginBadge()
+  // The browser may still report onCreated for this URL if the safety timer
+  // released it first. Remember the file so it is never sent twice.
+  rememberHeldRequestUrl(prepared.candidate.url)
+  rememberHeldRequestUrl(item.url)
   await completeTakeover(chromeApi, settings, item, handoff.receipt)
   return 'cancelled'
 }

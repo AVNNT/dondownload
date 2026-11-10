@@ -152,8 +152,25 @@ export function recommendedCapturePermissions(chromeApi) {
   if (optional === null || optional.has('cookies')) {
     permissions.push('cookies')
   }
-  // Site access for every http/https site is a required manifest permission,
-  // so the welcome page only asks for the optional permissions above.
+  // Chromium grants the declared host_permissions at install. Firefox treats
+  // them as user-granted in MV3, so the same user gesture must ask for the
+  // broad sites too; otherwise the all-sites overlay and network evidence stay
+  // unavailable until the user finds the add-on permission page.
+  if (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.userAgent === 'string' &&
+    /Firefox\//.test(navigator.userAgent)
+  ) {
+    // Firefox has no downloads.onDeterminingFilename, so the hand-off holds the
+    // response with a blocking webRequest listener instead. Ask for it in the
+    // same gesture, but only when the manifest declares it optional.
+    if (optional === null || optional.has('webRequestBlocking')) {
+      permissions.push('webRequestBlocking')
+    }
+    return { permissions, origins: ['http://*/*', 'https://*/*'] }
+  }
+  // Site access for every http/https site is a required manifest permission on
+  // Chromium, so the welcome page only asks for the optional permissions above.
   return { permissions }
 }
 

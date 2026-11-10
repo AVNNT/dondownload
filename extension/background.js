@@ -34,6 +34,7 @@ import {
   rememberDecidedDownload
 } from './handoff.js'
 import { captureGofileDownload, installGofileCaptureListeners } from './gofile-capture.js'
+import { installFirefoxDownloadHold } from './firefox-hold.js'
 import {
   HANDOFF_CARD_MESSAGE_TYPES,
   handleHandoffCardMessage
@@ -726,6 +727,10 @@ async function toggleOverlayOnActiveTab() {
 // also re-asserts the always-on all-sites registration, so a registration lost
 // to a browser reset comes back without user action.
 installDownloadsSupport()
+// Firefox has no downloads.onDeterminingFilename. Its blocking webRequest
+// listener holds the response until the same hand-off reaches a durable
+// receipt; the install is a no-op on Chromium and without the optional grant.
+void installFirefoxDownloadHold(chrome)
 // The Gofile row capture listens on its own onCreated/onChanged, so it records
 // and cancels a scan's downloads whether or not the browser fires the held
 // onDeterminingFilename event the hand-off prefers.
@@ -748,6 +753,9 @@ chrome.permissions.onAdded.addListener((permissions) => {
   invalidatePermissionCache()
   networkObservation.install()
   mediaSniffer.install()
+  // The blocking webRequest grant may arrive after the popup closed; the hold
+  // then replaces the onCreated-only path without a browser restart.
+  void installFirefoxDownloadHold(chrome)
   void refreshNetworkObservation().catch(() => undefined)
   void refreshMediaSniffing().catch(() => undefined)
   void handlePermissionsAdded(chrome, permissions).catch(() => undefined)

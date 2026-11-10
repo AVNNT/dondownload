@@ -153,12 +153,22 @@ this local HTTP flow. Pixeldrain list and Gofile-folder coverage remain open.
 
 - **Milestone 1 foundation:** complete.
 - **Milestone 2A (manual browser capture):** complete and locally verified.
-  A Helium/Chrome/Edge-compatible Manifest V3 extension sends only an explicitly
-  chosen HTTP(S) URL through the native messaging host to the loopback desktop
-  bridge and the existing `DownloadManager.add` path.
+  A Helium/Chrome/Edge/Firefox-compatible Manifest V3 extension sends only an
+  explicitly chosen HTTP(S) URL through the native messaging host to the
+  loopback desktop bridge and the existing `DownloadManager.add` path.
+  Firefox 140+ runs the same modules as an event page and uses a Mozilla
+  `allowed_extensions` app manifest.
 - **Helium registration support:** committed at `f03886d`. The registration
   script keeps its explicit `Helium` option mapped to the verified
   Chromium-compatible Chrome current-user key.
+- **Firefox support:** the same `extension/` folder now declares
+  `browser_specific_settings.gecko` and a `background.scripts` event page, so
+  Firefox 140+ runs it without a separate build. The app writes a
+  `allowed_extensions` app manifest under
+  `HKCU\Software\Mozilla\NativeMessagingHosts\com.dondownload.bridge`, and the
+  native host accepts Firefox's manifest-path + add-on-ID launch arguments.
+  Firefox has no `downloads.onDeterminingFilename`, so automatic hand-off uses
+  the existing `onCreated` path.
 - **Milestone 2B (per-site video overlay): COMPLETE and locally verified.**
   The overlay, per-site opt-in/revoke flow, truthful UI-only panel, regression
   tests and docs are implemented. A headed Helium run now shows the DD button

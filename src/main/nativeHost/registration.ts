@@ -3,12 +3,17 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import {
   CHROME_NATIVE_HOST_REGISTRY_KEY,
+  DONDOWNLOAD_NATIVE_HOST_ADDON,
   EDGE_NATIVE_HOST_REGISTRY_KEY,
+  FIREFOX_NATIVE_HOST_REGISTRY_KEY,
   NATIVE_HOST_NAME,
   type BrowserExtensionBrowserStatus,
   type BrowserExtensionStatus
 } from '@shared/browserExtension'
-import { DONDOWNLOAD_EXTENSION_ID } from '@shared/extensionId'
+import {
+  DONDOWNLOAD_EXTENSION_ID,
+  isFirefoxAddonId
+} from '@shared/extensionId'
 
 /**
  * Zero-config current-user native messaging registration.
@@ -63,6 +68,14 @@ interface NativeManifest {
   allowed_origins: string[]
 }
 
+interface FirefoxNativeManifest {
+  name: string
+  description: string
+  path: string
+  type: 'stdio'
+  allowed_extensions: string[]
+}
+
 const EXACT_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}\/$/
 const HOST_EXE_NAME = 'dondownload-native-host.exe'
 const MANIFEST_DESCRIPTION =
@@ -74,6 +87,20 @@ export function nativeManifestPath(appDataPath: string): string {
     'DonDownload',
     'native-messaging',
     `${NATIVE_HOST_NAME}.json`
+  )
+}
+
+/**
+ * Firefox app manifests use `allowed_extensions` (add-on IDs) instead of
+ * Chromium's `allowed_origins`, and must live in a separate file because the
+ * same host name cannot be registered with both keys.
+ */
+export function firefoxManifestPath(appDataPath: string): string {
+  return path.join(
+    appDataPath,
+    'DonDownload',
+    'native-messaging',
+    `${NATIVE_HOST_NAME}.firefox.json`
   )
 }
 
@@ -127,12 +154,33 @@ function sanitizedOrigins(existing: unknown, extensionOrigin: string): string[] 
   return origins
 }
 
-function parseManifest(raw: string | null): Partial<NativeManifest> | null {
+function sanitizedExtensions(
+  existing: unknown,
+  addonId: string
+): string[] {
+  const extensions: string[] = []
+  if (Array.isArray(existing)) {
+    for (const value of existing) {
+      if (!isFirefoxAddonId(value) || value.includes('*') || extensions.includes(value)) {
+        continue
+      }
+      extensions.push(value)
+    }
+  }
+  if (!extensions.includes(addonId)) extensions.push(addonId)
+  return extensions
+}
+
+type ParsedNativeManifest = Partial<
+  NativeManifest & { allowed_extensions: string[] }
+>
+
+function parseManifest(raw: string | null): ParsedNativeManifest | null {
   if (raw === null) return null
   try {
     const parsed = JSON.parse(raw) as unknown
     return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Partial<NativeManifest>)
+      ? (parsed as ParsedNativeManifest)
       : null
   } catch {
     return null
@@ -141,7 +189,7 @@ function parseManifest(raw: string | null): Partial<NativeManifest> | null {
 
 async function resolveHostPath(
   deps: RegistrationDependencies,
-  existing: Partial<NativeManifest> | null
+  existing: ParsedNativeManifest | null
 ): Promise<string> {
   const existingPath =
     existing && typeof existing.path === 'string' ? existing.path : null
@@ -168,13 +216,29 @@ function buildManifest(hostPath: string, allowedOrigins: string[]): NativeManife
   }
 }
 
-function manifestContents(manifest: NativeManifest): string {
+function buildFirefoxManifest(
+  hostPath: string,
+  allowedExtensions: string[]
+): FirefoxNativeManifest {
+  return {
+    name: NATIVE_HOST_NAME,
+    description: MANIFEST_DESCRIPTION,
+    path: hostPath,
+    type: 'stdio',
+    allowed_extensions: allowedExtensions
+  }
+}
+
+function manifestContents(
+  manifest: NativeManifest | FirefoxNativeManifest
+): string {
   return `${JSON.stringify(manifest, null, 2)}\n`
 }
 
 function browserRows(
   chromeRegistered: boolean,
-  edgeRegistered: boolean
+  edgeRegistered: boolean,
+  firefoxRegistered: boolean
 ): BrowserExtensionBrowserStatus[] {
   return [
     {
@@ -194,6 +258,12 @@ function browserRows(
       registered: edgeRegistered,
       registryKey: EDGE_NATIVE_HOST_REGISTRY_KEY,
       shared: false
+    },
+    {
+      browser: 'Firefox',
+      registered: firefoxRegistered,
+      registryKey: FIREFOX_NATIVE_HOST_REGISTRY_KEY,
+      shared: false
     }
   ]
 }
@@ -210,6 +280,7 @@ export async function registerNativeHost(
   deps: RegistrationDependencies
 ): Promise<BrowserExtensionStatus> {
   const manifestPath = nativeManifestPath(deps.appDataPath)
+  const firefoxManifest = firefoxManifestPath(deps.appDataPath)
   const extensionFolder = extensionFolderPath(deps)
   const extensionOrigin = `chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`
   const errors: string[] = []
@@ -218,16 +289,29 @@ export async function registerNativeHost(
     ? packagedNativeHostPath(deps.resourcesPath)
     : developmentNativeHostPath(deps.appPath)
   let allowedOrigins: string[] = [extensionOrigin]
+  let allowedExtensions: string[] = [DONDOWNLOAD_NATIVE_HOST_ADDON]
 
   try {
     const raw = await deps.fileSystem.readFile(manifestPath)
+    const rawFirefox = await deps.fileSystem.readFile(firefoxManifest)
     const existing = parseManifest(raw)
-    hostPath = await resolveHostPath(deps, existing)
+    const existingFirefox = parseManifest(rawFirefox)
+    hostPath = await resolveHostPath(deps, existing ?? existingFirefox)
     allowedOrigins = sanitizedOrigins(existing?.allowed_origins, extensionOrigin)
+    allowedExtensions = sanitizedExtensions(
+      existingFirefox?.allowed_extensions,
+      DONDOWNLOAD_NATIVE_HOST_ADDON
+    )
 
     const desired = manifestContents(buildManifest(hostPath, allowedOrigins))
     if (raw !== desired) {
       await deps.fileSystem.writeFileAtomic(manifestPath, desired)
+    }
+    const desiredFirefox = manifestContents(
+      buildFirefoxManifest(hostPath, allowedExtensions)
+    )
+    if (rawFirefox !== desiredFirefox) {
+      await deps.fileSystem.writeFileAtomic(firefoxManifest, desiredFirefox)
     }
   } catch (error) {
     errors.push(`Manifest: ${errorMessage(error)}`)
@@ -235,14 +319,20 @@ export async function registerNativeHost(
 
   let chromeRegistered = false
   let edgeRegistered = false
+  let firefoxRegistered = false
   for (const [key, assign] of [
     [CHROME_NATIVE_HOST_REGISTRY_KEY, (value: boolean) => (chromeRegistered = value)],
-    [EDGE_NATIVE_HOST_REGISTRY_KEY, (value: boolean) => (edgeRegistered = value)]
+    [EDGE_NATIVE_HOST_REGISTRY_KEY, (value: boolean) => (edgeRegistered = value)],
+    [FIREFOX_NATIVE_HOST_REGISTRY_KEY, (value: boolean) => (firefoxRegistered = value)]
   ] as const) {
     try {
+      // Firefox's registry key points at the allowed_extensions manifest; the
+      // Chromium-compatible browsers share the allowed_origins manifest.
+      const target =
+        key === FIREFOX_NATIVE_HOST_REGISTRY_KEY ? firefoxManifest : manifestPath
       const current = await deps.registry.readDefault(key)
-      if (current !== manifestPath) {
-        await deps.registry.writeDefault(key, manifestPath)
+      if (current !== target) {
+        await deps.registry.writeDefault(key, target)
       }
       assign(true)
     } catch (error) {
@@ -252,11 +342,14 @@ export async function registerNativeHost(
   }
 
   const status: BrowserExtensionStatus = {
-    registered: chromeRegistered && edgeRegistered,
-    browsers: browserRows(chromeRegistered, edgeRegistered),
+    registered: chromeRegistered && edgeRegistered && firefoxRegistered,
+    browsers: browserRows(chromeRegistered, edgeRegistered, firefoxRegistered),
     hostPath,
     manifestPath,
     allowedOrigins,
+    firefoxManifestPath: firefoxManifest,
+    firefoxAddonId: DONDOWNLOAD_NATIVE_HOST_ADDON,
+    allowedExtensions,
     extensionFolder,
     extensionId: DONDOWNLOAD_EXTENSION_ID,
     lastError: errors.length > 0 ? errors.join(' | ') : null
@@ -276,13 +369,20 @@ export async function unregisterNativeHost(
   deps: RegistrationDependencies
 ): Promise<UnregisterResult> {
   const manifestPath = nativeManifestPath(deps.appDataPath)
+  const firefoxManifest = firefoxManifestPath(deps.appDataPath)
   const installDirectory = path.dirname(deps.execPath)
 
   try {
     const raw = await deps.fileSystem.readFile(manifestPath)
+    const rawFirefox = await deps.fileSystem.readFile(firefoxManifest)
     const manifest = parseManifest(raw)
+    const firefox = parseManifest(rawFirefox)
     const manifestHostPath =
-      manifest && typeof manifest.path === 'string' ? manifest.path : null
+      manifest && typeof manifest.path === 'string'
+        ? manifest.path
+        : firefox && typeof firefox.path === 'string'
+          ? firefox.path
+          : null
     if (manifestHostPath === null) {
       return { removed: false, reason: 'no-manifest', lastError: null }
     }
@@ -303,7 +403,8 @@ export async function unregisterNativeHost(
     const errors: string[] = []
     for (const key of [
       CHROME_NATIVE_HOST_REGISTRY_KEY,
-      EDGE_NATIVE_HOST_REGISTRY_KEY
+      EDGE_NATIVE_HOST_REGISTRY_KEY,
+      FIREFOX_NATIVE_HOST_REGISTRY_KEY
     ]) {
       try {
         await deps.registry.removeKey(key)
@@ -311,10 +412,12 @@ export async function unregisterNativeHost(
         errors.push(`Registry: ${errorMessage(error)}`)
       }
     }
-    try {
-      await deps.fileSystem.removeFile(manifestPath)
-    } catch (error) {
-      errors.push(`Manifest: ${errorMessage(error)}`)
+    for (const file of [manifestPath, firefoxManifest]) {
+      try {
+        await deps.fileSystem.removeFile(file)
+      } catch (error) {
+        errors.push(`Manifest: ${errorMessage(error)}`)
+      }
     }
 
     const lastError = errors.length > 0 ? errors.join(' | ') : null

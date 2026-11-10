@@ -1,5 +1,6 @@
 export const HANDOFF_BADGE_CLEAR_MS: number
 export const HANDOFF_SUGGEST_TIMEOUT_MS: number
+export const HELD_REQUEST_URL_TTL_MS: number
 
 export type HandoffOutcome =
   | 'cancelled'
@@ -29,11 +30,17 @@ export function handleCreatedDownload(
   item: unknown,
   options?: HandoffOptions
 ): Promise<HandoffOutcome>
+export function handoffHeldRequest(
+  chromeApi: unknown,
+  item: unknown
+): Promise<HandoffOutcome>
 export function installDownloadsListener(
   chromeApi: unknown,
   onCreated: (item: unknown, options?: HandoffOptions) => unknown
 ): boolean
 export function resetDownloadsListenerForTests(): void
 export function rememberDecidedDownload(item: unknown): void
+export function rememberHeldRequestUrl(value: unknown): void
+export function resetHeldRequestUrlsForTests(): void
 export function hasNeedsLoginBadge(): boolean
 export function clearNeedsLoginBadge(): void

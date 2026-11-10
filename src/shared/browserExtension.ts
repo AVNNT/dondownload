@@ -1,4 +1,7 @@
-import { DONDOWNLOAD_EXTENSION_ID } from './extensionId'
+import {
+  DONDOWNLOAD_EXTENSION_ID,
+  DONDOWNLOAD_FIREFOX_ADDON_ID
+} from './extensionId'
 
 /**
  * Renderer-safe status for the zero-config browser bridge registration.
@@ -6,7 +9,7 @@ import { DONDOWNLOAD_EXTENSION_ID } from './extensionId'
  * payload data.
  */
 export interface BrowserExtensionBrowserStatus {
-  browser: 'Chrome' | 'Helium' | 'Edge'
+  browser: 'Chrome' | 'Helium' | 'Edge' | 'Firefox'
   registered: boolean
   /** Current-user registry key used by this browser. */
   registryKey: string
@@ -21,6 +24,10 @@ export interface BrowserExtensionStatus {
   hostPath: string
   manifestPath: string
   allowedOrigins: string[]
+  /** Firefox reads `allowed_extensions` from its own app manifest. */
+  firefoxManifestPath: string
+  firefoxAddonId: string
+  allowedExtensions: string[]
   extensionFolder: string
   extensionId: string
   lastError: string | null
@@ -34,5 +41,11 @@ export const CHROME_NATIVE_HOST_REGISTRY_KEY =
 export const EDGE_NATIVE_HOST_REGISTRY_KEY =
   'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.dondownload.bridge'
 
+export const FIREFOX_NATIVE_HOST_REGISTRY_KEY =
+  'HKCU\\Software\\Mozilla\\NativeMessagingHosts\\com.dondownload.bridge'
+
 /** Fixed origin written to every manifest. Wildcards are never accepted. */
 export const DONDOWNLOAD_NATIVE_HOST_ORIGIN = `chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`
+
+/** Fixed add-on ID written to the Firefox app manifest's allowed_extensions. */
+export const DONDOWNLOAD_NATIVE_HOST_ADDON = DONDOWNLOAD_FIREFOX_ADDON_ID

@@ -7,11 +7,23 @@ const extensionDir = path.join(process.cwd(), 'extension')
 
 interface ExtensionManifest {
   manifest_version: number
+  minimum_chrome_version?: string
+  browser_specific_settings?: {
+    gecko?: {
+      id?: string
+      strict_min_version?: string
+      data_collection_permissions?: { required?: string[] }
+    }
+  }
   permissions?: string[]
   optional_permissions?: string[]
   host_permissions?: string[]
   optional_host_permissions?: string[]
-  background?: { service_worker?: string; type?: string }
+  background?: {
+    service_worker?: string
+    scripts?: string[]
+    type?: string
+  }
   icons?: Record<string, string>
   action?: {
     default_popup?: string
@@ -40,9 +52,26 @@ describe('browser extension manifest', () => {
     ])
     expect(manifest.content_scripts).toBeUndefined()
     expect(manifest.background?.service_worker).toBe('background.js')
+    // Firefox runs an event page from `scripts`; Chromium 121+ ignores the key.
+    expect(manifest.background?.scripts).toEqual(['background.js'])
+    expect(manifest.background?.type).toBe('module')
+    expect(manifest.minimum_chrome_version).toBe('121')
     expect(manifest.action?.default_popup).toBe('popup.html')
     expect(manifest.options_ui).toEqual({ page: 'options.html', open_in_tab: true })
     expect(manifest.commands?.['toggle-overlay']?.suggested_key).toBeUndefined()
+  })
+
+  it('pins the Firefox add-on ID and the supported Firefox baseline', async () => {
+    const manifest = await readManifest()
+    // Registered content scripts pass `world: 'ISOLATED'`, which Firefox only
+    // accepts from 128. The declared data collection permissions and current
+    // ESR baseline set the floor at 140. The ID is the allowed_extensions entry
+    // for native messaging, so it must match src/shared/extensionId.ts.
+    expect(manifest.browser_specific_settings?.gecko).toEqual({
+      id: 'dondownload@dondownload.app',
+      strict_min_version: '140.0',
+      data_collection_permissions: { required: ['none'] }
+    })
   })
 
   it('grants HTTP(S) site access at install so the all-sites switch is always on', async () => {
@@ -83,11 +112,14 @@ describe('browser extension manifest', () => {
     expect(manifest.optional_permissions ?? []).not.toContain('downloads')
   })
 
-  it('declares webRequest and cookies only as optional permissions', async () => {
+  it('declares webRequest, webRequestBlocking and cookies only as optional permissions', async () => {
     const manifest = await readManifest()
+    // webRequestBlocking lets Firefox hold a response before the browser
+    // downloads it, the way onDeterminingFilename does on Chromium.
     expect([...(manifest.optional_permissions ?? [])].sort()).toEqual([
       'cookies',
-      'webRequest'
+      'webRequest',
+      'webRequestBlocking'
     ])
     expect(manifest.permissions ?? []).not.toContain('webRequest')
     expect(manifest.permissions ?? []).not.toContain('cookies')
@@ -124,6 +156,7 @@ describe('browser extension manifest', () => {
       'bridge.js',
       'browser-downloads.js',
       'capture-settings.js',
+      'firefox-hold.js',
       'handoff-policy.js',
       'handoff.js',
       'gofile-capture.js',

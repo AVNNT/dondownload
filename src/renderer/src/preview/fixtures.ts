@@ -35,9 +35,13 @@ import {
 import {
   CHROME_NATIVE_HOST_REGISTRY_KEY,
   EDGE_NATIVE_HOST_REGISTRY_KEY,
+  FIREFOX_NATIVE_HOST_REGISTRY_KEY,
   type BrowserExtensionStatus
 } from '@shared/browserExtension'
-import { DONDOWNLOAD_EXTENSION_ID } from '@shared/extensionId'
+import {
+  DONDOWNLOAD_EXTENSION_ID,
+  DONDOWNLOAD_FIREFOX_ADDON_ID
+} from '@shared/extensionId'
 import {
   defaultMediaToolSettings,
   type MediaToolSettings
@@ -103,12 +107,22 @@ const browserExtensionFixture: BrowserExtensionStatus = {
       registered: true,
       registryKey: EDGE_NATIVE_HOST_REGISTRY_KEY,
       shared: false
+    },
+    {
+      browser: 'Firefox',
+      registered: true,
+      registryKey: FIREFOX_NATIVE_HOST_REGISTRY_KEY,
+      shared: false
     }
   ],
   hostPath: 'C:\\Program Files\\DonDownload\\resources\\native\\dondownload-native-host.exe',
   manifestPath:
     'C:\\Users\\preview\\AppData\\Roaming\\DonDownload\\native-messaging\\com.dondownload.bridge.json',
   allowedOrigins: [`chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`],
+  firefoxManifestPath:
+    'C:\\Users\\preview\\AppData\\Roaming\\DonDownload\\native-messaging\\com.dondownload.bridge.firefox.json',
+  firefoxAddonId: DONDOWNLOAD_FIREFOX_ADDON_ID,
+  allowedExtensions: [DONDOWNLOAD_FIREFOX_ADDON_ID],
   extensionFolder: 'C:\\Program Files\\DonDownload\\resources\\extension',
   extensionId: DONDOWNLOAD_EXTENSION_ID,
   lastError: null
