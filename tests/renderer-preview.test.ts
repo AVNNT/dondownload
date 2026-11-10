@@ -115,18 +115,26 @@ describe('browser preview fixture adapter', () => {
 
   it('notifies subscribers and unsubscribes cleanly', async () => {
     const preview = api()
-    const seen: string[] = []
+    const seen: Array<{ id: string; status: string }> = []
     const unsubscribe = preview.onSnapshotChanged((snapshot) => {
-      seen.push(snapshot.downloads[0]?.status ?? 'missing')
+      const item = snapshot.downloads[0]
+      seen.push({
+        id: item?.id ?? 'missing',
+        status: item?.status ?? 'missing'
+      })
     })
 
     const paused = await preview.pauseDownload('preview-download-active')
     expect(paused.ok).toBe(true)
-    expect(seen).toEqual(['paused'])
+    expect(seen).toEqual([
+      { id: 'preview-download-active', status: 'paused' }
+    ])
 
     unsubscribe()
     await preview.resumeDownload('preview-download-active')
-    expect(seen).toEqual(['paused'])
+    expect(seen).toEqual([
+      { id: 'preview-download-active', status: 'paused' }
+    ])
   })
 
   it('drives a clearly simulated download through resume, progress and completion', async () => {
@@ -136,10 +144,12 @@ describe('browser preview fixture adapter', () => {
     const resumed = await preview.resumeDownload('preview-download-active')
     expect(resumed.ok).toBe(true)
     if (!resumed.ok) return
-    expect(
-      resumed.value.downloads.find((item) => item.id === 'preview-download-active')
-        ?.status
-    ).toBe('queued')
+    const resumedItem = resumed.value.downloads.find(
+      (item) => item.id === 'preview-download-active'
+    )
+    expect(resumedItem?.status).toBe('waiting')
+    expect(resumedItem?.completedBytes).toBe(2_300 * 1024 * 1024)
+    expect(resumedItem?.blockReason).toBeNull()
 
     expect(preview.advanceDownloadFixture()).toContain('Simulated progress')
     const progressing = await preview.getSnapshot()
@@ -149,7 +159,7 @@ describe('browser preview fixture adapter', () => {
       (item) => item.id === 'preview-download-active'
     )
     expect(active?.status).toBe('active')
-    expect(active?.completedBytes).toBeGreaterThan(0)
+    expect(active?.completedBytes).toBeGreaterThan(2_300 * 1024 * 1024)
 
     expect(preview.advanceDownloadFixture()).toContain('Simulated completion')
     const completed = await preview.getSnapshot()
@@ -161,6 +171,28 @@ describe('browser preview fixture adapter', () => {
     expect(done?.status).toBe('complete')
     expect(done?.completedBytes).toBe(done?.totalBytes)
     expect(done?.filePath).toContain(done?.filename)
+  })
+
+  it('retries a failed download with reset progress and no invented success', async () => {
+    const preview = api()
+    const retried = await preview.retryDownload('preview-download-error')
+    expect(retried.ok).toBe(true)
+    if (!retried.ok) return
+    const item = retried.value.downloads.find(
+      (download) => download.id === 'preview-download-error'
+    )
+    expect(item?.id).toBe('preview-download-error')
+    expect(item?.status).toBe('queued')
+    expect(item?.completedBytes).toBe(0)
+    expect(item?.speedBps).toBe(0)
+    expect(item?.etaSeconds).toBeNull()
+    expect(item?.errorMessage).toBeNull()
+    expect(item?.filePath).toBeNull()
+    expect(item?.completedAt).toBeNull()
+    expect(item?.attempts).toBe(3)
+    expect(item?.totalBytes).toBe(512 * 1024 * 1024)
+    expect(item?.connections).toBe(4)
+    expect(item?.blockReason).toBeNull()
   })
 
   it('supports media analysis, queueing, cancellation and polling snapshots', async () => {
