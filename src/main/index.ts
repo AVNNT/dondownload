@@ -118,16 +118,20 @@ let mediaPublisher: SnapshotDeltaPublisher<
 > | null = null
 let batchPublisher: SnapshotDeltaPublisher<Batch, Record<string, never>> | null =
   null
+/**
+ * The isolated interactive-smoke window renders offscreen for CDP-driven
+ * verification and is never shown on the desktop. Its deltas must still flow,
+ * otherwise the harness cannot observe the live renderer it is testing. Only
+ * the interactive smoke session sets this; the desktop app never does.
+ */
+let forceSnapshotDelivery = false
 
 /** True only when the renderer can actually show a progress update. */
 function snapshotWindowVisible(): boolean {
   const window = mainWindow
-  return (
-    window !== null &&
-    !window.isDestroyed() &&
-    window.isVisible() &&
-    !window.isMinimized()
-  )
+  if (window === null || window.isDestroyed()) return false
+  if (forceSnapshotDelivery) return true
+  return window.isVisible() && !window.isMinimized()
 }
 
 function refreshSnapshotDelivery(): void {
@@ -891,6 +895,10 @@ if (unregisterRequested) {
 
     const interactiveSmoke =
       smoke !== null && process.env.DONDOWNLOAD_INTERACTIVE_SMOKE === '1'
+    // The verification window is offscreen, so the normal visibility gate would
+    // suppress every delta the harness observes. Keep delivery on for this
+    // isolated session only; the real desktop window keeps the gate.
+    forceSnapshotDelivery = interactiveSmoke
     const interactiveBridge =
       interactiveSmoke && process.env.DONDOWNLOAD_INTERACTIVE_BRIDGE === '1'
 
@@ -905,6 +913,12 @@ if (unregisterRequested) {
     // longer waits for the download engine or browser integration to be ready.
     const window = openMainWindow(smoke === null && !startHidden, interactiveSmoke)
     mainWindow = window
+    if (interactiveSmoke) {
+      // The offscreen verification window never becomes visible, so Chromium
+      // would otherwise throttle timers and animation frames the harness waits
+      // on. This affects only the isolated CDP session.
+      window.webContents.setBackgroundThrottling(false)
+    }
     applyInterfaceZoom(
       desktopSettingsManager.getSettings().interfaceSizePercent
     )

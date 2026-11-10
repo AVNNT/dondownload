@@ -3,11 +3,14 @@
  * Real packaged Electron UI verification. Launches the packaged app on an
  * isolated userData path, drives the renderer through CDP (not OS input), and
  * downloads a throttled loopback fixture through the real IPC, DownloadManager
- * and aria2 stack. The window must be visible for delta snapshots, so the
- * default run shows it; pass --headless only for static checks.
+ * and aria2 stack. Runs hidden and offscreen by default so a verification run
+ * does not take over the desktop; the isolated interactive-smoke session still
+ * delivers snapshot deltas to the offscreen renderer. Pass --visible only when
+ * the real on-screen window itself must be exercised.
  *
  *   npm run build && npx electron-builder --win --dir --x64
  *   node scripts/electron-ui-verification.mjs
+ *   node scripts/electron-ui-verification.mjs --visible
  */
 import { createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
@@ -26,8 +29,9 @@ const downloadDir = path.join(userData, 'smoke-downloads')
 const screenshotDir = path.join(runDir, 'screenshots')
 const cdpPort = 19335
 const startedAt = new Date().toISOString()
-// A normal (non-smoke) launch downloads into the real Downloads/DonDownload
-// folder, so a unique name avoids collisions and makes cleanup safe.
+// A visible (non-smoke) launch downloads into the real Downloads/DonDownload
+// folder, so a unique name avoids collisions and makes cleanup safe. The
+// hidden smoke session downloads into its isolated userData directory.
 const fileName = `controlled-${startedAt.replace(/[:.]/g, '-')}.bin`
 const fixturePath = `/${fileName}`
 const fileSize = 16 * 1024 * 1024
@@ -152,17 +156,17 @@ function record(name, details) {
   console.log(`${name}: ${JSON.stringify(details)}`)
 }
 
-// Delta snapshots are suppressed while the window is hidden, so the live UI
-// checks need a visible window. Pass --headless only for static checks on a
-// machine without a desktop (progress/pause checks will not run there).
-const VISIBLE = !process.argv.includes('--headless')
+// Hidden by default: the isolated interactive-smoke window renders offscreen
+// and never appears on the desktop, and the main process still delivers
+// snapshot deltas for it. Pass --visible to exercise a real on-screen window.
+const VISIBLE_WINDOW = process.argv.includes('--visible')
 
 function appEnvironment() {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
-  if (VISIBLE) {
-    // A normal launch (not the smoke harness) is the only way to get a visible
-    // window, and the delta publishers deliberately send nothing while hidden.
+  if (VISIBLE_WINDOW) {
+    // A visible run is a normal launch (not the smoke harness), so the real
+    // desktop window and Downloads folder are used.
     delete env.DONDOWNLOAD_SMOKE_TEST
     delete env.DONDOWNLOAD_INTERACTIVE_SMOKE
     delete env.DONDOWNLOAD_SMOKE_RESULT_PATH
@@ -180,13 +184,13 @@ async function startApp() {
     `--user-data-dir=${userData}`,
     `--remote-debugging-port=${cdpPort}`,
     '--remote-debugging-address=127.0.0.1',
-    ...(VISIBLE ? [] : ['--smoke-test', '--headless'])
+    ...(VISIBLE_WINDOW ? [] : ['--smoke-test'])
   ], {
     cwd: path.dirname(appPath),
     env: appEnvironment(),
-    // windowsHide also keeps BrowserWindow.isVisible() false on Windows, which
-    // suppresses every delta snapshot; the visible mode must not set it.
-    windowsHide: !VISIBLE,
+    // The hidden mode also keeps the Electron process console window hidden.
+    // BrowserWindow visibility is controlled by the smoke session, not this.
+    windowsHide: !VISIBLE_WINDOW,
     stdio: ['ignore', 'ignore', 'pipe']
   })
   appProcess.stderr.on('data', chunk => {
@@ -219,7 +223,7 @@ async function startApp() {
     preload: typeof window.donDownload?.getSnapshot === 'function',
     snapshot: window.donDownload ? null : 'preload-missing'
   })`), value => value?.rendered && value?.preload, 30_000)
-  record('actual-electron-startup', { title: ready.title, renderer: ready.rendered, preloadApi: ready.preload, windowVisible: false })
+  record('actual-electron-startup', { title: ready.title, renderer: ready.rendered, preloadApi: ready.preload, windowVisible: VISIBLE_WINDOW })
   return cdp
 }
 

@@ -140,6 +140,20 @@ Electron/Helium or start media engines such as yt-dlp/FFmpeg.
   integration uses a local loopback HTTP fixture and temporary directories only,
   and runs only when explicitly selected with `ARIA2_TEST_BINARY`.
 
+### Packaged UI verification runs hidden by default
+
+`scripts/electron-ui-verification.mjs` is an opt-in check that launches the real
+packaged app on an isolated `userData` path and drives it through CDP. By
+default it starts the isolated interactive-smoke session: the real renderer,
+preload, IPC, SQLite and aria2 stack run, but the window renders offscreen and
+never appears on the desktop. The main process keeps delivering snapshot deltas
+to that offscreen window, so the progress, pause/resume, settings and screenshot
+checks retain their coverage.
+
+Pass `--visible` only when the real on-screen window itself must be exercised.
+That mode is a normal desktop launch: it uses the real Downloads folder and
+leaves a visible window while it runs. Neither mode sends OS input.
+
 ## Mocked renderer vs native Electron IPC
 
 The fast and subsystem tiers are hermetic. They use mocked Electron modules,
