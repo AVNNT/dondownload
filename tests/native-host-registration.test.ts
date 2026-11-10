@@ -17,13 +17,24 @@ interface Manifest {
   allowed_origins: string[]
 }
 
+interface FirefoxManifest {
+  name: string
+  description: string
+  path: string
+  type: string
+  allowed_extensions: string[]
+}
+
 interface RegistrationPlan {
   mode: 'register' | 'unregister'
   hostPath: string
   manifestPath: string
+  firefoxManifestPath: string
+  firefoxAddonId: string
   browsers: Array<{
     browser: string
     registryKey: string
+    manifestKind: 'origins' | 'extensions'
     sharesKeyWith: string[]
     note: string
   }>
@@ -33,6 +44,8 @@ const chromeCompatibleKey =
   'HKCU:\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.dondownload.bridge'
 const edgeKey =
   'HKCU:\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.dondownload.bridge'
+const firefoxKey =
+  'HKCU:\\Software\\Mozilla\\NativeMessagingHosts\\com.dondownload.bridge'
 
 function runScript(args: string[]): {
   status: number | null
@@ -194,8 +207,87 @@ describeWindows('native host registration manifest', () => {
     expect(manifest.allowed_origins).toEqual([`chrome-extension://${id}/`])
   })
 
-  it('rejects an unknown browser selection', () => {
+  it('writes a Firefox allowed_extensions manifest with the fixed add-on ID', () => {
+    const result = runScript(['-PrintFirefoxManifest', '-HostPath', hostPath])
+
+    expect(result.status).toBe(0)
+    const manifest = JSON.parse(result.stdout) as FirefoxManifest
+    expect(manifest.name).toBe('com.dondownload.bridge')
+    expect(manifest.type).toBe('stdio')
+    expect(manifest.path).toBe(hostPath)
+    expect(manifest.allowed_extensions).toEqual(['dondownload@dondownload.app'])
+    expect(manifest.allowed_extensions.join(',')).not.toContain('*')
+    expect(manifest).not.toHaveProperty('allowed_origins')
+  })
+
+  it('accepts an explicit Firefox add-on ID and rejects an invalid one', () => {
+    const custom = runScript([
+      '-PrintFirefoxManifest',
+      '-FirefoxAddonId',
+      'legacy@example.org',
+      '-HostPath',
+      hostPath
+    ])
+    expect(custom.status).toBe(0)
+    expect(
+      (JSON.parse(custom.stdout) as FirefoxManifest).allowed_extensions
+    ).toEqual(['legacy@example.org'])
+
+    const invalid = runScript([
+      '-PrintFirefoxManifest',
+      '-FirefoxAddonId',
+      '*',
+      '-HostPath',
+      hostPath
+    ])
+    expect(invalid.status).not.toBe(0)
+    expect(`${invalid.stdout}\n${invalid.stderr}`).toMatch(/invalid firefox add-on id/i)
+  })
+
+  it('maps explicit Firefox registration to the Mozilla key and Firefox manifest', () => {
     const result = runScript([
+      '-PrintRegistration',
+      '-Browser',
+      'Firefox',
+      '-HostPath',
+      hostPath
+    ])
+
+    expect(result.status).toBe(0)
+    const plan = JSON.parse(result.stdout) as RegistrationPlan
+    expect(plan.mode).toBe('register')
+    expect(plan.firefoxManifestPath).toMatch(
+      /native-messaging\\com\.dondownload\.bridge\.firefox\.json$/
+    )
+    expect(plan.firefoxAddonId).toBe('dondownload@dondownload.app')
+    expect(plan.browsers).toEqual([
+      expect.objectContaining({
+        browser: 'Firefox',
+        registryKey: firefoxKey,
+        manifestKind: 'extensions'
+      })
+    ])
+  })
+
+  it('selects Chrome, Edge and Firefox with All', () => {
+    const result = runScript(['-PrintRegistration', '-Browser', 'All'])
+
+    expect(result.status).toBe(0)
+    const plan = JSON.parse(result.stdout) as RegistrationPlan
+    expect(plan.browsers.map((target) => target.browser)).toEqual([
+      'Chrome',
+      'Edge',
+      'Firefox'
+    ])
+    expect(
+      plan.browsers.find((target) => target.browser === 'Firefox')?.manifestKind
+    ).toBe('extensions')
+    expect(
+      plan.browsers.find((target) => target.browser === 'Chrome')?.manifestKind
+    ).toBe('origins')
+  })
+
+  it('rejects an unknown browser selection', () => {    const result = runScript([
       '-PrintRegistration',
       '-Browser',
       'HeliumSpecific',

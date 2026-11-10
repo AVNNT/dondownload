@@ -25,6 +25,15 @@ import {
 } from './site-policy.js'
 import { readCaptureSettings, writeCaptureSettings } from './capture-settings.js'
 
+// Firefox opens the command editor from the add-on manager instead of the
+// Chromium extensions page, so the hint must not send Firefox users to a
+// chrome:// URL.
+const SHORTCUT_PAGE_LABEL = /Firefox\//.test(
+  typeof navigator === 'undefined' ? '' : navigator.userAgent
+)
+  ? 'about:addons > Manage Extension Shortcuts'
+  : 'chrome://extensions/shortcuts'
+
 export const OVERLAY_PENDING_STORAGE_KEY = 'dondownloadOverlayPendingEnable'
 export const OVERLAY_PENDING_TTL_MS = 5 * 60 * 1000
 export const OVERLAY_HOST_ID = 'dondownload-overlay-host'
@@ -1183,7 +1192,7 @@ export function describeOverlayStatus(input) {
       tone: 'on',
       hint: `Overlay is on for ${site}. A floating button follows the active playing video; a detected progressive source can be downloaded directly. ${
         shortcut === null
-          ? 'Set a browser shortcut at chrome://extensions/shortcuts.'
+          ? `Set a browser shortcut at ${SHORTCUT_PAGE_LABEL}.`
           : `Press ${shortcut} to show or hide the overlay.`
       } Choose Analyze to see verified options and reported file sizes; a download is queued only when you pick one, and access stays limited to this exact origin.`
     }

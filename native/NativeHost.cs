@@ -98,6 +98,9 @@ internal static class NativeHost
         new Regex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.CultureInvariant);
     private static readonly Regex ExtensionOriginPattern =
         new Regex("^chrome-extension://[a-p]{32}/?$", RegexOptions.CultureInvariant);
+    // Firefox passes the add-on ID from browser_specific_settings.gecko.id as
+    // the second argument, after the app manifest path.
+    private const string FirefoxAddonId = "dondownload@dondownload.app";
     private static readonly Regex OpaqueMediaIdPattern =
         new Regex("^[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant);
     private static readonly Regex ContainerPattern =
@@ -172,10 +175,11 @@ internal static class NativeHost
         try
         {
             // Chromium-compatible browsers (Helium, Chrome, Edge) pass the
-            // caller origin as the first argument. The browser manifest's
-            // allowed_origins is the authoritative origin check; this rejects
-            // obviously non-extension launches too.
-            if (args.Length > 0 && !ExtensionOriginPattern.IsMatch(args[0]))
+            // caller origin as the first argument. Firefox passes the app
+            // manifest path first and the caller add-on ID second. Each
+            // browser's app manifest (allowed_origins / allowed_extensions) is
+            // the authoritative check; this rejects obviously foreign launches.
+            if (!IsSupportedCaller(args))
             {
                 Console.Error.WriteLine("DonDownload native host: unsupported caller origin.");
                 return 3;
@@ -189,6 +193,24 @@ internal static class NativeHost
             Console.Error.WriteLine("DonDownload native host failed: " + error.GetType().Name);
             return 2;
         }
+    }
+
+    private static bool IsSupportedCaller(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            // Manual invocation for diagnostics.
+            return true;
+        }
+        if (ExtensionOriginPattern.IsMatch(args[0]))
+        {
+            return true;
+        }
+        // Firefox: args[0] is the app manifest path and args[1] is the add-on
+        // ID. A Chromium launch never matches this pair, because its second
+        // argument is a native window handle.
+        return args.Length >= 2 &&
+            string.Equals(args[1], FirefoxAddonId, StringComparison.Ordinal);
     }
 
     private static int Run()

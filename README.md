@@ -4,7 +4,7 @@ A Windows-first, open-source download manager for ordinary HTTP(S) downloads.
 This repository contains the **Milestone 1 foundation** (a working Electron
 desktop app with a React renderer, a real aria2 engine, durable SQLite download
 history, conservative restart reconciliation, and a Windows tray) plus
-**Milestone 2A**: an optional Helium/Chrome/Edge Manifest V3 extension for
+**Milestone 2A**: an optional Helium/Chrome/Edge/Firefox Manifest V3 extension for
 **manual** HTTP(S) capture through a strict native messaging bridge, and
 **Milestone 2B**: an opt-in, per-site playback overlay for verified progressive
 MP4/WebM-family sources, detected HLS/DASH manifests and explicit yt-dlp page
@@ -112,10 +112,17 @@ legal advice.
 
 ## Browser extension: manual HTTP(S) capture (Milestone 2A)
 
-The `extension/` folder is a Chromium-compatible Manifest V3 extension (verified
+The `extension/` folder is a cross-browser Manifest V3 extension (verified
 locally with Helium 0.20.3.1 / Chromium 156.0.8078.79) that sends an explicitly
-chosen HTTP(S) URL to the running desktop app. Manual capture stays available:
+chosen HTTP(S) URL to the running desktop app. The same folder targets Firefox
+140 or newer, where it runs the background as a non-persistent event page
+instead of a service worker; the manifest passes the Firefox add-on linter with
+no errors, but a real-Firefox end-to-end run is still outstanding. Manual
+capture stays available:
 
+- Chromium 121 or newer is required. Older Chromium cannot read a Manifest V3
+  `background.scripts` entry, which is what makes the same manifest work in
+  Firefox; from 121 Chromium ignores that entry and uses the service worker.
 - Manual capture uses `activeTab`, `contextMenus` and `nativeMessaging`. The 2B
   overlay adds `scripting`, `storage` (session-only pending state) and the
   required `host_permissions` for `http://*/*` and `https://*/*`, so
@@ -174,12 +181,16 @@ on the folder it was loaded from:
 
 **Fixed extension ID:** `mikinloaillialkiannpcejdbmfbljhm`
 
+**Fixed Firefox add-on ID:** `dondownload@dondownload.app`
+
 1. Start DonDownload once. It writes
-   `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json` and the
-   current-user Chrome/Helium and Edge registry keys. The app may be hidden in
-   the tray.
+   `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json`, a
+   Firefox app manifest at
+   `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.firefox.json`,
+   and the current-user Chrome/Helium, Edge and Mozilla Firefox registry keys.
+   The app may be hidden in the tray.
 2. Open the app's **Settings → Browser extension** panel. It shows the exact
-   extension folder and connection state for Chrome, Helium and Edge.
+   extension folder and connection state for Chrome, Helium, Edge and Firefox.
 3. In Helium, open `chrome://extensions` (Helium is Chromium-based and uses
    Chromium's standard extension manager). In Chrome, open
    `chrome://extensions`; in Edge, open `edge://extensions`.
@@ -190,16 +201,33 @@ on the folder it was loaded from:
 6. The extension's welcome page opens on first install. It checks the native
    connection and links to the same fixes if the app is not running yet.
 
+Firefox uses the same folder, but its temporary add-on flow is different:
+
+1. Open `about:debugging#/runtime/this-firefox` and choose
+   **Load Temporary Add-on**.
+2. Select `manifest.json` in the extension folder. Firefox assigns the fixed
+   add-on ID from `browser_specific_settings.gecko.id`, so the Mozilla
+   `allowed_extensions` entry matches without any typing.
+3. A temporary add-on is removed when Firefox restarts; load it again. For a
+   permanent install, sign the folder as an `.xpi` (for example with
+   `web-ext sign`) or publish it to addons.mozilla.org.
+4. Firefox treats the `http://*/*` and `https://*/*` host permissions as
+   user-granted. If **Settings → Extensions → DonDownload Capture →
+   Permissions** does not show access to all sites, enable it there; otherwise
+   the all-sites overlay cannot attach and the popup falls back to per-site
+   grants.
+
 No extension ID needs to be copied or typed. If a browser still shows
 **Needs repair**, choose **Repair browser connection** in that Settings panel.
-The panel also exposes the native host path, the exact `allowed_origins` and
-the last registration error.
+The panel also exposes the native host path, the exact `allowed_origins`, the
+Firefox add-on ID and the last registration error.
 
-The generated manifest keeps only valid exact
+The generated Chromium manifest keeps only valid exact
 `chrome-extension://<32 a-p characters>/` origins from an existing manifest and
-adds the fixed ID. It never contains a wildcard. Registry writes are current-user
-only (no administrator rights) and are skipped when the existing value already
-matches.
+adds the fixed ID. The Firefox manifest keeps only valid `name@domain` add-on IDs
+in `allowed_extensions`. Neither ever contains a wildcard. Registry writes are
+current-user only (no administrator rights) and are skipped when the existing
+value already matches.
 
 ### 3. Advanced fallback: register manually
 
@@ -229,19 +257,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-ho
 # Chrome and Edge:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
   -Browser Both
+
+# Chrome, Edge and Firefox:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser All
+```
+
+Firefox only:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -Browser Firefox
 ```
 
 Pass `-ExtensionId` only for an advanced setup where the loaded extension is
 not the pinned manifest. IDs are comma-separated and validated as lowercase
 `[a-p]{32}`; wildcards are rejected. Helium and Chrome share the
 Chromium-compatible key, so include every extra ID in one command if you use
-both.
+both. Pass `-FirefoxAddonId` only when the loaded add-on does not use the fixed
+`dondownload@dondownload.app` ID; the value is validated as `name@domain`.
 
 The script:
 
 - writes the same `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.json`
   manifest with explicit `allowed_origins` entries such as
   `chrome-extension://<id>/` (never `*`);
+- writes the Firefox app manifest
+  `%APPDATA%\DonDownload\native-messaging\com.dondownload.bridge.firefox.json`
+  with an explicit `allowed_extensions` entry (never `*`) when Firefox is
+  selected;
 - requires the manifest `path` to be a real `.exe`;
 - writes current-user registry values:
   - Helium: `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
@@ -249,14 +293,22 @@ The script:
     no Helium-specific key is written)
   - Chrome: the same `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`
   - Edge: `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.dondownload.bridge`
+  - Firefox: `HKCU\Software\Mozilla\NativeMessagingHosts\com.dondownload.bridge`
 - does not require administrator rights;
 - is safe to run repeatedly.
 
-Inspect the manifest without writing anything:
+Inspect the Chromium manifest without writing anything:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
   -PrintManifest
+```
+
+Inspect the Firefox manifest without writing anything:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-native-host.ps1 `
+  -PrintFirefoxManifest
 ```
 
 Show the resolved registry keys and manifest path without writing anything,
@@ -285,9 +337,10 @@ Reload the extension (or restart the browser) after registering.
 
 The NSIS uninstaller runs
 `"$INSTDIR\DonDownload.exe" --unregister-native-host` and waits for it. That
-mode removes both registry keys and the manifest only when the manifest `path`
-is inside the installed application folder. A development registration that
-points at the repository is deliberately left alone.
+mode removes the Chrome/Helium, Edge and Firefox registry keys and both
+manifests only when the manifest `path` is inside the installed application
+folder. A development registration that points at the repository is deliberately
+left alone.
 
 ### 4. Use it
 
@@ -316,8 +369,9 @@ points at the repository is deliberately left alone.
 - Native host not registered: a clear registration hint in the popup and `!` on
   the badge. DonDownload registers automatically at startup; choose **Repair
   browser connection** in Settings or restart the app if this still appears.
-- Extension ID not in `allowed_origins`: the browser reports native host access
-  as forbidden. The fixed ID is registered automatically; use the Settings
+- Extension ID not in `allowed_origins` (Chromium) or the add-on ID not in
+  `allowed_extensions` (Firefox): the browser reports native host access as
+  forbidden. The fixed IDs are registered automatically; use the Settings
   **Repair browser connection** action, or the advanced registration script.
 - DonDownload not running, or a stale bridge endpoint after a crash: a prompt
   "not running/unavailable" error. The bridge never launches the app.
@@ -343,9 +397,11 @@ points at the repository is deliberately left alone.
   little-endian length + UTF-8 JSON), caps frames at 1 MiB, accepts
   `{ "type": "queue-download", "url": "..." }` with an optional boolean
   `force`, and writes diagnostics only to stderr without logging URLs.
-- The browser manifest's exact `allowed_origins` is the authoritative
-  browser-side origin check. The native host also rejects non-
-  `chrome-extension://` caller origins as defence in depth.
+- The browser manifest's exact `allowed_origins` (Chromium) and
+  `allowed_extensions` (Firefox) are the authoritative browser-side checks. The
+  native host also rejects callers that present neither a
+  `chrome-extension://` origin nor Firefox's manifest-path + fixed add-on-ID
+  launch pair, as defence in depth.
 - The bridge calls the existing `DownloadManager.add`. It cannot expose aria2
   RPC, start a second aria2, open or focus the desktop window, bypass URL/file
   name validation, or change retry, tray and history behavior.
@@ -366,8 +422,12 @@ loaded:
    window is hidden.
 5. Quit DonDownload and send again; expect a prompt "not running" error, not a
    false success.
-6. Open a `chrome://`, `edge://` or `file://` page; expect an unsupported-URL
-   error before any native message is sent.
+6. Open a `chrome://`, `about:`, `edge://` or `file://` page; expect an
+   unsupported-URL error before any native message is sent.
+7. In Firefox, repeat steps 1-3 from the temporary add-on. Expect the same
+   success/duplicate behavior; the browser copy is cancelled after the durable
+   receipt through `downloads.onCreated`, because Firefox has no
+   `onDeterminingFilename` event.
 
 ## Browser extension: opt-in progressive playback capture
 
@@ -844,11 +904,13 @@ with no way to restore it.
 
 ## Implemented in Milestone 2A
 
-- Helium/Chrome/Edge-compatible Manifest V3 extension whose manual capture path
-  uses `activeTab`, `contextMenus` and `nativeMessaging`: an explicit popup
-  action and a link context menu. No downloads/webRequest interception, no
-  notifications permission. (Milestone 2B adds `scripting` and optional host
-  declarations for the opt-in overlay only.)
+- Helium/Chrome/Edge/Firefox-compatible Manifest V3 extension whose manual
+  capture path uses `activeTab`, `contextMenus` and `nativeMessaging`: an
+  explicit popup action and a link context menu. No downloads/webRequest
+  interception, no notifications permission. (Milestone 2B adds `scripting` and
+  optional host declarations for the opt-in overlay only.) Firefox 140+ runs the
+  background as an event page and uses its own `allowed_extensions` host
+  manifest.
 - Toolbar badge and popup feedback that report success only after the desktop
   app accepts the URL, with actionable errors for unsupported URLs, missing
   native host, unauthorized extension origin, connection failure and app
@@ -856,16 +918,20 @@ with no way to restore it.
 - A real C# Windows native messaging executable built with the .NET Framework
   compiler (no SDK), using standard bounded length-prefixed UTF-8 JSON framing,
   strict schema/type/URL validation, stderr-only diagnostics and no URL logging.
+  It accepts both the Chromium caller origin and Firefox's manifest-path +
+  add-on-ID launch arguments.
 - Repeatable current-user PowerShell registration/unregistration for Helium,
-  Chrome and Edge with exact, validated `allowed_origins`; no wildcard and no
-  admin rights. Helium is an explicit option that maps to the locally verified
-  Chromium-compatible Chrome key; no unverified Helium-specific key is written.
+  Chrome, Edge and Firefox with exact, validated `allowed_origins` and
+  `allowed_extensions`; no wildcard and no admin rights. Helium is an explicit
+  option that maps to the locally verified Chromium-compatible Chrome key; no
+  unverified Helium-specific key is written.
 - Zero-config registration on every normal app start: a stable pinned extension
-  ID, an atomically written manifest, and idempotent current-user registry
-  values for Chrome/Helium and Edge. The Settings UI reports per-browser state,
-  host path, allowed origins and the last error, and can repair the connection.
-  The uninstaller removes only a registration that points inside the installed
-  application folder.
+  ID, an atomically written manifest, a Firefox `allowed_extensions` manifest,
+  and idempotent current-user registry values for Chrome/Helium, Edge and
+  Firefox. The Settings UI reports per-browser state, host path, allowed
+  origins, the Firefox add-on ID and the last error, and can repair the
+  connection. The uninstaller removes only a registration that points inside
+  the installed application folder.
 - A loopback-only authenticated main-process bridge that can only call the
   existing `DownloadManager.add`. It works while the window is hidden in the
   tray, returns acceptance only after add succeeds, removes endpoint state on
@@ -956,7 +1022,7 @@ src/preload/index.ts      contextBridge API
 src/renderer/             React UI
 src/shared/               Types, IPC channels, validation, format, policy,
                           native bridge protocol constants
-extension/                Helium/Chrome/Edge MV3 popup, context menu, native client
+extension/                Cross-browser MV3 popup, context menu, native client
                            and opt-in progressive playback capture overlay
 native/NativeHost.cs      C# native messaging host source
 scripts/                  Native host build and current-user registration

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
@@ -28,6 +28,8 @@ import {
 
 afterEach(() => {
   delete (globalThis as any).chrome
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 interface FakeNative {
@@ -264,6 +266,30 @@ describe('welcome recommended capture setup', () => {
     expect(recommendedCapturePermissions(fake.chrome)).toEqual({
       permissions: ['webRequest']
     })
+  })
+
+  it('also requests broad site access on Firefox, where host permissions are optional', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0'
+    })
+    const fake = installFakeChrome()
+
+    expect(recommendedCapturePermissions(fake.chrome)).toEqual({
+      permissions: ['webRequest', 'cookies'],
+      origins: ['http://*/*', 'https://*/*']
+    })
+
+    await new Promise<any>((resolve) => {
+      enableRecommendedCapture(fake.chrome, resolve)
+    })
+
+    expect(fake.permissionRequests).toEqual([
+      {
+        permissions: ['webRequest', 'cookies'],
+        origins: ['http://*/*', 'https://*/*']
+      }
+    ])
   })
 
   it('describes the switch as always active on all sites', () => {
