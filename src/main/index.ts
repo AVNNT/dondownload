@@ -45,6 +45,7 @@ import { loginItemSettings, shouldManageLoginItem } from './desktop/loginItem'
 import {
   decideBeforeQuit,
   decideWindowClose,
+  decideWindowShow,
   isCleanupRunning,
   shouldQuitWhenAllWindowsClosed
 } from './lifecycle'
@@ -90,7 +91,17 @@ import {
 } from './smoke/report'
 import { runSmokeTest } from './smoke/run'
 
+// The UI is a plain list: no video, no 3D, no canvas. Chromium's GPU process
+// costs roughly 60 MB of RAM and buys nothing for it, so software rendering is
+// the default. DONDOWNLOAD_GPU=1 restores hardware acceleration when a
+// rendering problem has to be ruled out. Must run before `ready`.
+if (process.env.DONDOWNLOAD_GPU !== '1') {
+  app.disableHardwareAcceleration()
+}
+
 let mainWindow: BrowserWindow | null = null
+/** A clipboard link seen while no window existed, offered on the next show. */
+let pendingClipboardLink: string | null = null
 let appTray: AppTray | null = null
 let aria2: Aria2Service | null = null
 let manager: DownloadManager | null = null
@@ -141,6 +152,17 @@ function requestSnapshotResync(): void {
   downloadPublisher?.requestFull()
   mediaPublisher?.requestFull()
   batchPublisher?.requestFull()
+}
+
+/**
+ * Drop every per-window delta baseline. A destroyed window's renderer state is
+ * gone, so the next window must receive a full snapshot instead of a patch
+ * against rows it never received.
+ */
+function resetSnapshotDelivery(): void {
+  downloadPublisher?.reset()
+  mediaPublisher?.reset()
+  batchPublisher?.reset()
 }
 
 /** A user or OS quit request has been accepted; windows may now close. */
@@ -339,10 +361,13 @@ function openMainWindow(
       trayAvailable: appTray !== null
     })
     if (action === 'hide-to-tray') {
-      // Keep the renderer, aria2 and polling alive in the background.
+      // aria2, the download manager and the browser bridge keep running without
+      // a window; the renderer does not. Destroy it after the close event has
+      // unwound so the next show can build a fresh one.
       event.preventDefault()
       window.hide()
       refreshTray()
+      setImmediate(() => destroyMainWindow(window))
     }
   })
   window.on('show', () => {
@@ -369,30 +394,99 @@ function openMainWindow(
   return window
 }
 
-function showMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    mainWindow = openMainWindow()
+/**
+ * Tear the window down for real. The renderer process, its JavaScript heap and
+ * its compositor surfaces are the largest memory consumers in the app, so a
+ * hidden app keeps only the main process resident. Everything that must survive
+ * (aria2, the download manager, the browser bridge, notifications, the tray and
+ * taskbar progress) reads the window through a null-tolerant getter.
+ */
+function destroyMainWindow(window: BrowserWindow): void {
+  if (mainWindow === window) {
+    mainWindow = null
+    resetSnapshotDelivery()
   }
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  if (!mainWindow.isVisible()) mainWindow.show()
-  mainWindow.focus()
+  if (!window.isDestroyed()) {
+    try {
+      window.destroy()
+    } catch {
+      // A window already tearing down must not break the tray action.
+    }
+  }
+  refreshTray()
+}
+
+function showMainWindow(): void {
+  const action = decideWindowShow({
+    windowExists: mainWindow !== null,
+    windowDestroyed: mainWindow?.isDestroyed() ?? false
+  })
+  if (action === 'create') {
+    // A destroyed window cannot be shown again. The fresh renderer loads from
+    // scratch, and `ready-to-show` shows it as soon as it has painted.
+    mainWindow = openMainWindow()
+    const zoomPercent =
+      desktopSettingsManager?.getSettings().interfaceSizePercent
+    if (zoomPercent !== undefined) applyInterfaceZoom(zoomPercent)
+    const clipboardLink = pendingClipboardLink
+    pendingClipboardLink = null
+    if (clipboardLink !== null) {
+      sendToMainWindow((window) =>
+        window.webContents.send(IPC.clipboardLink, clipboardLink)
+      )
+    }
+    refreshTray()
+    return
+  }
+  const window = mainWindow
+  if (window === null || window.isDestroyed()) return
+  if (window.isMinimized()) window.restore()
+  if (!window.isVisible()) window.show()
+  window.focus()
   refreshTray()
 }
 
 function hideMainWindow(): void {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+  const window = mainWindow
+  if (window !== null && !window.isDestroyed()) {
+    window.hide()
+    destroyMainWindow(window)
+  }
   refreshTray()
+}
+
+/**
+ * Deliver one message to the current window, waiting for a freshly created
+ * renderer to finish loading. A window recreated after close-to-tray has no
+ * listeners yet, so a direct send would be dropped.
+ */
+function sendToMainWindow(send: (window: BrowserWindow) => void): void {
+  const window = mainWindow
+  if (window === null || window.isDestroyed()) return
+  if (window.webContents.isLoading()) {
+    // React subscribes in an effect that can run just after did-finish-load
+    // (see the scan handoff below), so give it a moment before sending.
+    window.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        if (window.isDestroyed()) return
+        send(window)
+      }, 750).unref?.()
+    })
+    return
+  }
+  send(window)
 }
 
 /**
  * Run startup work that is not needed for the first frame only after the
  * renderer has produced its first paint. `ready-to-show` is Electron's
  * first-frame signal; the bounded fallback keeps the work from being skipped
- * entirely when the window never shows (for example, a failed renderer load).
- * The task runs exactly once and never blocks the caller.
+ * entirely when the window never shows (for example, a failed renderer load or
+ * a hidden start with no window at all). The task runs exactly once and never
+ * blocks the caller.
  */
 function scheduleAfterFirstPaint(
-  window: BrowserWindow,
+  window: BrowserWindow | null,
   task: () => void
 ): void {
   let started = false
@@ -402,7 +496,7 @@ function scheduleAfterFirstPaint(
     const handle = setImmediate(() => task())
     handle.unref?.()
   }
-  if (window.isDestroyed()) {
+  if (window === null || window.isDestroyed()) {
     run()
     return
   }
@@ -504,6 +598,10 @@ if (unregisterRequested) {
       onUrl: (url) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.clipboardLink, url)
+        } else {
+          // No renderer while hidden to the tray: keep the newest link and
+          // offer it when the window is next created.
+          pendingClipboardLink = url
         }
       }
     })
@@ -521,7 +619,9 @@ if (unregisterRequested) {
         (desktopSettingsManager?.getSettings().showNotifications ?? false),
       onActivate: (kind, id) => {
         showMainWindow()
-        mainWindow?.webContents.send(IPC.revealRow, `${kind}:${id}`)
+        sendToMainWindow((window) =>
+          window.webContents.send(IPC.revealRow, `${kind}:${id}`)
+        )
       }
     })
 
@@ -903,11 +1003,17 @@ if (unregisterRequested) {
     // bridge, tool probes and update checks. The renderer already renders a
     // "starting" engine state from the first snapshot, so the first paint no
     // longer waits for the download engine or browser integration to be ready.
-    const window = openMainWindow(smoke === null && !startHidden, interactiveSmoke)
-    mainWindow = window
-    applyInterfaceZoom(
-      desktopSettingsManager.getSettings().interfaceSizePercent
-    )
+    // A hidden start creates no window at all: the tray is the only surface, and
+    // the renderer and its GPU work are not started until the user shows it.
+    const window = startHidden
+      ? null
+      : openMainWindow(smoke === null, interactiveSmoke)
+    if (window !== null) {
+      mainWindow = window
+      applyInterfaceZoom(
+        desktopSettingsManager.getSettings().interfaceSizePercent
+      )
+    }
 
     // Create the tray immediately after the window; this still happens long
     // before the first frame, so closing the window always has a safe target.
@@ -935,7 +1041,7 @@ if (unregisterRequested) {
       if (startHidden && appTray === null) {
         // Hidden-start was requested but the tray is unavailable; showing the
         // window is the only way to keep the app reachable.
-        window.once('ready-to-show', () => window.show())
+        showMainWindow()
       }
     }
 
@@ -945,7 +1051,7 @@ if (unregisterRequested) {
     const smokeDiagnostics =
       smoke === null ? null : new SmokeDiagnosticsCollector()
     const disposeSmokeDiagnostics =
-      smokeDiagnostics === null
+      smokeDiagnostics === null || window === null
         ? null
         : attachSmokeDiagnostics(window.webContents, smokeDiagnostics)
 
@@ -1041,7 +1147,9 @@ if (unregisterRequested) {
           downloadStatus: createHandoffDownloadStatus(bridgeManager),
           onShowDownload: (downloadId) => {
             showMainWindow()
-            mainWindow?.webContents.send(IPC.revealRow, `download:${downloadId}`)
+            sendToMainWindow((window) =>
+              window.webContents.send(IPC.revealRow, `download:${downloadId}`)
+            )
           },
           onScanRequested: (session) => {
             // Signed-in pages are scanned from the browser tab. Bringing the
@@ -1103,7 +1211,7 @@ if (unregisterRequested) {
         return
       }
       try {
-        if (smokeDiagnostics === null) {
+        if (smokeDiagnostics === null || window === null) {
           throw new Error('Smoke renderer diagnostics were not initialized.')
         }
         const result = await runSmokeTest({

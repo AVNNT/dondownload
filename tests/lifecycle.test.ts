@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   decideBeforeQuit,
   decideWindowClose,
+  decideWindowShow,
   isCleanupRunning,
   shouldQuitWhenAllWindowsClosed,
   trayMenuLabel
@@ -30,6 +31,17 @@ describe('window close policy', () => {
     expect(
       decideWindowClose({ isQuitting: false, trayAvailable: false })
     ).toBe('close')
+  })
+})
+
+describe('window show policy', () => {
+  it('creates a window when none exists or it was destroyed', () => {
+    expect(decideWindowShow({ windowExists: false, windowDestroyed: false })).toBe('create')
+    expect(decideWindowShow({ windowExists: true, windowDestroyed: true })).toBe('create')
+  })
+
+  it('focuses a live window', () => {
+    expect(decideWindowShow({ windowExists: true, windowDestroyed: false })).toBe('focus-existing')
   })
 })
 

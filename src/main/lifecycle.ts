@@ -9,12 +9,32 @@ export interface WindowCloseInput {
 
 /**
  * Closing the main window is a background action, not a quit: hide it to the
- * tray so aria2 keeps downloading. An explicit quit, or a failed tray, falls
- * back to the normal close path.
+ * tray so aria2 keeps downloading, then destroy it. Only the main process stays
+ * resident while the app is hidden; the renderer and its GPU surfaces are
+ * recreated on the next show. An explicit quit, or a failed tray, falls back to
+ * the normal close path.
  */
 export function decideWindowClose(input: WindowCloseInput): WindowCloseAction {
   if (input.isQuitting || !input.trayAvailable) return 'close'
   return 'hide-to-tray'
+}
+
+export type WindowShowAction = 'focus-existing' | 'create'
+
+export interface WindowShowInput {
+  /** A window object is still referenced. */
+  windowExists: boolean
+  /** That window has been destroyed, for example after close-to-tray. */
+  windowDestroyed: boolean
+}
+
+/**
+ * Showing the app after close-to-tray builds a fresh window and renderer; an
+ * existing live window is only restored and focused.
+ */
+export function decideWindowShow(input: WindowShowInput): WindowShowAction {
+  if (!input.windowExists || input.windowDestroyed) return 'create'
+  return 'focus-existing'
 }
 
 /** The tray's first menu item toggles visibility with an accurate label. */

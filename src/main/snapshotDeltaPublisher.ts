@@ -61,6 +61,17 @@ export class SnapshotDeltaPublisher<Row extends { id: string }, Fields extends o
     this.flush()
   }
 
+  /**
+   * Forget what the previous renderer was sent. The window is destroyed when
+   * the app is hidden to the tray, so the next window has no state at all: a
+   * patch against the old baseline would be rejected as a revision gap. The
+   * next flush therefore builds a full snapshot from the retained payload.
+   */
+  reset(): void {
+    this.lastSent = null
+    this.forceFull = false
+  }
+
   flush(): void {
     if (this.latest === null || !this.visible) return
 
