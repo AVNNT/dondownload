@@ -319,6 +319,20 @@ describe('SnapshotDeltaPublisher hidden window handling', () => {
     expect(catchUp.upserted.map((row) => row.id)).toEqual(['a', 'b'])
   })
 
+  it('sends a full snapshot to a recreated window after reset', () => {
+    const { publisher: instance, sent, setWindowVisible } = publisher(true)
+    instance.publish(payload([{ id: 'a', value: 1, label: 'A' }]))
+    setWindowVisible(false)
+    instance.reset()
+    setWindowVisible(true)
+    expect(sent).toHaveLength(2)
+    const resent = sent[1]
+    expect(resent?.kind).toBe('full')
+    expect(resent?.revision).toBe(2)
+    const state = applySnapshotDelta(null, resent as SnapshotDelta<Row, Fields>)
+    expect(state.state?.rows.map((row) => row.id)).toEqual(['a'])
+  })
+
   it('does not send anything when re-shown with no changes', () => {
     const { publisher: instance, sent, setWindowVisible } = publisher(true)
     instance.publish(payload([{ id: 'a', value: 1, label: 'A' }]))
