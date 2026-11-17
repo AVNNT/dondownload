@@ -146,6 +146,12 @@ export interface MediaJobsManagerOptions {
    */
   startAllowed?: (now: number) => boolean
   /**
+   * How many media jobs may download or merge at once. Each one is a yt-dlp
+   * process, often with ffmpeg, so an unbounded queue can saturate the PC.
+   * Read on every start so a settings change applies to the next job.
+   */
+  maxActiveJobs?: () => number
+  /**
    * Called for an extractor-style analysis failure. It may run a verified
    * yt-dlp update and resolves true when a newer binary was activated.
    */
@@ -154,6 +160,9 @@ export interface MediaJobsManagerOptions {
 
 export const MEDIA_INTERRUPTED_MESSAGE =
   'Interrupted before it finished because DonDownload stopped. Partial files are kept; download again to start a new job.'
+
+/** yt-dlp + ffmpeg pairs allowed to run at once unless the caller says otherwise. */
+export const DEFAULT_MAX_ACTIVE_MEDIA_JOBS = 2
 
 const MEDIA_DOWNLOAD_FAILED_MESSAGE =
   'The media download failed. Analyze the page again and retry.'
@@ -307,6 +316,7 @@ export class MediaJobsManager {
   private readonly now: () => number
   private readonly progressPersistIntervalMs: number
   private readonly startAllowed: (now: number) => boolean
+  private readonly maxActiveJobs: () => number
   private readonly onExtractorFailure:
     | (() => Promise<boolean>)
     | null
@@ -343,6 +353,8 @@ export class MediaJobsManager {
     this.progressPersistIntervalMs =
       options.progressPersistIntervalMs ?? PROGRESS_PERSIST_INTERVAL_MS
     this.startAllowed = options.startAllowed ?? (() => true)
+    this.maxActiveJobs =
+      options.maxActiveJobs ?? (() => DEFAULT_MAX_ACTIVE_MEDIA_JOBS)
     this.onExtractorFailure = options.onExtractorFailure ?? null
 
     this.loadPersistedJobs()
@@ -761,6 +773,8 @@ export class MediaJobsManager {
     } catch {
       // The job is already cancelled locally; a missing engine job is fine.
     }
+    // Its slot is free now, even if the engine run settles later.
+    this.pumpPolicy()
 
     return this.toMediaJob(job)
   }
@@ -795,6 +809,7 @@ export class MediaJobsManager {
     } catch {
       // The job is already paused locally; a missing child is harmless.
     }
+    this.pumpPolicy()
     return this.getMediaSnapshot()
   }
 
@@ -1145,11 +1160,16 @@ export class MediaJobsManager {
     return false
   }
 
-  /** Start jobs that were queued while the allowed-hours gate was closed. */
+  /**
+   * Start jobs that were held back by the allowed-hours gate or by the
+   * active-job limit. runJob re-checks both, so extra jobs simply wait again.
+   */
   pumpPolicy(now = this.now()): void {
-    if (this.closed || !this.startAllowed(now)) return
+    if (this.closed) return
+    const gateOpen = this.startAllowed(now)
     for (const job of this.jobs.values()) {
       if (job.record.status !== 'queued' || !job.awaitingPolicy) continue
+      if (!gateOpen && !job.startNow) continue
       job.awaitingPolicy = false
       queueMicrotask(() => {
         void this.runJob(job.record.id)
@@ -1258,6 +1278,13 @@ export class MediaJobsManager {
       job.awaitingPolicy = true
       return
     }
+    if (this.activeJobCount() >= Math.max(1, this.maxActiveJobs())) {
+      // Wait for a free slot; an explicit Resume/Retry keeps its override.
+      job.awaitingPolicy = true
+      job.startNow = override
+      this.publish(true)
+      return
+    }
     job.awaitingPolicy = false
     this.endMergePhase(job)
     const runId = job.runId + 1
@@ -1294,7 +1321,20 @@ export class MediaJobsManager {
       this.completeJob(id, runId, result)
     } catch (error) {
       this.failJob(id, runId, error)
+    } finally {
+      // This run's slot is free (finished, failed, paused or cancelled).
+      this.pumpPolicy()
     }
+  }
+
+  private activeJobCount(): number {
+    let count = 0
+    for (const job of this.jobs.values()) {
+      if (job.record.status === 'downloading' || job.record.status === 'merging') {
+        count += 1
+      }
+    }
+    return count
   }
 
   private handleProgress(

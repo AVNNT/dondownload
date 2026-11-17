@@ -8,6 +8,7 @@ import { AppError } from '../errors'
 import { buildAria2Args } from './args'
 import { Aria2Client } from './client'
 import { locateAria2c } from './locator'
+import { lowerProcessPriority } from '../processPriority'
 
 const START_TIMEOUT_MS = 12_000
 const READY_POLL_INTERVAL_MS = 200
@@ -173,6 +174,7 @@ export class Aria2Service {
       stdio: ['ignore', 'ignore', 'pipe']
     })
     this.child = child
+    lowerProcessPriority(child.pid)
 
     child.once('error', (error) => {
       spawnError = error

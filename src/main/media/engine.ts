@@ -77,6 +77,7 @@ import {
 import { createJsRuntime, needsJsRuntime } from './jsRuntime'
 import type { JsRuntime } from './jsRuntime'
 import { createToolchainResolver } from './toolchain'
+import { lowerProcessPriority } from '../processPriority'
 
 export type { MediaDirectDownload } from './analysis'
 export type { MediaCollectionTarget } from './collections'
@@ -928,6 +929,7 @@ export function createMediaEngine(
         return
       }
       job.child = child
+      lowerProcessPriority(child.pid)
 
       child.stdout?.on('data', (chunk: unknown) =>
         progress.handleStdoutText(typeof chunk === 'string' ? chunk : String(chunk))

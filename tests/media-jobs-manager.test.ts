@@ -29,6 +29,7 @@ vi.mock('../src/main/mediaJobs/mergeProgress', () => ({
 }))
 
 import type {
+  MediaJob,
   MediaAnalysis,
   MediaFormatOption,
   MediaJobRecord,
@@ -217,6 +218,7 @@ async function createHarness(
     now?: () => number
     progressPersistIntervalMs?: number
     startAllowed?: (now: number) => boolean
+    maxActiveJobs?: () => number
   } = {}
 ): Promise<Harness> {
   const engine = options.engine ?? new FakeEngine()
@@ -232,7 +234,8 @@ async function createHarness(
     onUpdate: (snapshot) => updates.push(snapshot),
     now: options.now,
     progressPersistIntervalMs: options.progressPersistIntervalMs,
-    startAllowed: options.startAllowed
+    startAllowed: options.startAllowed,
+    maxActiveJobs: options.maxActiveJobs
   })
   managers.push(manager)
   return { engine, database, manager, updates, mediaDir }
@@ -913,7 +916,7 @@ describe('MediaJobsManager cancellation', () => {
 
 describe('MediaJobsManager duplicate policy', () => {
   it('rejects the same active source+option unless force is true', async () => {
-    const harness = await createHarness()
+    const harness = await createHarness({ maxActiveJobs: () => 3 })
     const analysis = await harness.manager.analyzeMedia({
       url: 'https://example.com/watch?v=1'
     })
@@ -1583,5 +1586,48 @@ describe('MediaJobsManager merge progress', () => {
     await flushMicrotasks()
 
     expect(harness.manager.getMediaJob(job.id).mergeProgress).toBeUndefined()
+  })
+})
+
+describe('MediaJobsManager active job limit', () => {
+  async function queueThree(harness: Harness): Promise<MediaJob[]> {
+    const jobs: MediaJob[] = []
+    for (const url of ['a', 'b', 'c']) {
+      const analysis = await harness.manager.analyzeMedia({
+        url: `https://example.com/watch?v=${url}`
+      })
+      jobs.push(
+        await harness.manager.queueMedia({
+          analysisId: analysis.analysisId,
+          optionId: VIDEO_OPTION_ID
+        })
+      )
+    }
+    await flushMicrotasks()
+    return jobs
+  }
+
+  it('runs at most the limit and starts the next job when a slot frees', async () => {
+    const harness = await createHarness({ maxActiveJobs: () => 2 })
+    const [first, , third] = await queueThree(harness)
+    expect(harness.engine.downloads).toHaveLength(2)
+    const waiting = harness.manager
+      .getMediaSnapshot()
+      .jobs.find((job) => job.id === third?.id)
+    expect(waiting?.status).toBe('queued')
+
+    await harness.manager.cancelMedia(first?.id)
+    await flushMicrotasks()
+    expect(harness.engine.downloads.map((d) => d.request.jobId)).toContain(third?.id)
+  })
+
+  it('starts a waiting job after a running one fails', async () => {
+    const harness = await createHarness({ maxActiveJobs: () => 1 })
+    const [first, second] = await queueThree(harness)
+    expect(harness.engine.downloads).toHaveLength(1)
+    harness.engine.downloads[0]?.reject(new Error('boom'))
+    await flushMicrotasks()
+    const started = harness.engine.downloads.map((d) => d.request.jobId)
+    expect(started).toEqual([first?.id, second?.id])
   })
 })

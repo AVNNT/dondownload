@@ -34,7 +34,10 @@ import {
   createAppUpdateChecker,
   type AppUpdateChecker
 } from './appUpdate/checker'
-import { MediaJobsManager } from './mediaJobs/manager'
+import {
+  DEFAULT_MAX_ACTIVE_MEDIA_JOBS,
+  MediaJobsManager
+} from './mediaJobs/manager'
 import { registerIpc } from './ipc'
 import { SettingsManager } from './settings/manager'
 import { DesktopSettingsManager } from './settings/desktopManager'
@@ -788,6 +791,13 @@ if (unregisterRequested) {
       outputRootDir: downloadDir,
       database,
       startAllowed: (now) => isAllowedAt(settings.getSettings(), now),
+      // Never more media jobs than the download limit, and at most two
+      // yt-dlp/ffmpeg pairs: they are the heaviest processes the app starts.
+      maxActiveJobs: () =>
+        Math.min(
+          settings.getSettings().maxConcurrentDownloads,
+          DEFAULT_MAX_ACTIVE_MEDIA_JOBS
+        ),
       onExtractorFailure: () => mediaUpdater?.notifyExtractorFailure() ?? Promise.resolve(false),
       onUpdate: (snapshot) => {
         // A deferred verified update becomes visible only after every active
