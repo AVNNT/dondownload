@@ -75,6 +75,33 @@ chunks. electron-vite does not emit a Rollup stats/visualizer file by default,
 so `statsFile` is `null`; if a stats file is added to `out/`, the benchmark
 reports it automatically.
 
+## Runtime memory profile
+
+Measured on a dev build (`npm run dev`) on the same machines as the baseline
+below. These are working-set figures for the whole app, not a benchmark, so
+they only have to stay in the same ballpark:
+
+| State | Working set |
+| --- | --- |
+| Window open | ~324 MB |
+| Hidden to tray | ~235 MB (was ~355 MB) |
+
+What keeps these numbers down:
+
+- **GPU acceleration is off by default.** The UI is a plain list, so Chromium's
+  GPU process only costs memory. Set `DONDOWNLOAD_GPU=1` to re-enable hardware
+  acceleration when ruling out a rendering problem.
+- **No renderer while hidden to the tray.** Hiding the app destroys the
+  `BrowserWindow`; the main process, aria2, the download/media managers, the
+  tray and taskbar progress keep running. Showing the app again creates a fresh
+  window (and re-applies taskbar progress to it).
+- **At most 2 parallel media jobs.** yt-dlp/ffmpeg pairs are the heaviest
+  processes the app starts, so the media queue never runs more than two at
+  once, even when the download limit is higher.
+- **Helper processes run below normal priority.** aria2 and yt-dlp (and ffmpeg,
+  which inherits the class on Windows) are set to below-normal CPU priority, so
+  transfers yield the CPU to games and foreground apps.
+
 ## Baseline
 
 Environment for the baseline below:

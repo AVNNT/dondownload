@@ -168,6 +168,15 @@ export interface TaskbarProgressController {
   refresh: () => void
   /** Apply the pending value immediately (used on teardown). */
   flush: () => void
+  /**
+   * Re-apply the current aggregate to whatever window `getWindow` returns now.
+   *
+   * Call this after the window was recreated (the app destroys the renderer
+   * while in the tray): a new `BrowserWindow` starts with no bar, so the cached
+   * "last applied" value must not suppress the update. Also resets the throttle
+   * so the new window gets the bar right away.
+   */
+  sync: () => void
   /** Stop timers and clear the bar. */
   dispose: () => void
 }
@@ -180,13 +189,12 @@ export interface TaskbarProgressReader {
 export interface TaskbarProgressOptions {
   /**
    * Returns the live window or null when none exists / it was destroyed. It is
-   * a getter because the window is created after the download manager.
+   * a getter because the window is created after the download manager, and
+   * because the window is destroyed and recreated when the app hides to the
+   * tray and is shown again.
    */
-  getWindow: () => {
-    isDestroyed: () => boolean
-    setProgressBar: (value: number) => void
-  } | null
-  /** Cheap aggregate readers for `refresh()`. */
+  getWindow: () => TaskbarWindow | null
+  /** Cheap aggregate readers for `refresh()` and `sync()`. */
   read?: TaskbarProgressReader
   /**
    * Minimum delay between two `setProgressBar` calls. Default 500 ms, i.e. at
@@ -200,12 +208,20 @@ export interface TaskbarProgressOptions {
   clearTimer?: (handle: unknown) => void
 }
 
+/** The subset of `BrowserWindow` the controller touches. */
+export interface TaskbarWindow {
+  isDestroyed: () => boolean
+  setProgressBar: (value: number) => void
+}
+
 const DEFAULT_THROTTLE_MS = 500
 
 /**
  * Throttled taskbar driver. The first update after an idle period applies
  * immediately; later ones are coalesced so a fast aria2 poll cannot flood the
- * shell with `setProgressBar` calls. Identical values are not re-sent.
+ * shell with `setProgressBar` calls. Identical values are not re-sent to the
+ * same window; a recreated window always gets the current value, because its
+ * bar starts empty.
  */
 export function createTaskbarProgress(
   options: TaskbarProgressOptions
@@ -228,16 +244,34 @@ export function createTaskbarProgress(
     })
 
   let lastAppliedAt = Number.NEGATIVE_INFINITY
+  /** The window `applied` was sent to; a new identity invalidates the cache. */
+  let appliedWindow: TaskbarWindow | null = null
   let applied: number | null = null
   let pending: number | null = null
   let timer: unknown = null
   let disposed = false
 
-  const apply = (value: number): void => {
+  /**
+   * Returns the usable window, or null when there is none. Never merge the two
+   * checks into one: a `BrowserWindow` destroyed between the getter and the
+   * call would still be handed to `setProgressBar`, which throws.
+   */
+  const liveWindow = (): TaskbarWindow | null => {
     const window = options.getWindow()
-    if (window === null || window.isDestroyed()) return
+    if (window === null || window.isDestroyed()) return null
+    return window
+  }
+
+  /** True when `value` still has to be sent to `window`. */
+  const needsApply = (window: TaskbarWindow, value: number): boolean =>
+    appliedWindow !== window || applied !== value
+
+  const apply = (value: number): void => {
+    const window = liveWindow()
+    if (window === null) return
     try {
       window.setProgressBar(value)
+      appliedWindow = window
       applied = value
     } catch {
       // A window can be destroyed between the check and the call.
@@ -255,7 +289,11 @@ export function createTaskbarProgress(
     if (disposed || pending === null) return
     const value = pending
     pending = null
-    if (value === applied) return
+    const window = liveWindow()
+    if (window === null) return
+    // A recreated window always gets the current value, even if the number is
+    // the same one the previous window already showed.
+    if (!needsApply(window, value)) return
     lastAppliedAt = now()
     apply(value)
   }
@@ -263,15 +301,37 @@ export function createTaskbarProgress(
   const schedule = (value: number): void => {
     pending = value
     if (timer !== null) return
+    const window = liveWindow()
+    // Same value already shown on this window: nothing to do.
+    if (window !== null && !needsApply(window, value)) {
+      pending = null
+      return
+    }
     const elapsed = now() - lastAppliedAt
-    if (elapsed >= throttleMs) {
+    // A window created since the last apply must show the bar immediately.
+    // Its progress bar starts empty and hiding the app stops publishes, so
+    // waiting would leave the taskbar blank for up to one throttle window.
+    // The same window keeps the ordinary throttle.
+    const recreated = window !== null && appliedWindow !== window
+    if (recreated || elapsed >= throttleMs) {
       flush()
       return
     }
+    // No window at all: remember the newest value and retry shortly.
     timer = setTimer(() => {
       timer = null
       flush()
-    }, throttleMs - elapsed)
+    }, Math.max(1, throttleMs - elapsed))
+  }
+
+  const currentValue = (): number | null => {
+    if (options.read === undefined) return null
+    return taskbarProgressValue(
+      computeTaskbarProgressFromTotals(
+        options.read.downloads(),
+        options.read.mediaJobs?.()
+      )
+    )
   }
 
   const update = (input: TaskbarProgressInput): void => {
@@ -280,21 +340,40 @@ export function createTaskbarProgress(
   }
 
   const refresh = (): void => {
-    if (!enabled || disposed || options.read === undefined) return
-    schedule(
-      taskbarProgressValue(
-        computeTaskbarProgressFromTotals(
-          options.read.downloads(),
-          options.read.mediaJobs?.()
-        )
-      )
-    )
+    if (!enabled || disposed) return
+    const value = currentValue()
+    if (value === null) return
+    schedule(value)
+  }
+
+  const sync = (): void => {
+    if (!enabled || disposed) return
+    // A window that is gone (or was never there) has nothing to show yet; the
+    // next window creation triggers another `sync()`.
+    const window = liveWindow()
+    if (window === null) return
+    clearPendingTimer()
+    const value = currentValue() ?? pending
+    if (value === null) {
+      // Nothing known yet (no readers): forget the cache so the next publish
+      // is applied to this window even if the number is unchanged.
+      applied = null
+      appliedWindow = null
+      return
+    }
+    // The window identity changed, so the applied cache no longer describes
+    // it and the throttle must not delay the very first paint of the bar.
+    if (!needsApply(window, value)) return
+    pending = null
+    lastAppliedAt = now()
+    apply(value)
   }
 
   return {
     update,
     refresh,
     flush,
+    sync,
     dispose: () => {
       if (disposed) return
       disposed = true
@@ -302,6 +381,7 @@ export function createTaskbarProgress(
       pending = null
       if (enabled && applied !== -1) apply(-1)
       applied = null
+      appliedWindow = null
     }
   }
 }
