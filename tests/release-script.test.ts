@@ -455,7 +455,7 @@ describe('vendor staging pins', () => {
       'utf8'
     )
 
-    // Release 1.2.0 shipped the Chocolatey shim because the PATH lookup won
+    // Release 1.1.0 shipped the Chocolatey shim because the PATH lookup won
     // over the verified download. Both the file hash and the shim directories
     // are now guarded.
     expect(script).toContain(

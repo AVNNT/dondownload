@@ -103,6 +103,20 @@ describe('redact: user paths', () => {
     expect(redact('cannot create C:\\SecretFolder\\')).toBe('cannot create <path>')
   })
 
+  it('redacts a drive path without a separating boundary', () => {
+    // A folder name may contain `)` (for example `Holiday (2024)`), so the
+    // token runs to the end of the quoted path; the prose after the comma is
+    // redacted with it. Leaking no part of the path is the priority.
+    expect(redact('open(D:\\Data\\x.zip,failed)')).toBe('open(<path>')
+    expect(redact('openD:\\Data\\secret.zip')).toBe('open<path>.zip')
+    expect(redact('atD:\\Data\\secret.zip')).toBe('at<path>.zip')
+  })
+
+  it('does not mistake a URL scheme or clock time for a drive path', () => {
+    expect(redact('see https://example.com/path')).toBe('see https://example.com/')
+    expect(redact('at 12:30 the sync failed')).toBe('at 12:30 the sync failed')
+  })
+
   it('leaves ordinary prose and short relative names alone', () => {
     expect(redact('aria2 exited with code 1; the request timed out')).toBe(
       'aria2 exited with code 1; the request timed out'

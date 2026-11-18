@@ -195,14 +195,22 @@ function stopsToken(character: string): boolean {
   )
 }
 
-/** True when a Windows drive or UNC path starts at `index`. */
+/**
+ * True when a Windows drive path starts at `index`.
+ *
+ * A drive path is recognised even without a preceding boundary: an error can
+ * quote one inside another token (`openD:\Data\x.zip`). `X://` is explicitly
+ * not a path, so a URL that was already collapsed to its origin (`https://`)
+ * is never mistaken for drive `s:\`. A clock time (`12:30`) has no separator
+ * after the colon and is likewise left alone.
+ */
 function isWindowsPathStart(text: string, index: number): boolean {
-  if (!isBoundary(text, index)) return false
   const hasDrive =
     /[A-Za-z]/.test(text[index] ?? '') &&
     text[index + 1] === ':' &&
     isPathSeparator(text[index + 2])
-  if (hasDrive) return true
+  if (hasDrive) return !isPathSeparator(text[index + 3] ?? '')
+  if (!isBoundary(text, index)) return false
   return (
     text[index] === BACKSLASH &&
     text[index + 1] === BACKSLASH &&

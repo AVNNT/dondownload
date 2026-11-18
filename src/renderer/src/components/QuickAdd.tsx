@@ -270,6 +270,10 @@ export function QuickAdd({
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
       // Keep the entered URL/name and make the intentional repeat explicit.
       setDuplicateInput(input)
+    } else {
+      // Never swallow a failure: a save-to token may have expired, and the
+      // user has to see that instead of assuming the default folder was used.
+      setLocalError(result.error.message)
     }
   }
 
@@ -285,6 +289,10 @@ export function QuickAdd({
       setDuplicateInput(null)
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
       setDuplicateInput(input)
+    } else {
+      // The retry path must surface an expired save-to folder (or any other
+      // refusal) instead of silently posting to the default folder.
+      setLocalError(result.error.message)
     }
   }
 

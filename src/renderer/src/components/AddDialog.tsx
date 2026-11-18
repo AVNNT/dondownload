@@ -36,6 +36,15 @@ import {
 
 export type AddDialogTab = 'direct' | 'media' | 'scan'
 
+/**
+ * Shown when main no longer recognises the Save-to token (30-minute TTL, or a
+ * folder that disappeared). The UI keeps the expired selection so the next
+ * attempt is refused with the same message rather than silently using the
+ * default folder; choosing a folder again replaces the token.
+ */
+const SAVE_TO_EXPIRED_MESSAGE =
+  'That save-to folder has expired. Choose the folder again before downloading.'
+
 export interface AddDialogProps {
   /** Opening hint: 'media' seeds the qualities view; 'scan' noop, files seed text. */
   tab: AddDialogTab
@@ -269,7 +278,12 @@ export function AddDialog({
             : { destinationToken: destination.token })
         })
         if (result.ok) setNotice('Media download queued.')
-        else setAnalysisError(result.error)
+        else {
+          if (result.error.code === 'DOWNLOAD_FOLDER_EXPIRED') {
+            setDestinationError(SAVE_TO_EXPIRED_MESSAGE)
+          }
+          setAnalysisError(result.error)
+        }
       } catch (error) {
         setAnalysisError({
           code: 'MEDIA_REQUEST_FAILED',
@@ -365,6 +379,12 @@ export function AddDialog({
           onAdd={async (input) => {
             const result = await onAdd(input)
             if (result.ok) onClose()
+            else if (result.error.code === 'DOWNLOAD_FOLDER_EXPIRED') {
+              // Keep the expired token selected on purpose. Retrying then
+              // fails with this explicit message instead of silently falling
+              // back to the default folder; "Change" replaces the token.
+              setDestinationError(SAVE_TO_EXPIRED_MESSAGE)
+            }
             return result
           }}
           url={single.url}

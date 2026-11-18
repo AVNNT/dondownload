@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening, revealing, verifying or deleting a download can no longer reach a
+  file outside its own folder when its saved history entry points at a whole
+  drive.
+- Different MEGA links that differ only in their decryption key are no longer
+  reported as the same download, and MEGA links already in history match again
+  after the upgrade.
+- Closing the first-start guide no longer risks reverting another settings
+  change made while the guide was open.
+- If the folder chosen for one download is no longer available, the Add dialog
+  now says so and asks you to choose it again instead of quietly using the
+  default folder.
+- Diagnostics and log files now also hide drive paths that appear inside
+  another word.
+
 ## [1.3.0] - 2026-11-18
 
 ### Added
