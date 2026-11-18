@@ -1,0 +1,194 @@
+{
+  "generatedAt": "2026-11-18T10:05:25.828Z",
+  "environment": {
+    "node": "v24.19.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor          ",
+    "cores": 32,
+    "totalMemoryGiB": 31.1,
+    "electron": "45.2.2",
+    "gpu": "software",
+    "launcher": "source-production-build"
+  },
+  "requestedRuns": 3,
+  "completedRuns": 3,
+  "phases": [
+    {
+      "phase": "window-open-idle",
+      "runs": 3,
+      "total": 333.4,
+      "processes": 4,
+      "groups": {
+        "main": 118.1,
+        "gpu": 68.4,
+        "renderer": 90.8,
+        "utility": 55.4,
+        "other": 0
+      }
+    },
+    {
+      "phase": "hidden-to-tray",
+      "runs": 3,
+      "total": 239.2,
+      "processes": 3,
+      "groups": {
+        "main": 118.3,
+        "gpu": 65.5,
+        "renderer": 0,
+        "utility": 55.4,
+        "other": 0
+      }
+    },
+    {
+      "phase": "shown-again",
+      "runs": 3,
+      "total": 345,
+      "processes": 4,
+      "groups": {
+        "main": 119.3,
+        "gpu": 68.4,
+        "renderer": 102,
+        "utility": 55.4,
+        "other": 0
+      }
+    }
+  ],
+  "runs": [
+    {
+      "run": 1,
+      "ok": true,
+      "phases": [
+        {
+          "phase": "window-open-idle",
+          "totalsByGroup": {
+            "main": 118.1,
+            "gpu": 68.4,
+            "renderer": 90.8,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 332.7,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:04:04.989Z"
+        },
+        {
+          "phase": "hidden-to-tray",
+          "totalsByGroup": {
+            "main": 118.3,
+            "gpu": 65.5,
+            "renderer": 0,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 239.2,
+          "processes": 3,
+          "timestamp": "2026-11-18T10:04:15.011Z"
+        },
+        {
+          "phase": "shown-again",
+          "totalsByGroup": {
+            "main": 118.8,
+            "gpu": 68.4,
+            "renderer": 102,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 344.7,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:04:25.040Z"
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "ok": true,
+      "phases": [
+        {
+          "phase": "window-open-idle",
+          "totalsByGroup": {
+            "main": 117.7,
+            "gpu": 68.5,
+            "renderer": 91.8,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 333.4,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:04:35.337Z"
+        },
+        {
+          "phase": "hidden-to-tray",
+          "totalsByGroup": {
+            "main": 117.9,
+            "gpu": 65.6,
+            "renderer": 0,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 238.9,
+          "processes": 3,
+          "timestamp": "2026-11-18T10:04:45.351Z"
+        },
+        {
+          "phase": "shown-again",
+          "totalsByGroup": {
+            "main": 119.3,
+            "gpu": 68.5,
+            "renderer": 101.8,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 345,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:04:55.364Z"
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "ok": true,
+      "phases": [
+        {
+          "phase": "window-open-idle",
+          "totalsByGroup": {
+            "main": 119.9,
+            "gpu": 68.4,
+            "renderer": 89.9,
+            "utility": 55.4,
+            "other": 0
+          },
+          "total": 333.6,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:05:05.669Z"
+        },
+        {
+          "phase": "hidden-to-tray",
+          "totalsByGroup": {
+            "main": 120.1,
+            "gpu": 65.5,
+            "renderer": 0,
+            "utility": 55.5,
+            "other": 0
+          },
+          "total": 241.1,
+          "processes": 3,
+          "timestamp": "2026-11-18T10:05:15.693Z"
+        },
+        {
+          "phase": "shown-again",
+          "totalsByGroup": {
+            "main": 121.6,
+            "gpu": 68.4,
+            "renderer": 104.6,
+            "utility": 55.5,
+            "other": 0
+          },
+          "total": 350.1,
+          "processes": 4,
+          "timestamp": "2026-11-18T10:05:25.723Z"
+        }
+      ]
+    }
+  ]
+}

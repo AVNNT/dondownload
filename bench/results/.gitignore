@@ -1,2 +1,3 @@
-# Per-run scratch files; only latest.json is the checked-in baseline.
+# Per-run scratch files; only the latest-*.json files are checked-in baselines.
 partial/
+memory-history.jsonl

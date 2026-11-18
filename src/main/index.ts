@@ -93,6 +93,8 @@ import {
   type SmokeCheckResult
 } from './smoke/report'
 import { runSmokeTest } from './smoke/run'
+import { memoryBenchOutPath } from './memoryBench/report'
+import { startMemoryBench } from './memoryBench/runner'
 
 // The UI is a plain list: no video, no 3D, no canvas. Chromium's GPU process
 // costs roughly 60 MB of RAM and buys nothing for it, so software rendering is
@@ -235,6 +237,9 @@ if (smokeConfig.enabled) {
     )
   }
 }
+
+/** Optional RAM benchmark outfile; null for every normal launch. */
+const memoryBenchPath = memoryBenchOutPath(process.env)
 
 traceStartup('main bundle evaluated; smoke configuration resolved')
 
@@ -1306,6 +1311,19 @@ if (unregisterRequested) {
     // the critical path; it still overlaps the renderer load, so extension
     // hand-offs arriving a few milliseconds later succeed.
     void startBrowserBridge()
+
+    // Opt-in RAM benchmark: measures the real memory phases, then quits.
+    if (memoryBenchPath !== null) {
+      startMemoryBench({
+        outPath: memoryBenchPath,
+        hideToTray: hideMainWindow,
+        showWindow: showMainWindow,
+        quit: () => {
+          quitRequested = true
+          app.quit()
+        }
+      })
+    }
 
     // Everything below is useful but not needed for the first frame. Run it
     // after the window has painted (with a bounded fallback if it never shows)
