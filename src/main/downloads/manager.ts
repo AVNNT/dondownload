@@ -2133,7 +2133,7 @@ export class DownloadManager {
       'allow-overwrite': 'false',
       'continue': 'true',
       'content-disposition-default-utf8': 'true',
-      'user-agent': 'DonDownload/1.2.0'
+      'user-agent': 'DonDownload/1.3.0'
     }
     if (explicitFilename) {
       options.out = sanitizeFilename(explicitFilename)

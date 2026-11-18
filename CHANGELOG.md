@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-18
+
 ### Added
 
 - Choose where each download is saved ("Save to") in the Add and Quick add
@@ -17,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Firefox extension in releases is now signed by Mozilla and installs
   permanently.
+
+### Fixed
+
+- Copy diagnostics now hides bare `token=`, `password=` and `api_key=` values.
 
 ## [1.2.0] - 2026-11-18
 
@@ -115,6 +121,7 @@ Initial tagged snapshot: the Electron app with aria2 downloads, SQLite history,
 tray behaviour, the browser extension, media downloads through yt-dlp and
 FFmpeg, the Smart Link Scanner, batches, settings and the Windows installer.
 
+[1.3.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.0
 [1.2.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.1.0
 [0.1.0]: https://github.com/AVNNT/dondownload/releases/tag/v0.1.0

@@ -100,7 +100,7 @@ describe('features verification gate', () => {
   it('never publishes hooks when disabled', () => {
     const globalObject: Record<string, unknown> = {}
     const hooks = {
-      appVersion: '1.2.0',
+      appVersion: '1.3.0',
       tray: vi.fn(),
       windowState: vi.fn(),
       registerDestination: vi.fn(),
@@ -123,7 +123,7 @@ describe('features verification gate', () => {
 
   it('publishes hooks only when enabled', () => {
     const globalObject: Record<string, unknown> = {}
-    const hooks = { appVersion: '1.2.0' } as unknown as FeaturesVerificationHooks
+    const hooks = { appVersion: '1.3.0' } as unknown as FeaturesVerificationHooks
     expect(
       installFeaturesVerification({ enabled: true, hooks, globalObject })
     ).toBe(true)
