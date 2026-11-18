@@ -43,6 +43,8 @@ import type {
   YtdlpUpdateState
 } from '../shared/mediaTools'
 import type { BrowserExtensionStatus } from '../shared/browserExtension'
+import type { NotificationActionRequest } from '../shared/notifications'
+import type { WelcomeInfo } from '../shared/welcome'
 import type { AppUpdateState } from '../shared/appUpdate'
 import type {
   ScanBrowserScriptSelection,
@@ -292,6 +294,24 @@ const api: DonDownloadApi = {
       ipcRenderer.removeListener(IPC.revealRow, handler)
     }
   },
+  onNotificationAction: (
+    listener: (request: NotificationActionRequest) => void
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      request: NotificationActionRequest
+    ): void => {
+      listener(request)
+    }
+    ipcRenderer.on(IPC.notificationAction, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.notificationAction, handler)
+    }
+  },
+  getWelcomeInfo: () =>
+    ipcRenderer.invoke(IPC.getWelcomeInfo) as Promise<ApiResult<WelcomeInfo>>,
+  openWelcomeReleases: () =>
+    ipcRenderer.invoke(IPC.openWelcomeReleases) as Promise<ApiResult<null>>,
   getMediaToolSettings: () =>
     ipcRenderer.invoke(IPC.getMediaToolSettings) as Promise<
       ApiResult<MediaToolSettings>

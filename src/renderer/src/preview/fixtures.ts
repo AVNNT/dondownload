@@ -42,6 +42,7 @@ import {
   DONDOWNLOAD_EXTENSION_ID,
   DONDOWNLOAD_FIREFOX_ADDON_ID
 } from '@shared/extensionId'
+import type { WelcomeInfo } from '@shared/welcome'
 import {
   defaultMediaToolSettings,
   type MediaToolSettings
@@ -137,6 +138,41 @@ const browserExtensionFixture: BrowserExtensionStatus = {
  * reload starts the same demo again.
  */
 
+const welcomeInfoFixture: WelcomeInfo = {
+  downloadDir: 'C:\\Users\\preview\\Downloads\\DonDownload',
+  browsers: [
+    {
+      id: 'chrome',
+      label: 'Chrome',
+      engine: 'chromium',
+      connected: true,
+      connectionRow: 'Chrome'
+    },
+    {
+      id: 'edge',
+      label: 'Edge',
+      engine: 'chromium',
+      connected: true,
+      connectionRow: 'Edge'
+    },
+    {
+      id: 'brave',
+      label: 'Brave',
+      engine: 'chromium',
+      connected: true,
+      connectionRow: 'Chrome'
+    },
+    {
+      id: 'firefox',
+      label: 'Firefox',
+      engine: 'gecko',
+      connected: false,
+      connectionRow: 'Firefox'
+    }
+  ],
+  extensionBundled: true
+}
+
 const PREVIEW_ARIA2 = {
   status: 'ready' as const,
   version: '1.37.0',
@@ -170,6 +206,14 @@ export interface PreviewClock {
   now?: () => number
 }
 
+export interface PreviewOptions extends PreviewClock {
+  /**
+   * Seeds the persisted first-run flag. The fixture preview defaults to seen so
+   * ordinary state shots are not covered by the guide; `?state=welcome` opts in.
+   */
+  welcomeGuideSeen?: boolean
+}
+
 /** Controls only the in-memory preview fixtures; never part of the preload API. */
 export interface PreviewFixtureControls {
   advanceDownloadFixture: () => string
@@ -180,7 +224,7 @@ export interface PreviewFixtureControls {
 type Listener<T> = (value: T) => void
 
 export function createPreviewApi(
-  options: PreviewClock = {}
+  options: PreviewOptions = {}
 ): DonDownloadApi & PreviewFixtureControls {
   const now = options.now ?? (() => Date.now())
   const anchor = now()
@@ -189,7 +233,9 @@ export function createPreviewApi(
   let mediaJobs = seedMediaJobs(anchor)
   let batches = seedBatches(anchor)
   let settings = seedSettings()
-  let desktopSettings: DesktopSettings = seedDesktopSettings()
+  let desktopSettings: DesktopSettings = seedDesktopSettings(
+    options.welcomeGuideSeen ?? true
+  )
   let mediaToolSettings: MediaToolSettings = defaultMediaToolSettings()
   let appUpdateSettings: AppUpdateSettings = defaultAppUpdateSettings()
   const scanSessions: ScanSession[] = []
@@ -1685,6 +1731,9 @@ export function createPreviewApi(
     onClipboardLink: () => () => undefined,
 
     onRevealRow: () => () => undefined,
+    onNotificationAction: () => () => undefined,
+    getWelcomeInfo: async () => ok(welcomeInfoFixture),
+    openWelcomeReleases: async () => ok(null),
 
     getMediaToolSettings: async () => ok({ ...mediaToolSettings }),
 
@@ -2021,9 +2070,10 @@ function seedSettings(): DownloadSettings {
   }
 }
 
-function seedDesktopSettings(): DesktopSettings {
+function seedDesktopSettings(welcomeGuideSeen = true): DesktopSettings {
   return {
     ...defaultDesktopSettings(),
+    welcomeGuideSeen,
     watchClipboard: true,
     interfaceSizePercent: 110
   }

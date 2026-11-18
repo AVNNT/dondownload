@@ -1,20 +1,36 @@
 import type { AppSnapshot } from '@shared/types'
 import type { MediaSnapshot } from '@shared/media'
+import type { NotificationActivation } from '@shared/notifications'
 import { createNoopHost, type CoreHost } from '../host'
 import {
   decideCompletionNotification,
   type NotificationJobKind
 } from './decide'
+import {
+  TOAST_ACTION_OPEN,
+  TOAST_ACTION_SHOW,
+  buildCompletionToastXml,
+  notificationTag
+} from './toast'
 
 export interface CompletionNotificationOptions {
   isEnabled: () => boolean
   /** Injectable for tests; production asks the host. */
   isSupported?: () => boolean
-  /** Show/select the finished row when the notification is clicked. */
-  onActivate?: (kind: NotificationJobKind, id: string) => void
+  /** Show/select the finished row when the notification is activated. */
+  onActivate?: (
+    kind: NotificationJobKind,
+    id: string,
+    action: NotificationActivation
+  ) => void
   /** Desktop shell port for notifications; Electron wires it in main. */
   host?: CoreHost
+  /** Injectable for tests; defaults to the running platform. */
+  platform?: NodeJS.Platform
 }
+
+/** Unique, alphanumeric Windows toast tags for this process. */
+let notificationSequence = 0
 
 /** A status that can never move again without a new explicit user action. */
 const TERMINAL_STATUSES = new Set([
@@ -41,8 +57,13 @@ export class CompletionNotificationService {
   private readonly isEnabled: () => boolean
   private readonly host: CoreHost
   private readonly isSupported: () => boolean
+  private readonly platform: NodeJS.Platform
   private readonly onActivate:
-    | ((kind: NotificationJobKind, id: string) => void)
+    | ((
+        kind: NotificationJobKind,
+        id: string,
+        action: NotificationActivation
+      ) => void)
     | null
   /** Non-terminal statuses only, keyed by the opaque job id. */
   private readonly downloadStatuses = new Map<string, string>()
@@ -53,6 +74,7 @@ export class CompletionNotificationService {
     this.host = options.host ?? createNoopHost()
     this.isSupported =
       options.isSupported ?? (() => this.host.isNotificationSupported())
+    this.platform = options.platform ?? process.platform
     this.onActivate = options.onActivate ?? null
   }
 
@@ -130,20 +152,63 @@ export class CompletionNotificationService {
     if (!decision.notify) return
 
     try {
+      // Windows completion toasts get "Open" / "Show in folder" buttons. The
+      // XML carries only the transient notification tag; the opaque job id
+      // stays in this closure and is never parsed back from toast arguments.
+      const notificationId =
+        this.platform === 'win32' && nextStatus === 'complete'
+          ? notificationTag(
+              (notificationSequence += 1),
+              Date.now().toString(36)
+            )
+          : null
+      const toastXml =
+        notificationId === null
+          ? undefined
+          : buildCompletionToastXml({
+              title: decision.title,
+              body: decision.body,
+              notificationId
+            })
+
       const notification = this.host.createNotification({
         title: decision.title,
-        body: decision.body
+        body: decision.body,
+        ...(toastXml === undefined ? {} : { toastXml }),
+        ...(notificationId === null ? {} : { id: notificationId })
       })
       notification.on('click', () => {
-        try {
-          this.onActivate?.(kind, id)
-        } catch {
-          // A missing window must not break notification handling.
-        }
+        this.activate(kind, id, 'activate')
       })
+      if (toastXml !== undefined) {
+        notification.onAction((actionIndex) => {
+          // Only the two indices this XML defines are acted on. Anything else
+          // just reveals the row, so an unexpected activation never opens a
+          // file on its own.
+          const action =
+            actionIndex === TOAST_ACTION_OPEN
+              ? 'open'
+              : actionIndex === TOAST_ACTION_SHOW
+                ? 'show'
+                : 'activate'
+          this.activate(kind, id, action)
+        })
+      }
       notification.show()
     } catch {
       // Notifications are a non-critical convenience.
+    }
+  }
+
+  private activate(
+    kind: NotificationJobKind,
+    id: string,
+    action: NotificationActivation
+  ): void {
+    try {
+      this.onActivate?.(kind, id, action)
+    } catch {
+      // A missing window must not break notification handling.
     }
   }
 }

@@ -26,6 +26,8 @@ import type {
   YtdlpUpdateState
 } from './mediaTools'
 import type { BrowserExtensionStatus } from './browserExtension'
+import type { NotificationActionRequest } from './notifications'
+import type { WelcomeInfo } from './welcome'
 import type { AppUpdateState } from './appUpdate'
 import type {
   ScanBrowserScriptSelection,
@@ -412,6 +414,18 @@ export interface DonDownloadApi {
   onClipboardLink: (listener: (url: string) => void) => () => void
   /** Notification click: reveal (select) one download or media row. */
   onRevealRow: (listener: (rowKey: string) => void) => () => void
+  /**
+   * Completion-toast button: open the finished file or reveal it in Explorer.
+   * The id came from main's own notification closure, never from toast text.
+   */
+  onNotificationAction: (
+    listener: (request: NotificationActionRequest) => void
+  ) => () => void
+
+  // First-start guide. Read-only detection of installed browsers plus the
+  // current download folder; the releases link is a fixed main-process URL.
+  getWelcomeInfo: () => Promise<ApiResult<WelcomeInfo>>
+  openWelcomeReleases: () => Promise<ApiResult<null>>
 
   // Managed yt-dlp updater. The update request only carries the automatic
   // toggle; a check can report up-to-date, updated, deferred or a safe failure.

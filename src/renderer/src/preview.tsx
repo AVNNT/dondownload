@@ -35,9 +35,9 @@ function Automation(): null {
 /**
  * Screenshot automation, driven by query parameters so headless browsers can
  * capture UI states without a driver: ?state=add|add-opts|add-links|batches|
- * cancel-menu|cancelled|clear-list|details|images|shortcuts|undo, optional
- * ?theme=light|dark|oled, and ?overflow=1 renders a badge with the
- * horizontal-overflow metrics.
+ * cancel-menu|cancelled|clear-list|details|images|shortcuts|undo|welcome|
+ * welcome-browser|welcome-tutorial|welcome-ready, optional ?theme=light|dark|
+ * oled, and ?overflow=1 renders a badge with the horizontal-overflow metrics.
  */
 function runPreviewAutomation(): void {
   // React StrictMode runs effects twice in dev; the automation must run once.
@@ -135,6 +135,27 @@ function runPreviewAutomation(): void {
         new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true })
       )
     }
+    if (state === 'welcome') {
+      // The fixture seeds welcomeGuideSeen=false for this state; the guide mounts
+      // from the desktop-settings read right after the first render.
+      await wait(600)
+    }
+    if (state === 'welcome-browser' || state === 'welcome-ready') {
+      await wait(600)
+      await clickByText('Next')
+      await wait(350)
+      if (state === 'welcome-ready') {
+        await clickByText('Next')
+        await wait(350)
+      }
+    }
+    if (state === 'welcome-tutorial') {
+      await wait(600)
+      await clickByText('Next')
+      await wait(350)
+      await clickByText('Show me how')
+      await wait(400)
+    }
     if (state === 'done-chip') {
       await clickByText('Done')
     }
@@ -231,7 +252,10 @@ if (!import.meta.env.DEV) {
     'The DonDownload fixture preview is only available in development.'
 } else {
   document.documentElement.dataset.preview = 'fixtures'
-  const previewApi = createPreviewApi()
+  const previewParams = new URLSearchParams(window.location.search)
+  const previewApi = createPreviewApi({
+    welcomeGuideSeen: !previewParams.get('state')?.startsWith('welcome')
+  })
   fixtureApi = previewApi
   window.donDownload = previewApi
 

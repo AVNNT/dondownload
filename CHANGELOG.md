@@ -5,6 +5,22 @@ All notable changes to DonDownload are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A short first-start guide: where downloads go, connecting your browser
+  (detected from the usual Windows install folders with the existing
+  native-messaging status), and the key shortcuts. It is shown once, can be
+  replayed from Settings → Getting started, and can be skipped with Esc.
+- Completion notifications on Windows now have "Open" and "Show in folder"
+  buttons. Clicking the toast body still reveals the finished row; a file that
+  was moved or deleted shows the normal missing-file message.
+
+### Changed
+
+- The persisted desktop settings gained a first-run flag (SQLite schema v22).
+
 ## [1.0.0] - 2026-11-18
 
 First public release.

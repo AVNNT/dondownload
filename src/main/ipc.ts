@@ -28,6 +28,8 @@ import type {
   YtdlpUpdateState
 } from '@shared/mediaTools'
 import type { AppUpdateState } from '@shared/appUpdate'
+import type { WelcomeInfo } from '@shared/welcome'
+import { WELCOME_RELEASES_URL } from '@shared/welcome'
 import type { ScanQueueResult, ScanManualMatchResult, ScanSession, ScanQueueSelectionsResult } from '@shared/scanner'
 import {
   parseScanCancelInput,
@@ -88,6 +90,8 @@ export interface IpcContext {
   scanQueue?: ScanQueueService
   /** Manual "Match to video file…" support. */
   manualMatch?: ManualMatchService
+  /** First-start guide data; detection and folder resolution stay in main. */
+  welcome?: { getInfo: () => Promise<WelcomeInfo> }
   /** Send fresh full deltas for every snapshot stream after a renderer gap. */
   requestSnapshotResync?: () => void
   getWindow: () => BrowserWindow | null
@@ -400,6 +404,31 @@ export function registerIpc(context: IpcContext): void {
       )
     }
     context.clipboardWriter?.writeText(rawText)
+    return null
+  })
+
+  // First-start guide. The renderer receives detected browser labels and the
+  // current download folder; it never supplies a path or a URL. Opening the
+  // releases page uses one fixed, public URL.
+  invoke<WelcomeInfo>(IPC.getWelcomeInfo, () => {
+    if (!context.welcome) {
+      throw new AppError(
+        'WELCOME_UNAVAILABLE',
+        'The welcome guide is not available.'
+      )
+    }
+    return context.welcome.getInfo()
+  })
+
+  invoke<null>(IPC.openWelcomeReleases, async () => {
+    try {
+      await shell.openExternal(WELCOME_RELEASES_URL)
+    } catch {
+      throw new AppError(
+        'WELCOME_LINK_FAILED',
+        'The releases page could not be opened.'
+      )
+    }
     return null
   })
 

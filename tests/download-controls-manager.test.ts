@@ -22,6 +22,8 @@ import {
 import { BatchManager } from '../src/main/batches/manager'
 import { DownloadManager } from '../src/main/downloads/manager'
 import { AppError } from '../src/main/errors'
+import type { CoreHost } from '../src/main/host'
+import { createTestHost } from './fakes/host'
 
 const tempDirs: string[] = []
 const managers: DownloadManager[] = []
@@ -253,7 +255,8 @@ function createManager(
   downloadDir: string,
   clock: Clock,
   settings: SettingsRef,
-  updates?: AppSnapshot[]
+  updates?: AppSnapshot[],
+  host?: CoreHost
 ): { manager: DownloadManager; aria2: FakeAria2 } {
   const aria2 = new FakeAria2()
   const manager = new DownloadManager(
@@ -263,7 +266,7 @@ function createManager(
       updates?.push(snapshot)
     },
     database,
-    { now: () => clock.value, settings: () => settings.value }
+    { now: () => clock.value, settings: () => settings.value, host }
   )
   managers.push(manager)
   return { manager, aria2 }
@@ -737,6 +740,174 @@ describe('cancelling a download', () => {
       code: 'DOWNLOAD_COMPLETE'
     })
     expect(itemByUrl(manager, doneUrl).status).toBe('complete')
+  })
+})
+
+describe('completion notification file actions', () => {
+  async function completedFile(
+    manager: DownloadManager,
+    aria2: FakeAria2,
+    url: string,
+    downloadDir: string,
+    filename: string
+  ): Promise<{ id: string; file: string }> {
+    await manager.add({ url })
+    const pending = itemByUrl(manager, url)
+    await mkdir(downloadDir, { recursive: true })
+    const file = path.join(downloadDir, filename)
+    await writeFile(file, 'completed bytes')
+    aria2.setFile(pending.gid, file)
+    aria2.setStatus(pending.gid, 'complete')
+    await manager.refreshPolicy()
+    return { id: itemByUrl(manager, url).id, file }
+  }
+
+  it('opens and reveals exactly the path recorded for the opaque id', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const opened: string[] = []
+    const revealed: string[] = []
+    const host = createTestHost({
+      openPath: async (target) => {
+        opened.push(target)
+        return ''
+      },
+      showItemInFolder: (target) => {
+        revealed.push(target)
+      }
+    })
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      host
+    )
+
+    const { id, file } = await completedFile(
+      manager,
+      aria2,
+      'https://example.com/notify.bin',
+      downloadDir,
+      'notify.bin'
+    )
+    expect(itemByUrl(manager, 'https://example.com/notify.bin').filePath).toBe(
+      file
+    )
+
+    await manager.openFile(id)
+    await manager.showInFolder(id)
+    expect(opened).toEqual([file])
+    expect(revealed).toEqual([file])
+  })
+
+  it('refuses an unknown id instead of opening anything', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const opened: string[] = []
+    const host = createTestHost({
+      openPath: async (target) => {
+        opened.push(target)
+        return ''
+      }
+    })
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      host
+    )
+
+    await expect(
+      manager.openFile('00000000-0000-4000-8000-000000000000')
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_NOT_FOUND'
+    })
+    await expect(
+      manager.showInFolder('00000000-0000-4000-8000-000000000000')
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_NOT_FOUND'
+    })
+    expect(opened).toEqual([])
+  })
+
+  it('reports FILE_MISSING when the recorded file was moved or deleted', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const opened: string[] = []
+    const host = createTestHost({
+      openPath: async (target) => {
+        opened.push(target)
+        return ''
+      }
+    })
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      host
+    )
+
+    const { id, file } = await completedFile(
+      manager,
+      aria2,
+      'https://example.com/gone.bin',
+      downloadDir,
+      'gone.bin'
+    )
+    await rm(file)
+
+    await expect(manager.openFile(id)).rejects.toMatchObject({
+      code: 'FILE_MISSING'
+    })
+    await expect(manager.showInFolder(id)).rejects.toMatchObject({
+      code: 'FILE_MISSING'
+    })
+    expect(opened).toEqual([])
+  })
+
+  it('refuses a recorded path outside the download folder', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const opened: string[] = []
+    const host = createTestHost({
+      openPath: async (target) => {
+        opened.push(target)
+        return ''
+      }
+    })
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      host
+    )
+
+    await manager.add({ url: 'https://example.com/escape.bin' })
+    const pending = itemByUrl(manager, 'https://example.com/escape.bin')
+    await mkdir(downloadDir, { recursive: true })
+    const outside = path.join(downloadDir, '..', 'escape.bin')
+    await writeFile(outside, 'outside')
+    aria2.setFile(pending.gid, outside)
+    aria2.setStatus(pending.gid, 'complete')
+    await manager.refreshPolicy()
+
+    const done = itemByUrl(manager, 'https://example.com/escape.bin')
+    await expect(manager.openFile(done.id)).rejects.toMatchObject({
+      code: 'FILE_OUTSIDE_DOWNLOAD_DIR'
+    })
+    expect(opened).toEqual([])
   })
 })
 
