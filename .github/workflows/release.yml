@@ -14,6 +14,11 @@
 # The update signing key is the UPDATE_SIGNING_KEY repository secret: the
 # Ed25519 private key as PKCS#8 PEM text. A fork without the secret fails the
 # job on purpose instead of publishing an unsigned SHA256SUMS.txt.
+#
+# The Firefox xpi is signed by Mozilla through the AMO_JWT_ISSUER /
+# AMO_JWT_SECRET repository secrets (addons.mozilla.org API key and secret).
+# scripts/release.mjs fails rather than publish an unsigned xpi when they are
+# missing; a fork without AMO access must pass --skip-amo explicitly.
 
 name: Release
 
@@ -96,6 +101,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: node scripts/release.mjs --ci --publish
 
       - name: Delete the update signing key

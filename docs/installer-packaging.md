@@ -358,9 +358,10 @@ maintainer flow is:
 2. `git tag v<version> && git push origin v<version>`. The `Release` workflow
    checks that the tag equals `v` + the `package.json` version, runs typecheck,
    lint, `test:fast` and `test:extension`, builds the installer (staging the
-   pinned vendor archives), signs `SHA256SUMS.txt` with the `UPDATE_SIGNING_KEY`
-   secret and creates a **draft** GitHub release with every asset and notes from
-   the changelog section.
+   pinned vendor archives), signs the Firefox extension with Mozilla through the
+   `AMO_JWT_ISSUER`/`AMO_JWT_SECRET` secrets (unlisted channel), signs
+   `SHA256SUMS.txt` with the `UPDATE_SIGNING_KEY` secret and creates a **draft**
+   GitHub release with every asset and notes from the changelog section.
 3. Review the draft, verify the signature and hashes, then publish it manually.
    Drafts are invisible to the updater. The installed app checks the published
    release at most once per 24 hours.
@@ -373,6 +374,12 @@ the update signing key at
 `node scripts/generate-update-signing-key.mjs <path>` and paste the printed
 public key into `UPDATE_SIGNING_PUBLIC_KEY` in `src/shared/release.ts`. Never
 commit the private key.
+
+The Firefox xpi is signed by Mozilla when `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`
+are in the environment (unlisted channel, pinned `web-ext@8.9.0`). A local
+`npm run release` skips that step with a warning when they are absent, while
+`--ci --publish` fails rather than ship an unsigned extension; pass `--skip-amo`
+to ship the unsigned xpi on purpose.
 
 ## Verification
 

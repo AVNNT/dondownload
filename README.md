@@ -57,7 +57,8 @@ Sends downloads, pages and videos from your browser to the app.
 
 **Firefox · Zen (140+)**
 1. Download `dondownload-extension-firefox-1.2.0.xpi`
-2. `about:debugging` → **Load Temporary Add-on** → pick the file
+2. Open the file (or drag it into a Firefox window) and confirm **Add**. It is
+   signed by Mozilla, so it stays installed after a restart.
 
 The app connects to the extension by itself.
 
@@ -85,14 +86,17 @@ can be moved to another location without re-registering.
 #### Firefox and Zen (140 or newer)
 
 1. Download `dondownload-extension-firefox-1.2.0.xpi` from the same release.
-2. **Temporary:** open `about:debugging#/runtime/this-firefox`, choose
-   **Load Temporary Add-on** and pick the `.xpi` (or the `manifest.json` inside
-   an extracted folder). Firefox removes temporary add-ons when it restarts, so
-   they have to be loaded again.
-3. **Permanent:** Firefox only installs an `.xpi` permanently when it is signed
-   by Mozilla. Alternatively use Firefox Developer Edition (or Nightly) with
-   `xpinstall.signatures.required` set to `false` in `about:config`, then install
-   the file from `about:addons` → gear icon → **Install Add-on From File**.
+2. Open the file (double-click, or drag it into a Firefox window) and confirm
+   **Add**. The `.xpi` in releases is signed by Mozilla through
+   addons.mozilla.org, so Firefox 140+ installs it permanently: it stays
+   installed after a restart and updates like any other add-on.
+
+Developer note: to try local changes, open
+`about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and
+pick `manifest.json` from the `extension/` folder yourself. A build from source
+is unsigned, so Firefox only keeps it until the browser restarts (Firefox
+Developer Edition or Nightly accept it with `xpinstall.signatures.required` set
+to `false` in `about:config`).
 
 The add-on uses the fixed ID `dondownload@dondownload.app`, which the desktop
 app registers automatically.

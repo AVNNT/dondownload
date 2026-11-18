@@ -71,8 +71,12 @@ To build your own release channel:
 2. In `src/shared/release.ts` set `UPDATE_REPO` to your `{ owner, repo }` and
    `UPDATE_SIGNING_PUBLIC_KEY` to the printed public key, then rebuild.
 3. Add the private key (PKCS#8 PEM text) as the `UPDATE_SIGNING_KEY` Actions
-   secret. Pushing a `v<version>` tag then builds and drafts a release in your
-   fork, exactly like the maintainer flow.
+   secret. The release job also signs the Firefox xpi with Mozilla and reads
+   `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` (addons.mozilla.org API key and
+   secret); without them it fails instead of shipping an unsigned extension.
+   Forks without AMO access can pass `--skip-amo` to the release command to
+   ship the unsigned xpi on purpose. Pushing a `v<version>` tag then builds and
+   drafts a release in your fork, exactly like the maintainer flow.
 4. To ship a build with the updater disabled instead, set `UPDATE_REPO` to
    `null`. The updater then makes no network request and needs no key.
 

@@ -3,9 +3,10 @@
 Status: **1.2.0 release prepared; releases are built by GitHub Actions.** The
 application and browser extension are version 1.2.0, the updater points at the
 public `AVNNT/dondownload` repository and its Ed25519 update signing key is
-configured. The installer is still **unsigned**. Code-signing, the extension
-store listing and human legal review remain open. This checklist is not legal
-clearance.
+configured. The installer is still **unsigned**. Code-signing, the Chromium
+extension store listing and human legal review remain open. This checklist is
+not legal clearance. Future releases ship a Firefox `.xpi` signed by Mozilla
+(unlisted channel), so it installs permanently.
 
 ## Verified
 
@@ -51,11 +52,12 @@ clearance.
       final hash. 1.2.0 ships unsigned on purpose; do not claim a signed
       installer.
 - [ ] **Extension store listing:** produce the store listing for the
-      Chromium-compatible extension. 1.2.0 ships the extension inside the
-      installer and as `dondownload-extension-chromium-1.2.0.zip` /
-      `dondownload-extension-firefox-1.2.0.xpi` release assets; until a store
-      listing exists, loading the unpacked (extracted) package is the documented
-      install path.
+      Chromium-compatible extension. Releases ship the extension inside the
+      installer and as `dondownload-extension-chromium-<version>.zip` /
+      `dondownload-extension-firefox-<version>.xpi` assets. The Firefox xpi is
+      signed by Mozilla through the AMO secrets and installs permanently from a
+      plain file open; for Chromium a store listing is still missing, so loading
+      the unpacked (extracted) package remains the documented install path.
 - [ ] **GPL corresponding source:** attach reviewed source archives for the
       exact shipped aria2 and FFmpeg/ffprobe binaries, or obtain a written offer
       that counsel approves. `dist/THIRD-PARTY-SOURCES.txt` records what was
@@ -105,17 +107,23 @@ for rebuilding a draft for an existing tag. It never moves or creates a tag.
    - `dist/dondownload-extension-chromium-<version>.zip` — extract it and use
      "Load unpacked" (or load `extension/` directly from a checkout).
    - `dist/dondownload-extension-firefox-<version>.xpi` — the same files with
-     `manifest.json` at the archive root, **unsigned**, for temporary loading
-     or self-distribution.
+     `manifest.json` at the archive root.
    `.d.ts`, test and source-map files are excluded; icons and CSS are included.
-4. Write and sign `dist/SHA256SUMS.txt` with the update signing key. The
-   extension packages are built before this step so both of them are covered by
-   the checksums and the signature; the installer line stays first, which is
-   what the updater searches for.
-5. Write `dist/THIRD-PARTY-SOURCES.txt` (the written offer/pointer described
+4. Sign the Firefox xpi with Mozilla (addons.mozilla.org, unlisted channel) and
+   replace it with the signed bytes, keeping the asset name. This runs only
+   when `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` are set. `--ci --publish` fails
+   without them, so a release never ships an unsigned extension by accident;
+   locally the step is skipped with a warning, and `--skip-amo` makes an
+   unsigned build explicit for forks without AMO access. See
+   [Mozilla extension signing](#mozilla-extension-signing-amo).
+5. Write and sign `dist/SHA256SUMS.txt` with the update signing key. The
+   extension packages are built (and the Firefox one is signed) before this
+   step so both of them are covered by the checksums and the signature; the
+   installer line stays first, which is what the updater searches for.
+6. Write `dist/THIRD-PARTY-SOURCES.txt` (the written offer/pointer described
    below) and, if the optional sources directory exists, list the GPL source
    archives found there.
-6. Without `--publish`, print the exact asset list and the commands a publish
+7. Without `--publish`, print the exact asset list and the commands a publish
    run would use. Nothing is tagged, pushed or uploaded. With `--publish`, run
    `gh release create v<version> --draft --title "DonDownload <version>"
    --notes-file ...` with every asset. If a draft for the tag already exists,
@@ -149,6 +157,33 @@ Locally, `npm run release` is the same build without tagging or uploading, and
 - Generate a key pair once with
   `node scripts/generate-update-signing-key.mjs <path-outside-the-repo>`.
 
+### Mozilla extension signing (AMO)
+
+- The release `.xpi` is signed by Mozilla through the addons.mozilla.org API,
+  so Firefox 140+ installs it permanently from a plain file open (or drag and
+  drop), not only through `about:debugging`.
+- CI reads the credentials from the **`AMO_JWT_ISSUER`** (API key) and
+  **`AMO_JWT_SECRET`** (API secret) repository secrets. The release workflow
+  passes them to the release step only; `release.mjs` hands them to web-ext as
+  `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET`, so they never appear on a command
+  line or in a log line.
+- Signing uses the pinned `web-ext@8.9.0` (exact version, fetched with
+  `npx -y`) on the `unlisted` channel with a 15-minute approval timeout. 8.3.0
+  fails with "Unsupported file type"; never float this version.
+- The signed output replaces
+  `dist/dondownload-extension-firefox-<version>.xpi` before the checksums are
+  written, so `SHA256SUMS.txt` and its Ed25519 signature cover the signed
+  bytes. `release.mjs` refuses to continue unless the xpi contains
+  `META-INF/mozilla.rsa` or `META-INF/cose.sig`.
+- `--ci --publish` without both secrets **fails**; a release never ships an
+  unsigned extension silently. A local `npm run release` skips signing with a
+  warning instead.
+- **Forks without AMO access** pass `--skip-amo` to ship the unsigned xpi on
+  purpose. Combining `--skip-amo` with the credentials is refused as
+  contradictory. An unsigned xpi only installs temporarily, unless the browser
+  is Developer Edition/Nightly with `xpinstall.signatures.required` set to
+  `false`.
+
 ### Code signing is still open
 
 The installer, the application executable, the native messaging host, aria2,
@@ -167,7 +202,9 @@ invisible to the application updater and to users. After review:
    `THIRD-PARTY-SOURCES.txt`.
 2. Download `SHA256SUMS.txt` and `SHA256SUMS.txt.sig` from the draft, verify the
    Ed25519 signature with the public key in `src/shared/release.ts`, and verify
-   each asset hash.
+   each asset hash. For the Firefox xpi, also confirm it contains
+   `META-INF/mozilla.rsa` (or `META-INF/cose.sig`): that is Mozilla's signature,
+   and without it Firefox only installs the add-on temporarily.
 3. Check the release notes rendered from the `## [1.2.0] - 2026-11-18` section
    of `CHANGELOG.md`.
 4. Publish the draft on GitHub. Only then does `releases/latest` offer it.
@@ -214,8 +251,11 @@ its own repository and key (below) or disable the updater.
    paste the printed public key into `UPDATE_SIGNING_PUBLIC_KEY`. Rebuild; the
    updater only accepts releases from that repository signed by that key.
 4. Add the private key as the `UPDATE_SIGNING_KEY` Actions secret (PKCS#8 PEM
-   text) in your fork. The release workflow then signs and drafts its own
-   releases when you push a `v*` tag.
+   text) in your fork. Add `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` (an
+   addons.mozilla.org API key and secret) if you want Mozilla-signed extension
+   packages; without them the release step fails by design, so pass `--skip-amo`
+   in the workflow if your fork ships the unsigned xpi on purpose. The release
+   workflow then signs and drafts its own releases when you push a `v*` tag.
 5. Tag and push as in the maintainer flow above.
 
 **Fork without releases.** Set `UPDATE_REPO` to `null` (or

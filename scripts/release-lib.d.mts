@@ -77,3 +77,38 @@ export function extractChangelogSection(
   version: string
 ): string | null
 export function renderThirdPartySourcesText(input: ThirdPartySourcesInput): string
+
+export const AMO_SIGNING_CHANNEL: string
+export const WEB_EXT_VERSION: string
+export const AMO_APPROVAL_TIMEOUT_MS: number
+export const AMO_CREDENTIAL_ENV_VARS: string[]
+export const AMO_SIGNATURE_ENTRIES: string[]
+
+export interface AmoCredentials {
+  apiKey: string
+  apiSecret: string
+}
+
+export interface AmoSigningOptions {
+  credentials?: AmoCredentials | null
+  ci?: boolean
+  publish?: boolean
+  skipAmo?: boolean
+}
+
+export type AmoSigningPlan =
+  | { action: 'sign'; reason: 'credentials' }
+  | { action: 'skip'; reason: 'skip-flag' | 'missing-credentials' }
+
+export function readAmoCredentials(env?: Record<string, string | undefined>): AmoCredentials | null
+export function planAmoSigning(options: AmoSigningOptions): AmoSigningPlan
+export function amoSignArguments(options: {
+  sourceDirectory: string
+  artifactsDirectory: string
+}): string[]
+export function amoSignEnvironment(
+  credentials: AmoCredentials,
+  env?: Record<string, string | undefined>
+): Record<string, string | undefined>
+export function listZipEntryNames(bytes: Uint8Array): string[]
+export function findAmoSignatureEntry(entryNames: readonly string[]): string | null
