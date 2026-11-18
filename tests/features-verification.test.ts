@@ -1,6 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync, mkdirSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CoreHost } from '../src/main/host'
 import { DownloadDestinationStore } from '../src/main/downloads/destination'
@@ -8,13 +10,24 @@ import {
   FEATURES_VERIFY_ENV,
   FEATURES_VERIFY_GLOBAL,
   TrayMenuProbe,
+  applySeededHistory,
+  checkHistoryLookups,
   createDestinationProbe,
   createRecordingHost,
   featuresVerificationEnabled,
+  historySeedPath,
   installFeaturesVerification,
+  probeHistoryLookups,
+  probeWelcomeGuideSeen,
+  shouldApplySeed,
+  summarizeHistoryRows,
+  writeSeedHistory,
   type FeaturesVerificationHooks,
+  type HistoryLookupExpectation,
+  type HistoryProbeSource,
   type TrayMenuProbePorts
 } from '../src/main/smoke/featuresVerification'
+import { defaultDesktopSettings } from '../src/shared/desktopSettings'
 import type { TrayMenuActions } from '../src/main/trayMenu'
 
 const tempDirs: string[] = []
@@ -100,13 +113,19 @@ describe('features verification gate', () => {
   it('never publishes hooks when disabled', () => {
     const globalObject: Record<string, unknown> = {}
     const hooks = {
-      appVersion: '1.3.0',
+      appVersion: '1.3.1',
+      seededHistory: vi.fn(),
+      databaseErrorCode: vi.fn(),
+      historyRows: vi.fn(),
+      writeSeededHistory: vi.fn(),
       tray: vi.fn(),
       windowState: vi.fn(),
       registerDestination: vi.fn(),
       resolveDestination: vi.fn(),
       notificationActivate: vi.fn(),
       probeLog: vi.fn(),
+      historyLookups: vi.fn(),
+      verifyHistory: vi.fn(),
       hostCalls: vi.fn(),
       clearHostCalls: vi.fn()
     } as unknown as FeaturesVerificationHooks
@@ -123,7 +142,7 @@ describe('features verification gate', () => {
 
   it('publishes hooks only when enabled', () => {
     const globalObject: Record<string, unknown> = {}
-    const hooks = { appVersion: '1.3.0' } as unknown as FeaturesVerificationHooks
+    const hooks = { appVersion: '1.3.1' } as unknown as FeaturesVerificationHooks
     expect(
       installFeaturesVerification({ enabled: true, hooks, globalObject })
     ).toBe(true)
@@ -301,5 +320,216 @@ describe('tray menu probe', () => {
         .filter((item) => item.type !== 'separator')
         .map((item) => item.label)
     ).toEqual(['new.zip', 'old.zip', 'Show in folder'])
+  })
+})
+
+describe('stability regression probes', () => {
+  const SEEDED_ROWS = [
+    {
+      id: 'v23-mega-one',
+      url: 'https://mega.nz/file/abc#key-one',
+      filename: 'key-one.zip',
+      normalizedUrl: 'https://mega.nz/file/abc',
+      createdAt: 1000
+    },
+    {
+      id: 'v23-mega-two',
+      url: 'https://mega.nz/file/abc#key-two',
+      filename: 'key-two.zip',
+      normalizedUrl: 'https://mega.nz/file/abc',
+      createdAt: 3000
+    },
+    {
+      id: 'v23-normal',
+      url: 'https://example.com/files/legacy.zip',
+      filename: 'legacy.zip',
+      normalizedUrl: 'https://example.com/files/legacy.zip',
+      createdAt: 2000
+    }
+  ]
+
+  function history(
+    matches: Record<string, { state: string; filename: string }> = {}
+  ): HistoryProbeSource {
+    const source = {
+      schemaVersion: 24,
+      loadAll: () => [{ id: 'a' }, { id: 'b' }],
+      findDuplicate: (url: string) => matches[url] ?? null
+    }
+    return source
+  }
+
+  it('reports schema, row count and each duplicate result in order', () => {
+    const database = history({
+      'https://mega.nz/file/abc#key-one': { state: 'finished', filename: 'one.zip' }
+    })
+    const result = probeHistoryLookups({
+      urls: ['https://mega.nz/file/abc#key-one', 'https://mega.nz/file/abc#key-two'],
+      database
+    })
+
+    expect(result.schemaVersion).toBe(24)
+    expect(result.rows).toBe(2)
+    expect(result.lookups.map((entry) => entry.matched)).toEqual([true, false])
+    expect(result.lookups[0]).toMatchObject({ state: 'finished', filename: 'one.zip' })
+    expect(result.lookups[1]).toMatchObject({ state: null, filename: null })
+  })
+
+  it('reports each history expectation separately and never throws on a mismatch', () => {
+    const database = history({
+      'https://mega.nz/file/abc#key-one': { state: 'finished', filename: 'key-one.zip' },
+      'https://mega.nz/file/abc#key-two': { state: 'finished', filename: 'key-one.zip' }
+    })
+    const expectations = [
+      { url: 'https://mega.nz/file/abc#key-one', matched: true, filename: 'key-one.zip' },
+      { url: 'https://mega.nz/file/abc#key-two', matched: false }
+    ]
+
+    const first: HistoryLookupExpectation = {
+      url: expectations[0]!.url,
+      matched: true,
+      filename: 'key-one.zip'
+    }
+    const exact = checkHistoryLookups(
+      { urls: expectations.map((item) => item.url), database },
+      [first],
+      2
+    )
+    expect(exact).toMatchObject({ passed: true, schemaVersion: 24, rows: 2 })
+    expect(exact.failures).toEqual([])
+
+    const collapsed = checkHistoryLookups(
+      { urls: expectations.map((item) => item.url), database },
+      expectations,
+      3
+    )
+    expect(collapsed.passed).toBe(false)
+    expect(collapsed.failures).toHaveLength(2)
+    expect(collapsed.failures[0]).toContain('expected 3 history rows')
+    expect(collapsed.failures[1]).toContain('key-two')
+  })
+
+  it('refuses a non-string lookup instead of guessing', () => {
+    expect(() => probeHistoryLookups({ urls: [42], database: history() })).toThrow(
+      /expects URLs/
+    )
+  })
+
+  it('dismisses the guide and reports both settings snapshots unchanged otherwise', () => {
+    // The real app and harness drive this through the actual guide UI; this
+    // pins the settings-manager contract the check relies on.
+    let current = { ...defaultDesktopSettings(), welcomeGuideSeen: false, showNotifications: false }
+    const result = probeWelcomeGuideSeen({
+      getSettings: () => ({ ...current }),
+      markWelcomeGuideSeen: () => {
+        current = { ...current, welcomeGuideSeen: true }
+        return { ...current }
+      }
+    })
+
+    expect(result.before.welcomeGuideSeen).toBe(false)
+    expect(result.after.welcomeGuideSeen).toBe(true)
+    expect(result.after.showNotifications).toBe(false)
+    expect(result.after).toEqual({ ...result.before, welcomeGuideSeen: true })
+  })
+
+  it('uses a seeded history file once', async () => {
+    const folder = await makeFolder()
+    const seed = historySeedPath(path.join(folder, 'nested'))
+    await writeFile(seed, 'seeded-v23')
+    const databasePath = path.join(folder, 'downloads.sqlite3')
+    await writeFile(databasePath, 'live-v24')
+
+    expect(applySeededHistory(seed, databasePath)).toBe(true)
+    expect(await readFile(databasePath, 'utf8')).toBe('seeded-v23')
+    expect(existsSync(seed)).toBe(false)
+
+    // A different seed may follow a first one (restart 2 of the harness).
+    const second = historySeedPath(path.join(folder, 'nested'))
+    await writeFile(second, 'seeded-again')
+    expect(applySeededHistory(second, databasePath)).toBe(true)
+    expect(await readFile(databasePath, 'utf8')).toBe('seeded-again')
+
+    // A missing seed leaves the live file untouched.
+    expect(applySeededHistory(second, databasePath)).toBe(false)
+    expect(await readFile(databasePath, 'utf8')).toBe('seeded-again')
+  })
+
+  it('writes a real v23 seed through the production migrator and adds rows', async () => {
+    const folder = await makeFolder()
+    const seedPath = path.join(folder, 'history', 'seed-history.sqlite3')
+    let builtAt: number | null = null
+    const written = writeSeedHistory({
+      seedPath,
+      upTo: 23,
+      rows: SEEDED_ROWS,
+      buildAtVersion: (filePath, upTo) => {
+        builtAt = upTo
+        mkdirSync(path.dirname(filePath), { recursive: true })
+        // Same contract as `buildHistoryAtVersion` for the columns this test
+        // reads: a v23 file with the downloads table and its normalized index.
+        const db = new DatabaseSync(filePath)
+        db.exec(`
+          CREATE TABLE downloads (
+            id TEXT PRIMARY KEY NOT NULL, gid TEXT NOT NULL, url TEXT NOT NULL,
+            filename TEXT NOT NULL, dir TEXT NOT NULL, status TEXT NOT NULL,
+            total_bytes INTEGER NOT NULL DEFAULT 0,
+            completed_bytes INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT, attempts INTEGER NOT NULL DEFAULT 1,
+            max_attempts INTEGER NOT NULL DEFAULT 3, created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL, completed_at INTEGER,
+            normalized_url TEXT
+          );
+          PRAGMA user_version = 23;
+        `)
+        db.close()
+      }
+    })
+
+    expect(written).toBe(seedPath)
+    expect(builtAt).toBe(23)
+    const raw = new DatabaseSync(seedPath)
+    try {
+      expect(raw.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 23 })
+      const rows = raw
+        .prepare('SELECT id, url, normalized_url, created_at FROM downloads ORDER BY created_at')
+        .all()
+      expect(rows).toEqual(
+        SEEDED_ROWS.map((row) => ({
+          id: row.id,
+          url: row.url,
+          normalized_url: row.normalizedUrl,
+          created_at: row.createdAt
+        })).sort((a, b) => a.created_at - b.created_at)
+      )
+    } finally {
+      raw.close()
+    }
+  })
+
+  it('summarizes the live history without exposing ids', () => {
+    expect(
+      summarizeHistoryRows([
+        { createdAt: 30, url: 'https://mega.nz/file/abc#key-two' },
+        { createdAt: 10, url: 'https://mega.nz/file/abc#key-one' },
+        { createdAt: 20, url: 'https://example.com/files/legacy.zip' }
+      ])
+    ).toEqual({
+      rows: 3,
+      createdAt: [10, 20, 30],
+      megaKeyed: [
+        'https://mega.nz/file/abc#key-two',
+        'https://mega.nz/file/abc#key-one'
+      ]
+    })
+  })
+
+  it('only applies a real seed path, never an empty value or the database itself', () => {
+    const databasePath = path.resolve('C:\\profile\\downloads.sqlite3')
+    expect(shouldApplySeed(undefined, databasePath)).toBe(false)
+    expect(shouldApplySeed('', databasePath)).toBe(false)
+    expect(shouldApplySeed('   ', databasePath)).toBe(false)
+    expect(shouldApplySeed(databasePath, databasePath)).toBe(false)
+    expect(shouldApplySeed('C:\\profile\\seed-history.sqlite3', databasePath)).toBe(true)
   })
 })

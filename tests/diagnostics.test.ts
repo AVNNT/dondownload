@@ -11,7 +11,7 @@ const USER_FOLDER = `${PROFILE}\\Downloads\\DonDownload`
 
 function input(overrides: Partial<Parameters<typeof buildDiagnostics>[0]> = {}) {
   return {
-    appVersion: '1.3.0',
+    appVersion: '1.3.1',
     windowsVersion: 'Windows 11 Pro',
     windowsBuild: '10.0.22631',
     arch: 'x64',
@@ -36,7 +36,7 @@ function input(overrides: Partial<Parameters<typeof buildDiagnostics>[0]> = {}) 
 describe('diagnostics content', () => {
   it('includes every non-personal fact a maintainer needs', () => {
     const text = buildDiagnostics(input())
-    expect(text).toContain('App version: 1.3.0')
+    expect(text).toContain('App version: 1.3.1')
     expect(text).toContain('Windows: Windows 11 Pro (build 10.0.22631, x64)')
     expect(text).toContain('Packaged build: yes')
     expect(text).toContain('Electron 45.2.2')

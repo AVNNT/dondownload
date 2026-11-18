@@ -1,5 +1,9 @@
 import type { MenuItemConstructorOptions } from 'electron'
 import type { DownloadFolderChoice } from '@shared/downloadDestination'
+import type { DesktopSettings } from '@shared/desktopSettings'
+import { mkdirSync, copyFileSync, rmSync } from 'node:fs'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import type { CoreHost } from '../host'
 import { AppError } from '../errors'
 import {
@@ -30,6 +34,11 @@ import type { DownloadDestinationStore } from '../downloads/destination'
  */
 
 export const FEATURES_VERIFY_ENV = 'DONDOWNLOAD_FEATURES_VERIFY'
+/**
+ * User-data folder the harness seeds a v23 history database in before a
+ * restart check; main copies it over the live database on the next launch.
+ */
+export const FEATURES_VERIFY_SEED_ENV = 'DONDOWNLOAD_FEATURES_VERIFY_SEED'
 /** Name of the main-process global the harness evaluates against. */
 export const FEATURES_VERIFY_GLOBAL = '__dondownloadFeaturesVerify'
 
@@ -251,8 +260,39 @@ export interface WindowProbeState {
   offscreen: boolean
 }
 
+export interface DuplicateProbeResult {
+  url: string
+  matched: boolean
+  state: string | null
+  filename: string | null
+}
+
+export interface HistoryProbeState {
+  schemaVersion: number
+  rows: number
+  /** `findDuplicate` through the production database module, in order. */
+  lookups: DuplicateProbeResult[]
+}
+
+export interface DesktopSettingsProbeState {
+  before: DesktopSettings
+  after: DesktopSettings
+}
+
 export interface FeaturesVerificationHooks {
   appVersion: string
+  /** True only when this launch replaced history with the harness' seed file. */
+  seededHistory: () => boolean
+  /** Write the next launch's seed history at an older schema version. */
+  writeSeededHistory: (request: {
+    directory: string
+    upTo?: number
+    rows: readonly SeededDownloadRow[]
+  }) => string
+  /** Code of the history open failure for this launch, or null when it opened. */
+  databaseErrorCode: () => string | null
+  /** Shape of the live history: row count, creation times, MEGA-keyed rows. */
+  historyRows: () => HistoryRowsReport
   tray: () => TrayMenuProbe
   /** Proves the harness window never appeared or took focus. */
   windowState: () => WindowProbeState
@@ -266,6 +306,18 @@ export interface FeaturesVerificationHooks {
   ) => void
   /** Write one line through the production logger so redaction can be checked. */
   probeLog: (message: string) => void
+  /**
+   * Schema version, row count and duplicate lookups through the app's own
+   * database. The harness seeds a v23 file and restarts, so this reads exactly
+   * the database that launch upgraded to v24.
+   */
+  historyLookups: (urls: readonly unknown[]) => HistoryProbeState
+  /** Split over `historyLookups` so a mismatch comes back as a report. */
+  verifyHistory: (
+    urls: readonly unknown[],
+    expectations?: readonly HistoryLookupExpectation[],
+    expectedRows?: number
+  ) => HistoryLookupCheck
   hostCalls: () => readonly HostCallRecord[]
   clearHostCalls: () => void
 }
@@ -331,4 +383,244 @@ export function createDestinationProbe(
     },
     resolveDestination: (token: unknown) => store.resolve(token)
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Stability-regression probes
+ * ------------------------------------------------------------------------- */
+
+/** The slice of the production history database these probes need. */
+export interface HistoryProbeSource {
+  readonly schemaVersion: number
+  loadAll(): readonly unknown[]
+  findDuplicate(normalizedUrl: string): {
+    state: string
+    filename: string
+  } | null
+}
+
+export interface HistoryProbeInput {
+  /** Normalized URLs to look up, in order. */
+  urls: readonly unknown[]
+  /** The app's live database (already migrated by this launch). */
+  database: HistoryProbeSource
+}
+
+/**
+ * Prove the duplicate lookup on the database this launch opened. The harness
+ * seeds a v23 file before restarting, so opening it already ran the v24
+ * migration; the lookups here then see exactly what the app's history uses.
+ */
+export function probeHistoryLookups(input: HistoryProbeInput): HistoryProbeState {
+  const lookups: DuplicateProbeResult[] = []
+  for (const url of input.urls) {
+    if (typeof url !== 'string') {
+      throw new AppError('VERIFY_INVALID', 'historyLookups expects URLs')
+    }
+    const found = input.database.findDuplicate(url)
+    lookups.push({
+      url,
+      matched: found !== null,
+      state: found?.state ?? null,
+      filename: found?.filename ?? null
+    })
+  }
+  return {
+    schemaVersion: input.database.schemaVersion,
+    rows: input.database.loadAll().length,
+    lookups
+  }
+}
+
+/**
+ * Copy a harness-written history file over the live database before it is
+ * opened, then delete the seed so it is used exactly once. Returns whether the
+ * replacement happened. Only the harness can point this at a database: the
+ * seed path comes from the features-verification env var, which is set only
+ * for a smoke + feature-check run the harness started itself.
+ */
+export function applySeededHistory(seed: string, databasePath: string): boolean {
+  let replaced = false
+  try {
+    copyFileSync(seed, databasePath)
+    replaced = true
+  } catch {
+    replaced = false
+  } finally {
+    rmSync(seed, { force: true })
+    if (replaced) {
+      // A -wal/-shm left by the harness' own connection must not be replayed on
+      // top of the replaced file.
+      rmSync(`${databasePath}-wal`, { force: true })
+      rmSync(`${databasePath}-shm`, { force: true })
+    }
+  }
+  return replaced
+}
+
+/**
+ * Whether this launch should copy a seeded history file. Only the harness sets
+ * the env var, but an empty value must never mean "copy nothing" onto itself.
+ */
+export function shouldApplySeed(
+  seed: string | undefined,
+  databasePath: string
+): seed is string {
+  if (typeof seed !== 'string') return false
+  const trimmed = seed.trim()
+  if (trimmed.length === 0) return false
+  return path.resolve(trimmed) !== path.resolve(databasePath)
+}
+
+/** Link the harness will look up in the seeded history, and what it means. */
+export interface HistoryLookupExpectation {
+  url: string
+  matched: boolean
+  filename?: string
+}
+
+export interface HistoryRowsReport {
+  rows: number
+  /** Creation time of each history row, oldest first (ids are not exposed). */
+  createdAt: number[]
+  /** Filenames of rows whose `normalized_url` kept a MEGA key fragment. */
+  megaKeyed: string[]
+}
+
+const MEGA_KEY_PATTERN = /^https?:\/\/mega\.nz\/.*#/
+
+/** Identify the seeded older rows in the live history without exposing ids. */
+export function summarizeHistoryRows(
+  rows: readonly { createdAt: number; url: string }[]
+): HistoryRowsReport {
+  return {
+    rows: rows.length,
+    createdAt: rows.map((row) => row.createdAt).sort((a, b) => a - b),
+    // The app's own rows are normalized on save; only an upgraded row can still
+    // carry a MEGA key from the seeded file, so this is migration evidence.
+    megaKeyed: rows
+      .filter((row) => MEGA_KEY_PATTERN.test(row.url))
+      .map((row) => row.url)
+  }
+}
+
+export interface HistoryLookupCheck {
+  passed: boolean
+  schemaVersion: number
+  rows: number
+  lookups: DuplicateProbeResult[]
+  failures: string[]
+}
+
+/**
+ * Evaluate `probeHistoryLookups` against expectations. Throwing inside a
+ * CDP-evaluated hook would reach the harness as a bare Error, so each mismatch
+ * is collected here instead and reported with its own reason.
+ */
+export function checkHistoryLookups(
+  input: HistoryProbeInput,
+  expectations: readonly HistoryLookupExpectation[] = [],
+  expectedRows?: number
+): HistoryLookupCheck {
+  const result = probeHistoryLookups(input)
+  const failures: string[] = []
+  if (result.schemaVersion < 24) {
+    failures.push(`schema stayed at v${result.schemaVersion}`)
+  }
+  if (expectedRows !== undefined && result.rows !== expectedRows) {
+    failures.push(`expected ${expectedRows} history rows, found ${result.rows}`)
+  }
+  expectations.forEach((expected, index) => {
+    const actual = result.lookups[index]
+    if (actual === undefined) {
+      failures.push(`${expected.url}: no lookup result`)
+      return
+    }
+    if (actual.matched !== expected.matched) {
+      failures.push(
+        `${expected.url}: matched=${actual.matched}, expected ${expected.matched}`
+      )
+    }
+    if (expected.filename !== undefined && actual.filename !== expected.filename) {
+      failures.push(
+        `${expected.url}: matched ${actual.filename}, expected ${expected.filename}`
+      )
+    }
+  })
+  return { passed: failures.length === 0, ...result, failures }
+}
+
+export interface SeededDownloadRow {
+  id: string
+  url: string
+  filename: string
+  /** `normalized_url` exactly as the older schema backfilled it. */
+  normalizedUrl: string
+  /** Distinct creation times keep the history list deterministic. */
+  createdAt: number
+}
+
+/**
+ * Write the harness' v23 history file with the production migrator, then add
+ * the rows through plain SQL. Returns the path the next launch copies into
+ * place (`FEATURES_VERIFY_SEED_ENV`), so the upgrade runs on real startup.
+ */
+export function writeSeedHistory(input: {
+  seedPath: string
+  upTo: number
+  rows: readonly SeededDownloadRow[]
+  buildAtVersion: (filePath: string, upTo: number) => void
+}): string {
+  rmSync(input.seedPath, { force: true })
+  input.buildAtVersion(input.seedPath, input.upTo)
+  const db = new DatabaseSync(input.seedPath)
+  try {
+    const insert = db.prepare(`
+      INSERT INTO downloads (
+        id, gid, url, filename, dir, status, total_bytes, completed_bytes,
+        created_at, updated_at, completed_at, normalized_url
+      ) VALUES (?, ?, ?, ?, ?, 'complete', 10, 10, ?, ?, ?, ?)
+    `)
+    input.rows.forEach((row, index) => {
+      insert.run(
+        row.id,
+        `0123456789abcde${index}`,
+        row.url,
+        row.filename,
+        'C:\\Downloads',
+        row.createdAt,
+        row.createdAt,
+        row.createdAt,
+        row.normalizedUrl
+      )
+    })
+    db.exec(`PRAGMA user_version = ${input.upTo}`)
+  } finally {
+    db.close()
+  }
+  return input.seedPath
+}
+
+/** Seed path for a harness run that will write a v23 history file first. */
+export function historySeedPath(directory: string): string {
+  mkdirSync(directory, { recursive: true })
+  return path.join(directory, 'seed-history.sqlite3')
+}
+
+export interface WelcomeGuideProbePorts {
+  getSettings: () => DesktopSettings
+  markWelcomeGuideSeen: () => DesktopSettings
+}
+
+/**
+ * Snapshot, dismiss and snapshot again through the production settings
+ * manager. The harness changes another preference between the two calls; only
+ * `welcomeGuideSeen` may differ from the value it set.
+ */
+export function probeWelcomeGuideSeen(
+  ports: WelcomeGuideProbePorts
+): DesktopSettingsProbeState {
+  const before = ports.getSettings()
+  const after = ports.markWelcomeGuideSeen()
+  return { before, after }
 }

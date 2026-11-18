@@ -127,7 +127,7 @@ Shape:
   "durationMs": 1234,
   "pid": 1234,
   "environment": {
-    "appVersion": "1.3.0",
+    "appVersion": "1.3.1",
     "electronVersion": "...",
     "chromeVersion": "...",
     "nodeVersion": "...",

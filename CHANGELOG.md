@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-18
+
+A stability release: bug fixes only, no new features.
+
 ### Fixed
 
 - Opening, revealing, verifying or deleting a download can no longer reach a
@@ -139,6 +143,7 @@ Initial tagged snapshot: the Electron app with aria2 downloads, SQLite history,
 tray behaviour, the browser extension, media downloads through yt-dlp and
 FFmpeg, the Smart Link Scanner, batches, settings and the Windows installer.
 
+[1.3.1]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.1
 [1.3.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.0
 [1.2.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.1.0

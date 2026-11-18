@@ -160,7 +160,7 @@ describe('diagnostics IPC results', () => {
   })
 
   it('returns the diagnostics block as text', async () => {
-    const block = 'DonDownload diagnostics\nApp version: 1.3.0'
+    const block = 'DonDownload diagnostics\nApp version: 1.3.1'
     const fakeWindow = register({ buildDiagnostics: () => block })
 
     const result = await handler(IPC.copyDiagnostics)(trustedEvent(fakeWindow))

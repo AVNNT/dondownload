@@ -7,7 +7,9 @@
  *   2. "Save to" per-download destination (add, restart, Open/Show in folder),
  *   3. the tray menu (items, enable/disable, Pause all through the real manager),
  *   4. "Copy diagnostics" (version present, secrets redacted),
- *   5. a completion-toast Open/Show activation.
+ *   5. a completion-toast Open/Show activation,
+ *   6. the schema v24 history upgrade of a seeded v23 database (MEGA keys),
+ *   7. closing the welcome guide touching only `welcomeGuideSeen`.
  *
  * Everything runs against the built app in the isolated smoke/E2E mode:
  * `DONDOWNLOAD_SMOKE_TEST=1` gives an isolated userData/download folder,
@@ -45,6 +47,10 @@ const inspectorPort = 19356
 const startedAt = new Date().toISOString()
 const HOOK = 'globalThis.__dondownloadFeaturesVerify'
 const SECRET_MARKER = 'VERIFYSECRET9f3a1c'
+/** Must match FEATURES_VERIFY_SEED_ENV in src/main/smoke/featuresVerification.ts. */
+const SEED_ENV = 'DONDOWNLOAD_FEATURES_VERIFY_SEED'
+const historyDir = path.join(runDir, 'history-seed')
+const seededDatabasePath = path.join(historyDir, 'seed-history.sqlite3')
 
 const fixtures = [
   {
@@ -277,7 +283,12 @@ function appEnvironment() {
   return env
 }
 
-async function startApp() {
+/**
+ * Start the packaged app. `seed` (a path the harness wrote) replaces the history
+ * file just before the app opens it, so an older schema goes through the real
+ * migration on launch.
+ */
+async function startApp({ seed = null } = {}) {
   appProcess = spawn(
     appPath,
     [
@@ -290,7 +301,7 @@ async function startApp() {
     ],
     {
       cwd: path.dirname(appPath),
-      env: appEnvironment(),
+      env: seed === null ? appEnvironment() : { ...appEnvironment(), [SEED_ENV]: seed },
       // windowsHide keeps the BrowserWindow out of the foreground; smoke also
       // creates it with show:false and offscreen rendering.
       windowsHide: true,
@@ -1146,6 +1157,200 @@ async function checkNotificationActivation() {
   }
 }
 
+/**
+ * Rows for the v23 seed, recorded exactly as v23's backfill wrote them: both
+ * MEGA links share one key-less `normalized_url`. Three rows in total, so the
+ * v24 upgrade can be checked against a realistic table.
+ */
+const SEEDED_ROWS = [
+  {
+    id: 'v23-mega-one',
+    url: 'https://mega.nz/file/abc#key-one',
+    filename: 'key-one.zip',
+    normalizedUrl: 'https://mega.nz/file/abc',
+    createdAt: 1000
+  },
+  {
+    id: 'v23-mega-two',
+    url: 'https://mega.nz/file/abc#key-two',
+    filename: 'key-two.zip',
+    normalizedUrl: 'https://mega.nz/file/abc',
+    createdAt: 3000
+  },
+  {
+    id: 'v23-normal',
+    url: 'https://example.com/files/legacy.zip',
+    filename: 'legacy.zip',
+    normalizedUrl: 'https://example.com/files/legacy.zip',
+    createdAt: 2000
+  }
+]
+
+/**
+ * Write a v23 database with two MEGA rows that differ only in `#key` and one
+ * normal row. The app must migrate it to v24 on the next launch.
+ */
+async function writeV23History() {
+  // The app builds the seed with its own production migrator (real v23 shape),
+  // then the next launch copies that file into place before opening it.
+  const seedPath = await hookCall(
+    `return h.writeSeededHistory(${JSON.stringify({
+      directory: historyDir,
+      upTo: 23,
+      rows: SEEDED_ROWS
+    })})`
+  )
+  assert(seedPath === seededDatabasePath, `unexpected seed path ${seedPath}`)
+  return seedPath
+}
+
+/** Links looked up in the seeded v23 history; see `writeV23History`. */
+const HISTORY_URLS = ['https://mega.nz/file/abc#key-one', 'https://mega.nz/file/abc#key-two']
+
+/**
+ * Each MEGA link must find its own seeded row. Under v23 both rows shared one
+ * key-less `normalized_url`, so both lookups returned the same (newest) row;
+ * v24 keeps the key in the identity and both resolve to themselves.
+ */
+const HISTORY_EXPECTATIONS = [
+  { url: HISTORY_URLS[0], matched: true, filename: 'key-one.zip' },
+  { url: HISTORY_URLS[1], matched: true, filename: 'key-two.zip' }
+]
+
+/**
+ * The app was restarted on a v23 history file seeded by `writeV23History`.
+ * Reading it through the production database module proves the v24 migration
+ * ran on launch and that MEGA keys are part of duplicate identity, while an
+ * ordinary row still matches.
+ */
+async function checkHistoryUpgrade() {
+  let history
+  let databaseError = null
+  const rows = await hookCall('return h.historyRows()')
+  const seededTimes = SEEDED_ROWS.map(row => row.createdAt).sort((a, b) => a - b)
+  const foundSeeded = seededTimes.every(time => rows.createdAt.includes(time))
+  assert(
+    foundSeeded && rows.rows >= 3,
+    `the seeded rows are not in the live history: ${JSON.stringify(rows)}`
+  )
+  try {
+    history = await hookCall(
+      `return h.verifyHistory(${JSON.stringify(HISTORY_URLS)}, ${JSON.stringify(
+        HISTORY_EXPECTATIONS
+      )}, ${rows.rows})`
+    )
+  } catch (error) {
+    history = null
+    databaseError = error instanceof Error ? error.message : String(error)
+    // The launch could not open the seeded history at all. Start the app again
+    // without a seed so this run leaves a healthy instance behind; the failure
+    // itself is reported below.
+    await stopApp().catch(() => {})
+    await startApp()
+  }
+  if (databaseError !== null) {
+    const code = await hookCall('return h.databaseErrorCode()').catch(() => null)
+    throw new Error(`seeded history launch failed (${code}): ${databaseError}`)
+  }
+  if (history.passed !== true) {
+    throw new Error(`history check failed: ${history.failures.join('; ')}`)
+  }
+  const seeded = await hookCall('return h.seededHistory()')
+  assert(seeded === true, 'this launch did not use the v23 seed file')
+  assert(
+    history.schemaVersion === 24,
+    `history upgraded to v${history.schemaVersion}, expected v24`
+  )
+
+  const live = await renderer.evaluate(
+    `window.donDownload.checkDuplicate(${JSON.stringify(HISTORY_URLS[1])})`
+  )
+  assert(live?.ok === true, `checkDuplicate IPC failed: ${JSON.stringify(live)}`)
+  assert(
+    live.value?.filename === 'key-two.zip',
+    `the duplicate IPC returned ${JSON.stringify(live.value)} for the second MEGA link`
+  )
+  return {
+    schemaVersion: history.schemaVersion,
+    rows: rows.rows,
+    lookups: history.lookups,
+    duplicateIpcFilename: live.value.filename
+  }
+}
+
+/**
+ * Close the real guide through its own button while another desktop preference
+ * changes, then read the stored settings back: only welcomeGuideSeen may move.
+ */
+async function checkWelcomeGuideSettings() {
+  const reset = await renderer.evaluate(`(async () => {
+    const current = await window.donDownload.getDesktopSettings()
+    if (!current.ok) return current
+    const saved = await window.donDownload.updateDesktopSettings({
+      ...current.value,
+      welcomeGuideSeen: false,
+      showNotifications: false
+    })
+    return saved.ok ? { ok: true } : saved
+  })()`)
+  assert(reset?.ok === true, `could not reset the guide flag: ${JSON.stringify(reset)}`)
+  // The running renderer decided at startup; a restart shows the guide again,
+  // exactly as a first start would.
+  await stopApp()
+  await startApp()
+  const guideOpen = await waitFor(
+    () => renderer.evaluate(`!!document.querySelector('[aria-label="Close the welcome guide"]')`),
+    Boolean,
+    20_000,
+    'welcome guide after restart'
+  )
+  assert(guideOpen, 'the welcome guide did not open')
+
+  // Another surface flips the notification preference while the guide is open.
+  const toggled = await renderer.evaluate(`(async () => {
+    const current = await window.donDownload.getDesktopSettings()
+    if (!current.ok) return current
+    return window.donDownload.updateDesktopSettings({
+      ...current.value,
+      showNotifications: true
+    })
+  })()`)
+  assert(toggled?.ok === true, `notification toggle failed: ${JSON.stringify(toggled)}`)
+
+  await renderer.evaluate(
+    `document.querySelector('[aria-label="Close the welcome guide"]').click()`
+  )
+  const stored = await waitFor(
+    async () => {
+      const result = await renderer.evaluate('window.donDownload.getDesktopSettings()')
+      return result?.ok ? result.value : null
+    },
+    value => value?.welcomeGuideSeen === true,
+    15_000,
+    'welcomeGuideSeen persisted'
+  )
+  assert(stored.showNotifications === true, 'closing the guide reverted showNotifications')
+  const unchanged = Object.entries(stored)
+    .filter(([key]) => key !== 'welcomeGuideSeen')
+    .filter(([key, value]) => value !== toggled.value[key])
+  assert(
+    unchanged.length === 0,
+    `closing the guide changed other settings: ${JSON.stringify(unchanged)}`
+  )
+  const closed = await waitFor(
+    () => renderer.evaluate(`!document.querySelector('[aria-label="Close the welcome guide"]')`),
+    Boolean,
+    10_000,
+    'welcome guide closing'
+  )
+  assert(closed, 'the welcome guide stayed open')
+  return {
+    welcomeGuideSeen: stored.welcomeGuideSeen,
+    showNotificationsKept: stored.showNotifications,
+    otherFieldsUnchanged: true
+  }
+}
+
 /* ------------------------------------------------------------------------- *
  * Run
  * ------------------------------------------------------------------------- */
@@ -1192,6 +1397,27 @@ try {
     'Completion-toast Open/Show resolves the recorded path',
     checkNotificationActivation
   )
+  const guidePassed = await check(
+    'welcome-guide-settings',
+    'Closing the welcome guide flips only welcomeGuideSeen',
+    checkWelcomeGuideSettings
+  )
+
+  // Write the v23 history with the app's own migrator, then restart on it. The
+  // guided flip above already left a fresh guide state, so nothing blocks it.
+  let seedPath = null
+  try {
+    seedPath = await writeV23History()
+  } catch (error) {
+    console.error(`seed write failed: ${error instanceof Error ? error.message : error}`)
+  }
+  await stopApp()
+  await startApp({ seed: seedPath })
+  const historyPassed = await check(
+    'history-upgrade-v24',
+    'Seed v23 MEGA + normal rows: v24 migration keeps MEGA keys distinct',
+    checkHistoryUpgrade
+  )
 
   const failed = checks.filter(entry => entry.status === 'FAIL')
   const report = {
@@ -1209,7 +1435,9 @@ try {
       saveToDestination: saveToPassed,
       trayMenu: trayPassed,
       diagnostics: diagnosticsPassed,
-      notificationActivation: notificationPassed
+      notificationActivation: notificationPassed,
+      welcomeGuideSettings: guidePassed,
+      historyUpgrade: historyPassed
     },
     results: checks
   }

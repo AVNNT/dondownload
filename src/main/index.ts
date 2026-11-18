@@ -32,7 +32,11 @@ import {
 import { Aria2Service, defaultDownloadDir } from './aria2/service'
 import { BatchManager } from './batches/manager'
 import { ChecksumService } from './checksum/service'
-import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
+import {
+  buildHistoryAtVersion,
+  openDownloadDatabase,
+  resolveDownloadDatabasePath
+} from './db/database'
 import { DownloadManager } from './downloads/manager'
 import { DownloadDestinationStore } from './downloads/destination'
 import { HistoryCleanupService } from './history/cleanup'
@@ -106,11 +110,19 @@ import { SnapshotDeltaPublisher } from './snapshotDeltaPublisher'
 import { startupNow, traceStartup } from './startupTrace'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
 import {
+  applySeededHistory,
+  checkHistoryLookups,
   createDestinationProbe,
   createRecordingHost,
+  FEATURES_VERIFY_SEED_ENV,
   featuresVerificationEnabled,
   installFeaturesVerification,
+  historySeedPath,
+  probeHistoryLookups,
+  shouldApplySeed,
+  summarizeHistoryRows,
   TrayMenuProbe,
+  writeSeedHistory,
   type RecordingHost
 } from './smoke/featuresVerification'
 import {
@@ -930,6 +942,10 @@ if (unregisterRequested) {
     // History uses the SQLite runtime bundled with Electron's Node (node:sqlite),
     // in a dedicated file under Electron's userData directory.
     let database: ReturnType<typeof openDownloadDatabase> | null = null
+    /** Code of the open failure, for the harness message only. */
+    let databaseErrorCode = 'DATABASE_ERROR'
+    /** Whether a harness-seeded history file replaced the previous one. */
+    let seedReplaced = false
     // A tray stub left over from a previous run must go before this process
     // creates its own tray, so two icons never coexist. Fire and forget: a
     // missing stub simply means nothing is running.
@@ -942,13 +958,19 @@ if (unregisterRequested) {
       spawn
     )
     const databaseStartedAt = startupNow()
+    const databasePath = resolveDownloadDatabasePath(app.getPath('userData'))
+    // Harness-only: replace the history file with a seeded v23 database before
+    // it is opened, so the upgrade path runs exactly as it would for a user.
+    const historySeed = featuresVerify ? process.env[FEATURES_VERIFY_SEED_ENV] : undefined
+    if (shouldApplySeed(historySeed, databasePath)) {
+      seedReplaced = applySeededHistory(historySeed, databasePath)
+    }
     try {
-      database = openDownloadDatabase(
-        resolveDownloadDatabasePath(app.getPath('userData'))
-      )
+      database = openDownloadDatabase(databasePath)
     } catch (error) {
       // Keep the app usable if storage is unavailable; downloads still work but
       // history will not survive a relaunch. Do not log URLs or payloads.
+      databaseErrorCode = error instanceof AppError ? error.code : 'DATABASE_ERROR'
       const detail = error instanceof Error ? error.message : 'unknown error'
       logError('Download history is unavailable: %s', detail)
       if (!app.isPackaged) console.error(`Download history is unavailable: ${detail}`)
@@ -1681,6 +1703,28 @@ if (unregisterRequested) {
         enabled: true,
         hooks: {
           appVersion: app.getVersion(),
+          // Proves the harness' v23 seed was actually the file this launch
+          // upgraded (and that a normal launch never replaces history).
+          seededHistory: () => seedReplaced,
+          databaseErrorCode: () => (database === null ? databaseErrorCode : null),
+          historyRows: () => {
+            if (database === null) {
+              throw new AppError('DATABASE_ERROR', 'history database is unavailable')
+            }
+            return summarizeHistoryRows(
+              database.loadAll().map((row) => ({
+                createdAt: row.record.createdAt,
+                url: row.record.url
+              }))
+            )
+          },
+          writeSeededHistory: ({ directory, upTo = 23, rows }) =>
+            writeSeedHistory({
+              seedPath: historySeedPath(directory),
+              upTo,
+              rows,
+              buildAtVersion: buildHistoryAtVersion
+            }),
           tray: () => trayProbe,
           windowState: () => {
             const current = mainWindow
@@ -1704,6 +1748,26 @@ if (unregisterRequested) {
           // Goes through the production logger, so the diagnostics copy must
           // show the redacted form of whatever this line contains.
           probeLog: (message) => logInfo('%s', message),
+          // Read-only checks over the production database and settings modules,
+          // so the schema-v24 and welcome-guide fixes are exercised in the real
+          // packaged app, not only in unit tests.
+          historyLookups: (urls) => {
+            if (database === null) {
+              throw new AppError('DATABASE_ERROR', 'history database is unavailable')
+            }
+            return probeHistoryLookups({ urls, database: database })
+          },
+          verifyHistory: (urls, expectations, expectedRows) => {
+            if (database === null) {
+              throw new AppError('DATABASE_ERROR', 'history database is unavailable')
+            }
+            return checkHistoryLookups(
+              { urls, database: database },
+              expectations,
+              expectedRows
+            )
+          },
+
           hostCalls: () => recordingHost?.calls ?? [],
           clearHostCalls: () => recordingHost?.clear()
         }

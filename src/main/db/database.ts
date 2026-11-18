@@ -890,6 +890,39 @@ function databaseError(context: string, error: unknown): AppError {
   return new AppError('DATABASE_ERROR', `${context}: ${detail}`)
 }
 
+/**
+ * Build a history file as an older release left it: run the production
+ * migrations up to `upTo` (same order and transaction handling as `migrate`)
+ * and stop. Only the smoke features-verification harness calls this, to prove
+ * an upgrade path against the real migrator.
+ */
+export function buildHistoryAtVersion(filePath: string, upTo: number): void {
+  mkdirSync(path.dirname(filePath), { recursive: true })
+  const db = new DatabaseSync(filePath)
+  try {
+    db.exec('PRAGMA foreign_keys = ON')
+    for (const migration of MIGRATIONS) {
+      if (migration.version > upTo) break
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        migration.prepare?.(db)
+        if (migration.sql) db.exec(migration.sql)
+        db.exec(`PRAGMA user_version = ${migration.version}`)
+        db.exec('COMMIT')
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          // The transaction may already be closed; the error below matters.
+        }
+        throw databaseError(`Could not build schema v${migration.version}`, error)
+      }
+    }
+  } finally {
+    db.close()
+  }
+}
+
 /** True when `table` already has a column named `column`. */
 function tableHasColumn(
   db: DatabaseSync,
