@@ -1,7 +1,7 @@
 # DonDownload release-readiness checklist
 
-Status: **1.1.0 release prepared; releases are built by GitHub Actions.** The
-application and browser extension are version 1.1.0, the updater points at the
+Status: **1.2.0 release prepared; releases are built by GitHub Actions.** The
+application and browser extension are version 1.2.0, the updater points at the
 public `AVNNT/dondownload` repository and its Ed25519 update signing key is
 configured. The installer is still **unsigned**. Code-signing, the extension
 store listing and human legal review remain open. This checklist is not legal
@@ -11,7 +11,7 @@ clearance.
 
 - [x] Latest locally verified installer (2026-11-06 build):
       `dist/DonDownload-0.1.0-x64-setup.exe`, approximately **234 MB**. The
-      1.1.0 installer is produced by the `Release` workflow (or a local
+      1.2.0 installer is produced by the `Release` workflow (or a local
       `npm run release`); record its size and SHA-256 in the release handoff
       rather than in this document. The payload uses the Gyan FFmpeg essentials
       build.
@@ -48,12 +48,12 @@ clearance.
 
 - [ ] **Code-signing certificate:** obtain an authorized certificate, sign and
       timestamp the final installer, then verify the signature and publish the
-      final hash. 1.1.0 ships unsigned on purpose; do not claim a signed
+      final hash. 1.2.0 ships unsigned on purpose; do not claim a signed
       installer.
 - [ ] **Extension store listing:** produce the store listing for the
-      Chromium-compatible extension. 1.1.0 ships the extension inside the
-      installer and as `dondownload-extension-chromium-1.1.0.zip` /
-      `dondownload-extension-firefox-1.1.0.xpi` release assets; until a store
+      Chromium-compatible extension. 1.2.0 ships the extension inside the
+      installer and as `dondownload-extension-chromium-1.2.0.zip` /
+      `dondownload-extension-firefox-1.2.0.xpi` release assets; until a store
       listing exists, loading the unpacked (extracted) package is the documented
       install path.
 - [ ] **GPL corresponding source:** attach reviewed source archives for the
@@ -61,7 +61,7 @@ clearance.
       that counsel approves. `dist/THIRD-PARTY-SOURCES.txt` records what was
       attached.
 
-## Release pipeline (from 1.1.0)
+## Release pipeline (from 1.2.0)
 
 The release is built by GitHub Actions, not on a maintainer machine.
 `scripts/stage-vendor.ps1` downloads the pinned aria2, yt-dlp and FFmpeg
@@ -152,7 +152,7 @@ Locally, `npm run release` is the same build without tagging or uploading, and
 ### Code signing is still open
 
 The installer, the application executable, the native messaging host, aria2,
-yt-dlp and FFmpeg/ffprobe remain **NotSigned**. 1.1.0 does not change that:
+yt-dlp and FFmpeg/ffprobe remain **NotSigned**. 1.2.0 does not change that:
 `npm run release` never invokes `signtool`, never requests a certificate and
 never claims a signature. Until an authorized certificate is available, expect
 SmartScreen warnings and document them honestly.
@@ -168,7 +168,7 @@ invisible to the application updater and to users. After review:
 2. Download `SHA256SUMS.txt` and `SHA256SUMS.txt.sig` from the draft, verify the
    Ed25519 signature with the public key in `src/shared/release.ts`, and verify
    each asset hash.
-3. Check the release notes rendered from the `## [1.1.0] - 2026-11-18` section
+3. Check the release notes rendered from the `## [1.2.0] - 2026-11-18` section
    of `CHANGELOG.md`.
 4. Publish the draft on GitHub. Only then does `releases/latest` offer it.
 

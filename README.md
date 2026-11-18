@@ -38,7 +38,7 @@
 
 ## Install
 
-1. Download **`DonDownload-1.1.0-x64-setup.exe`** from [Releases](https://github.com/AVNNT/dondownload/releases/latest).
+1. Download **`DonDownload-1.2.0-x64-setup.exe`** from [Releases](https://github.com/AVNNT/dondownload/releases/latest).
 2. Run it. No admin rights needed.
 
 > [!NOTE]
@@ -51,12 +51,12 @@
 Sends downloads, pages and videos from your browser to the app.
 
 **Chrome · Edge · Brave · Helium**
-1. Download and extract `dondownload-extension-chromium-1.1.0.zip`
+1. Download and extract `dondownload-extension-chromium-1.2.0.zip`
 2. Open `chrome://extensions`, turn on **Developer mode**
 3. **Load unpacked** → pick the folder
 
 **Firefox · Zen (140+)**
-1. Download `dondownload-extension-firefox-1.1.0.xpi`
+1. Download `dondownload-extension-firefox-1.2.0.xpi`
 2. `about:debugging` → **Load Temporary Add-on** → pick the file
 
 The app connects to the extension by itself.
@@ -70,7 +70,7 @@ The app connects to the extension by itself.
 
 #### Chrome, Edge, Helium and Brave
 
-1. From the same GitHub release, download `dondownload-extension-chromium-1.1.0.zip`
+1. From the same GitHub release, download `dondownload-extension-chromium-1.2.0.zip`
    and extract it to a folder you keep (don't delete it while you use the
    extension).
 2. Open `chrome://extensions` (Edge: `edge://extensions`).
@@ -84,7 +84,7 @@ can be moved to another location without re-registering.
 
 #### Firefox and Zen (140 or newer)
 
-1. Download `dondownload-extension-firefox-1.1.0.xpi` from the same release.
+1. Download `dondownload-extension-firefox-1.2.0.xpi` from the same release.
 2. **Temporary:** open `about:debugging#/runtime/this-firefox`, choose
    **Load Temporary Add-on** and pick the `.xpi` (or the `manifest.json` inside
    an extracted folder). Firefox removes temporary add-ons when it restarts, so

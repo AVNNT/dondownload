@@ -450,7 +450,7 @@ describe('direct media queue path', () => {
       pageUrl: HANIME_URL,
       referer: HANIME_URL,
       kind: 'hls',
-      userAgent: 'DonDownload/1.1.0'
+      userAgent: 'DonDownload/1.2.0'
     })
   })
 

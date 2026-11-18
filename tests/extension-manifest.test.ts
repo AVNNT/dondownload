@@ -46,7 +46,7 @@ describe('browser extension manifest', () => {
       await readFile(path.join(process.cwd(), 'package.json'), 'utf8')
     ) as { version: string }
     expect(manifest.version).toBe(packageJson.version)
-    expect(manifest.version).toBe('1.1.0')
+    expect(manifest.version).toBe('1.2.0')
   })
 
   it('is Manifest V3 with the minimal manual-capture permissions plus HTTP(S) site access', async () => {

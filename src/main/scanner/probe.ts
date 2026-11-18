@@ -41,7 +41,7 @@ export const SCAN_PROBE_HOST_CONCURRENCY = 3
 export const SCAN_PROBE_CAP = 200
 export const SCAN_PROBE_CACHE_TTL_MS = 30_000
 const SCAN_PROBE_CACHE_MAX_ENTRIES = 512
-const SCAN_PROBE_USER_AGENT = 'DonDownload/1.1.0'
+const SCAN_PROBE_USER_AGENT = 'DonDownload/1.2.0'
 
 const HTTP_AGENT = new HttpAgent({
   keepAlive: true,

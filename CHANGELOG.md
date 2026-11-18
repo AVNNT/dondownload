@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-18
+
 ### Added
 
 - A more useful tray menu: a status line ("3 downloading · 4.2 MB/s" or
@@ -36,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Media (yt-dlp) duplicate matching uses only the same source URL plus format;
   the queue action warns first and a second press downloads another copy.
 - Settings → Downloads: "Warn about duplicates" (on by default).
+
+### Fixed
+
+- The installer now bundles the real aria2 download engine; the 1.1.0 build
+  contained a broken copy and was never published.
 
 ## [1.1.0] - 2026-11-18
 
@@ -97,5 +104,6 @@ Initial tagged snapshot: the Electron app with aria2 downloads, SQLite history,
 tray behaviour, the browser extension, media downloads through yt-dlp and
 FFmpeg, the Smart Link Scanner, batches, settings and the Windows installer.
 
+[1.2.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.2.0
 [1.1.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.1.0
 [0.1.0]: https://github.com/AVNNT/dondownload/releases/tag/v0.1.0
