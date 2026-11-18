@@ -1731,6 +1731,7 @@ export function createPreviewApi(
     onClipboardLink: () => () => undefined,
 
     onRevealRow: () => () => undefined,
+    onOpenSettings: () => () => undefined,
     onNotificationAction: () => () => undefined,
     getWelcomeInfo: async () => ok(welcomeInfoFixture),
     openWelcomeReleases: async () => ok(null),

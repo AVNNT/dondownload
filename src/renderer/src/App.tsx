@@ -463,6 +463,17 @@ export default function App(): JSX.Element {
     }
   }, [refreshAll])
 
+  // Tray "Settings": the main process already showed the window.
+  useEffect(() => {
+    const unsubscribe = window.donDownload.onOpenSettings(() => {
+      setMenu(null)
+      setPage('settings')
+    })
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
   // Completion-toast buttons. Main sends back the opaque id it captured from
   // the finished job; the existing open/show channels resolve and validate the
   // recorded path, so a moved or deleted file lands in the normal error banner.

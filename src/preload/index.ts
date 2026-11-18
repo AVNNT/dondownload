@@ -294,6 +294,16 @@ const api: DonDownloadApi = {
       ipcRenderer.removeListener(IPC.revealRow, handler)
     }
   },
+  /** Tray "Settings": show the window on its Settings page. */
+  onOpenSettings: (listener: () => void) => {
+    const handler = (): void => {
+      listener()
+    }
+    ipcRenderer.on(IPC.openSettings, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.openSettings, handler)
+    }
+  },
   onNotificationAction: (
     listener: (request: NotificationActionRequest) => void
   ) => {

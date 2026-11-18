@@ -76,6 +76,8 @@ export const IPC = {
   copyText: 'clipboard:copy-text',
   clipboardLink: 'clipboard:link-detected',
   revealRow: 'app:reveal-row',
+  // Main -> renderer: the tray's "Settings" entry opens the Settings page.
+  openSettings: 'app:open-settings',
   // Completion-toast button press (open / show in folder). Main supplies the
   // opaque job id it captured; toast XML arguments are never forwarded.
   notificationAction: 'app:notification-action',
