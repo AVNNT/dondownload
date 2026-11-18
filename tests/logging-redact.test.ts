@@ -140,6 +140,19 @@ describe('redact: cookies, tokens and headers', () => {
     )
   })
 
+  it('redacts a bare secret name with no prefix', () => {
+    // Regression: the name group used to require at least one character before
+    // the keyword, so the most common exact names were never redacted.
+    expect(redact('token=abc123 secret=hunter2 password=pw')).toBe(
+      'token=[redacted] secret=[redacted] password=[redacted]'
+    )
+    expect(redact('api_key=abc123')).toBe('api_key=[redacted]')
+    expect(redact('apikey: abc123')).toBe('apikey: [redacted]')
+    // A Cookie-shaped name is caught by the header rule first; the value is
+    // redacted either way.
+    expect(redact('auth-cookie=abc123')).toBe('auth-cookie: [redacted]')
+  })
+
   it('redacts long opaque tokens', () => {
     const blob = 'a'.repeat(48)
     expect(redact(`value ${blob} end`)).toBe('value [redacted] end')

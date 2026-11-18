@@ -44,8 +44,15 @@ const BEARER_PATTERN = /(bearer|basic)\s+[A-Za-z0-9\-._~+/]{8,}=*/gi
 const OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9\-._~+/]{40,}={0,2}/g
 
 /** `NAME=value` where the name itself says the value is a secret. */
+// The name may consist only of the keyword (`token=…`, `secret=…`,
+// `password=…`) or carry a prefix/suffix (`DONDOWNLOAD_API_TOKEN`,
+// `auth_password`). The leading word boundary keeps the match from starting
+// in the middle of an unrelated word, while the group itself has no minimum
+// length so an exact keyword is redacted too. `&` ends the value so a query
+// string's later parameters are left to the query-parameter rule (and are not
+// swallowed by one long assignment).
 const ENV_VALUE_PATTERN =
-  /([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|COOKIE|API_KEY|APIKEY|CREDENTIAL)[A-Za-z0-9_]*)\s*[:=]\s*[^\s,;}]+/gi
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|COOKIE|API_KEY|APIKEY|CREDENTIAL)[A-Za-z0-9_]*)(\s*[:=]\s*)[^\s,;}&]+/gi
 
 export interface RedactOptions {
   /**
@@ -265,7 +272,8 @@ export function redact(input: string, options: RedactOptions = {}): string {
     text = redactSecrets(text, options.secretValues ?? [])
     text = text.replace(
       ENV_VALUE_PATTERN,
-      (_whole: string, name: string) => `${name}=${PLACEHOLDER}`
+      (_whole: string, name: string, separator: string) =>
+        `${name}${separator}${PLACEHOLDER}`
     )
     text = text.replace(OPAQUE_TOKEN_PATTERN, PLACEHOLDER)
     return text.trim()

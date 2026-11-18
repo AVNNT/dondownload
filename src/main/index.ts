@@ -20,6 +20,10 @@ import type { BrowserExtensionStatus } from '@shared/browserExtension'
 import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type { MediaJob, MediaToolState } from '@shared/media'
 import type { Batch } from '@shared/batches'
+import type {
+  NotificationActivation,
+  NotificationJobKind
+} from '@shared/notifications'
 import {
   batchRowVersion,
   downloadRowVersion,
@@ -77,7 +81,7 @@ import {
   unregisterNativeHost,
   type NativeHostRegistrar
 } from './nativeHost/registration'
-import { createAppTray, type AppTray } from './tray'
+import { createAppTray, type AppTray, type TrayActions } from './tray'
 import {
   decideIdleStubHandOff,
   dismissLeftoverStub,
@@ -101,6 +105,14 @@ import { createMainWindow } from './window'
 import { SnapshotDeltaPublisher } from './snapshotDeltaPublisher'
 import { startupNow, traceStartup } from './startupTrace'
 import { loadSmokeTestConfig, type SmokeTestConfigEnabled } from './smoke/config'
+import {
+  createDestinationProbe,
+  createRecordingHost,
+  featuresVerificationEnabled,
+  installFeaturesVerification,
+  TrayMenuProbe,
+  type RecordingHost
+} from './smoke/featuresVerification'
 import {
   attachSmokeDiagnostics,
   SmokeDiagnosticsCollector
@@ -157,6 +169,8 @@ if (process.env.DONDOWNLOAD_GPU !== '1') {
 }
 
 let mainWindow: BrowserWindow | null = null
+/** True while the current window was created with offscreen rendering. */
+let mainWindowOffscreen = false
 /** A clipboard link seen while no window existed, offered on the next show. */
 let pendingClipboardLink: string | null = null
 let appTray: AppTray | null = null
@@ -294,6 +308,21 @@ if (smokeConfig.enabled) {
 
 /** Optional RAM benchmark outfile; null for every normal launch. */
 const memoryBenchPath = memoryBenchOutPath(process.env)
+
+/**
+ * Extra main-process hooks for `scripts/electron-features-verification.mjs`.
+ *
+ * This needs BOTH the accepted smoke configuration and the explicit
+ * `DONDOWNLOAD_FEATURES_VERIFY=1` opt-in, so an ordinary desktop run (where
+ * `smoke` is null) can never define them, and a smoke run without the opt-in
+ * stays exactly as it was.
+ */
+const featuresVerify = featuresVerificationEnabled({
+  smokeEnabled: smoke !== null,
+  env: process.env
+})
+/** Records Open/Show-in-folder instead of calling the shell; opt-in only. */
+let recordingHost: RecordingHost | null = null
 
 traceStartup('main bundle evaluated; smoke configuration resolved')
 
@@ -548,6 +577,7 @@ function openMainWindow(
   theme: AppTheme = settingsManager?.getSettings().theme ?? DEFAULT_THEME
 ): BrowserWindow {
   const window = createMainWindow({ show, offscreen, theme })
+  mainWindowOffscreen = offscreen
   if (!offscreen) {
     try {
       window.webContents.setZoomFactor(
@@ -638,6 +668,10 @@ function destroyMainWindow(window: BrowserWindow): void {
 }
 
 function showMainWindow(): void {
+  // Smoke/E2E runs must never put a window on the user's screen. The window
+  // still exists (hidden and offscreen), so notifications and tray actions can
+  // deliver their messages to the real renderer; only the focus call is skipped.
+  if (smoke !== null) return
   const action = decideWindowShow({
     windowExists: mainWindow !== null,
     windowDestroyed: mainWindow?.isDestroyed() ?? false
@@ -886,8 +920,12 @@ if (unregisterRequested) {
           : defaultDownloadDir(app.getPath('downloads'))
 
     const host = createElectronHost()
+    // Features verification records Open/Show-in-folder targets instead of
+    // launching Explorer or the default app. Every other host call is real.
+    recordingHost = featuresVerify ? createRecordingHost(host) : null
+    const shellHost = recordingHost?.host ?? host
 
-    aria2 = new Aria2Service(() => downloadDir, host)
+    aria2 = new Aria2Service(() => downloadDir, shellHost)
 
     // History uses the SQLite runtime bundled with Electron's Node (node:sqlite),
     // in a dedicated file under Electron's userData directory.
@@ -971,30 +1009,42 @@ if (unregisterRequested) {
     )
     applyLoginItem(desktopSettingsManager.getSettings())
 
+    /**
+     * Completion-toast activation. `activate` only reveals the row; `open` and
+     * `show` continue through the renderer's validated open/show IPC. Also
+     * invoked directly by the features-verification harness, which is the only
+     * way to exercise a Windows toast button without a real toast.
+     */
+    const notificationActivate = (
+      kind: NotificationJobKind,
+      id: string,
+      action: NotificationActivation
+    ): void => {
+      showMainWindow()
+      sendToMainWindow((window) => {
+        window.webContents.send(IPC.revealRow, `${kind}:${id}`)
+        // The toast button runs through the same validated open/show IPC the
+        // renderer already uses, so a file that moved or was deleted shows
+        // the existing "file missing" banner instead of failing silently.
+        if (action !== 'activate') {
+          window.webContents.send(IPC.notificationAction, {
+            kind,
+            id,
+            action
+          })
+        }
+      })
+    }
+
     notifications = new CompletionNotificationService({
-      host,
+      host: shellHost,
       // Off by default (opt-in), and never shown in smoke or E2E harness runs.
       isEnabled: () =>
         smoke === null &&
         process.env.DONDOWNLOAD_INTERACTIVE_SMOKE !== '1' &&
         process.env.DONDOWNLOAD_SMOKE_TEST !== '1' &&
         (desktopSettingsManager?.getSettings().showNotifications ?? false),
-      onActivate: (kind, id, action) => {
-        showMainWindow()
-        sendToMainWindow((window) => {
-          window.webContents.send(IPC.revealRow, `${kind}:${id}`)
-          // The toast button runs through the same validated open/show IPC the
-          // renderer already uses, so a file that moved or was deleted shows
-          // the existing "file missing" banner instead of failing silently.
-          if (action !== 'activate') {
-            window.webContents.send(IPC.notificationAction, {
-              kind,
-              id,
-              action
-            })
-          }
-        })
-      }
+      onActivate: notificationActivate
     })
 
     // Main-only token store for "Match to video file…". A picked path never
@@ -1093,7 +1143,7 @@ if (unregisterRequested) {
       },
       database,
       {
-        host,
+        host: shellHost,
         settings: () => settings.getSettings(),
         autoResume: () =>
           desktopSettingsManager?.getSettings().resumeInterruptedOnStartup ??
@@ -1177,7 +1227,7 @@ if (unregisterRequested) {
         : { lookup: mediaFixtureLookup })
     })
     mediaJobs = new MediaJobsManager({
-      host,
+      host: shellHost,
       engine: mediaEngine,
       mediaDir,
       // With sorting enabled, media output joins the same Video/Audio folders
@@ -1226,7 +1276,7 @@ if (unregisterRequested) {
     // those systems. It loads persisted batches and marks any active work
     // interrupted instead of auto-resuming it.
     batches = new BatchManager({
-      host,
+      host: shellHost,
       downloads: manager,
       mediaJobs,
       collectionEngine: mediaEngine,
@@ -1565,53 +1615,99 @@ if (unregisterRequested) {
       )
     }
 
+    // One object for the tray's menu/actions, whether or not this run actually
+    // installs a notification-area icon. The features-verification harness
+    // builds the same menu from the same actions over the main inspector.
+    const trayActions: TrayActions = {
+      showWindow: showMainWindow,
+      hideWindow: hideMainWindow,
+      quit: () => {
+        quitRequested = true
+        app.quit()
+      },
+      isWindowVisible: isMainWindowVisible,
+      openSettings: openSettingsFromTray,
+      pauseAll: () => {
+        void pauseAllDownloads()
+      },
+      resumeAll: () => {
+        void resumeAllDownloads()
+      },
+      getSpeedLimitBps: () =>
+        settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
+      setSpeedLimitBps: (bps) => {
+        void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
+          const detail =
+            error instanceof Error ? error.message : 'unknown error'
+          logError('Speed limit could not be changed: %s', detail)
+          if (!app.isPackaged) {
+            console.error(`Speed limit could not be changed: ${detail}`)
+          }
+        })
+      },
+      // Read through the live managers; the tray never caches a snapshot.
+      getDownloads: () => manager?.getSnapshot().downloads ?? [],
+      getMediaJobs: () => mediaJobs?.getMediaSnapshot().jobs ?? [],
+      openDownload: openTrayDownload,
+      showDownloadInFolder: showTrayDownloadInFolder,
+      addFromClipboard: addFromClipboardFromTray,
+      // One clipboard read per menu open; never a timer of its own. The tray
+      // host already tolerates a rejected/locked clipboard read.
+      readClipboardText: () => clipboard.readText()
+    }
+
     // Create the tray immediately after the window; this still happens long
     // before the first frame, so closing the window always has a safe target.
     // If tray creation fails, the policy falls back to close-and-quit.
     // Smoke verification never creates a tray, so no desktop UI surface exists.
     if (smoke === null) {
-      appTray = createAppTray({
-        showWindow: showMainWindow,
-        hideWindow: hideMainWindow,
-        quit: () => {
-          quitRequested = true
-          app.quit()
-        },
-        isWindowVisible: isMainWindowVisible,
-        openSettings: openSettingsFromTray,
-        pauseAll: () => {
-          void pauseAllDownloads()
-        },
-        resumeAll: () => {
-          void resumeAllDownloads()
-        },
-        getSpeedLimitBps: () =>
-          settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
-        setSpeedLimitBps: (bps) => {
-          void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
-            const detail =
-              error instanceof Error ? error.message : 'unknown error'
-            logError('Speed limit could not be changed: %s', detail)
-            if (!app.isPackaged) {
-              console.error(`Speed limit could not be changed: ${detail}`)
-            }
-          })
-        },
-        // Read through the live managers; the tray never caches a snapshot.
-        getDownloads: () => manager?.getSnapshot().downloads ?? [],
-        getMediaJobs: () => mediaJobs?.getMediaSnapshot().jobs ?? [],
-        openDownload: openTrayDownload,
-        showDownloadInFolder: showTrayDownloadInFolder,
-        addFromClipboard: addFromClipboardFromTray,
-        // One clipboard read per menu open; never a timer of its own. The tray
-        // host already tolerates a rejected/locked clipboard read.
-        readClipboardText: () => clipboard.readText()
-      })
+      appTray = createAppTray(trayActions)
       if (startHidden && appTray === null) {
         // Hidden-start was requested but the tray is unavailable; showing the
         // window is the only way to keep the app reachable.
         showMainWindow()
       }
+    } else if (featuresVerify) {
+      // Inspector-only hooks; nothing below runs in a normal desktop session.
+      const trayProbe = new TrayMenuProbe({
+        windowVisible: isMainWindowVisible,
+        downloads: trayActions.getDownloads,
+        mediaJobs: trayActions.getMediaJobs,
+        speedLimitBps: trayActions.getSpeedLimitBps,
+        readClipboardText: trayActions.readClipboardText,
+        actions: trayActions
+      })
+      installFeaturesVerification({
+        enabled: true,
+        hooks: {
+          appVersion: app.getVersion(),
+          tray: () => trayProbe,
+          windowState: () => {
+            const current = mainWindow
+            if (current === null || current.isDestroyed()) {
+              return {
+                visible: false,
+                focused: false,
+                destroyed: true,
+                offscreen: false
+              }
+            }
+            return {
+              visible: current.isVisible(),
+              focused: current.isFocused(),
+              destroyed: false,
+              offscreen: mainWindowOffscreen
+            }
+          },
+          ...createDestinationProbe(downloadDestinationStore),
+          notificationActivate,
+          // Goes through the production logger, so the diagnostics copy must
+          // show the redacted form of whatever this line contains.
+          probeLog: (message) => logInfo('%s', message),
+          hostCalls: () => recordingHost?.calls ?? [],
+          clearHostCalls: () => recordingHost?.clear()
+        }
+      })
     }
 
     // Begin counting idle time only once the tray exists: without a tray the
