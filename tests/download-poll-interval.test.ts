@@ -365,3 +365,49 @@ describe('adaptive download polling', () => {
     expect(port.pumpPolicy).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('idle downloads leave no pending poll timer', () => {
+  it('creates one timer for work and clears it when the last transfer finishes', async () => {
+    vi.useFakeTimers()
+    const aria2 = new FakeAria2()
+    const clock = { value: Date.UTC(2026, 10, 4, 12, 0, 0) }
+    const manager = createManager(aria2, clock, await makeDownloadDir())
+
+    // A fresh manager has nothing to observe, so it holds no timer at all.
+    expect(vi.getTimerCount()).toBe(0)
+
+    await manager.add({ url: 'https://example.com/timer.bin' })
+    expect(vi.getTimerCount()).toBe(1)
+
+    const gid = manager.getSnapshot().downloads[0]?.gid
+    if (!gid) throw new Error('missing gid')
+    aria2.setStatus(gid, 'active')
+    await advance(ACTIVE_POLL_INTERVAL_MS)
+    expect(manager.getSnapshot().downloads[0]?.status).toBe('active')
+    // Still exactly one timer: a poll never leaves a second one behind.
+    expect(vi.getTimerCount()).toBe(1)
+
+    aria2.setStatus(gid, 'complete')
+    await advance(ACTIVE_POLL_INTERVAL_MS)
+    expect(manager.getSnapshot().downloads[0]?.status).toBe('complete')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops the timer on pause and restarts it on resume', async () => {
+    vi.useFakeTimers()
+    const aria2 = new FakeAria2()
+    const clock = { value: Date.UTC(2026, 10, 4, 12, 0, 0) }
+    const manager = createManager(aria2, clock, await makeDownloadDir())
+
+    await manager.add({ url: 'https://example.com/paused.bin' })
+    const id = manager.getSnapshot().downloads[0]?.id
+    if (!id) throw new Error('missing id')
+    expect(vi.getTimerCount()).toBe(1)
+
+    await manager.pause(id)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await manager.resume(id)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+})

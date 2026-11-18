@@ -624,6 +624,8 @@ if (unregisterRequested) {
     clipboardWatcher = new ClipboardWatcher({
       readText: () => clipboard.readText(),
       isEnabled: () => desktopSettingsManager?.getSettings().watchClipboard ?? false,
+      // Hidden to the tray means no window to react in: poll less often.
+      hasWindow: () => mainWindow !== null && !mainWindow.isDestroyed(),
       onUrl: (url) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.clipboardLink, url)

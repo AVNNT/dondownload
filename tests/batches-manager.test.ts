@@ -1302,3 +1302,88 @@ describe('cancel, retry and remove isolation', () => {
     expect(downloads.pauseCalls).toHaveLength(0)
   })
 })
+
+describe('batch polling timers', () => {
+  /**
+   * A manager with real polling enabled and no database, so the only pending
+   * timer is the poll interval itself.
+   */
+  function createPollingHarness(): Harness {
+    const downloads = new FakeDownloads()
+    const media = new FakeMediaJobs()
+    const engine = new FakeCollectionEngine()
+    const pixeldrain = new FakePixeldrain()
+    const manager = new BatchManager({
+      downloads,
+      mediaJobs: media,
+      collectionEngine: engine,
+      pixeldrain,
+      onUpdate: () => undefined,
+      now: () => NOW,
+      pollIntervalMs: 1_000,
+      progressPersistIntervalMs: 0,
+      openExternal
+    })
+    return {
+      manager,
+      downloads,
+      media,
+      engine,
+      pixeldrain,
+      database: new FakePersistence()
+    }
+  }
+
+  it('holds no interval while nothing is active and starts one for new work', async () => {
+    vi.useFakeTimers()
+    const { manager, downloads } = createPollingHarness()
+
+    // Idle: no batch exists, so no interval may be pending.
+    expect(vi.getTimerCount()).toBe(0)
+
+    const result = await manager.submitSmartBatch({
+      urls: ['https://example.com/files/a.zip']
+    })
+    const batchId = result.batch?.id
+    if (!batchId) throw new Error('expected a direct batch')
+    await manager.waitForIdle()
+    expect(vi.getTimerCount()).toBe(1)
+
+    downloads.complete('child_1')
+    manager.refresh()
+    expect(manager.getBatch(batchId).status).toBe('complete')
+    // The last item is terminal: the interval is gone.
+    expect(vi.getTimerCount()).toBe(0)
+
+    // Waiting much longer than the cadence must not resurrect it.
+    vi.advanceTimersByTime(60_000)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await manager.submitSmartBatch({
+      urls: ['https://example.com/files/b.zip']
+    })
+    await manager.waitForIdle()
+    expect(vi.getTimerCount()).toBe(1)
+
+    manager.close()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('clears the interval when the last active batch is cancelled', async () => {
+    vi.useFakeTimers()
+    const { manager } = createPollingHarness()
+
+    const result = await manager.submitSmartBatch({
+      urls: ['https://example.com/files/c.zip']
+    })
+    const batchId = result.batch?.id
+    if (!batchId) throw new Error('expected a direct batch')
+    await manager.waitForIdle()
+    expect(vi.getTimerCount()).toBe(1)
+
+    await manager.cancelBatch({ batchId })
+    expect(vi.getTimerCount()).toBe(0)
+
+    manager.close()
+  })
+})
