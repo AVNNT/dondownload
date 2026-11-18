@@ -2,14 +2,9 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createTestHost } from './fakes/host'
 
-const { showItemInFolder } = vi.hoisted(() => ({
-  showItemInFolder: vi.fn()
-}))
-
-vi.mock('electron', () => ({
-  shell: { showItemInFolder }
-}))
+const showItemInFolder = vi.fn()
 
 // The merge-output probe is exercised on its own (media-merge-progress.test.ts);
 // here only its scheduling and publication are under test.
@@ -226,6 +221,7 @@ async function createHarness(
   const mediaDir = options.mediaDir ?? (await makeTempDir())
   const updates: MediaSnapshot[] = []
   const manager = new MediaJobsManager({
+    host: createTestHost({ showItemInFolder }),
     engine,
     mediaDir,
     outputDirFor: options.outputDirFor,

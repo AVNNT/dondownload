@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { shell } from 'electron'
 import {
   isActiveMediaJobStatus,
   normalizeMediaSourceUrl,
@@ -28,6 +27,7 @@ import {
   type SniffedMediaInput
 } from '@shared/sniffedMedia'
 import { AppError } from '../errors'
+import { createNoopHost, type CoreHost } from '../host'
 import {
   checkDeleteTarget,
   deleteTargetError,
@@ -156,6 +156,11 @@ export interface MediaJobsManagerOptions {
    * yt-dlp update and resolves true when a newer binary was activated.
    */
   onExtractorFailure?: () => Promise<boolean>
+  /**
+   * Desktop shell port for open/reveal/recycle actions. Electron wires its
+   * implementation in main; narrow tests use the inert default.
+   */
+  host?: CoreHost
 }
 
 export const MEDIA_INTERRUPTED_MESSAGE =
@@ -320,6 +325,7 @@ export class MediaJobsManager {
   private readonly onExtractorFailure:
     | (() => Promise<boolean>)
     | null
+  private readonly host: CoreHost
 
   private readonly jobs = new Map<string, ManagedMediaJob>()
   /** Only jobs currently `downloading`; taskbar aggregation is O(active). */
@@ -356,6 +362,7 @@ export class MediaJobsManager {
     this.maxActiveJobs =
       options.maxActiveJobs ?? (() => DEFAULT_MAX_ACTIVE_MEDIA_JOBS)
     this.onExtractorFailure = options.onExtractorFailure ?? null
+    this.host = options.host ?? createNoopHost()
 
     this.loadPersistedJobs()
   }
@@ -908,7 +915,7 @@ export class MediaJobsManager {
     }
 
     try {
-      await shell.trashItem(record.filePath as string)
+      await this.host.trashItem(record.filePath as string)
     } catch {
       throw new AppError(
         'FILE_DELETE_FAILED',
@@ -1074,7 +1081,7 @@ export class MediaJobsManager {
       )
     }
 
-    shell.showItemInFolder(record.filePath)
+    this.host.showItemInFolder(record.filePath)
     return null
   }
 
@@ -1102,7 +1109,7 @@ export class MediaJobsManager {
       )
     }
 
-    const failure = await shell.openPath(record.filePath)
+    const failure = await this.host.openPath(record.filePath)
     if (failure.length > 0) {
       throw new AppError(
         'FILE_OPEN_FAILED',

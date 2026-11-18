@@ -1,7 +1,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { shell } from 'electron'
 import {
   type AddDownloadInput,
   type AppSnapshot,
@@ -52,6 +51,7 @@ import {
 import type { Aria2Service } from '../aria2/service'
 import type { DownloadDatabase } from '../db/database'
 import { AppError } from '../errors'
+import { createNoopHost, type CoreHost } from '../host'
 import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
 import { isUnsafeLocalPath } from '../scanner/manualMatch'
@@ -152,6 +152,11 @@ export interface DownloadManagerOptions {
    * picked. Main-only; a raw renderer path is never accepted.
    */
   resolvePairingFolder?: (token: string) => PickedVideoFolder | null
+  /**
+   * Desktop shell port for open/reveal/recycle actions. Electron wires its
+   * implementation in main; narrow tests use the inert default.
+   */
+  host?: CoreHost
 }
 
 export interface CookieTargetResolutionInput {
@@ -233,6 +238,7 @@ export class DownloadManager {
   private readonly pairingFileIds = new Set<string>()
   private readonly submittingIds = new Set<string>()
   private readonly now: () => number
+  private readonly host: CoreHost
   private readonly autoResumeProvider: () => boolean
   private readonly resolveCookieTarget: CookieTargetResolver
   private readonly resolvePairingFolder:
@@ -306,6 +312,7 @@ export class DownloadManager {
   ) {
     this.database = database
     this.now = options.now ?? Date.now
+    this.host = options.host ?? createNoopHost()
     this.autoResumeProvider = options.autoResume ?? (() => false)
     this.resolveCookieTarget =
       options.resolveCookieTarget ?? defaultResolveCookieTarget
@@ -1240,7 +1247,7 @@ export class DownloadManager {
       )
     }
 
-    shell.showItemInFolder(record.filePath)
+    this.host.showItemInFolder(record.filePath)
     return null
   }
 
@@ -1271,7 +1278,7 @@ export class DownloadManager {
       )
     }
 
-    const failure = await shell.openPath(record.filePath)
+    const failure = await this.host.openPath(record.filePath)
     if (failure.length > 0) {
       throw new AppError(
         'FILE_OPEN_FAILED',
@@ -1312,7 +1319,7 @@ export class DownloadManager {
     }
 
     try {
-      await shell.trashItem(record.filePath as string)
+      await this.host.trashItem(record.filePath as string)
     } catch {
       throw new AppError(
         'FILE_DELETE_FAILED',

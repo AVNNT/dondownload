@@ -43,6 +43,7 @@ import { SettingsManager } from './settings/manager'
 import { DesktopSettingsManager } from './settings/desktopManager'
 import { ClipboardWatcher } from './clipboard/watcher'
 import { AppError } from './errors'
+import { createElectronHost } from './electronHost'
 import { CompletionNotificationService } from './notifications/service'
 import { loginItemSettings, shouldManageLoginItem } from './desktop/loginItem'
 import {
@@ -551,7 +552,9 @@ if (unregisterRequested) {
           ? path.join(app.getPath('userData'), 'smoke-downloads')
           : defaultDownloadDir(app.getPath('downloads'))
 
-    aria2 = new Aria2Service(() => downloadDir)
+    const host = createElectronHost()
+
+    aria2 = new Aria2Service(() => downloadDir, host)
 
     // History uses the SQLite runtime bundled with Electron's Node (node:sqlite),
     // in a dedicated file under Electron's userData directory.
@@ -622,6 +625,7 @@ if (unregisterRequested) {
     applyLoginItem(desktopSettingsManager.getSettings())
 
     notifications = new CompletionNotificationService({
+      host,
       // Off by default (opt-in), and never shown in smoke or E2E harness runs.
       isEnabled: () =>
         smoke === null &&
@@ -707,6 +711,7 @@ if (unregisterRequested) {
       },
       database,
       {
+        host,
         settings: () => settings.getSettings(),
         autoResume: () =>
           desktopSettingsManager?.getSettings().resumeInterruptedOnStartup ??
@@ -788,6 +793,7 @@ if (unregisterRequested) {
         : { lookup: mediaFixtureLookup })
     })
     mediaJobs = new MediaJobsManager({
+      host,
       engine: mediaEngine,
       mediaDir,
       // With sorting enabled, media output joins the same Video/Audio folders
@@ -833,6 +839,7 @@ if (unregisterRequested) {
     // those systems. It loads persisted batches and marks any active work
     // interrupted instead of auto-resuming it.
     batches = new BatchManager({
+      host,
       downloads: manager,
       mediaJobs,
       collectionEngine: mediaEngine,
