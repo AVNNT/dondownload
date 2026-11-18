@@ -1,93 +1,74 @@
+<div align="center">
+
+<img src="build/icon.png" alt="" width="96">
+
 # DonDownload
 
-A fast, focused, open-source download manager for Windows, built on Electron,
-React and aria2, with an optional browser extension.
+**A fast, lightweight download manager for Windows.**
 
-![Main window with sample downloads](docs/screenshots/main-1280x800.png)
+[![Release](https://img.shields.io/github/v/release/AVNNT/dondownload?label=download)](https://github.com/AVNNT/dondownload/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-The screenshots in this README come from the app's development browser preview
-with sample data, not from a live download session. More:
-[details pane](docs/screenshots/details-1280x800.png) ·
-[add dialog](docs/screenshots/add-dialog-1280x800.png) ·
-[selection and batch actions](docs/screenshots/selection-1280x800.png) ·
-[context menu](docs/screenshots/context-menu-1280x800.png) ·
-[narrow window](docs/screenshots/narrow-800x600.png)
+<img src="docs/screenshots/main-1280x800.png" alt="DonDownload main window" width="900">
+
+</div>
 
 ## Features
 
-- **Fast segmented downloads.** Every HTTP(S) transfer runs through aria2, up to
-  16 connections per file by default, with a per-host back-off when a server
-  does not like that many. Three downloads run at once by default.
-- **Browser hand-off.** The companion extension (Chrome, Edge, Helium, Brave and
-  Firefox/Zen) sends a page or a link straight to the running app, and can hand
-  ordinary file downloads over automatically. The browser's copy is cancelled
-  only after the app has durably accepted the job.
-- **Media downloads.** Paste a video page, or pick a stream from the extension
-  overlay, and DonDownload analyses it with yt-dlp and downloads the quality you
-  choose. FFmpeg merges separate video/audio streams, and yt-dlp can keep its
-  managed copy up to date from GitHub releases (on by default).
-- **Smart Link Scanner.** Paste up to 10 forum topic or page URLs and the app
-  collects the direct download links, resolves linked video pages with yt-dlp,
-  pairs scripts with videos and queues the whole selection as batches.
-  Gofile share links open in your own browser, and the extension reads the file
-  list from that tab.
-- **Batches.** Group related files, watch them progress together, and retry or
-  cancel individual items.
-- **Low memory use.** The window is dropped while the app sits in the tray
-  (about **141 MB**, vs. about **238 MB** with the window open). After a minute
-  in the tray with nothing downloading, the app exits and leaves a tiny native
-  tray icon (~1 MB). Clicking it, or sending a download from the browser
-  extension, starts the app again.
-- **A download list that stays quick.** Virtualised list, instant search,
-  category filters, drag-and-drop or clipboard paste to add (`Ctrl+V`), undo for
-  removals, and a details pane with per-connection info, checksum verification
-  and "show in folder". Press `?` for the shortcut list.
-- **Real settings.** Speed limit, concurrent downloads, connections per file,
-  allowed hours (new downloads wait for the window; running ones finish),
-  sort-into-type folders, automatic history cleanup, optional completion
-  notifications, start at sign-in, resume interrupted downloads, three themes
-  (OLED black by default) and interface size.
-- **Durable history.** Every download is recorded in SQLite and survives
-  restarts. Interrupted transfers are marked **Interrupted** rather than
-  silently re-downloaded; one click retries them with the partial file kept.
+|  |  |
+| --- | --- |
+| ⚡ **Fast** | aria2 under the hood, up to 16 connections per file |
+| 🌐 **Browser hand-off** | Chrome, Edge, Brave, Helium, Firefox and Zen send downloads straight to the app |
+| 🎬 **Video downloads** | Paste a video page, pick the quality (yt-dlp + FFmpeg) |
+| 🔎 **Link scanner** | Paste forum or page links, get every download on them |
+| 🪶 **Light** | ~1 MB when idle in the tray |
+| 🔒 **Private** | No accounts, no telemetry, signed updates |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/details-1280x800.png" alt="Details pane"><p align="center">Details for every download</p></td>
+    <td width="50%"><img src="docs/screenshots/add-dialog-1280x800.png" alt="Add dialog"><p align="center">Paste links, check, download</p></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/selection-1280x800.png" alt="Multi-selection with batch actions"><p align="center">Act on many at once</p></td>
+    <td width="50%"><img src="docs/screenshots/context-menu-1280x800.png" alt="Right-click menu"><p align="center">Everything one right-click away</p></td>
+  </tr>
+</table>
 
 ## Install
 
-1. Open the [Releases](https://github.com/AVNNT/dondownload/releases) page and
-   download `DonDownload-1.0.0-x64-setup.exe`.
-2. Run it. The installer is per-user: it installs for your Windows account and
-   **does not need administrator rights**.
+1. Download **`DonDownload-1.0.0-x64-setup.exe`** from [Releases](https://github.com/AVNNT/dondownload/releases/latest).
+2. Run it. No admin rights needed.
 
-**About the "Unknown publisher" warning (SmartScreen).** The 1.0.0 installer is
-not code-signed, so Windows shows a blue *Windows protected your PC* dialog with
-an unknown publisher. To continue, click **More info**, then **Run anyway**. If
-you would rather check the file first, compare its SHA-256 with
-`SHA256SUMS.txt` on the same release page:
+> [!NOTE]
+> The installer isn't code-signed yet. If Windows shows *Windows protected your PC*, click **More info → Run anyway**.
 
-```powershell
-Get-FileHash .\DonDownload-1.0.0-x64-setup.exe -Algorithm SHA256
-```
+## Browser extension (optional)
 
-DonDownload needs Windows 10 or 11 on x64. The installer bundles aria2, yt-dlp
-and FFmpeg, so nothing else has to be installed. Downloads are saved to
-`%USERPROFILE%\Downloads\DonDownload` by default, with an optional
-"sort into folders by type" setting.
+<img src="docs/screenshots/extension-popup.png" alt="Extension popup" width="300" align="right">
 
-Uninstalling through Windows Settings removes the app and its shortcuts but
-never deletes your downloaded files or your history.
+Sends downloads, pages and videos from your browser to the app.
 
-## Browser extension
+**Chrome · Edge · Brave · Helium**
+1. Download and extract `dondownload-extension-chromium-1.0.0.zip`
+2. Open `chrome://extensions`, turn on **Developer mode**
+3. **Load unpacked** → pick the folder
 
-The extension is optional. The desktop app works on its own: paste a link, drag
-one in, or add one from the clipboard if you turn clipboard watching on.
+**Firefox · Zen (140+)**
+1. Download `dondownload-extension-firefox-1.0.0.xpi`
+2. `about:debugging` → **Load Temporary Add-on** → pick the file
 
-<img src="docs/screenshots/extension-popup.png" alt="Extension popup on a video page" width="320">
+The app connects to the extension by itself.
 
-The desktop app registers the browser side of the connection (the native
-messaging host) by itself on every launch, for the current Windows user only, so
-no setup scripts or registry edits are part of the normal path.
+<br clear="right">
 
-### Chrome, Edge, Helium and Brave
+## More
+
+<details>
+<summary><b>Extension details</b></summary>
+
+#### Chrome, Edge, Helium and Brave
 
 1. From the same GitHub release, download `dondownload-extension-chromium-1.0.0.zip`
    and extract it to a folder you keep (don't delete it while you use the
@@ -101,7 +82,7 @@ no setup scripts or registry edits are part of the normal path.
 The extension has a fixed ID (`mikinloaillialkiannpcejdbmfbljhm`), so the folder
 can be moved to another location without re-registering.
 
-### Firefox and Zen (140 or newer)
+#### Firefox and Zen (140 or newer)
 
 1. Download `dondownload-extension-firefox-1.0.0.xpi` from the same release.
 2. **Temporary:** open `about:debugging#/runtime/this-firefox`, choose
@@ -116,7 +97,7 @@ can be moved to another location without re-registering.
 The add-on uses the fixed ID `dondownload@dondownload.app`, which the desktop
 app registers automatically.
 
-### What the extension does
+#### What it does
 
 - **Send this page** from the toolbar popup, or right-click a link →
   **Download with DonDownload**. Success is reported only after the app has
@@ -136,7 +117,10 @@ The extension never blocks or rewrites your browsing. `webRequest` and `cookies`
 are optional permissions that are requested only when you use a feature that
 needs them (media size evidence and per-site cookie opt-in).
 
-## Updates
+</details>
+
+<details>
+<summary><b>Updates</b></summary>
 
 DonDownload checks GitHub Releases at most once every 24 hours (the setting is
 on by default; **Check now** is available too). A release is only offered when:
@@ -151,7 +135,10 @@ The update is downloaded into the app's own data folder and installs only when
 you click **Restart and install**. It refuses to start while a download or media
 job is still running.
 
-## Privacy
+</details>
+
+<details>
+<summary><b>Privacy</b></summary>
 
 DonDownload has no accounts, no telemetry, no analytics and no crash reporting.
 
@@ -178,13 +165,10 @@ The desktop bridge the extension talks to listens only on `127.0.0.1` with a
 random port and a fresh bearer token per launch, and accepts nothing but a URL
 to download.
 
-## Uninstalling the browser extension
+</details>
 
-Remove the extension from `chrome://extensions` or `about:addons`. Running the
-installer's uninstaller removes the native messaging registration it created;
-a development registration that points at a source checkout is left alone.
-
-## Building from source
+<details>
+<summary><b>Build from source</b></summary>
 
 Requirements: Windows 10/11 x64, Node.js 24+, npm 10+. For the extension and the
 installer you also need the .NET Framework 4.x C# compiler (`csc.exe`), which
@@ -232,7 +216,10 @@ Further reading:
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Please report
 security issues privately, as described in [SECURITY.md](SECURITY.md).
 
-## License
+</details>
+
+<details>
+<summary><b>License</b></summary>
 
 DonDownload's own source is released under the [MIT License](LICENSE).
 
@@ -245,3 +232,5 @@ bundled; it is downloaded on demand for some YouTube jobs. See
 [docs/licensing-release-audit.md](docs/licensing-release-audit.md) for the
 release audit. Those notices travel with the installer. The MIT license for
 DonDownload does not replace the terms of any bundled binary.
+
+</details>
