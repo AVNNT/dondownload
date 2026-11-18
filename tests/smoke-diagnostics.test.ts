@@ -23,7 +23,7 @@ function collect(
 }
 
 const environment: SmokeEnvironmentInfo = {
-  appVersion: '1.0.0',
+  appVersion: '1.1.0',
   electronVersion: '45.2.2',
   chromeVersion: '140.0.0.0',
   nodeVersion: '24.19.0',

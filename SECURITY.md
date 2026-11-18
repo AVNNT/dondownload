@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are made for the current **1.0.x** release line. Older or forked
+Security fixes are made for the current **1.1.x** release line. Older or forked
 builds are not supported.
 
 ## Reporting a vulnerability
@@ -23,7 +23,7 @@ publish details until a fix is available.
 ## What to expect
 
 - An acknowledgement that the report was received.
-- An assessment of severity and, if it is accepted, a fix in a following 1.0.x
+- An assessment of severity and, if it is accepted, a fix in a following 1.1.x
   release with credit to the reporter unless you ask otherwise.
 - A coordinated disclosure timeline agreed with you.
 

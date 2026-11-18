@@ -1930,7 +1930,7 @@ internal static class NativeHost
         request.KeepAlive = true;
         request.Timeout = timeoutMilliseconds;
         request.ReadWriteTimeout = timeoutMilliseconds;
-        request.UserAgent = "DonDownload-Native/1.0.0";
+        request.UserAgent = "DonDownload-Native/1.1.0";
         ConfigureBridgeServicePoint(request, state.Port);
         return request;
     }
