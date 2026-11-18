@@ -1,0 +1,113 @@
+name: Bug report
+description: Something in DonDownload is not working as expected
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search the existing issues first, and do
+        not include private URLs, download links, cookies or file names you do
+        not want to publish.
+
+        Security problems do not belong here — see
+        https://github.com/AVNNT/dondownload/blob/master/SECURITY.md for the
+        private reporting channel.
+  - type: input
+    id: app-version
+    attributes:
+      label: DonDownload version
+      description: Shown under Settings, on the Updates panel, or in the installer / release file name.
+      placeholder: '1.0.0'
+    validations:
+      required: true
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: How did you install it?
+      options:
+        - Installer from GitHub Releases
+        - Built from source
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: For example Windows 11 24H2, or Windows 10 22H2.
+      placeholder: 'Windows 11 24H2'
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser and extension version
+      description: Pick the browser you used with the extension, if the problem involves it.
+      options:
+        - Not using the extension
+        - Chrome
+        - Edge
+        - Helium
+        - Brave
+        - Firefox 140+
+        - Zen 140+
+        - Other (described below)
+    validations:
+      required: true
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      description: Shown on the browser's extensions page (for example 0.4.1).
+      placeholder: '0.4.1'
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps from a fresh app start.
+      placeholder: |
+        1. Start DonDownload
+        2. Paste <link>
+        3. Click Download
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include any error message the app or extension showed.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: |
+        DonDownload writes no log files. Its messages (including the browser
+        bridge, aria2 and media errors) are printed to the terminal you started
+        it from, so paste the relevant lines here.
+
+        Downloaded files, history and settings live in
+        `%USERPROFILE%\Downloads\DonDownload` and `%APPDATA%\dondownload`.
+        Please redact URLs, tokens and personal paths before pasting.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues for the same problem.
+          required: true
+        - label: I removed private URLs, tokens and personal paths from this report.
+          required: true
