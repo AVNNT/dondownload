@@ -14,6 +14,7 @@
 import { sendDurableHandoff } from './bridge.js'
 import {
   rememberHandedOffDownload,
+  settleHandedOffDownloads,
   showHandoffCard
 } from './handoff-card.js'
 import {
@@ -170,7 +171,10 @@ function eraseDownload(chromeApi, downloadId) {
 async function completeTakeover(chromeApi, settings, item, receipt) {
   notifyHandoff(chromeApi, settings, 'DD', 'Sent to DonDownload')
   try {
-    rememberHandedOffDownload(receipt.downloadId)
+    rememberHandedOffDownload(receipt.downloadId, chromeApi)
+    // Keep this worker generation alive until the id is in session storage, so
+    // a suspension right after the hand-off cannot lose it.
+    await settleHandedOffDownloads(chromeApi)
   } catch {
     // Session memory is best effort; the badge still reports the hand-off.
   }

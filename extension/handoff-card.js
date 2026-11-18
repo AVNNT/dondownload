@@ -22,43 +22,154 @@ export const MAX_HANDOFF_CARDS = 3
 export const HANDOFF_CARD_POLL_MS = 2_000
 export const HANDOFF_CARD_MAX_POLL_MS = 30 * 60 * 1_000
 export const HANDOFF_CARD_DONE_HIDE_MS = 6_000
+// After the card stops polling it still hides itself, so a stale "40%" card can
+// never stay on the page once DonDownload stopped answering.
+export const HANDOFF_CARD_GIVE_UP_HIDE_MS = 8_000
 export const HANDOFF_CARD_MAX_FAILURES = 3
 export const MAX_HANDOFF_CARD_FILENAME_LENGTH = 180
+export const HANDED_OFF_DOWNLOADS_STORAGE_KEY =
+  'dondownloadHandedOffDownloads'
 
 const DOWNLOAD_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 /**
- * Download ids handed off by this worker generation. It is deliberately
- * memory-only and bounded: a swallowed or restored worker simply stops
- * answering, and a page can never enumerate or guess another user's ids.
+ * Download ids handed off in this browser session. chrome.storage.session keeps
+ * them across an MV3 worker suspension, so a poll that reaches a restarted
+ * worker still knows the id; this in-memory Set is the fast path for the
+ * current generation. Only ids this session handed off are ever stored, and the
+ * list stays bounded, so a page can never enumerate or guess another user's ids.
  */
 const handedOffDownloadIds = new Set()
+let handedOffLoad = null
+let handedOffWrite = Promise.resolve()
 
-export function rememberHandedOffDownload(downloadId) {
-  if (
-    typeof downloadId !== 'string' ||
-    !DOWNLOAD_ID_PATTERN.test(downloadId)
-  ) {
-    return false
+function sessionStorageArea(chromeApi) {
+  const api =
+    chromeApi && chromeApi.storage
+      ? chromeApi
+      : typeof chrome === 'undefined'
+        ? null
+        : chrome
+  const storage = api && api.storage
+  const session = storage && storage.session
+  return session && typeof session.get === 'function' ? session : null
+}
+
+function normalizeStoredHandedOffIds(value) {
+  const result = []
+  if (!Array.isArray(value)) return result
+  for (const candidate of value) {
+    if (typeof candidate !== 'string') continue
+    if (!DOWNLOAD_ID_PATTERN.test(candidate)) continue
+    if (result.includes(candidate)) continue
+    result.push(candidate)
+    // The newest ids matter most, so keep the tail of a corrupt or oversized
+    // value instead of the oldest entries.
+    if (result.length > MAX_HANDED_OFF_DOWNLOAD_IDS) result.shift()
   }
+  return result
+}
+
+function rememberInMemory(downloadId) {
   handedOffDownloadIds.add(downloadId)
   while (handedOffDownloadIds.size > MAX_HANDED_OFF_DOWNLOAD_IDS) {
     const oldest = handedOffDownloadIds.values().next()
     if (oldest.done === true) break
     handedOffDownloadIds.delete(oldest.value)
   }
+}
+
+/** Pull the persisted ids into memory once per worker generation. */
+function loadHandedOffDownloads(chromeApi) {
+  const session = sessionStorageArea(chromeApi)
+  if (session === null) return Promise.resolve()
+  if (handedOffLoad !== null) return handedOffLoad
+  handedOffLoad = Promise.resolve()
+    .then(() => session.get(HANDED_OFF_DOWNLOADS_STORAGE_KEY))
+    .then((stored) => {
+      const values = normalizeStoredHandedOffIds(
+        stored && stored[HANDED_OFF_DOWNLOADS_STORAGE_KEY]
+      )
+      for (const id of values) {
+        if (!handedOffDownloadIds.has(id)) rememberInMemory(id)
+      }
+    })
+    .catch(() => undefined)
+  return handedOffLoad
+}
+
+/**
+ * Write the current set after the load, so a remember that races the first read
+ * can never clobber the ids persisted by the previous worker generation. Writes
+ * are serialized; every failure stays silent because the in-memory mirror still
+ * answers this generation.
+ */
+function persistHandedOffDownloads(chromeApi) {
+  const session = sessionStorageArea(chromeApi)
+  if (session === null) return handedOffWrite
+  handedOffWrite = handedOffWrite
+    .catch(() => undefined)
+    .then(() => loadHandedOffDownloads(chromeApi))
+    .then(() =>
+      session.set({
+        [HANDED_OFF_DOWNLOADS_STORAGE_KEY]: [...handedOffDownloadIds].slice(
+          -MAX_HANDED_OFF_DOWNLOAD_IDS
+        )
+      })
+    )
+    .catch(() => undefined)
+  return handedOffWrite
+}
+
+export function rememberHandedOffDownload(downloadId, chromeApi) {
+  if (
+    typeof downloadId !== 'string' ||
+    !DOWNLOAD_ID_PATTERN.test(downloadId)
+  ) {
+    return false
+  }
+  rememberInMemory(downloadId)
+  void persistHandedOffDownloads(chromeApi)
   return true
 }
 
-export function hasHandedOffDownload(downloadId) {
-  return (
-    typeof downloadId === 'string' && handedOffDownloadIds.has(downloadId)
-  )
+/**
+ * Resolve once the current set is in session storage. A service worker that
+ * awaits this keeps its event alive long enough for the write to land.
+ */
+export function settleHandedOffDownloads(chromeApi) {
+  return persistHandedOffDownloads(chromeApi)
 }
 
-export function forgetHandedOffDownloadsForTests() {
+export async function hasHandedOffDownload(downloadId, chromeApi) {
+  if (typeof downloadId !== 'string') return false
+  if (handedOffDownloadIds.has(downloadId)) return true
+  await loadHandedOffDownloads(chromeApi)
+  return handedOffDownloadIds.has(downloadId)
+}
+
+export async function forgetHandedOffDownloadsForTests(chromeApi) {
   handedOffDownloadIds.clear()
+  handedOffLoad = null
+  handedOffWrite = Promise.resolve()
+  const session = sessionStorageArea(chromeApi)
+  if (session === null) return
+  try {
+    await session.remove(HANDED_OFF_DOWNLOADS_STORAGE_KEY)
+  } catch {
+    // A fake or unavailable storage area needs no cleanup.
+  }
+}
+
+/**
+ * Test hook: drop only the in-memory mirror and leave session storage alone, so
+ * a test can simulate the worker being suspended and restarted.
+ */
+export function resetHandedOffDownloadsMemoryForTests() {
+  handedOffDownloadIds.clear()
+  handedOffLoad = null
+  handedOffWrite = Promise.resolve()
 }
 
 function cardFilename(value) {
@@ -99,8 +210,10 @@ export function handoffCardPayload(receipt, rawFilename) {
  *
  * One fixed bottom-right container per page holds up to three cards, newest on
  * top. Each card polls the service worker every two seconds while the page is
- * visible, pauses while the document is hidden, stops on done/error/close, and
- * gives up after three consecutive failures or thirty minutes. Every value is
+ * visible, pauses while the document is hidden, and resolves on done/error: a
+ * finished card hides itself after six seconds, and a card that gives up after
+ * three consecutive failures or thirty minutes hides itself after eight. A
+ * pointer resting on the card postpones that until it leaves. Every value is
  * assigned with textContent.
  */
 export function handoffCardInjected(payload) {
@@ -109,6 +222,7 @@ export function handoffCardInjected(payload) {
   var POLL_MS = 2000
   var MAX_POLL_MS = 1800000
   var DONE_HIDE_MS = 6000
+  var GIVE_UP_HIDE_MS = 8000
   var MAX_FAILURES = 3
   var STATUS_MESSAGE = 'dondownload:handoff-status'
   var SHOW_MESSAGE = 'dondownload:handoff-show'
@@ -245,6 +359,8 @@ export function handoffCardInjected(payload) {
   var failures = 0
   var startedAt = Date.now()
   var finished = false
+  var sawProgress = false
+  var hovering = false
 
   function stopPolling() {
     if (timer !== null) {
@@ -260,7 +376,9 @@ export function handoffCardInjected(payload) {
   }
 
   // A hidden tab needs no progress updates: pause the interval and resume with
-  // one immediate tick when the page becomes visible again.
+  // one immediate tick when the page becomes visible again. That first tick is
+  // also what recovers a card whose service worker was suspended and restarted
+  // while the tab was hidden.
   function onVisibilityChange() {
     if (finished) return
     if (doc.hidden === true) {
@@ -299,6 +417,28 @@ export function handoffCardInjected(payload) {
     if (index >= 0) registry.cards.splice(index, 1)
   }
 
+  // The card is never left behind: once it settles or gives up it hides itself,
+  // and a pointer resting on it only postpones that until the pointer leaves.
+  function scheduleRemoval(delay) {
+    if (hideTimer !== null) clearTimeout(hideTimer)
+    hideTimer = setTimeout(function () {
+      hideTimer = null
+      if (hovering === true) {
+        scheduleRemoval(GIVE_UP_HIDE_MS)
+        return
+      }
+      remove()
+    }, delay)
+  }
+
+  function giveUp() {
+    if (finished) return
+    finished = true
+    stopPolling()
+    meta.textContent = 'Open DonDownload to see progress'
+    scheduleRemoval(GIVE_UP_HIDE_MS)
+  }
+
   function finishWith(status, errorMessage, completedBytes, totalBytes) {
     finished = true
     stopPolling()
@@ -310,7 +450,7 @@ export function handoffCardInjected(payload) {
         typeof totalBytes === 'number' && totalBytes > 0
           ? formatBytes(totalBytes)
           : 'Saved in DonDownload'
-      hideTimer = setTimeout(remove, DONE_HIDE_MS)
+      scheduleRemoval(DONE_HIDE_MS)
       return
     }
     title.textContent = 'Download failed'
@@ -322,17 +462,39 @@ export function handoffCardInjected(payload) {
         : 'Open DonDownload to see progress'
   }
 
+  // The desktop answered "no such download" for an id that was already making
+  // progress: the row finished and was cleared (or the retention cleanup removed
+  // it). That is a completed download, not a reason to keep a stale card.
+  function finishWithRemoved() {
+    finished = true
+    stopPolling()
+    title.textContent = 'Downloaded'
+    fill.className = 'fill done'
+    fill.style.width = '100%'
+    meta.textContent = 'Saved in DonDownload'
+    scheduleRemoval(DONE_HIDE_MS)
+  }
+
+  function failureCode(result) {
+    if (!result || typeof result !== 'object') return ''
+    var error = result.error
+    if (!error || typeof error !== 'object') return ''
+    return typeof error.code === 'string' ? error.code : ''
+  }
+
   function applyStatus(result) {
     if (!result || result.ok !== true) {
-      failures += 1
-      if (failures >= MAX_FAILURES) {
-        stopPolling()
-        meta.textContent = 'Open DonDownload to see progress'
+      if (failureCode(result) === 'NOT_FOUND' && sawProgress === true) {
+        finishWithRemoved()
+        return
       }
+      failures += 1
+      if (failures >= MAX_FAILURES) giveUp()
       return
     }
     failures = 0
     if (result.status === 'done') {
+      sawProgress = true
       finishWith('done', undefined, result.completedBytes, result.totalBytes)
       return
     }
@@ -345,6 +507,7 @@ export function handoffCardInjected(payload) {
       )
       return
     }
+    sawProgress = true
     title.textContent =
       result.status === 'paused'
         ? 'Download paused'
@@ -355,8 +518,7 @@ export function handoffCardInjected(payload) {
   function tick() {
     if (finished) return
     if (Date.now() - startedAt > MAX_POLL_MS) {
-      stopPolling()
-      meta.textContent = 'Open DonDownload to see progress'
+      giveUp()
       return
     }
     try {
@@ -368,14 +530,19 @@ export function handoffCardInjected(payload) {
         }
       )
     } catch {
+      // An invalidated extension context throws on every poll, so this path
+      // gives up on the same three-failure budget as a missing answer.
       failures += 1
-      if (failures >= MAX_FAILURES) {
-        stopPolling()
-        meta.textContent = 'Open DonDownload to see progress'
-      }
+      if (failures >= MAX_FAILURES) giveUp()
     }
   }
 
+  card.addEventListener('mouseenter', function () {
+    hovering = true
+  })
+  card.addEventListener('mouseleave', function () {
+    hovering = false
+  })
   close.addEventListener('click', remove)
   show.addEventListener('click', function () {
     try {
@@ -458,8 +625,9 @@ function cardFailure(code, message) {
 
 /**
  * Service-worker side of the card. Only this extension's own content scripts
- * may ask, and only about ids this worker handed off itself in this session, so
- * a page can never probe an arbitrary download id.
+ * may ask, and only about ids this browser session handed off itself (the
+ * registry survives a worker suspension in chrome.storage.session), so a page
+ * can never probe an arbitrary download id.
  */
 export async function handleHandoffCardMessage(chromeApi, message, sender) {
   if (!message || typeof message !== 'object') return null
@@ -495,7 +663,7 @@ export async function handleHandoffCardMessage(chromeApi, message, sender) {
       'The download identifier is not valid.'
     )
   }
-  if (!hasHandedOffDownload(downloadId)) {
+  if (!(await hasHandedOffDownload(downloadId, chromeApi))) {
     return cardFailure(
       'NOT_FOUND',
       'DonDownload did not take over that download.'
