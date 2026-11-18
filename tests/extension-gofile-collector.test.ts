@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 interface CollectedFile {
   name: string
@@ -763,10 +763,9 @@ describe('gofile collector collection', () => {
       result: ShareResult | null
     }
     expect(run).toBeDefined()
-    for (let attempt = 0; attempt < 50 && !run.done; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-    expect(run.done).toBe(true)
+    // Poll until the collector's own deadline elapses; never assume a fixed
+    // number of 5 ms slices is enough on a loaded machine.
+    await vi.waitFor(() => expect(run.done).toBe(true))
     expect(run.result?.files).toHaveLength(1)
   })
 })
