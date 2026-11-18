@@ -2,9 +2,7 @@
 
 Status: contracts plus integrated implementation. The media engine, media
 manager, renderer media UI, native-bridge routes, C# host and extension bridge
-have since been integrated (see `docs/development-status.md`). Milestone 3A is
-**PASS** at `e7e28ee`, verified end to end in a headed Helium run. Milestone 3B
-has started in planning only, so the contracts below remain the 3A surface.
+have since been integrated and verified end to end in a headed Helium run.
 
 ## Public API
 

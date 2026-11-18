@@ -3,8 +3,8 @@
 Status: shared contracts, SQLite v4 persistence, a main-process batch
 orchestration slice and a desktop renderer batch UI are implemented. This
 document describes the contracts and schema. The orchestrator, desktop
-IPC/preload wiring, renderer UI and hermetic tests are covered in
-[development-status.md](development-status.md). Native-bridge batch routes are
+IPC/preload wiring, renderer UI and hermetic tests live in `src/` and
+`tests/`. Native-bridge batch routes are
 deliberately **not** part of this layer.
 
 ## Scope and safety boundaries

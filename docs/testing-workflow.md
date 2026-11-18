@@ -163,7 +163,6 @@ reopen or re-verify it. The historical evidence is:
   ffprobe and full-decode checks.
 - Real-aria2 capture integration passed 3/3.
 
-Caveats recorded in [development-status.md](development-status.md) still apply.
 The historical headed checks predate this stricter input-isolation rule: they
 used a disposable Helium profile, synthetic Win32/CDP input and UI Automation for
 the permission prompt instead of a manual-only click, and loaded the extension
