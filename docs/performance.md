@@ -83,14 +83,31 @@ they only have to stay in the same ballpark:
 
 | State | Working set |
 | --- | --- |
-| Window open | ~324 MB |
-| Hidden to tray | ~235 MB (was ~355 MB) |
+| Window open | ~236 MB |
+| Hidden to tray | ~141 MB (was ~239 MB) |
+
+Measured with `npm run bench:memory` (median of 3, production build) on the
+reference machine below. The numbers moved −97 MB with the window open and
+−98 MB hidden to tray after Chromium helper processes were folded into the main
+process (see below).
 
 What keeps these numbers down:
 
 - **GPU acceleration is off by default.** The UI is a plain list, so Chromium's
   GPU process only costs memory. Set `DONDOWNLOAD_GPU=1` to re-enable hardware
   acceleration when ruling out a rendering problem.
+- **No separate GPU process.** `in-process-gpu` keeps the software GPU thread
+  inside the main process instead of a helper: `bench:memory` totals went from
+  333/239/345 MB (open/hidden/shown) to 286/191/297 MB, i.e. −47 MB per phase
+  and no `gpu` process at all.
+- **Network service in-process.** `enable-features=NetworkServiceInProcess2`
+  removes the ~55 MB network-service utility process: totals went to
+  236/141/248 MB, i.e. a further −50 MB per phase and no `utility` process.
+  Downloads still go through aria2; the renderer's asset loads and the app-update
+  checks use the in-process network service. The feature list is merged with any
+  existing `enable-features` value, never overwritten. Both switches live in
+  `src/main/index.ts` next to `disableHardwareAcceleration()` and are also
+  disabled by `DONDOWNLOAD_GPU=1`.
 - **No renderer while hidden to the tray.** Hiding the app destroys the
   `BrowserWindow`; the main process, aria2, the download/media managers, the
   tray and taskbar progress keep running. Showing the app again creates a fresh
@@ -101,6 +118,12 @@ What keeps these numbers down:
 - **Helper processes run below normal priority.** aria2 and yt-dlp (and ffmpeg,
   which inherits the class on Windows) are set to below-normal CPU priority, so
   transfers yield the CPU to games and foreground apps.
+
+Switches that were measured but **not** kept, because they changed nothing:
+`disable-gpu` plus `disable-software-rasterizer` together with `in-process-gpu`
+(within ±2 MB noise), `disable-features=SpareRendererForSitePerProcess` (no spare
+renderer exists to remove), and `AudioServiceOutOfProcess,AudioServiceSandbox`
+(the UI has no audio, so there was no audio service to save).
 
 ## Baseline
 

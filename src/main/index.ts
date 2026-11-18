@@ -95,6 +95,7 @@ import {
 import { runSmokeTest } from './smoke/run'
 import { memoryBenchOutPath } from './memoryBench/report'
 import { startMemoryBench } from './memoryBench/runner'
+import { mergeFeatureList } from './commandLine/features'
 
 // The UI is a plain list: no video, no 3D, no canvas. Chromium's GPU process
 // costs roughly 60 MB of RAM and buys nothing for it, so software rendering is
@@ -102,6 +103,20 @@ import { startMemoryBench } from './memoryBench/runner'
 // rendering problem has to be ruled out. Must run before `ready`.
 if (process.env.DONDOWNLOAD_GPU !== '1') {
   app.disableHardwareAcceleration()
+  // Keeps the separate software GPU process inside the browser process instead
+  // of paying for one: −47 MB total (bench:memory median of 3; the GPU process
+  // falls from 68 MB to 0 and the main process absorbs its work).
+  app.commandLine.appendSwitch('in-process-gpu')
+  // Runs Chromium's network service inside the browser process instead of a
+  // ~55 MB utility process: −51 MB total. Downloads still go through aria2; the
+  // renderer's asset loads and the app-update checks use this in-process net.
+  // Merged with any existing list, never overwritten, so other features survive.
+  app.commandLine.appendSwitch(
+    'enable-features',
+    mergeFeatureList(app.commandLine.getSwitchValue('enable-features'), [
+      'NetworkServiceInProcess2'
+    ])
+  )
 }
 
 let mainWindow: BrowserWindow | null = null
