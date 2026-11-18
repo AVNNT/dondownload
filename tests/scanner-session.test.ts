@@ -49,6 +49,14 @@ function managed(
     probeCap?: number
     updates?: ScanSession[]
     ttlMs?: number
+    duplicates?: (url: string) => {
+      kind: 'download'
+      state: 'active' | 'finished'
+      id: string
+      filename: string
+      date: number
+      fileExists: boolean
+    } | null
   } = {}
 ): ScanSessionManager {
   return new ScanSessionManager({
@@ -56,6 +64,9 @@ function managed(
     ...(options.probe === undefined ? {} : { probeItem: options.probe }),
     ...(options.probeCap === undefined ? {} : { probeCap: options.probeCap }),
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+    ...(options.duplicates === undefined
+      ? {}
+      : { duplicates: options.duplicates }),
     onUpdate: (session) => options.updates?.push(session)
   })
 }
@@ -90,6 +101,38 @@ describe('scan sessions', () => {
     expect(done.counters.ready).toBe(3)
     expect(updates.some((update) => update.status === 'done')).toBe(true)
     // The public DTO never carries a URL.
+    expect(JSON.stringify(done)).not.toContain('https://')
+  })
+
+  it('marks an item whose URL history already has, without leaking the URL', async () => {
+    const fetcher: ScanPageFetcher = async () =>
+      page('<a href="/files/archive.zip">archive</a>')
+    const seen: string[] = []
+    const sessions = managed(fetcher, {
+      probe: readyProbe,
+      duplicates: (url) => {
+        seen.push(url)
+        return {
+          kind: 'download',
+          state: 'finished',
+          id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+          filename: 'archive.zip',
+          date: Date.UTC(2026, 2, 4),
+          fileExists: true
+        }
+      }
+    })
+
+    const started = sessions.start(PAGE_URL)
+    await sessions.waitForScan(started.sessionId)
+    const done = sessions.getSession(started.sessionId)
+
+    expect(seen.length).toBeGreaterThan(0)
+    expect(done.items[0]?.alreadyDownloaded).toEqual({
+      state: 'finished',
+      filename: 'archive.zip',
+      date: Date.UTC(2026, 2, 4)
+    })
     expect(JSON.stringify(done)).not.toContain('https://')
   })
 

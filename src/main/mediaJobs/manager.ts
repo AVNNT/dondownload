@@ -22,6 +22,7 @@ import {
   type MediaToolState
 } from '@shared/media'
 import { mediaOutputFormatsForOption } from '@shared/mediaOutput'
+import type { DuplicateWarning } from '@shared/duplicates'
 import {
   parseSniffedMediaInput,
   type SniffedMediaInput
@@ -644,6 +645,63 @@ export class MediaJobsManager {
       })
     }
     return queued
+  }
+
+  /**
+   * Advisory duplicate match for one media choice. Identity is exactly the
+   * same source URL + format fingerprint the queue guard already uses; no
+   * title, size or fuzzy matching is applied. An active job wins, otherwise
+   * the latest completed job is described so the UI can warn before queueing.
+   */
+  checkDuplicate(rawInput: unknown): DuplicateWarning | null {
+    if (this.closed) return null
+    const input = parseMediaQueueInput(rawInput)
+    const cached = this.requireAnalysis(input.analysisId)
+    const option = cached.analysis.options.find(
+      (candidate) => candidate.optionId === input.optionId
+    )
+    if (!option) return null
+    const outputFormat: MediaOutputFormat = input.outputFormat ?? 'auto'
+    const fingerprint = mediaOptionFingerprint(
+      cached.sourceUrl,
+      option,
+      outputFormat
+    )
+
+    let finished: DuplicateWarning | null = null
+    for (const job of this.jobs.values()) {
+      if (
+        job.optionFingerprint !== fingerprint ||
+        job.record.sourceUrl !== cached.sourceUrl
+      ) {
+        continue
+      }
+      const common = {
+        kind: 'media' as const,
+        id: job.record.id,
+        filename: job.record.label,
+        fileExists: job.record.filePath !== null
+      }
+      if (isActiveMediaJobStatus(job.record.status)) {
+        return {
+          ...common,
+          state: 'active',
+          date: job.record.createdAt
+        }
+      }
+      if (job.record.status !== 'complete') continue
+      if (
+        finished === null ||
+        (job.record.completedAt ?? job.record.createdAt) > finished.date
+      ) {
+        finished = {
+          ...common,
+          state: 'finished',
+          date: job.record.completedAt ?? job.record.createdAt
+        }
+      }
+    }
+    return finished
   }
 
   /**

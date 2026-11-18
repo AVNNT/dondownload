@@ -1175,6 +1175,18 @@ export function SettingsSection({
             />
           </SettingRow>
           <SettingRow
+            title="Warn about duplicates"
+            description="Show an inline notice when a link's history already has the same URL. Nothing is downloaded automatically."
+          >
+            <Switch
+              checked={desktopDraft.warnAboutDuplicates}
+              label="Warn about duplicates"
+              onChange={(checked) =>
+                commitDesktop({ warnAboutDuplicates: checked })
+              }
+            />
+          </SettingRow>
+          <SettingRow
             title="Watch the clipboard for links"
             description="When you copy a link, DonDownload offers to add it. Nothing downloads on its own."
           >

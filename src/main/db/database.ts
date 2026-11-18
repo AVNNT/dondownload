@@ -50,6 +50,7 @@ import {
   type AppUpdateSettings
 } from '@shared/appUpdate'
 import { AppError } from '../errors'
+import { normalizeDuplicateUrl, type DuplicateWarning } from '@shared/duplicates'
 
 /**
  * SQLite runtime note: Electron 45 ships Node 24, which includes the
@@ -58,7 +59,7 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 22
+export const SCHEMA_VERSION = 23
 
 /** Column added by the v21 "free memory when idle in the tray" migration. */
 const COLUMN_EXIT_TO_TRAY_STUB = 'exit_to_tray_stub_when_idle'
@@ -75,6 +76,14 @@ const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'error',
   'cancelled',
   'interrupted'
+])
+
+/** A prior job the user still expects in the list. */
+const ACTIVE_DUPLICATE_STATUSES: ReadonlySet<string> = new Set([
+  'queued',
+  'active',
+  'waiting',
+  'paused'
 ])
 
 export interface StoredDownload {
@@ -790,6 +799,47 @@ export const MIGRATIONS: readonly Migration[] = [
       UPDATE desktop_settings
         SET ${COLUMN_WELCOME_GUIDE_SEEN} = COALESCE(${COLUMN_WELCOME_GUIDE_SEEN}, 0);
     `
+  },
+  {
+    // Duplicate warnings need an indexed, normalized source URL. The column is
+    // additive and nullable so an unparseable legacy row never blocks the
+    // upgrade; `prepare` backfills every existing row once inside the same
+    // migration transaction. "Warn about duplicates" is an ordinary desktop
+    // preference that defaults to on for existing and fresh profiles alike.
+    version: 23,
+    prepare: (db) => {
+      if (!tableHasColumn(db, 'downloads', 'normalized_url')) {
+        db.exec('ALTER TABLE downloads ADD COLUMN normalized_url TEXT')
+      }
+      if (!tableHasColumn(db, 'desktop_settings', 'warn_about_duplicates')) {
+        db.exec(`
+          ALTER TABLE desktop_settings
+            ADD COLUMN warn_about_duplicates INTEGER NOT NULL DEFAULT 1
+            CHECK (warn_about_duplicates IN (0, 1))
+        `)
+      }
+
+      // Backfill once, in JS, because SQLite cannot reproduce the exact URL
+      // normalization. This is a migration-only full pass; every later lookup
+      // hits the index created below.
+      const rows = db
+        .prepare('SELECT id, url FROM downloads')
+        .all() as Record<string, unknown>[]
+      const update = db.prepare(
+        'UPDATE downloads SET normalized_url = ? WHERE id = ?'
+      )
+      for (const row of rows) {
+        if (typeof row.id !== 'string' || typeof row.url !== 'string') continue
+        const normalized = normalizeDuplicateUrl(row.url)
+        if (normalized !== null) update.run(normalized, row.id)
+      }
+    },
+    sql: `
+      CREATE INDEX IF NOT EXISTS downloads_normalized_url_idx
+        ON downloads (normalized_url);
+      UPDATE desktop_settings
+        SET warn_about_duplicates = COALESCE(warn_about_duplicates, 1);
+    `
   }
 ]
 
@@ -995,6 +1045,7 @@ function rowToDesktopSettings(row: Record<string, unknown>): DesktopSettings {
     watchClipboard: number(row, 'watch_clipboard', 0) === 1,
     launchAtLogin: number(row, 'launch_at_login', 0) === 1,
     exitToTrayStubWhenIdle: number(row, 'exit_to_tray_stub_when_idle', 1) === 1,
+    warnAboutDuplicates: number(row, 'warn_about_duplicates', 1) === 1,
     welcomeGuideSeen: number(row, 'welcome_guide_seen', 0) === 1,
     interfaceSizePercent: number(row, 'interface_size_percent', 100)
   })
@@ -1130,6 +1181,7 @@ export class DownloadDatabase {
   private readonly durableRowStatement: StatementSync
   private readonly selectAllStatement: StatementSync
   private readonly deleteStatement: StatementSync
+  private readonly duplicateLookupStatement: StatementSync
   private readonly downloadControlsStatement: StatementSync
   private readonly downloadBlockReasonStatement: StatementSync
   private readonly downloadChecksumStatement: StatementSync
@@ -1173,13 +1225,15 @@ export class DownloadDatabase {
 
       this.upsertStatement = this.db.prepare(`
         INSERT INTO downloads (
-          id, gid, url, filename, explicit_filename, dir, file_path, status,
-          total_bytes, completed_bytes, error_message, error_detail, attempts,
-          max_attempts, created_at, updated_at, completed_at, needs_login
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, gid, url, normalized_url, filename, explicit_filename, dir,
+          file_path, status, total_bytes, completed_bytes, error_message,
+          error_detail, attempts, max_attempts, created_at, updated_at,
+          completed_at, needs_login
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           gid = excluded.gid,
           url = excluded.url,
+          normalized_url = excluded.normalized_url,
           filename = excluded.filename,
           explicit_filename = excluded.explicit_filename,
           dir = excluded.dir,
@@ -1203,6 +1257,21 @@ export class DownloadDatabase {
         'SELECT 1 AS persisted FROM downloads WHERE id = ?'
       )
       this.deleteStatement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
+      // Indexed equality lookup: downloads_normalized_url_idx covers the
+      // WHERE clause, so a duplicate check never scans the history table.
+      this.duplicateLookupStatement = this.db.prepare(`
+        SELECT id, filename, status, file_path, created_at, completed_at
+        FROM downloads
+        WHERE normalized_url = ?
+        ORDER BY
+          CASE
+            WHEN status IN ('queued', 'active', 'waiting', 'paused') THEN 0
+            WHEN status = 'complete' THEN 1
+            ELSE 2
+          END,
+          created_at DESC
+        LIMIT 1
+      `)
       this.downloadControlsStatement = this.db.prepare(`
         UPDATE downloads
         SET scheduled_at = ?, speed_limit_bps = ?, connections = ?
@@ -1273,8 +1342,9 @@ export class DownloadDatabase {
         INSERT INTO desktop_settings (
           id, resume_interrupted_on_startup, show_notifications,
           watch_clipboard, launch_at_login, exit_to_tray_stub_when_idle,
-          welcome_guide_seen, interface_size_percent, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+          warn_about_duplicates, welcome_guide_seen, interface_size_percent,
+          updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           resume_interrupted_on_startup =
             excluded.resume_interrupted_on_startup,
@@ -1282,6 +1352,7 @@ export class DownloadDatabase {
           watch_clipboard = excluded.watch_clipboard,
           launch_at_login = excluded.launch_at_login,
           exit_to_tray_stub_when_idle = excluded.exit_to_tray_stub_when_idle,
+          warn_about_duplicates = excluded.warn_about_duplicates,
           welcome_guide_seen = excluded.welcome_guide_seen,
           interface_size_percent = excluded.interface_size_percent,
           updated_at = excluded.updated_at
@@ -1407,6 +1478,54 @@ export class DownloadDatabase {
       return stored
     } catch (error) {
       throw databaseError('Could not load download history', error)
+    }
+  }
+
+  /**
+   * Indexed duplicate lookup for one already-normalized URL.
+   *
+   * An unfinished job (queued/active/waiting/paused) wins over history so the
+   * UI can offer "Show it" instead of a second transfer. Otherwise the most
+   * recent completed job is returned. Error/cancelled/interrupted rows are not
+   * a duplicate: they never produced a finished file to open.
+   *
+   * `fileExists` is only a database-layer default; callers that can stat the
+   * recorded path refine it.
+   */
+  findDuplicate(normalizedUrl: string): DuplicateWarning | null {
+    this.assertOpen()
+    const normalized = normalizeDuplicateUrl(normalizedUrl)
+    if (normalized === null) return null
+    try {
+      const row = this.duplicateLookupStatement.get(normalized) as
+        | Record<string, unknown>
+        | undefined
+      if (!row) return null
+      const id = text(row, 'id')
+      const filename = text(row, 'filename')
+      const status = text(row, 'status')
+      if (!id || !filename || !status) return null
+      if (
+        !ACTIVE_DUPLICATE_STATUSES.has(status) &&
+        status !== 'complete'
+      ) {
+        return null
+      }
+      const createdAt = Math.trunc(number(row, 'created_at'))
+      const completedAt = nullableNumber(row, 'completed_at')
+      return {
+        kind: 'download',
+        state: ACTIVE_DUPLICATE_STATUSES.has(status) ? 'active' : 'finished',
+        id,
+        filename,
+        date:
+          completedAt !== null && completedAt > 0
+            ? completedAt
+            : createdAt,
+        fileExists: false
+      }
+    } catch (error) {
+      throw databaseError('Could not check download history for duplicates', error)
     }
   }
 
@@ -1736,6 +1855,7 @@ export class DownloadDatabase {
         parsed.watchClipboard ? 1 : 0,
         parsed.launchAtLogin ? 1 : 0,
         parsed.exitToTrayStubWhenIdle ? 1 : 0,
+        parsed.warnAboutDuplicates ? 1 : 0,
         parsed.welcomeGuideSeen ? 1 : 0,
         parsed.interfaceSizePercent,
         Date.now()
@@ -2018,6 +2138,7 @@ export class DownloadDatabase {
       record.id,
       record.gid,
       record.url,
+      normalizeDuplicateUrl(record.url),
       record.filename,
       entry.explicitFilename,
       record.dir,

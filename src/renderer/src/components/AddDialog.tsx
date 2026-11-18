@@ -13,6 +13,7 @@ import type {
   AppErrorInfo,
   AppSnapshot
 } from '@shared/types'
+import type { DuplicateWarning } from '@shared/duplicates'
 import { formatBytes } from '@shared/format'
 import { DEFAULT_PER_HOST_CONNECTIONS } from '@shared/settings'
 import {
@@ -41,6 +42,8 @@ export interface AddDialogProps {
   busy?: boolean
   /** Short human summary of an already-queued item, e.g. "paused at 64%". */
   describeDuplicate?: (url: string) => string | null
+  /** Reveals the active duplicate row from the add dialog. */
+  onShowDuplicate?: (warning: DuplicateWarning) => void
   /** Resumes the already-queued item instead of forcing a second copy. */
   onResumeDuplicate?: (url: string) => void
   /** Global connection count shown on the Options stepper while "Default". */
@@ -84,6 +87,7 @@ export function AddDialog({
   busy = false,
   describeDuplicate,
   onResumeDuplicate,
+  onShowDuplicate,
   defaultConnections = DEFAULT_PER_HOST_CONNECTIONS,
   onScanOpen,
   onClose,
@@ -105,6 +109,7 @@ export function AddDialog({
   const [analysisError, setAnalysisError] = useState<AppErrorInfo | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
+  const [mediaDuplicateKey, setMediaDuplicateKey] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
 
   const registerQuickSubmit = useCallback(
@@ -203,6 +208,30 @@ export function AddDialog({
       setAnalysisError(null)
       setNotice(null)
       try {
+        const queueKey = `${optionId}|${outputFormat}`
+        if (mediaDuplicateKey !== queueKey) {
+          // Advisory same-source + same-format check. A second press is the
+          // explicit "download another copy" action, so the check is skipped.
+          try {
+            const check = await window.donDownload.checkMediaDuplicate({
+              analysisId: analysis.analysisId,
+              optionId,
+              outputFormat
+            })
+            if (check.ok && check.value !== null) {
+              setMediaDuplicateKey(queueKey)
+              setNotice(
+                check.value.state === 'active'
+                  ? 'This format is already queued or downloading. Press Queue again for another copy.'
+                  : 'This format was already downloaded. Press Queue again for another copy.'
+              )
+              return
+            }
+          } catch {
+            // A failed advisory check must never block the queue action.
+          }
+        }
+        setMediaDuplicateKey(null)
         const result = await onQueue({
           analysisId: analysis.analysisId,
           optionId,
@@ -223,7 +252,7 @@ export function AddDialog({
         setQueuingOptionId(null)
       }
     },
-    [analysis, onQueue, queuingOptionId]
+    [analysis, mediaDuplicateKey, onQueue, queuingOptionId]
   )
 
   const clearAnalysis = useCallback((): void => {
@@ -232,6 +261,7 @@ export function AddDialog({
     setAnalysis(null)
     setAnalysisError(null)
     setNotice(null)
+    setMediaDuplicateKey(null)
   }, [])
 
   let body: JSX.Element
@@ -312,6 +342,7 @@ export function AddDialog({
           registerSubmit={registerQuickSubmit}
           describeDuplicate={describeDuplicate}
           onResumeDuplicate={onResumeDuplicate}
+          onShowDuplicate={onShowDuplicate}
           defaultConnections={defaultConnections}
         />
       </div>

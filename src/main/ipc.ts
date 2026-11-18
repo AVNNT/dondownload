@@ -21,6 +21,8 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type { DuplicateWarning } from '@shared/duplicates'
+import { parseDuplicateCheckUrl } from '@shared/duplicates'
 import type { ChecksumResult } from '@shared/checksum'
 import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
@@ -162,6 +164,12 @@ export function registerIpc(context: IpcContext): void {
   invoke<AppSnapshot>(IPC.addDownload, (_event, input) =>
     context.manager.add(input)
   )
+  // Advisory only: the renderer sends one URL; main validates it before the
+  // indexed history lookup. Nothing is queued by this channel.
+  invoke<DuplicateWarning | null>(IPC.checkDuplicate, async (_event, url) => {
+    const normalized = parseDuplicateCheckUrl(url)
+    return context.manager.checkDuplicate(normalized)
+  })
   invoke<AppSnapshot>(IPC.pauseDownload, (_event, id) =>
     context.manager.pause(id)
   )
@@ -227,6 +235,10 @@ export function registerIpc(context: IpcContext): void {
 
   invoke<MediaAnalysis>(IPC.analyzeMedia, (_event, input) =>
     media().analyzeMedia(input)
+  )
+
+  invoke<DuplicateWarning | null>(IPC.checkMediaDuplicate, (_event, input) =>
+    media().checkDuplicate(input)
   )
 
   invoke<MediaSnapshot>(IPC.queueMedia, async (_event, input) => {

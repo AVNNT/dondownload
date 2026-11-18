@@ -353,10 +353,17 @@ export function ScanPanel({
     if (preselectedRef.current.has(session.sessionId)) return
     preselectedRef.current.add(session.sessionId)
     const pre = buildScanPreSelection(session)
-    if (pre.itemIds.length === 0) return
+    // A URL already in history starts unchecked; the user can still tick it.
+    const duplicates = new Set(
+      session.items
+        .filter((item) => item.alreadyDownloaded != null)
+        .map((item) => item.id)
+    )
+    const items = pre.itemIds.filter((id) => !duplicates.has(id))
+    if (items.length === 0) return
     setSelection((current) => {
       const next = new Set(current)
-      for (const id of pre.itemIds) next.add(id)
+      for (const id of items) next.add(id)
       return next
     })
     if (pre.overLimit) {
@@ -652,9 +659,14 @@ export function ScanPanel({
   )
 
   const queueable = items.filter(isQueueable)
+  /** Safe "select all" target: history duplicates stay unchecked by default. */
+  const autoSelectable = queueable.filter(
+    (item) => item.alreadyDownloaded == null
+  )
   const selectedItems = queueable.filter((item) => selection.has(item.id))
   const allVisibleSelected =
-    queueable.length > 0 && queueable.every((item) => selection.has(item.id))
+    autoSelectable.length > 0 &&
+    autoSelectable.every((item) => selection.has(item.id))
   const overSelectionLimit = selectedItems.length > MAX_SCAN_SELECTION
   const selectedVideoCount = selectedItems.filter(
     (item) => isVideoCardItem(item) && item.status === 'ready'
@@ -673,7 +685,10 @@ export function ScanPanel({
   }
 
   const toggleGroup = (groupItems: readonly ScanItem[]): void => {
-    const ids = groupItems.filter(isQueueable).map((item) => item.id)
+    const ids = groupItems
+      .filter(isQueueable)
+      .filter((item) => item.alreadyDownloaded == null)
+      .map((item) => item.id)
     const allSelected = ids.length > 0 && ids.every((id) => selection.has(id))
     setSelection((current) => {
       const next = new Set(current)
@@ -687,7 +702,9 @@ export function ScanPanel({
 
   const toggleAll = (): void => {
     setSelection(
-      allVisibleSelected ? new Set() : new Set(queueable.map((item) => item.id))
+      allVisibleSelected
+        ? new Set()
+        : new Set(autoSelectable.map((item) => item.id))
     )
   }
 
@@ -1542,6 +1559,16 @@ export function ScanPanel({
               </>
             ) : null}
             <span>{item.hostname}</span>
+            {item.alreadyDownloaded != null ? (
+              <>
+                <span>·</span>
+                <span className="font-semibold text-amber-300">
+                  {item.alreadyDownloaded.state === 'active'
+                    ? 'already in your list'
+                    : 'already downloaded'}
+                </span>
+              </>
+            ) : null}
             {item.postNumber !== null ? (
               <>
                 <span>·</span>

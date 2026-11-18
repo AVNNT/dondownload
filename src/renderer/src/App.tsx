@@ -40,6 +40,7 @@ import {
 } from '@shared/snapshotDelta'
 import type { AppUpdateState } from '@shared/appUpdate'
 import type { ScanSession } from '@shared/scanner'
+import type { DuplicateWarning } from '@shared/duplicates'
 import { formatBytes, formatSpeed } from '@shared/format'
 import type { Batch } from '@shared/batches'
 import { DEFAULT_PER_HOST_CONNECTIONS, type DownloadSettings } from '@shared/settings'
@@ -1386,6 +1387,21 @@ export default function App(): JSX.Element {
     [allRows, runPlan]
   )
 
+  /** Reveal the row an "Already in your list" add notice refers to. */
+  const showDuplicateRow = useCallback(
+    (warning: DuplicateWarning): void => {
+      const key = `${warning.kind}:${warning.id}`
+      setPage('library')
+      setStatusFilter('all')
+      setQuery('')
+      setDetailsClosedFor(null)
+      setSelection({ selected: [key], anchor: key })
+      setFocusedKey(key)
+      void refreshAll()
+    },
+    [refreshAll]
+  )
+
   const requestClearCompleted = useCallback((): void => {
     const plan = planBulkAction('clear-completed', allRows)
     if (plan.length === 0) return
@@ -1867,6 +1883,7 @@ export default function App(): JSX.Element {
               busy={adding}
               describeDuplicate={describeDuplicate}
               onResumeDuplicate={resumeDuplicateUrl}
+              onShowDuplicate={showDuplicateRow}
               defaultConnections={
                 settings?.perHostConnections ?? DEFAULT_PER_HOST_CONNECTIONS
               }

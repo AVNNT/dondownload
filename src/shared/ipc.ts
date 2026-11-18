@@ -5,6 +5,9 @@ export const IPC = {
   snapshotResync: 'app:snapshot-resync',
   restartAria2: 'app:restart-aria2',
   addDownload: 'download:add',
+  // Advisory duplicate lookup before an add. Indexed by normalized URL and
+  // returns only renderer-safe fields (no path or header).
+  checkDuplicate: 'download:check-duplicate',
   pauseDownload: 'download:pause',
   // Stop an in-flight transfer but keep its row (and partial file) so the user
   // can Retry later. Distinct from pause, which is resumable, and remove.
@@ -19,6 +22,8 @@ export const IPC = {
   showInFolder: 'download:show-in-folder',
   openFile: 'download:open-file',
   analyzeMedia: 'media:analyze',
+  // Advisory duplicate check for one analysis format; never queues anything.
+  checkMediaDuplicate: 'media:check-duplicate',
   queueMedia: 'media:queue',
   getMediaSnapshot: 'media:get-snapshot',
   getMediaJob: 'media:get-job',

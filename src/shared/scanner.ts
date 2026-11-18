@@ -221,6 +221,17 @@ export interface ScanItem {
    * a boolean; the page URL itself never enters this DTO.
    */
   browserMatchPending?: boolean
+  /**
+   * Set when download/media history already has this exact source URL. The
+   * scanner shows a badge and leaves the row unchecked by default; nothing is
+   * blocked if the user deliberately ticks it again.
+   */
+  alreadyDownloaded?: {
+    state: 'active' | 'finished'
+    filename: string
+    /** completedAt for a finished row, createdAt while active. */
+    date: number
+  } | null
 }
 
 export interface ScanCounters {

@@ -87,6 +87,10 @@ import {
 } from '@shared/scanner'
 import { buildScanScriptSets } from '@shared/scriptSets'
 import { normalizeHttpUrl } from '@shared/validation'
+import {
+  normalizeDuplicateUrl,
+  type DuplicateWarning
+} from '@shared/duplicates'
 
 const browserExtensionFixture: BrowserExtensionStatus = {
   registered: true,
@@ -1198,6 +1202,44 @@ export function createPreviewApi(
 
     getSnapshot: async () => ok(downloadSnapshot()),
 
+    checkDuplicate: async (url: string) => {
+      let normalized: string | null
+      try {
+        normalized = normalizeDuplicateUrl(normalizeHttpUrl(url))
+      } catch (error) {
+        return fail(
+          PREVIEW_INVALID_INPUT_CODE,
+          error instanceof Error ? error.message : 'Enter a download URL.'
+        )
+      }
+      if (normalized === null) return ok<DuplicateWarning | null>(null)
+      let active: DownloadItem | null = null
+      let finished: DownloadItem | null = null
+      for (const item of downloads) {
+        if (normalizeDuplicateUrl(item.url) !== normalized) continue
+        if (
+          item.status === 'queued' ||
+          item.status === 'active' ||
+          item.status === 'waiting' ||
+          item.status === 'paused'
+        ) {
+          active ??= item
+        } else if (item.status === 'complete') {
+          finished ??= item
+        }
+      }
+      const match = active ?? finished
+      if (match === null) return ok<DuplicateWarning | null>(null)
+      return ok<DuplicateWarning | null>({
+        kind: 'download',
+        state: active === null ? 'finished' : 'active',
+        id: match.id,
+        filename: match.filename,
+        date: match.completedAt ?? match.createdAt,
+        fileExists: match.filePath !== null
+      })
+    },
+
     probeUrlSize: async (url: string) => {
       // Deterministic pseudo-size so preview rows show a plausible value.
       let hash = 7
@@ -1218,8 +1260,11 @@ export function createPreviewApi(
         )
       }
 
+      const normalized = normalizeDuplicateUrl(url)
       const duplicate = downloads.find(
-        (item) => item.url === url && item.status !== 'complete'
+        (item) =>
+          normalizeDuplicateUrl(item.url) === normalized &&
+          item.status !== 'complete'
       )
       if (duplicate && input.force !== true) {
         return fail(
@@ -1446,6 +1491,8 @@ export function createPreviewApi(
     },
 
     analyzeMedia: async (input) => analyzeMedia(input),
+
+    checkMediaDuplicate: async () => ok<DuplicateWarning | null>(null),
 
     queueMedia: async (input: MediaQueueInput) => {
       const analysis = analyses.get(input.analysisId)

@@ -527,7 +527,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(22)
+    expect(SCHEMA_VERSION).toBe(23)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -835,7 +835,8 @@ describe('per-download control persistence', () => {
       'checksum_algorithm',
       'checksum_ok',
       'checksum_computed',
-      'checksum_checked_at'
+      'checksum_checked_at',
+      'normalized_url'
     ])
     const invalidUpdates = [
       'UPDATE downloads SET scheduled_at = -1',
@@ -950,7 +951,8 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
       [
         ...downloadIndexes,
         'downloads_created_at_updated_at_idx',
-        'downloads_history_cleanup_idx'
+        'downloads_history_cleanup_idx',
+        'downloads_normalized_url_idx'
       ].sort()
     )
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
@@ -1069,7 +1071,8 @@ describe('v5 to v8 migration', () => {
       'checksum_algorithm',
       'checksum_ok',
       'checksum_computed',
-      'checksum_checked_at'
+      'checksum_checked_at',
+      'normalized_url'
     ])
     expect(project(rowsOf(verify, 'downloads'), DOWNLOAD_COLUMNS)).toEqual(
       project(before, DOWNLOAD_COLUMNS)
@@ -1527,7 +1530,7 @@ describe('v21 to v22 first-start guide flag', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(22)
+    expect(migrated.schemaVersion).toBe(23)
     expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
     expect(migrated.loadDesktopSettings().welcomeGuideSeen).toBe(false)
     migrated.saveDesktopSettings({
@@ -1568,7 +1571,7 @@ describe('v20 to v21 idle tray stub setting', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(22)
+    expect(migrated.schemaVersion).toBe(23)
     expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
     expect(migrated.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(true)
 

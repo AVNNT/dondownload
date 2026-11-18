@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type JSX
@@ -14,11 +15,13 @@ import {
   type CollectionSelectionAvailability
 } from '@shared/batches'
 import { formatMediaSize } from '@shared/format'
+import type { DuplicateWarning } from '@shared/duplicates'
 import type {
   AppErrorInfo,
   SmartBatchSubmitEntry,
   SmartBatchSubmitResult
 } from '@shared/types'
+import { filenameFromUrl } from '../lib/addParse'
 
 const OUTCOME_LABEL: Record<SmartBatchSubmitEntry['outcome'], string> = {
   'batch-item': 'Queued',
@@ -67,13 +70,28 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
   )
   const [actionPending, setActionPending] = useState(false)
   const [actionError, setActionError] = useState<AppErrorInfo | null>(null)
+  const [duplicateByUrl, setDuplicateByUrl] = useState<
+    Record<string, DuplicateWarning | null>
+  >({})
+  const [skippedUrls, setSkippedUrls] = useState<Set<string>>(new Set())
   const submittedSignature = useRef<string>('')
 
   const signature = urls.join('\n')
+  const urlList = useMemo(
+    () => (signature.length === 0 ? [] : signature.split('\n')),
+    [signature]
+  )
+  const selectedUrls = urlList.filter((url) => !skippedUrls.has(url))
+  const selectedSignature = selectedUrls.join('\n')
+  const duplicateCount = urlList.filter(
+    (url) => duplicateByUrl[url] != null
+  ).length
 
   const handleSubmit = useCallback(async (): Promise<void> => {
-    if (submitting || urls.length === 0) return
-    if (urls.length > MAX_BATCH_SOURCES) {
+    const targets =
+      selectedSignature.length === 0 ? [] : selectedSignature.split('\n')
+    if (submitting || targets.length === 0) return
+    if (targets.length > MAX_BATCH_SOURCES) {
       setSubmitError({
         code: 'BATCH_TOO_MANY_URLS',
         message: `Submit at most ${MAX_BATCH_SOURCES} URLs at a time.`
@@ -85,7 +103,9 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
     setSubmitting(true)
     setSubmitResult(null)
     try {
-      const result = await window.donDownload.submitSmartBatch({ urls })
+      const result = await window.donDownload.submitSmartBatch({
+        urls: targets
+      })
       if (!result.ok) {
         setSubmitError(result.error)
         return
@@ -105,7 +125,7 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
     } finally {
       setSubmitting(false)
     }
-  }, [submitting, urls, signature])
+  }, [submitting, selectedSignature, signature])
 
   // Reset the result when the input changes so stale outcomes are never shown
   // against a different URL list.
@@ -118,6 +138,52 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
       setPreviewNotice(null)
     }
   }, [signature])
+
+  // Advisory duplicate marks for the whole selection. Every URL is checked
+  // once per membership change; main answers from its indexed history lookup.
+  useEffect(() => {
+    let cancelled = false
+    if (urlList.length === 0) {
+      setDuplicateByUrl({})
+      setSkippedUrls(new Set())
+      return
+    }
+    void (async () => {
+      const entries = await Promise.all(
+        urlList.map(async (url) => {
+          try {
+            const result = await window.donDownload.checkDuplicate(url)
+            return [url, result.ok ? result.value : null] as const
+          } catch {
+            return [url, null] as const
+          }
+        })
+      )
+      if (cancelled) return
+      const next: Record<string, DuplicateWarning | null> = {}
+      for (const [url, warning] of entries) next[url] = warning
+      setDuplicateByUrl(next)
+      // Duplicates start unchecked; everything else stays selected. A manual
+      // tick still wins until the membership changes again.
+      setSkippedUrls(
+        new Set(
+          urlList.filter((url) => next[url] !== null && next[url] !== undefined)
+        )
+      )
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [urlList])
+
+  const toggleDuplicateSelection = useCallback((url: string): void => {
+    setSkippedUrls((current) => {
+      const next = new Set(current)
+      if (next.has(url)) next.delete(url)
+      else next.add(url)
+      return next
+    })
+  }, [])
 
   const handleToggleEntry = useCallback(
     (previewId: string, entryId: string): void => {
@@ -294,11 +360,13 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 surface-card p-3">
         <div className="min-w-0">
           <p className="text-[12.5px] font-medium text-zinc-200">
-            {urls.length} {urls.length === 1 ? 'link' : 'links'} to add
+            {selectedUrls.length} {selectedUrls.length === 1 ? 'link' : 'links'}{' '}
+            to add
           </p>
           <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
-            Direct links queue immediately; playlists and Pixeldrain lists show
-            a preview first.
+            {duplicateCount > 0
+              ? `${duplicateCount} ${duplicateCount === 1 ? 'link is' : 'links are'} already in your history and start unchecked.`
+              : 'Direct links queue immediately; playlists and Pixeldrain lists show a preview first.'}
           </p>
         </div>
         <button
@@ -306,12 +374,49 @@ export function BatchSubmit({ urls, disabled = false }: BatchSubmitProps): JSX.E
           onClick={() => {
             void handleSubmit()
           }}
-          disabled={disabled || submitting || urls.length === 0}
+          disabled={disabled || submitting || selectedUrls.length === 0}
           className="h-9 shrink-0 rounded-lg bg-accent-500 px-4 text-xs font-semibold text-on-accent transition hover:bg-accent-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
         >
-          {submitting ? 'Adding…' : `Add ${urls.length} ${urls.length === 1 ? 'link' : 'links'}`}
+          {submitting
+            ? 'Adding…'
+            : `Add ${selectedUrls.length} ${selectedUrls.length === 1 ? 'link' : 'links'}`}
         </button>
       </div>
+
+      <ul className="space-y-1.5 rounded-xl border border-white/10 surface-card p-3">
+        {urlList.map((url) => {
+          const duplicate = duplicateByUrl[url] ?? null
+          const checked = !skippedUrls.has(url)
+          return (
+            <li key={url}>
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/5 surface-soft px-2.5 py-2">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={disabled || submitting}
+                  onChange={() => toggleDuplicateSelection(url)}
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 surface-input accent-accent-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-300"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-200">
+                    <span className="break-words">{filenameFromUrl(url)}</span>
+                    {duplicate !== null ? (
+                      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[11px] font-semibold text-amber-300">
+                        {duplicate.state === 'active'
+                          ? 'already in your list'
+                          : 'already downloaded'}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-zinc-500">
+                    {url}
+                  </span>
+                </span>
+              </label>
+            </li>
+          )
+        })}
+      </ul>
 
       {submitError ? (
         <InlineError

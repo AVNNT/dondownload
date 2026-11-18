@@ -88,6 +88,7 @@ import {
   type ScanVideoRequest
 } from '@shared/scanVideo'
 import type { ScanSession } from '@shared/scanner'
+import type { DuplicateWarning } from '@shared/duplicates'
 import { ValidationError } from '@shared/validation'
 import { AppError, toErrorInfo } from '../errors'
 import {
@@ -162,6 +163,12 @@ export interface BridgeDownloadManager {
     downloadId: string
     persistedAt: number
   }>
+  /**
+   * Additive duplicate capability for the strict hand-off route. Returns the
+   * existing finished row only when its file still exists, so the bridge can
+   * answer with that row's receipt instead of downloading the same bytes again.
+   */
+  findDuplicate?(input: unknown): Promise<DuplicateWarning | null>
 }
 
 export interface NativeBridgeOptions {
@@ -220,6 +227,13 @@ export interface NativeBridgeOptions {
    * `onScanRequested` so smoke and focused tests can stub it.
    */
   onShowDownload?: (downloadId: string) => void
+  /**
+   * Additive: the strict hand-off accepted an existing finished file instead
+   * of downloading it again. Main uses this to raise the clickable
+   * "Already downloaded" toast; the browser still gets a normal receipt and
+   * shows its existing completion card.
+   */
+  onDuplicateHandoff?: (duplicate: DuplicateWarning) => void
   /**
    * Additive media capability. Worker B wires this; when it is absent the
    * media routes stay authenticated but report a safe unavailable error.
@@ -885,6 +899,41 @@ export async function startNativeBridge(
       logger(`Durable hand-off target rejected (${info.code}).`)
       sendError(response, 400, info.code, safeErrorMessage(info.message))
       return
+    }
+
+    // The user already has this exact file. Checking the local history before
+    // the network preflight means a finished download is never fetched again
+    // just to discover the duplicate. Only a still-existing file qualifies; a
+    // deleted file falls through to the ordinary download path.
+    const findDuplicate = options.manager.findDuplicate
+    if (typeof findDuplicate === 'function') {
+      let duplicate: DuplicateWarning | null = null
+      try {
+        duplicate = await findDuplicate.call(options.manager, input)
+      } catch (error) {
+        const info = toErrorInfo(error)
+        logger(`Durable hand-off duplicate check failed (${info.code}).`)
+      }
+      if (duplicate !== null) {
+        try {
+          options.onDuplicateHandoff?.(duplicate)
+        } catch {
+          // The toast is a convenience; the receipt still answers the browser.
+        }
+        // Same shape as a fresh acceptance, so older extensions cancel their
+        // own transfer and show the normal completion card for this row.
+        sendJson(response, 200, {
+          ok: true,
+          accepted: true,
+          operation: DURABLE_HANDOFF_CHANNEL,
+          durable: true,
+          receipt: {
+            downloadId: duplicate.id,
+            persistedAt: Math.max(1, Math.trunc(duplicate.date))
+          }
+        })
+        return
+      }
     }
 
     // The browser's own download may have used its cookies. Prove that the
