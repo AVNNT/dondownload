@@ -420,7 +420,7 @@ describe('browser preview fixture adapter', () => {
     expect(initial.ok).toBe(true)
     if (!initial.ok) return
     expect(() => parseDownloadSettings(initial.value)).not.toThrow()
-    expect(initial.value.theme).toBe('dark')
+    expect(initial.value.theme).toBe('oled')
 
     const updated = await preview.updateSettings({
       ...initial.value,

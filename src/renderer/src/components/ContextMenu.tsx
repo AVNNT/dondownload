@@ -1,4 +1,4 @@
-import { useEffect, useRef, type JSX, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import type { ContextAction, RowActionId } from '../lib/actions'
 
 interface ContextMenuProps {
@@ -24,6 +24,12 @@ export function ContextMenu({
   onClose
 }: ContextMenuProps): JSX.Element {
   const menuRef = useRef<HTMLDivElement | null>(null)
+  // Measured after the first layout; separators make the estimate too small.
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const height = menuRef.current?.offsetHeight ?? 0
+    if (height > 0) setMeasuredHeight(height)
+  }, [actions])
 
   useEffect(() => {
     const menu = menuRef.current
@@ -51,7 +57,7 @@ export function ContextMenu({
   }, [onClose])
 
   const width = 228
-  const estimatedHeight = actions.length * 32 + 24
+  const estimatedHeight = measuredHeight ?? actions.length * 32 + 24
   const left = Math.max(
     8,
     Math.min(x, (typeof window === 'undefined' ? width : window.innerWidth) - width - 8)
