@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement or a new feature
+title: '[Feature]: '
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search the existing issues first. Keep one idea per request.
+        Note that DonDownload only handles HTTP(S) and media downloads: torrents,
+        magnet links, DRM bypass and CAPTCHA solving are out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you are in, not only the feature you want.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it behave? Which settings, shortcuts or UI would it need?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have tried
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Downloads and transfers
+        - Media downloads (yt-dlp/FFmpeg)
+        - Smart Link Scanner
+        - Batches
+        - Browser extension
+        - Settings and appearance
+        - Installer and updates
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues for this request.
+          required: true
