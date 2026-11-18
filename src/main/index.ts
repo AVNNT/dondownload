@@ -71,6 +71,20 @@ import {
 } from './nativeHost/registration'
 import { createAppTray, type AppTray } from './tray'
 import {
+  decideIdleStubHandOff,
+  dismissLeftoverStub,
+  idleStubEnvPolicy,
+  idleStubShowArgs,
+  resolveIdleStubGraceMs,
+  spawnIdleStub,
+  IDLE_STUB_ENV,
+  IDLE_STUB_GRACE_ENV
+} from './idleStub'
+import {
+  createIdleStubController,
+  type IdleStubController
+} from './idleStub/controller'
+import {
   createTaskbarProgress,
   TASKBAR_ACTIVE_PROGRESS_EMPTY,
   type TaskbarProgressController
@@ -150,6 +164,8 @@ let mediaPublisher: SnapshotDeltaPublisher<
 > | null = null
 let batchPublisher: SnapshotDeltaPublisher<Batch, Record<string, never>> | null =
   null
+/** Hands the idle app over to the native tray stub, or null when ineligible. */
+let idleStub: IdleStubController | null = null
 
 /** True only when the renderer can actually show a progress update. */
 function snapshotWindowVisible(): boolean {
@@ -294,6 +310,99 @@ function hasActiveDownloadJobs(): boolean {
   return manager?.hasPendingDownloads() ?? false
 }
 
+/**
+ * A browser/native hand-off arrived recently; keep the full engine awake so the
+ * extension bridge can answer it instead of input passing to a sleeping app.
+ */
+const RECENT_HAND_OFF_MS = 120_000
+let recentHandOffUntil = 0
+function markRecentHandOff(): void {
+  recentHandOffUntil = Date.now() + RECENT_HAND_OFF_MS
+}
+
+/**
+ * True whenever the full engine has work that the tiny tray stub cannot do:
+ * active/queued/waiting downloads, media jobs (analyzing, downloading, merging,
+ * or held back by the allowed-hours gate), batches with active items, running
+ * scans, a verified app update waiting to install, and clipboard watching.
+ *
+ * Clipboard watching counts because the stub is only a tray icon: if the app
+ * handed over while watching, copied links would silently stop being offered.
+ * An active browser hand-off also counts, so the stub cannot wake the app right
+ * after replacing it.
+ */
+function isIdleStubBusy(): boolean {
+  if (desktopSettingsManager?.getSettings().watchClipboard ?? false) return true
+  if (recentHandOffUntil > Date.now()) return true
+  if (manager?.hasPendingDownloads() ?? false) return true
+  if ((manager?.getActiveProgress().activeCount ?? 0) > 0) return true
+  if (mediaJobs?.hasActiveJobs() ?? false) return true
+  if (mediaJobs?.hasPendingPolicyWork() ?? false) return true
+  if ((mediaJobs?.getActiveProgress().activeCount ?? 0) > 0) return true
+  if (batches?.hasActiveBatchWork() ?? false) return true
+  if (scanner?.hasActiveScans() ?? false) return true
+  if (appUpdate?.getState().canInstall ?? false) return true
+  return false
+}
+
+/**
+ * "Free memory when idle in the tray" is enabled by the setting, unless
+ * `DONDOWNLOAD_IDLE_STUB=0` turns it off. Development builds never hand over
+ * on their own: the packaged stub executable and a packaged app path do not
+ * exist there. `DONDOWNLOAD_IDLE_STUB=1` opts a development build in so the
+ * spawn path can be exercised by hand.
+ */
+function isIdleStubEnabled(): boolean {
+  const policy = idleStubEnvPolicy(process.env[IDLE_STUB_ENV])
+  if (!policy.enabled) return false
+  if (!(desktopSettingsManager?.getSettings().exitToTrayStubWhenIdle ?? false)) {
+    return false
+  }
+  return app.isPackaged || policy.forceInDev
+}
+
+/** Re-evaluate the hand-over after anything that may change its inputs. */
+function refreshIdleStub(): void {
+  idleStub?.evaluate()
+}
+
+/**
+ * Replace this process with the tiny native tray stub.
+ *
+ * Only a packaged run may do this, never smoke or the memory benchmark, and
+ * only when the stub actually shipped. The stub is spawned detached first, so
+ * the tray icon never blinks out, then the ordinary quit path runs: aria2, the
+ * media children and the database are shut down exactly as for the tray's
+ * "Quit" item. A cancelled or failed quit disposes and clears the controller.
+ */
+function exitToStub(): boolean {
+  const decision = decideIdleStubHandOff({
+    isPackaged: app.isPackaged,
+    isSmoke: smoke !== null || process.env.DONDOWNLOAD_SMOKE_TEST === '1',
+    isMemoryBench: memoryBenchPath !== null,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    env: process.env[IDLE_STUB_ENV],
+    hasRecentHandOff: isIdleStubBusy()
+  })
+  if (decision.action !== 'hand-off') {
+    traceStartup(`idle stub hand-off refused: ${decision.reason}`)
+    return false
+  }
+  traceStartup('idle stub hand-off: starting native tray stub')
+  spawnIdleStub(
+    decision.executable,
+    idleStubShowArgs(process.execPath, decision.icon),
+    spawn
+  )
+  idleStub?.dispose()
+  idleStub = null
+  quitRequested = true
+  app.quit()
+  return true
+}
+
 function refreshTray(): void {
   appTray?.refresh()
 }
@@ -329,6 +438,9 @@ function applyDesktopSettings(settings: DesktopSettings): void {
   applyInterfaceZoom(settings.interfaceSizePercent)
   applyLoginItem(settings)
   clipboardWatcher?.setEnabled(settings.watchClipboard)
+  // Watching the clipboard makes the app busy for the idle hand-off, and the
+  // setting itself can arm or disarm it, so both changes re-evaluate.
+  refreshIdleStub()
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.desktopSettingsChanged, settings)
   }
@@ -397,10 +509,13 @@ function openMainWindow(
   window.on('show', () => {
     refreshTray()
     refreshSnapshotDelivery()
+    // A shown window cancels a pending hand-off; `show` is initial too.
+    refreshIdleStub()
   })
   window.on('hide', () => {
     refreshTray()
     refreshSnapshotDelivery()
+    refreshIdleStub()
   })
   window.on('minimize', refreshSnapshotDelivery)
   window.on('restore', refreshSnapshotDelivery)
@@ -413,6 +528,7 @@ function openMainWindow(
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
     refreshTray()
+    refreshIdleStub()
   })
 
   return window
@@ -438,6 +554,7 @@ function destroyMainWindow(window: BrowserWindow): void {
     }
   }
   refreshTray()
+  refreshIdleStub()
 }
 
 function showMainWindow(): void {
@@ -574,6 +691,17 @@ if (unregisterRequested) {
     // History uses the SQLite runtime bundled with Electron's Node (node:sqlite),
     // in a dedicated file under Electron's userData directory.
     let database: ReturnType<typeof openDownloadDatabase> | null = null
+    // A tray stub left over from a previous run must go before this process
+    // creates its own tray, so two icons never coexist. Fire and forget: a
+    // missing stub simply means nothing is running.
+    dismissLeftoverStub(
+      {
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        env: process.env[IDLE_STUB_ENV]
+      },
+      spawn
+    )
     const databaseStartedAt = startupNow()
     try {
       database = openDownloadDatabase(
@@ -725,6 +853,9 @@ if (unregisterRequested) {
           rows: snapshot.downloads
         })
         updateTaskbarProgress()
+        // A download starting, finishing or queueing changes whether the app
+        // may hand over to the idle tray stub.
+        refreshIdleStub()
       },
       database,
       {
@@ -840,6 +971,7 @@ if (unregisterRequested) {
           rows: snapshot.jobs
         })
         updateTaskbarProgress()
+        refreshIdleStub()
       }
     })
 
@@ -871,6 +1003,7 @@ if (unregisterRequested) {
           fields: {},
           rows: snapshot.batches
         })
+        refreshIdleStub()
       }
     })
 
@@ -912,6 +1045,8 @@ if (unregisterRequested) {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC.scanUpdated, session)
         }
+        // A scan starting or settling changes the busy state.
+        refreshIdleStub()
       }
     })
     if (batches !== null) {
@@ -1041,6 +1176,22 @@ if (unregisterRequested) {
     const startHidden =
       process.argv.includes(START_HIDDEN_ARG) && smoke === null
 
+    // Idle tray stub. A lazy start that finds nothing to do (`--hidden` from a
+    // browser hand-off, or the login item after a reboot) starts with no window,
+    // so the grace period begins here and a genuinely unused engine hands the
+    // tray back to the stub instead of lingering in the background.
+    idleStub = createIdleStubController({
+      isWindowOpen: () => mainWindow !== null,
+      isWindowVisible: () => snapshotWindowVisible(),
+      isBusy: isIdleStubBusy,
+      isEnabled: isIdleStubEnabled,
+      graceMs: resolveIdleStubGraceMs(process.env[IDLE_STUB_GRACE_ENV]),
+      exitToStub: () => {
+        exitToStub()
+      },
+      log: (message) => traceStartup(message)
+    })
+
     // Create (and start loading) the window before the tray, aria2, the browser
     // bridge, tool probes and update checks. The renderer already renders a
     // "starting" engine state from the first snapshot, so the first paint no
@@ -1086,6 +1237,10 @@ if (unregisterRequested) {
         showMainWindow()
       }
     }
+
+    // Begin counting idle time only once the tray exists: without a tray the
+    // app has no surface the stub could hand back to.
+    if (appTray !== null) refreshIdleStub()
 
     // Diagnostics exist only in smoke mode. They observe the real hidden
     // window before startup work continues, so early renderer failures are
@@ -1186,7 +1341,10 @@ if (unregisterRequested) {
           // extension took over. Only the mapped status, two byte counts and a
           // display-only file name leave the desktop. One record lookup keeps
           // the 2 s poll independent of the download history size.
-          downloadStatus: createHandoffDownloadStatus(bridgeManager),
+          downloadStatus: (downloadId) => {
+            markRecentHandOff()
+            return createHandoffDownloadStatus(bridgeManager)(downloadId)
+          },
           onShowDownload: (downloadId) => {
             showMainWindow()
             sendToMainWindow((window) =>
@@ -1405,6 +1563,10 @@ if (unregisterRequested) {
 
   app.on('before-quit', (event) => {
     quitRequested = true
+    // A shutdown of any kind owns the process: never race it with the hand-off
+    // timer, which would spawn a stub that then has nothing running to hand to.
+    idleStub?.dispose()
+    idleStub = null
 
     const action = decideBeforeQuit({
       cleanup: { started: cleanupStarted, finished: cleanupFinished },

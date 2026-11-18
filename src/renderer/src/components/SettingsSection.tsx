@@ -1134,6 +1134,18 @@ export function SettingsSection(): JSX.Element {
               onChange={(checked) => commitDesktop({ watchClipboard: checked })}
             />
           </SettingRow>
+          <SettingRow
+            title="Free memory when idle in the tray"
+            description="Closes the app engine after a minute of idleness; the tray icon stays and reopens it. Stays on while the clipboard is watched, because the tiny tray icon cannot watch it."
+          >
+            <Switch
+              checked={desktopDraft.exitToTrayStubWhenIdle}
+              label="Free memory when idle in the tray"
+              onChange={(checked) =>
+                commitDesktop({ exitToTrayStubWhenIdle: checked })
+              }
+            />
+          </SettingRow>
         </div>
       </section>
 

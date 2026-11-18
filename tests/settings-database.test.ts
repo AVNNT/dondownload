@@ -9,6 +9,7 @@ import {
   type DownloadSettings
 } from '../src/shared/settings'
 import type { DownloadItem } from '../src/shared/types'
+import { defaultDesktopSettings } from '../src/shared/desktopSettings'
 import {
   DATABASE_FILENAME,
   SCHEMA_VERSION,
@@ -526,7 +527,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(20)
+    expect(SCHEMA_VERSION).toBe(21)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -1506,6 +1507,48 @@ describe('v5 migration rollback', () => {  it('rolls back added columns and sett
     expect(indexNames(verify, 'batch_items')).toEqual(batchItemIndexes)
     expect(columnNames(verify, 'download_settings')).toEqual(['id', 'marker'])
     expect(tableExists(verify, 'download_settings')).toBe(true)
+    verify.close()
+  })
+})
+
+describe('v20 to v21 idle tray stub setting', () => {
+  it('adds the setting defaulted on and round-trips both values', async () => {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    expect(seed.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(true)
+    close(seed)
+
+    // Simulate a profile created before the setting existed.
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      ALTER TABLE desktop_settings DROP COLUMN exit_to_tray_stub_when_idle;
+      PRAGMA user_version = 20;
+    `)
+    legacy.close()
+
+    const migrated = open(filePath)
+    expect(migrated.schemaVersion).toBe(21)
+    expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
+    expect(migrated.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(true)
+
+    migrated.saveDesktopSettings({
+      ...defaultDesktopSettings(),
+      exitToTrayStubWhenIdle: false
+    })
+    close(migrated)
+
+    const reopened = open(filePath)
+    expect(reopened.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(false)
+    close(reopened)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(columnNames(verify, 'desktop_settings')).toContain(
+      'exit_to_tray_stub_when_idle'
+    )
+    expect(rowsOf(verify, 'desktop_settings')[0]).toMatchObject({
+      exit_to_tray_stub_when_idle: 0
+    })
     verify.close()
   })
 })

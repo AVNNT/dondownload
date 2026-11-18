@@ -33,6 +33,7 @@ describe('desktop settings contract', () => {
       showNotifications: false,
       watchClipboard: false,
       launchAtLogin: false,
+      exitToTrayStubWhenIdle: true,
       interfaceSizePercent: 100
     })
     expect(DEFAULT_INTERFACE_SIZE).toBe(100)
@@ -323,7 +324,7 @@ describe('desktop settings persistence and paused media migration', () => {
     const database = openDownloadDatabase(path.join(dir, 'downloads.sqlite3'))
     try {
       expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-      expect(SCHEMA_VERSION).toBe(20)
+      expect(SCHEMA_VERSION).toBe(21)
       expect(database.loadDesktopSettings()).toEqual(defaultDesktopSettings())
 
       const next = {
@@ -331,6 +332,7 @@ describe('desktop settings persistence and paused media migration', () => {
         showNotifications: false,
         watchClipboard: true,
         launchAtLogin: true,
+        exitToTrayStubWhenIdle: false,
         interfaceSizePercent: 125 as const
       }
       database.saveDesktopSettings(next)

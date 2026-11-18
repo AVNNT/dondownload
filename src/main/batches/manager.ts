@@ -8,6 +8,7 @@ import {
   MAX_COLLECTION_SELECTION,
   BATCH_MEDIA_QUALITIES,
   isActiveBatchItemStatus,
+  isActiveBatchStatus,
   normalizeBatchSourceUrl,
   parseAnalyzeCollectionInput,
   parseBatch,
@@ -892,6 +893,21 @@ export class BatchManager {
 
   getBatch(rawId: unknown): Batch {
     return this.toPublicBatch(this.requireBatch(parseBatchId(rawId)))
+  }
+
+  /**
+   * True while a batch still has queued or running items. Read by the idle tray
+   * stub hand-off: a batch waiting on the allowed-hours gate or on a failed
+   * child is still work the stub cannot continue.
+   */
+  hasActiveBatchWork(): boolean {
+    for (const batch of this.batches.values()) {
+      if (isActiveBatchStatus(batch.record.status)) return true
+      for (const item of batch.items.values()) {
+        if (isActiveBatchItemStatus(item.status)) return true
+      }
+    }
+    return false
   }
 
   /* -------------------------- collection previews -------------------------- */

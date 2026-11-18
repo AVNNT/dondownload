@@ -17,6 +17,7 @@ export const DEFAULT_RESUME_INTERRUPTED_ON_STARTUP = true
 export const DEFAULT_SHOW_NOTIFICATIONS = false
 export const DEFAULT_WATCH_CLIPBOARD = false
 export const DEFAULT_LAUNCH_AT_LOGIN = false
+export const DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE = true
 
 /** Non-secret command-line argument used by the login item to start hidden. */
 export const START_HIDDEN_ARG = '--hidden'
@@ -31,6 +32,11 @@ export interface DesktopSettings {
   watchClipboard: boolean
   /** Register the packaged app to start when the user signs in. */
   launchAtLogin: boolean
+  /**
+   * Replace the idle app with the native tray stub while it sits in the tray
+   * with nothing to do, freeing most of its memory.
+   */
+  exitToTrayStubWhenIdle: boolean
   /** Renderer zoom percentage. */
   interfaceSizePercent: InterfaceSize
 }
@@ -41,6 +47,7 @@ export function defaultDesktopSettings(): DesktopSettings {
     showNotifications: DEFAULT_SHOW_NOTIFICATIONS,
     watchClipboard: DEFAULT_WATCH_CLIPBOARD,
     launchAtLogin: DEFAULT_LAUNCH_AT_LOGIN,
+    exitToTrayStubWhenIdle: DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE,
     interfaceSizePercent: DEFAULT_INTERFACE_SIZE
   }
 }
@@ -131,6 +138,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     'showNotifications',
     'watchClipboard',
     'launchAtLogin',
+    'exitToTrayStubWhenIdle',
     'interfaceSizePercent'
   ])
   return {
@@ -141,6 +149,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     showNotifications: booleanValue(record, 'showNotifications'),
     watchClipboard: booleanValue(record, 'watchClipboard'),
     launchAtLogin: booleanValue(record, 'launchAtLogin'),
+    exitToTrayStubWhenIdle: booleanValue(record, 'exitToTrayStubWhenIdle'),
     interfaceSizePercent: parseInterfaceSize(record.interfaceSizePercent)
   }
 }
