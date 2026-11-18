@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  HANDED_OFF_DOWNLOADS_STORAGE_KEY,
+  HANDOFF_CARD_DONE_HIDE_MS,
+  HANDOFF_CARD_GIVE_UP_HIDE_MS,
   HANDOFF_CARD_MESSAGE_TYPES,
   HANDOFF_CARD_POLL_MS,
   MAX_HANDED_OFF_DOWNLOAD_IDS,
@@ -10,6 +13,8 @@ import {
   hasHandedOffDownload,
   injectHandoffCard,
   rememberHandedOffDownload,
+  resetHandedOffDownloadsMemoryForTests,
+  settleHandedOffDownloads,
   showHandoffCard
 } from '../extension/handoff-card.js'
 
@@ -144,6 +149,15 @@ function click(node: FakeNode): void {
   for (const listener of node.listeners.click ?? []) listener()
 }
 
+function fire(node: FakeNode, type: string): void {
+  for (const listener of node.listeners[type] ?? []) listener()
+}
+
+/** Let the card's callback-based message chain settle under fake timers. */
+async function flushAsync(): Promise<void> {
+  for (let index = 0; index < 25; index += 1) await Promise.resolve()
+}
+
 interface FakeChrome {
   chrome: any
   statusMessages: unknown[]
@@ -151,14 +165,34 @@ interface FakeChrome {
   nativeMessages: unknown[]
   response: unknown
   nativeResponse: unknown
+  sessionStore: Map<string, unknown>
+}
+
+function sessionArea(store: Map<string, unknown>) {
+  return {
+    async get(key: string | string[]) {
+      const keys = Array.isArray(key) ? key : [key]
+      const value: Record<string, unknown> = {}
+      for (const name of keys) value[name] = store.get(name)
+      return value
+    },
+    async set(items: Record<string, unknown>) {
+      for (const [name, entry] of Object.entries(items)) store.set(name, entry)
+    },
+    async remove(key: string) {
+      store.delete(key)
+    }
+  }
 }
 
 function installFakeChrome(): FakeChrome {
+  const sessionStore = new Map<string, unknown>()
   const fake: FakeChrome = {
     chrome: null,
     statusMessages: [],
     showMessages: [],
     nativeMessages: [],
+    sessionStore,
     response: {
       ok: true,
       status: 'running',
@@ -195,7 +229,8 @@ function installFakeChrome(): FakeChrome {
         fake.nativeMessages.push({ host, message })
         callback(fake.nativeResponse)
       }
-    }
+    },
+    storage: { session: sessionArea(sessionStore) }
   }
   ;(globalThis as any).chrome = fake.chrome
   return fake
@@ -204,16 +239,16 @@ function installFakeChrome(): FakeChrome {
 beforeEach(() => {
   vi.useFakeTimers()
   delete (globalThis as any).__donDownloadHandoffCards
-  forgetHandedOffDownloadsForTests()
+  resetHandedOffDownloadsMemoryForTests()
   createFakeDocument()
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers()
   delete (globalThis as any).__donDownloadHandoffCards
+  await forgetHandedOffDownloadsForTests((globalThis as any).chrome)
   delete (globalThis as any).document
   delete (globalThis as any).chrome
-  forgetHandedOffDownloadsForTests()
 })
 
 function card(): FakeNode | null {
@@ -282,6 +317,63 @@ describe('in-page hand-off card', () => {
     expect(fake.statusMessages).toHaveLength(3)
   })
 
+  it('recovers on the first poll after a worker restart while the tab was hidden', async () => {
+    const fake = installFakeChrome()
+    // The id is already in the session registry, as it would be after a hand-off.
+    expect(rememberHandedOffDownload(DOWNLOAD_ID, fake.chrome)).toBe(true)
+    await settleHandedOffDownloads(fake.chrome)
+
+    // Route the card's polls through the real service-worker handler, so this
+    // exercises the registry, the bridge and the card together.
+    fake.chrome.runtime.sendMessage = (
+      message: any,
+      callback?: (value: unknown) => void
+    ) => {
+      void handleHandoffCardMessage(fake.chrome, message, {
+        id: EXTENSION_ID
+      }).then((response) => {
+        if (typeof callback === 'function') callback(response)
+      })
+    }
+
+    handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
+    await flushAsync()
+    expect(find(documentElement, 'meta')?.textContent).toBe(
+      '46% \u00b7 1.2 MB of 2.6 MB'
+    )
+
+    // Hidden tab, then the worker is suspended and restarted with empty module
+    // memory. Only chrome.storage.session still knows the id.
+    const doc = (globalThis as any).document
+    doc.hidden = true
+    doc.dispatch('visibilitychange')
+    resetHandedOffDownloadsMemoryForTests()
+    expect(await hasHandedOffDownload(DOWNLOAD_ID, fake.chrome)).toBe(true)
+
+    doc.hidden = false
+    doc.dispatch('visibilitychange')
+    await flushAsync()
+    // The resumed card was answered, not dropped as an unknown id.
+    expect(find(documentElement, 'title')?.textContent).toBe(
+      'DonDownload is downloading'
+    )
+
+    // The row is cleared after completion: the resumed card finishes and hides.
+    fake.nativeResponse = {
+      ok: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'DonDownload does not have that download.'
+      }
+    }
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
+    await flushAsync()
+    expect(find(documentElement, 'title')?.textContent).toBe('Downloaded')
+    expect(find(documentElement, 'meta')?.textContent).toBe('Saved in DonDownload')
+    vi.advanceTimersByTime(HANDOFF_CARD_DONE_HIDE_MS)
+    expect(card()).toBeNull()
+  })
+
   it('says Starting… while the size is unknown', () => {
     const fake = installFakeChrome()
     fake.response = {
@@ -316,7 +408,7 @@ describe('in-page hand-off card', () => {
     expect(card()).not.toBeNull()
   })
 
-  it('stops polling after three consecutive bridge failures', () => {
+  it('removes itself after giving up on three consecutive bridge failures', () => {
     const fake = installFakeChrome()
     fake.response = {
       ok: false,
@@ -330,7 +422,77 @@ describe('in-page hand-off card', () => {
     )
     const sent = fake.statusMessages.length
     vi.advanceTimersByTime(10_000)
+    // Polling stopped for good. The card is gone shortly after it gave up, so a
+    // stale progress card can never stay on the page forever.
     expect(fake.statusMessages).toHaveLength(sent)
+    expect(card()).toBeNull()
+  })
+
+  it('removes a given-up card only after the delay, and never under the pointer', () => {
+    const fake = installFakeChrome()
+    fake.response = {
+      ok: false,
+      error: { code: 'EXTENSION_CONTEXT_INVALIDATED', message: 'Gone.' }
+    }
+    handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS * 2)
+    expect(card()).not.toBeNull()
+    // Still visible for the whole grace period.
+    vi.advanceTimersByTime(HANDOFF_CARD_GIVE_UP_HIDE_MS - 500)
+    expect(card()).not.toBeNull()
+
+    // The pointer on the card postpones removal.
+    fire(card()!, 'mouseenter')
+    vi.advanceTimersByTime(HANDOFF_CARD_GIVE_UP_HIDE_MS * 3)
+    expect(card()).not.toBeNull()
+
+    fire(card()!, 'mouseleave')
+    vi.advanceTimersByTime(HANDOFF_CARD_GIVE_UP_HIDE_MS)
+    expect(card()).toBeNull()
+  })
+
+  it('treats a missing row after progress as a finished download', () => {
+    const fake = installFakeChrome()
+    handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
+    expect(find(documentElement, 'meta')?.textContent).toBe(
+      '46% \u00b7 1.2 MB of 2.6 MB'
+    )
+
+    // The desktop cleared the row (or its cleanup removed it) after progress;
+    // the id is simply gone, which means the file already reached DonDownload.
+    fake.response = {
+      ok: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'DonDownload does not have that download.'
+      }
+    }
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
+    expect(find(documentElement, 'title')?.textContent).toBe('Downloaded')
+    expect(find(documentElement, 'meta')?.textContent).toBe('Saved in DonDownload')
+    expect(find(documentElement, 'fill')?.className).toBe('fill done')
+
+    const sent = fake.statusMessages.length
+    vi.advanceTimersByTime(HANDOFF_CARD_DONE_HIDE_MS)
+    expect(card()).toBeNull()
+    expect(fake.statusMessages).toHaveLength(sent)
+  })
+
+  it('still counts a missing row as a failure before any progress', () => {
+    const fake = installFakeChrome()
+    fake.response = {
+      ok: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'DonDownload did not take over that download.'
+      }
+    }
+    handoffCardInjected({ downloadId: DOWNLOAD_ID, filename: 'report.zip' })
+    vi.advanceTimersByTime(HANDOFF_CARD_POLL_MS)
+    // One or two failures must not look like a completed download.
+    expect(find(documentElement, 'title')?.textContent).toBe(
+      'DonDownload is downloading'
+    )
     expect(card()).not.toBeNull()
   })
 
@@ -480,7 +642,7 @@ describe('service worker card messages', () => {
     expect(fake.nativeMessages).toEqual([])
 
     expect(rememberHandedOffDownload(DOWNLOAD_ID)).toBe(true)
-    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
+    expect(await hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
     await expect(
       handleHandoffCardMessage(fake.chrome, message, own)
     ).resolves.toMatchObject({
@@ -555,16 +717,16 @@ describe('service worker card messages', () => {
     ).resolves.toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('keeps the session id set bounded and memory-only', () => {
+  it('keeps the session id set bounded and validated', async () => {
     for (let index = 0; index < MAX_HANDED_OFF_DOWNLOAD_IDS + 5; index += 1) {
       const id = `f47ac10b-58cc-4372-a567-${String(index).padStart(12, '0')}`
       expect(rememberHandedOffDownload(id)).toBe(true)
     }
-    expect(hasHandedOffDownload('f47ac10b-58cc-4372-a567-000000000000')).toBe(
-      false
-    )
     expect(
-      hasHandedOffDownload(
+      await hasHandedOffDownload('f47ac10b-58cc-4372-a567-000000000000')
+    ).toBe(false)
+    expect(
+      await hasHandedOffDownload(
         `f47ac10b-58cc-4372-a567-${String(
           MAX_HANDED_OFF_DOWNLOAD_IDS + 4
         ).padStart(12, '0')}`
@@ -572,5 +734,62 @@ describe('service worker card messages', () => {
     ).toBe(true)
     expect(rememberHandedOffDownload('not-a-uuid')).toBe(false)
     expect(rememberHandedOffDownload(42)).toBe(false)
+  })
+
+  it('keeps the handed-off registry across a worker restart', async () => {
+    const fake = installFakeChrome()
+    const own = { id: EXTENSION_ID, tab: { id: 3 } }
+    expect(rememberHandedOffDownload(DOWNLOAD_ID, fake.chrome)).toBe(true)
+    await settleHandedOffDownloads(fake.chrome)
+    expect(fake.sessionStore.get(HANDED_OFF_DOWNLOADS_STORAGE_KEY)).toEqual([
+      DOWNLOAD_ID
+    ])
+
+    // Chrome suspends the worker while the tab is hidden: module memory is
+    // gone, but the session registry survives.
+    resetHandedOffDownloadsMemoryForTests()
+    expect(await hasHandedOffDownload(DOWNLOAD_ID, fake.chrome)).toBe(true)
+    await expect(
+      handleHandoffCardMessage(
+        fake.chrome,
+        { type: HANDOFF_CARD_MESSAGE_TYPES.STATUS, downloadId: DOWNLOAD_ID },
+        own
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 'running',
+      completedBytes: 1_200_000
+    })
+
+    // The restarted worker still refuses ids it never handed off.
+    expect(await hasHandedOffDownload(OTHER_ID, fake.chrome)).toBe(false)
+    await expect(
+      handleHandoffCardMessage(
+        fake.chrome,
+        { type: HANDOFF_CARD_MESSAGE_TYPES.STATUS, downloadId: OTHER_ID },
+        own
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
+  })
+
+  it('loads only bounded, valid ids from session storage', async () => {
+    const fake = installFakeChrome()
+    const ids: string[] = []
+    for (let index = 0; index < MAX_HANDED_OFF_DOWNLOAD_IDS + 10; index += 1) {
+      ids.push(`f47ac10b-58cc-4372-a567-${String(index).padStart(12, '0')}`)
+    }
+    fake.sessionStore.set(HANDED_OFF_DOWNLOADS_STORAGE_KEY, [
+      'not-a-uuid',
+      42,
+      ...ids
+    ])
+
+    resetHandedOffDownloadsMemoryForTests()
+    expect(await hasHandedOffDownload(ids[ids.length - 1]!, fake.chrome)).toBe(
+      true
+    )
+    // The oldest entries beyond the bound are dropped and junk is ignored.
+    expect(await hasHandedOffDownload(ids[0]!, fake.chrome)).toBe(false)
+    expect(await hasHandedOffDownload('not-a-uuid', fake.chrome)).toBe(false)
   })
 })

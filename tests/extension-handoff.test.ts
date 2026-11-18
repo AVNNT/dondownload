@@ -931,7 +931,7 @@ describe('in-page hand-off card', () => {
       }
     ])
     // The service worker may now answer progress questions for this id only.
-    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
+    expect(await hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
   })
 
   it('never shows a card when hand-off notifications are off', async () => {
@@ -957,7 +957,7 @@ describe('in-page hand-off card', () => {
     )
     expect(fake.injected).toEqual([])
     expect(fake.cancelled).toEqual([])
-    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(false)
+    expect(await hasHandedOffDownload(DOWNLOAD_ID)).toBe(false)
   })
 
   it('keeps the hand-off result when the card cannot be injected', async () => {
@@ -1151,6 +1151,6 @@ describe('downloads are intercepted before the Save As dialog', () => {
         args: [{ downloadId: DOWNLOAD_ID, filename: 'report.zip' }]
       }
     ])
-    expect(hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
+    expect(await hasHandedOffDownload(DOWNLOAD_ID)).toBe(true)
   })
 })
