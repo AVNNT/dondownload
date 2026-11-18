@@ -72,6 +72,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# When this Windows PowerShell 5.1 script is started from PowerShell 7 (for
+# example `npm run` inside a pwsh session or a GitHub Actions pwsh step), it
+# inherits pwsh's PSModulePath and cannot autoload its own built-in modules
+# (Get-FileHash, ConvertTo-Json, ...). Rebuild the 5.1 default module path.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $modulePaths = @(
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'),
+        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+        (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules')
+    )
+    $env:PSModulePath = $modulePaths -join [System.IO.Path]::PathSeparator
+}
 # Invoke-WebRequest's progress bar makes the multi-megabyte vendor downloads
 # dramatically slower on Windows PowerShell 5.1.
 $ProgressPreference = 'SilentlyContinue'
