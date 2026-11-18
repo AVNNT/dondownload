@@ -38,7 +38,8 @@ import {
  * Safe application self-updater backed by GitHub Releases.
  *
  * Security properties:
- * - When `UPDATE_REPO` is null no request is made at all.
+ * - When no update source is configured (an explicitly null `repo`/`UPDATE_REPO`,
+ *   or a repository without a usable signing key) no request is made at all.
  * - Only the fixed GitHub API endpoint and HTTPS assets on github.com,
  *   objects.githubusercontent.com or release-assets.githubusercontent.com are
  *   requested. Every redirect hop is validated, no cookies or credentials are

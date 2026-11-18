@@ -7,6 +7,7 @@ const extensionDir = path.join(process.cwd(), 'extension')
 
 interface ExtensionManifest {
   manifest_version: number
+  version?: string
   minimum_chrome_version?: string
   browser_specific_settings?: {
     gecko?: {
@@ -39,6 +40,15 @@ async function readManifest(): Promise<ExtensionManifest> {
 }
 
 describe('browser extension manifest', () => {
+  it('ships the same version as the application', async () => {
+    const manifest = await readManifest()
+    const packageJson = JSON.parse(
+      await readFile(path.join(process.cwd(), 'package.json'), 'utf8')
+    ) as { version: string }
+    expect(manifest.version).toBe(packageJson.version)
+    expect(manifest.version).toBe('1.0.0')
+  })
+
   it('is Manifest V3 with the minimal manual-capture permissions plus HTTP(S) site access', async () => {
     const manifest = await readManifest()
     expect(manifest.manifest_version).toBe(3)

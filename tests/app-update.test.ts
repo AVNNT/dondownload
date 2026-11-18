@@ -1,5 +1,6 @@
 import {
   createHash,
+  createPublicKey,
   generateKeyPairSync,
   sign as signBytes
 } from 'node:crypto'
@@ -23,6 +24,11 @@ import {
   createAppUpdateChecker,
   type AppUpdateCheckerOptions
 } from '../src/main/appUpdate/checker'
+import {
+  UPDATE_REPO,
+  UPDATE_SIGNING_PUBLIC_KEY,
+  isValidUpdateRepo
+} from '../src/shared/release'
 import { openDownloadDatabase } from '../src/main/db/database'
 import type {
   UpdaterFetch,
@@ -188,7 +194,7 @@ function makeChecker(
 ) {
   return createAppUpdateChecker({
     userDataPath,
-    appVersion: '0.1.0',
+    appVersion: '1.0.0',
     repo: REPO,
     signingPublicKey: SIGNING_PUBLIC_KEY,
     ...overrides
@@ -198,6 +204,34 @@ function makeChecker(
 function sumsFor(bytes: Uint8Array, name: string): string {
   return `${sha256(bytes)}  ${name}\n`
 }
+
+describe('release configuration', () => {
+  it('targets the public DonDownload repository', () => {
+    expect(UPDATE_REPO).toEqual({ owner: 'AVNNT', repo: 'dondownload' })
+    expect(isValidUpdateRepo(UPDATE_REPO)).toBe(true)
+  })
+
+  it('ships a base64 SPKI DER Ed25519 update signing key', () => {
+    expect(typeof UPDATE_SIGNING_PUBLIC_KEY).toBe('string')
+    const key = createPublicKey({
+      key: Buffer.from(UPDATE_SIGNING_PUBLIC_KEY as string, 'base64'),
+      format: 'der',
+      type: 'spki'
+    })
+    expect(key.asymmetricKeyType).toBe('ed25519')
+  })
+
+  it('configures the default checker without a network request', async () => {
+    const checker = createAppUpdateChecker({
+      userDataPath: await makeTemp(),
+      appVersion: '1.0.0'
+    })
+    const state = checker.getState()
+    expect(state.configured).toBe(true)
+    expect(state.status).toBe('idle')
+    expect(state.message).toBeNull()
+  })
+})
 
 describe('semver handling', () => {
   it('normalises tags and compares prereleases as older', () => {
@@ -238,9 +272,9 @@ describe('app update checker', () => {
   it('ignores older, equal and prerelease releases', async () => {
     const dir = await makeTemp()
 
-    for (const tag of ['v0.0.9', 'v0.1.0', 'v0.1.0-beta.1']) {
+    for (const tag of ['v0.0.9', 'v1.0.0', 'v1.0.0-beta.1']) {
       const { fetchImpl, calls } = createFetch({
-        api: () => response(releaseJson('0.1.0', { tag }), {
+        api: () => response(releaseJson('1.0.0', { tag }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         })
       })
@@ -253,19 +287,19 @@ describe('app update checker', () => {
     const bytes = new TextEncoder().encode('installer')
     const { fetchImpl, calls } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () =>
         response(
-          sumsFor(bytes, 'DonDownload-0.2.0-x64-setup.exe')
+          sumsFor(bytes, 'DonDownload-1.1.0-x64-setup.exe')
         ),
       installer: () => response(bytes)
     })
     const checker = makeChecker(dir, { fetchImpl })
     const state = await checker.check({ force: true })
     expect(state.status).toBe('ready')
-    expect(state.latestVersion).toBe('0.2.0')
+    expect(state.latestVersion).toBe('1.1.0')
     expect(calls.some((call) => call.url.includes('setup.exe'))).toBe(true)
   })
 
@@ -273,7 +307,7 @@ describe('app update checker', () => {
     const dir = await makeTemp()
     const { fetchImpl, calls } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { prerelease: true }), {
+        response(releaseJson('1.1.0', { prerelease: true }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         })
     })
@@ -288,7 +322,7 @@ describe('app update checker', () => {
     const { fetchImpl } = createFetch({
       api: () =>
         response(
-          releaseJson('0.2.0', { includeInstaller: false }),
+          releaseJson('1.1.0', { includeInstaller: false }),
           { url: 'https://api.github.com/repos/acme/dondownload/releases/latest' }
         )
     })
@@ -302,14 +336,14 @@ describe('app update checker', () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('installer')
     const installerUrl =
-      'https://github.com/acme/dondownload/releases/download/v0.2.0/DonDownload-0.2.0-x64-setup.exe'
+      'https://github.com/acme/dondownload/releases/download/v1.1.0/DonDownload-1.1.0-x64-setup.exe'
     const { fetchImpl, calls } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () =>
-        response(sumsFor(bytes, 'DonDownload-0.2.0-x64-setup.exe')),
+        response(sumsFor(bytes, 'DonDownload-1.1.0-x64-setup.exe')),
       installer: () => redirect('https://evil.example/installer.exe')
     })
     const checker = makeChecker(dir, { fetchImpl })
@@ -326,7 +360,7 @@ describe('app update checker', () => {
     const capped = createFetch({
       api: () =>
         response(
-          releaseJson('0.2.0', {
+          releaseJson('1.1.0', {
             installerSize: MAX_APP_UPDATE_BYTES + 1
           }),
           { url: 'https://api.github.com/repos/acme/dondownload/releases/latest' }
@@ -347,14 +381,14 @@ describe('app update checker', () => {
     const mismatch = createFetch({
       api: () =>
         response(
-          releaseJson('0.3.0', {
+          releaseJson('1.2.0', {
             installerBytes: bytes,
             installerSize: bytes.byteLength + 1
           }),
           { url: 'https://api.github.com/repos/acme/dondownload/releases/latest' }
         ),
       sums: () =>
-        response(sumsFor(bytes, 'DonDownload-0.3.0-x64-setup.exe')),
+        response(sumsFor(bytes, 'DonDownload-1.2.0-x64-setup.exe')),
       installer: () => response(bytes)
     })
     const mismatchState = await makeChecker(await makeTemp(), {
@@ -369,12 +403,12 @@ describe('app update checker', () => {
     const bytes = new TextEncoder().encode('tampered')
     const { fetchImpl } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () =>
         response(
-          `${'0'.repeat(64)}  DonDownload-0.2.0-x64-setup.exe\n`
+          `${'0'.repeat(64)}  DonDownload-1.1.0-x64-setup.exe\n`
         ),
       installer: () => response(bytes)
     })
@@ -384,7 +418,7 @@ describe('app update checker', () => {
     expect(state.message).toMatch(/SHA-256/i)
     expect(state.canInstall).toBe(false)
 
-    const updateDir = path.join(dir, 'updates', '0.2.0')
+    const updateDir = path.join(dir, 'updates', '1.1.0')
     const entries = await readdir(updateDir).catch(() => [] as string[])
     expect(entries.filter((name) => name.includes('setup.exe'))).toHaveLength(0)
   })
@@ -392,11 +426,11 @@ describe('app update checker', () => {
   it('downloads, verifies and exposes a ready installer', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('verified installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const { fetchImpl, calls } = createFetch({
       api: () =>
         response(
-          releaseJson('0.2.0', {
+          releaseJson('1.1.0', {
             installerBytes: bytes,
             body: 'Fixes and improvements.\nSecond line.'
           }),
@@ -411,7 +445,7 @@ describe('app update checker', () => {
     expect(state.canInstall).toBe(true)
     expect(state.releaseNotes).toBe('Fixes and improvements.\nSecond line.')
 
-    const filePath = path.join(dir, 'updates', '0.2.0', name)
+    const filePath = path.join(dir, 'updates', '1.1.0', name)
     expect(await readFile(filePath)).toEqual(Buffer.from(bytes))
 
     for (const call of calls) {
@@ -422,17 +456,17 @@ describe('app update checker', () => {
       expect(init.redirect).toBe('manual')
       expect(init.headers.Cookie).toBeUndefined()
       expect(init.headers.Authorization).toBeUndefined()
-      expect(init.headers['User-Agent']).toBe('DonDownload/0.1.0')
+      expect(init.headers['User-Agent']).toBe('DonDownload/1.0.0')
     }
   })
 
   it('verifies the Ed25519 signature before trusting the checksum file', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('signed installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const { fetchImpl, calls } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () => response(sumsFor(bytes, name)),
@@ -453,12 +487,12 @@ describe('app update checker', () => {
   it('refuses a checksum file whose signature was made over different bytes', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const original = sumsFor(bytes, name)
     const tampered = `${'0'.repeat(64)}  ${name}\n`
     const { fetchImpl, calls } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () => response(tampered),
@@ -474,16 +508,16 @@ describe('app update checker', () => {
   it('refuses a missing, malformed, oversized or wrongly signed signature', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const api = () =>
-      response(releaseJson('0.2.0', { installerBytes: bytes }), {
+      response(releaseJson('1.1.0', { installerBytes: bytes }), {
         url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
       })
 
     const missing = createFetch({
       api: () =>
         response(
-          releaseJson('0.2.0', {
+          releaseJson('1.1.0', {
             installerBytes: bytes,
             includeSignature: false
           }),
@@ -566,13 +600,13 @@ describe('app update checker', () => {
   it('accepts a base64 SPKI DER public key', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const derKey = SIGNING_KEYS.publicKey
       .export({ type: 'spki', format: 'der' })
       .toString('base64')
     const { fetchImpl } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () => response(sumsFor(bytes, name)),
@@ -588,10 +622,10 @@ describe('app update checker', () => {
   it('refuses to install while a job is active, then verifies and launches', async () => {
     const dir = await makeTemp()
     const bytes = new TextEncoder().encode('verified installer')
-    const name = 'DonDownload-0.2.0-x64-setup.exe'
+    const name = 'DonDownload-1.1.0-x64-setup.exe'
     const { fetchImpl } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () => response(sumsFor(bytes, name)),
@@ -619,7 +653,7 @@ describe('app update checker', () => {
     expect(installed.status).toBe('installing')
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(spawn).toHaveBeenCalledWith(
-      path.join(dir, 'updates', '0.2.0', name),
+      path.join(dir, 'updates', '1.1.0', name),
       []
     )
     expect(quit).toHaveBeenCalledTimes(1)
@@ -651,11 +685,11 @@ describe('app update checker', () => {
     const bytes = new TextEncoder().encode('installer')
     const { fetchImpl: laterFetch } = createFetch({
       api: () =>
-        response(releaseJson('0.2.0', { installerBytes: bytes }), {
+        response(releaseJson('1.1.0', { installerBytes: bytes }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         }),
       sums: () =>
-        response(sumsFor(bytes, 'DonDownload-0.2.0-x64-setup.exe')),
+        response(sumsFor(bytes, 'DonDownload-1.1.0-x64-setup.exe')),
       installer: () => response(bytes)
     })
     const oldStore = {

@@ -1,21 +1,30 @@
 /**
  * GitHub release source for application self-updates.
  *
- * `UPDATE_REPO` stays null until DonDownload has a public repository with
- * signed/checksummed release assets. While it is null every update UI reports
- * "Update source not configured" and the main process never makes a request.
+ * `UPDATE_REPO` points at the public DonDownload repository. Every release
+ * published there must carry a signed `SHA256SUMS.txt`, so the updater can
+ * authenticate the installer before downloading it. `scripts/release.mjs`
+ * builds, checksums, signs and (with `--publish`) drafts that release locally.
  */
-export const UPDATE_REPO: { owner: string; repo: string } | null = null
+export const UPDATE_REPO: { owner: string; repo: string } | null = {
+  owner: 'AVNNT',
+  repo: 'dondownload'
+}
 
 /**
  * Ed25519 public key used to authenticate `SHA256SUMS.txt` before any hash in
- * it is trusted. Paste either an SPKI PEM block or its base64 SPKI DER here.
+ * it is trusted. The value is the base64 SPKI DER form, but an SPKI PEM block
+ * is accepted too.
  *
- * Generate a key pair outside this repository with
- * `node scripts/generate-update-signing-key.mjs <path>`. While this is null
- * every configured update source refuses to offer an update.
+ * The matching private key is generated outside this repository with
+ * `node scripts/generate-update-signing-key.mjs <path>` and kept at
+ * `%USERPROFILE%\.dondownload-release\update-signing-key.pem` (or the path in
+ * `DONDOWNLOAD_UPDATE_SIGNING_KEY`). It must be backed up: losing it prevents
+ * every future authenticated update. While this is null the updater refuses to
+ * offer an update and reports "Update signing key not configured".
  */
-export const UPDATE_SIGNING_PUBLIC_KEY: string | null = null
+export const UPDATE_SIGNING_PUBLIC_KEY: string | null =
+  'MCowBQYDK2VwAyEA9fLGclrgcB1eHPWQiSTAlTbUdZyTiOHZ6ttF6UCbevY='
 export const UPDATE_SIGNING_KEY_NOT_CONFIGURED =
   'Update signing key not configured'
 
