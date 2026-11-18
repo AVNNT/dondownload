@@ -110,11 +110,12 @@ added by this baseline.
      `DONDOWNLOAD_YTDLP_PATH`, `DONDOWNLOAD_FFMPEG_PATH`, or the matching
      archive override `DONDOWNLOAD_ARIA2_ZIP_PATH`,
      `DONDOWNLOAD_YTDLP_ZIP_PATH`, `DONDOWNLOAD_FFMPEG_ZIP_PATH`;
-  2. the documented local installation path, then a `PATH` lookup;
+  2. the documented local installation path;
   3. a verified release archive cached below
-     `%LOCALAPPDATA%\DonDownload\vendor`;
-  4. the pinned official upstream release archive, downloaded from the exact
-     URL below and accepted only when its SHA-256 matches the pinned value.
+     `%LOCALAPPDATA%\DonDownload\vendor`, or the pinned official upstream
+     release archive, downloaded from the exact URL below and accepted only
+     when its SHA-256 matches the pinned value;
+  4. a `PATH` lookup, only when the verified archive cannot be obtained.
 - Uses these pinned download sources:
 
   | Tool | Upstream release asset | SHA-256 |
@@ -131,8 +132,19 @@ added by this baseline.
   extracted. Every archive entry name is validated for zip-slip safety and
   size-capped; the FFmpeg archive is 49 entries and only `bin/ffmpeg.exe` is
   written.
+- Pins the extracted aria2 executable itself: `build/vendor/aria2/aria2c.exe`
+  must be `be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2`
+  (5,649,408 bytes) whatever source supplied it. Any other bytes fail the
+  script. The hash cross-check also proves the pinned archive SHA-256 above.
+- Refuses any source below `\Chocolatey\bin\` or `\scoop\shims\`: those are
+  forwarding shims that answer `--version` on the machine that installed them
+  but break once copied into an installer.
 - Executes the extracted or local candidate with `--version`/`-version` and
   requires an exact version match with the pinned version.
+- Copies the staged executable into a fresh empty temporary directory and runs
+  its version command there, so a shim, a missing DLL or a side-by-side payload
+  fails the build instead of shipping. The yt-dlp one-folder build is copied
+  with its `_internal\` directory because it cannot start without it.
 - Refuses to continue when a tool is missing, a version differs, a license or
   notice file is missing, or the staging directory is outside the repository's
   ignored `build/` directory.
@@ -146,10 +158,11 @@ added by this baseline.
   notice text and, when the tool came from an archive, the pinned archive name,
   URL, SHA-256, size and extracted entry.
 
-`-ForceArchiveDownload` skips the local executable lookups and the
-`DONDOWNLOAD_*_ZIP_PATH` overrides so the cache, download and checksum path can
-be verified on a machine that also has the tools installed. CI runners do not
-need it: they have no local installations.
+`-ForceArchiveDownload` skips the local executable lookups, the `PATH` fallback
+and the `DONDOWNLOAD_*_ZIP_PATH` overrides so the cache, download and checksum
+path can be verified on a machine that also has the tools installed. CI runners
+do not need it: the verified archive is already preferred and the runner has no
+documented local installation.
 
 The manifest is deterministic for the same inputs: it has no timestamp and the
 tool order is fixed. The staged executables and manifest are git-ignored. They

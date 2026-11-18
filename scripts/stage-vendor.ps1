@@ -12,17 +12,28 @@ Each tool is resolved from the first of these that exists:
 
   1. an explicit DONDOWNLOAD_*_PATH executable override, or the matching
      DONDOWNLOAD_*_ZIP_PATH release-archive override;
-  2. a documented local installation path, then a PATH lookup;
+  2. a documented local installation path;
   3. a verified release archive cached below
-     %LOCALAPPDATA%\DonDownload\vendor;
-  4. the pinned official upstream release archive, downloaded from the exact
-     URL hard-coded below and accepted only when its SHA-256 matches the pinned
-     value.
+     %LOCALAPPDATA%\DonDownload\vendor, or the pinned official upstream release
+     archive, downloaded from the exact URL hard-coded below and accepted only
+     when its SHA-256 matches the pinned value;
+  4. a PATH lookup, only when the verified archive above cannot be obtained.
 
-Step 4 is what makes the installer build self-contained: a clean Windows
+Step 3 is what makes the installer build self-contained: a clean Windows
 machine or a GitHub Actions runner needs only Node.js, npm and the .NET
 Framework compiler. Only the pinned URLs below are ever downloaded, and nothing
 is extracted before its checksum matches.
+
+The real aria2 executable is also pinned by SHA-256 (ExpectedSha256 below), so
+any substituted binary fails the script wherever it came from. This matters
+because package managers install forwarding shims, not the program: a Chocolatey
+shim at C:\ProgramData\Chocolatey\bin\aria2c.exe answers --version on the
+machine that installed it, but breaks as soon as it is copied into the
+installer. Paths below \Chocolatey\bin\ or \scoop\shims\ are therefore rejected
+outright, and after staging every executable is copied into a fresh empty
+temporary directory and run there, so a shim or a missing DLL fails the build
+instead of shipping. (The yt-dlp one-folder build is copied with its
+`_internal\` payload because the executable cannot start without it.)
 
 Only aria2, yt-dlp and FFmpeg are staged. FFprobe and Deno are not: the app
 reads stream headers with FFmpeg itself and downloads Deno on demand for YouTube
@@ -127,15 +138,22 @@ $tools = @(
         KnownPaths           = @(
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\aria2.aria2_Microsoft.Winget.Source_8wekyb3d8bbwe\aria2-1.37.0-win-64bit-build1\aria2c.exe'
         )
-        # Official Windows release asset for the pinned version. The checksum
-        # below was computed from this exact asset; there is no other download
-        # source for aria2.
+        # Official Windows release asset for the pinned version. The archive
+        # SHA-256 was computed from this exact asset, and the extracted
+        # aria2c.exe is cross-checked against ExpectedSha256 (5,649,408 bytes),
+        # which is what proves the archive pin is right. There is no other
+        # download source for aria2.
         ArchiveEnvOverride   = 'DONDOWNLOAD_ARIA2_ZIP_PATH'
         CacheFileName        = 'aria2-1.37.0-win-64bit-build1.zip'
         ArchiveFileName      = 'aria2-1.37.0-win-64bit-build1.zip'
         ArchiveUrl           = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
         ArchiveSha256        = '67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288'
         ArchiveEntry         = 'aria2-1.37.0-win-64bit-build1/aria2c.exe'
+        # The real 1.37.0 win-64bit-build1 aria2c.exe. Any other bytes are
+        # rejected: release 1.1.0 shipped the 392,704-byte Chocolatey shim that
+        # a PATH lookup found on the CI runner, and aria2 could not start once
+        # installed. GPL-2.0-or-later is unchanged.
+        ExpectedSha256       = 'be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2'
         License              = 'GPL-2.0-or-later'
         LicenseFiles         = @(
             'third-party\licenses\aria2-COPYING.txt',
@@ -254,11 +272,35 @@ function Resolve-ConfiguredPath {
     return [System.IO.Path]::GetFullPath((Join-Path $root $raw))
 }
 
+# Package managers put a small forwarding executable on PATH instead of the
+# real program: C:\ProgramData\Chocolatey\bin\aria2c.exe and
+# %USERPROFILE%\scoop\shims\aria2c.exe are shims that answer --version only
+# while their target installation still exists. They cannot be shipped, so a
+# source below either directory is refused even though it looks like a tool.
+function Assert-NotShimPath {
+    param(
+        [pscustomobject]$Tool,
+        [string]$Path
+    )
+
+    $normalized = ([System.IO.Path]::GetFullPath($Path)).Replace('/', '\').ToLowerInvariant()
+    foreach ($marker in @('\chocolatey\bin\', '\scoop\shims\')) {
+        if ($normalized.Contains($marker)) {
+            throw "$($Tool.Name): refusing to stage a package-manager shim: $Path. Point $($Tool.EnvOverride) at the real executable, or let the script download the pinned verified archive."
+        }
+    }
+}
+
 # Returns a verified local executable, or $null when this machine has no usable
 # local copy. A DONDOWNLOAD_*_PATH override that points at a missing file still
-# fails loudly; only the documented fallback paths may be absent.
+# fails loudly; only the documented fallback paths may be absent. PATH is
+# searched only when -IncludePathLookup is set, so a verified download always
+# wins over whatever happens to be installed.
 function Find-ToolSource {
-    param([pscustomobject]$Tool)
+    param(
+        [pscustomobject]$Tool,
+        [switch]$IncludePathLookup
+    )
 
     $override = [Environment]::GetEnvironmentVariable($Tool.EnvOverride)
     if (-not [string]::IsNullOrWhiteSpace($override)) {
@@ -266,6 +308,7 @@ function Find-ToolSource {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             throw "$($Tool.Name): $($Tool.EnvOverride) points to a missing file: $candidate"
         }
+        Assert-NotShimPath -Tool $Tool -Path $candidate
         return [pscustomobject]@{
             Path   = $candidate
             Kind   = 'environment-override'
@@ -275,18 +318,23 @@ function Find-ToolSource {
 
     foreach ($candidate in $Tool.KnownPaths) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            Assert-NotShimPath -Tool $Tool -Path $resolved
             return [pscustomobject]@{
-                Path   = [System.IO.Path]::GetFullPath($candidate)
+                Path   = $resolved
                 Kind   = 'verified-local-path'
                 Origin = 'documented local installation path'
             }
         }
     }
 
+    if (-not $IncludePathLookup) { return $null }
+
     $command = Get-Command $Tool.PathCommand -ErrorAction SilentlyContinue
     if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace($command.Source)) {
         $candidate = [System.IO.Path]::GetFullPath($command.Source)
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            Assert-NotShimPath -Tool $Tool -Path $candidate
             return [pscustomobject]@{
                 Path   = $candidate
                 Kind   = 'path-lookup'
@@ -339,6 +387,70 @@ function Assert-Sha256 {
         throw "$Description checksum mismatch. Expected $Expected, got $actual for $Path."
     }
     return $actual
+}
+
+# Tools without an ExpectedSha256 pin (yt-dlp and FFmpeg) are accepted on their
+# version plus the archive checksum; aria2 is additionally pinned per file.
+function Assert-ExpectedSha256 {
+    param(
+        [pscustomobject]$Tool,
+        [string]$Path,
+        [string]$Stage
+    )
+
+    if (-not (Test-ToolProperty -Tool $Tool -Name 'ExpectedSha256')) { return }
+    Assert-Sha256 -Path $Path -Expected $Tool.ExpectedSha256 -Description "$($Tool.Name) $Stage" | Out-Null
+}
+
+# Copies the staged tool into a fresh, empty directory and runs its version
+# command there. A binary that only works next to its original installation (a
+# package-manager shim, a missing DLL, a side-by-side payload) fails here
+# instead of in the installer. The yt-dlp one-folder build cannot start without
+# its _internal payload, so that layout is copied whole; it is still isolated
+# from every installed copy on this machine.
+function Test-StagedExecutable {
+    param(
+        [pscustomobject]$Tool,
+        [string]$StagedPath
+    )
+
+    $probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        'dondownload-verify-{0}-{1}' -f $Tool.Name, [guid]::NewGuid().ToString('N')
+    )
+    $probeDirectory = Join-Path $probeRoot 'bin'
+    New-Item -ItemType Directory -Force -Path $probeDirectory | Out-Null
+    try {
+        $isOnedir = ($Tool.PSObject.Properties.Name -contains 'Layout') -and $Tool.Layout -eq 'onedir'
+        if ($isOnedir) {
+            Copy-Item -Path (Join-Path (Split-Path -Parent $StagedPath) '*') -Destination $probeDirectory -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $StagedPath -Destination (Join-Path $probeDirectory $Tool.Executable) -Force
+        }
+        $probeExe = Join-Path $probeDirectory $Tool.Executable
+        if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
+            throw "$($Tool.Name): the isolated staging probe did not contain $($Tool.Executable)."
+        }
+
+        Push-Location $probeDirectory
+        try {
+            $output = & $probeExe @($Tool.VersionArguments) 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $text = ($output | Out-String)
+        if ($exitCode -ne 0) {
+            throw "$($Tool.Name): the staged copy does not run outside its install directory (exit code $exitCode). This usually means a package-manager shim or a missing DLL was staged. Output: $($text.Trim())"
+        }
+        if (-not [regex]::Match($text, $Tool.VersionPattern).Success) {
+            throw "$($Tool.Name): the staged copy does not run outside its install directory. Output: $($text.Trim())"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $probeRoot) {
+            Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Expand-VerifiedZip {
@@ -517,6 +629,7 @@ function Resolve-YtdlpOnedir {
         foreach ($candidate in $exeCandidates) {
             $exePath = [System.IO.Path]::GetFullPath($candidate)
             if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) { continue }
+            Assert-NotShimPath -Tool $Tool -Path $exePath
             $directory = Split-Path -Parent $exePath
             if (Test-Path -LiteralPath (Join-Path $directory '_internal') -PathType Container) {
                 return [pscustomobject]@{
@@ -599,6 +712,10 @@ foreach ($tool in $tools) {
             if ($sourceHash -ne $stagedHash) {
                 throw "$($tool.Name): staged copy hash does not match the source hash."
             }
+            Assert-ExpectedSha256 -Tool $tool -Path $target -Stage 'staged executable'
+
+            # Prove the staged bytes work with nothing else around them.
+            Test-StagedExecutable -Tool $tool -StagedPath $target
 
             $item = Get-Item -LiteralPath $target
             $stagedFiles = @(Get-ChildItem -LiteralPath $targetDirectory -Recurse -File)
@@ -625,8 +742,10 @@ foreach ($tool in $tools) {
             }
         }
     } else {
-        # Single-executable tool: an explicit archive override wins, then a local
-        # executable, then the verified cache or the pinned upstream archive.
+        # Single-executable tool: an explicit archive override wins, then a
+        # documented local installation, then the verified cache or the pinned
+        # upstream archive. PATH is the very last resort, after the verified
+        # download has failed, because it is where package-manager shims live.
         $archive = $null
         $source = $null
         if ($ForceArchiveDownload) {
@@ -638,7 +757,16 @@ foreach ($tool in $tools) {
             } else {
                 $source = Find-ToolSource -Tool $tool
                 if ($null -eq $source) {
-                    $archive = Resolve-ToolArchive -Tool $tool
+                    try {
+                        $archive = Resolve-ToolArchive -Tool $tool
+                    } catch {
+                        # Offline machine with a real installation: keep the PATH
+                        # fallback, but rethrow the original failure if it has
+                        # nothing usable either.
+                        $archiveFailure = $_
+                        $source = Find-ToolSource -Tool $tool -IncludePathLookup
+                        if ($null -eq $source) { throw $archiveFailure }
+                    }
                 }
             }
         }
@@ -664,6 +792,9 @@ foreach ($tool in $tools) {
                 $sourceOrigin = $archive.Origin
             }
 
+            # Pin the bytes before they are copied anywhere: this rejects a shim,
+            # a truncated download and a different build from every source.
+            Assert-ExpectedSha256 -Tool $tool -Path $sourceExe -Stage 'source executable'
             $version = Get-ToolVersion -Tool $tool -Path $sourceExe
 
             $target = Join-Path $OutputDirectory $tool.TargetRelativePath
@@ -676,6 +807,10 @@ foreach ($tool in $tools) {
             if ($sourceHash -ne $stagedHash) {
                 throw "$($tool.Name): staged copy hash does not match the source hash."
             }
+            Assert-ExpectedSha256 -Tool $tool -Path $target -Stage 'staged executable'
+
+            # Prove the staged bytes work with nothing else around them.
+            Test-StagedExecutable -Tool $tool -StagedPath $target
 
             $item = Get-Item -LiteralPath $target
         } finally {

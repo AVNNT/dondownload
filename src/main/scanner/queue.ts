@@ -214,7 +214,7 @@ function isGofileTarget(target: ResolvedScanTarget): boolean {
  * The app's own product token, like the bounded page fetch. A direct stream is
  * downloaded by the media engine, which adds its own defaults on top.
  */
-const SCAN_MEDIA_USER_AGENT = 'DonDownload/1.1.0'
+const SCAN_MEDIA_USER_AGENT = 'DonDownload/1.2.0'
 
 const MEDIA_EXTENSION = /\.(?:mp4|webm|mkv|mov|m4v|m3u8|mpd|ts)$/i
 
