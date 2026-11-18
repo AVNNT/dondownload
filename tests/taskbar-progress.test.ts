@@ -8,6 +8,7 @@ import {
   TASKBAR_PROGRESS_IDLE,
   type TaskbarActiveProgress,
   type TaskbarProgressReader,
+  type TaskbarWindow,
   type TaskbarMediaJob,
   type TaskbarDownload
 } from '../src/main/taskbar/progress'
@@ -195,11 +196,14 @@ describe('createTaskbarProgress', () => {
         calls.push(value)
       }
     }
+    // Mirrors `mainWindow`: the app destroys it in the tray and creates a new
+    // one when the window is shown again.
+    let current: typeof window | null = window
     let clock = 0
     const timers: Array<{ at: number; callback: () => void }> = []
     const controller = createTaskbarProgress({
       enabled: options.enabled ?? true,
-      getWindow: () => window,
+      getWindow: () => current,
       ...(options.read === undefined ? {} : { read: options.read }),
       now: () => clock,
       setTimer: (callback, delay) => {
@@ -221,7 +225,30 @@ describe('createTaskbarProgress', () => {
         }
       }
     }
-    return { calls, controller, advance, window }
+    /** Destroy the current window (hiding to the tray) and forget it. */
+    const destroyWindow = (): void => {
+      current = null
+    }
+    /** Create the replacement window (showing it again). */
+    const createWindow = (): typeof window => {
+      const next = {
+        isDestroyed: () => false,
+        setProgressBar: (value: number) => {
+          calls.push(value)
+        }
+      }
+      current = next
+      return next
+    }
+    return {
+      calls,
+      controller,
+      advance,
+      window,
+      destroyWindow,
+      createWindow,
+      currentWindow: () => current
+    }
   }
 
   it('applies the first value immediately and throttles the rest', () => {
@@ -352,15 +379,134 @@ describe('createTaskbarProgress', () => {
     ).not.toThrow()
   })
 
+  describe('after the window is recreated', () => {
+    function aggregate(completedBytes: number, totalBytes: number) {
+      return {
+        activeCount: 1,
+        sizedCount: 1,
+        completedBytes,
+        totalBytes
+      }
+    }
+
+    it('re-applies the current value to the new window immediately', () => {
+      const read: TaskbarProgressReader = {
+        downloads: () => aggregate(250, 1_000)
+      }
+      const { controller, calls, destroyWindow, createWindow } = harness({
+        read
+      })
+
+      controller.refresh()
+      expect(calls).toEqual([0.25])
+
+      // Hide to the tray: the controller keeps running, the window goes away.
+      destroyWindow()
+      controller.refresh()
+      expect(calls).toEqual([0.25])
+
+      // Show again: a new window with an empty taskbar bar must be re-applied
+      // even though the value did not change.
+      createWindow()
+      controller.sync()
+      expect(calls).toEqual([0.25, 0.25])
+    })
+
+    it('applies only to the new window and never the destroyed one', () => {
+      const oldCalls: number[] = []
+      const newCalls: number[] = []
+      let current: TaskbarWindow | null = {
+        isDestroyed: () => false,
+        setProgressBar: (value) => oldCalls.push(value)
+      }
+      const destroyed = current
+      const controller = createTaskbarProgress({
+        getWindow: () => current,
+        read: { downloads: () => aggregate(500, 1_000) }
+      })
+      controller.refresh()
+      expect(oldCalls).toEqual([0.5])
+
+      // The window is destroyed for real: any call would throw.
+      destroyed.isDestroyed = () => true
+      destroyed.setProgressBar = () => {
+        throw new Error('Object has been destroyed')
+      }
+      current = null
+      expect(() => controller.sync()).not.toThrow()
+
+      current = {
+        isDestroyed: () => false,
+        setProgressBar: (value) => newCalls.push(value)
+      }
+      controller.sync()
+      expect(newCalls).toEqual([0.5])
+      expect(oldCalls).toEqual([0.5])
+    })
+
+    it('does not wait for the throttle window on a recreated window', () => {
+      const { controller, calls, advance, destroyWindow, createWindow } =
+        harness({
+          read: { downloads: () => aggregate(100, 1_000) }
+        })
+      controller.refresh()
+      advance(100)
+      controller.refresh()
+      // Coalesced: still inside the 500 ms throttle.
+      expect(calls).toEqual([0.1])
+
+      destroyWindow()
+      createWindow()
+      controller.sync()
+      expect(calls).toEqual([0.1, 0.1])
+      // `sync()` also discards the pending timer, so no duplicate later.
+      advance(1_000)
+      expect(calls).toEqual([0.1, 0.1])
+    })
+
+    it('drops the cache when no window exists yet', () => {
+      const { controller, calls, destroyWindow, createWindow } = harness({
+        read: { downloads: () => aggregate(100, 1_000) }
+      })
+      controller.refresh()
+      expect(calls).toEqual([0.1])
+
+      destroyWindow()
+      controller.sync()
+      expect(calls).toEqual([0.1])
+
+      createWindow()
+      controller.refresh()
+      expect(calls).toEqual([0.1, 0.1])
+    })
+
+    it('syncs a recreated window back to idle when nothing is active', () => {
+      let active = aggregate(100, 1_000)
+      const { controller, calls, destroyWindow, createWindow } = harness({
+        read: { downloads: () => active }
+      })
+      controller.refresh()
+      expect(calls).toEqual([0.1])
+
+      // The last transfer finished while the window was gone.
+      destroyWindow()
+      active = TASKBAR_ACTIVE_PROGRESS_EMPTY
+      createWindow()
+      controller.sync()
+      expect(calls).toEqual([0.1, -1])
+    })
+  })
+
   it('uses real timers by default', () => {
     vi.useFakeTimers()
     try {
       const calls: number[] = []
+      const window = {
+        isDestroyed: () => false,
+        setProgressBar: (value: number) => calls.push(value)
+      }
       const controller = createTaskbarProgress({
-        getWindow: () => ({
-          isDestroyed: () => false,
-          setProgressBar: (value: number) => calls.push(value)
-        })
+        getWindow: () => window
       })
       controller.update({ downloads: [download({ completedBytes: 100 })] })
       controller.update({ downloads: [download({ completedBytes: 400 })] })

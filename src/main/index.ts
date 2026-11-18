@@ -428,6 +428,9 @@ function showMainWindow(): void {
     // A destroyed window cannot be shown again. The fresh renderer loads from
     // scratch, and `ready-to-show` shows it as soon as it has painted.
     mainWindow = openMainWindow()
+    // The new window's taskbar bar is empty: re-apply the current aggregate
+    // right away (a download or media job may still be running while hidden).
+    taskbarProgress?.sync()
     const zoomPercent =
       desktopSettingsManager?.getSettings().interfaceSizePercent
     if (zoomPercent !== undefined) applyInterfaceZoom(zoomPercent)
