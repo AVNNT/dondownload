@@ -170,11 +170,21 @@ function runChecked(command, args, options = {}) {
 
 function runInteractive(command, args, options = {}) {
   log(`$ ${command} ${args.join(' ')}`)
-  const result = spawnSync(command, args, {
-    cwd: repositoryRoot,
-    stdio: 'inherit',
-    ...options
-  })
+  // Node refuses to spawn .cmd files without a shell (CVE-2024-27980). Callers
+  // pass fixed strings only, so a single shell command line is safe here.
+  const viaShell = command.endsWith('.cmd')
+  const result = viaShell
+    ? spawnSync([command, ...args].join(' '), {
+        cwd: repositoryRoot,
+        stdio: 'inherit',
+        shell: true,
+        ...options
+      })
+    : spawnSync(command, args, {
+        cwd: repositoryRoot,
+        stdio: 'inherit',
+        ...options
+      })
   if (result.error) {
     fail(`could not run ${command}: ${result.error.message}`)
   }
