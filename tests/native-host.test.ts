@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, copyFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
@@ -149,10 +149,10 @@ function jsonRespond(
 
 function runHost(
   frames: Buffer[],
-  options: { args?: string[]; env?: Record<string, string>; timeoutMs?: number } = {}
+  options: { exe?: string; args?: string[]; env?: Record<string, string>; timeoutMs?: number } = {}
 ): Promise<HostRun> {
   return new Promise((resolve, reject) => {
-    const child = spawn(hostExecutable, options.args ?? [], {
+    const child = spawn(options.exe ?? hostExecutable, options.args ?? [], {
       windowsHide: true,
       env: { ...process.env, ...options.env }
     })
@@ -609,6 +609,7 @@ describeWindows('Windows native messaging host', () => {
     // stale endpoint left by a crash.
     const statePath = await writeState(dir, { port: 1, token: 'a'.repeat(64) })
 
+    const startedAt = Date.now()
     const run = await runHost(
       [frame(JSON.stringify({ type: 'queue-download', url: 'https://example.com/a' }))],
       { env: { DONDOWNLOAD_BRIDGE_STATE: statePath } }
@@ -622,6 +623,53 @@ describeWindows('Windows native messaging host', () => {
     expect(responses[0]?.ok).toBe(false)
     expect(responses[0]?.error.code).toBe('APP_NOT_RUNNING')
     expect(responses[0]?.error.message).toMatch(/not running|unavailable/i)
+    // A development layout has no DonDownload.exe two directories above the
+    // host, so the host must not wait for a wake it cannot perform.
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+  })
+
+  it('starts the packaged app once and retries the bridge until it answers', async () => {
+    const app = await startFakeApp()
+    const dir = await makeTempDir()
+    const installDir = path.join(dir, 'install')
+    const nativeDir = path.join(installDir, 'resources', 'native')
+    await mkdir(nativeDir, { recursive: true })
+
+    // The packaged layout: <install>\resources\native\<host> and
+    // <install>\DonDownload.exe. The stand-in app executable is a copy of the
+    // host itself, so starting it is harmless and it writes only to stderr.
+    const hostCopy = path.join(nativeDir, 'dondownload-native-host.exe')
+    await copyFile(hostExecutable, hostCopy)
+    await copyFile(hostExecutable, path.join(installDir, 'DonDownload.exe'))
+
+    // The bridge state file only exists while the app runs, so it appears while
+    // the host is already retrying. The host must re-read it on every attempt.
+    const statePath = path.join(dir, 'native-bridge.json')
+    const appData = path.join(dir, 'appdata')
+    await mkdir(appData, { recursive: true })
+    const writeStateLater = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      await writeState(dir, { port: app.port, token: app.token })
+    })()
+
+    const startedAt = Date.now()
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'queue-download', url: 'https://example.com/a' }))],
+      {
+        exe: hostCopy,
+        env: { APPDATA: appData, DONDOWNLOAD_BRIDGE_STATE: statePath },
+        timeoutMs: 20_000
+      }
+    )
+    await writeStateLater
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([{ ok: true, accepted: true }])
+    expect(app.requests).toHaveLength(1)
+    expect(app.requests[0]?.url).toBe('/queue-download')
+    // The answer arrives only after the wake retry loop has waited for the
+    // state file, never on the first prompt failure.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_000)
   })
 
   it('reports failure when no endpoint state exists', async () => {

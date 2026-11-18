@@ -965,13 +965,15 @@ src/shared/               Types, IPC channels, validation, format, policy,
 extension/                Helium/Chrome/Edge MV3 popup, context menu, native client
                            and opt-in progressive playback capture overlay
 native/NativeHost.cs      C# native messaging host source
-scripts/                  Native host build and current-user registration
+native/TrayStub.cs        C# WinForms tray stub source (idle-app tray owner)
+scripts/                  Native host/tray stub build and current-user registration
 tests/                    Vitest unit tests, bridge/host tests and optional
                           aria2 integration test
 ```
 
-The built `native/dondownload-native-host.exe` is a local build artifact and is
-git-ignored; compile it with `npm run build:native-host`.
+The built `native/dondownload-native-host.exe` and
+`native/dondownload-tray.exe` are local build artifacts and are git-ignored;
+compile them with `npm run build:native-host` and `npm run build:tray-stub`.
 
 ## Known limitations
 
