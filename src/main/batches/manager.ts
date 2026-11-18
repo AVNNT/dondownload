@@ -76,6 +76,7 @@ import {
   PAIR_RENAME_VIDEO_FAILED,
   applyPairRename
 } from '../scanner/pairRename'
+import { logError } from '../logging'
 
 /**
  * Milestone 3B batch orchestration.
@@ -3949,7 +3950,7 @@ export class BatchManager {
     if (this.persistenceErrorLogged) return
     this.persistenceErrorLogged = true
     // Never include URLs, paths or record payloads in logs.
-    console.error(`Batch history ${context}.`)
+    logError(`Batch history ${context}.`)
   }
 
   /* -------------------------------- polling -------------------------------- */

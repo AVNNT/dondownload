@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as logger from '../src/main/logging'
 import {
   createIdleStubController,
   type IdleStubControllerOptions
@@ -206,6 +207,7 @@ describe('idle tray stub controller', () => {
 
   it('keeps the app running when the hand-off itself fails', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const logged = vi.spyOn(logger, 'logError').mockImplementation(() => undefined)
     try {
       const harness = createHarness({
         exitToStub: () => {
@@ -214,13 +216,17 @@ describe('idle tray stub controller', () => {
       })
       harness.controller.evaluate()
       expect(() => harness.advance(GRACE_MS)).not.toThrow()
-      expect(error).toHaveBeenCalled()
+      expect(logged).toHaveBeenCalledTimes(1)
+      expect(String(logged.mock.calls[0]?.[0])).toContain(
+        'Tray stub could not be started'
+      )
 
       // A later idle period may try again rather than giving up for good.
       harness.controller.evaluate()
       harness.advance(GRACE_MS)
-      expect(error).toHaveBeenCalledTimes(2)
+      expect(logged).toHaveBeenCalledTimes(2)
     } finally {
+      logged.mockRestore()
       error.mockRestore()
     }
   })

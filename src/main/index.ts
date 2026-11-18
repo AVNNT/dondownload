@@ -1,5 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog } from 'electron'
 import path from 'node:path'
+import os from 'node:os'
+import { promises as fsPromises } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
 import { isAllowedAt } from '@shared/schedule'
@@ -13,6 +15,7 @@ import {
   type InterfaceSize
 } from '@shared/desktopSettings'
 import type { AppSnapshot, Aria2State, DownloadItem } from '@shared/types'
+import type { BrowserExtensionStatus } from '@shared/browserExtension'
 import type { MediaJob, MediaToolState } from '@shared/media'
 import type { Batch } from '@shared/batches'
 import {
@@ -111,6 +114,20 @@ import { runSmokeTest } from './smoke/run'
 import { memoryBenchOutPath } from './memoryBench/report'
 import { startMemoryBench } from './memoryBench/runner'
 import { mergeFeatureList } from './commandLine/features'
+import {
+  closeLogger,
+  configureLogger,
+  defaultSecretValues,
+  defaultUserPaths,
+  getLogger,
+  logDebug,
+  logError,
+  logInfo,
+  logWarn,
+  logDirectory,
+  recentLogLines
+} from './logging'
+import { buildDiagnostics, DIAGNOSTICS_LOG_LINES } from './diagnostics'
 
 // The UI is a plain list: no video, no 3D, no canvas. Chromium's GPU process
 // costs roughly 60 MB of RAM and buys nothing for it, so software rendering is
@@ -276,6 +293,60 @@ const memoryBenchPath = memoryBenchOutPath(process.env)
 traceStartup('main bundle evaluated; smoke configuration resolved')
 
 /**
+ * The one log file for this process: `%APPDATA%\dondownload\logs\main.log`.
+ * It is configured after the single-instance check below, so a second launch
+ * never appends to a file the running app owns. A configuration failure must
+ * never stop the app from starting.
+ */
+function startFileLogging(): void {
+  try {
+    configureLogger({
+      directory: path.join(app.getPath('logs')),
+      userPaths: defaultUserPaths()
+    })
+  } catch {
+    // Logging is a diagnostic aid; the app works without it.
+  }
+}
+
+/**
+ * One uncaught exception or unhandled rejection, recorded and then shown.
+ * The original behaviour (a crash on an uncaught exception) is kept: the log
+ * only adds the redacted reason for the next bug report.
+ */
+function installCrashLogging(): void {
+  process.on('uncaughtException', (error) => {
+    logError('Uncaught exception: %s', error)
+  })
+  process.on('unhandledRejection', (reason) => {
+    // A rejected promise is reported, not fatal: most come from a cancelled
+    // native request or a bridge call whose reply no longer matters.
+    logWarn('Unhandled promise rejection: %s', reason)
+  })
+}
+
+/** Facts about this machine that a bug report needs and that are not personal. */
+function logStartup(): void {
+  logInfo(
+    'Starting DonDownload %s (%s, Windows build %s, %s)',
+    app.getVersion(),
+    app.isPackaged ? 'packaged' : 'development',
+    os.release(),
+    process.arch
+  )
+  logInfo(
+    'Runtime: Electron %s, Chromium %s, Node %s',
+    process.versions.electron ?? 'unknown',
+    process.versions.chrome ?? 'unknown',
+    process.versions.node
+  )
+  logInfo('Log folder: %s', logDirectory() ?? 'unavailable')
+  if (process.env.DONDOWNLOAD_DEBUG_LOG === '1') {
+    logDebug('Debug logging is enabled (DONDOWNLOAD_DEBUG_LOG=1).')
+  }
+}
+
+/**
  * Paths for zero-config native messaging registration. Evaluated only after
  * Electron is ready, so appData/appPath are final (including dev vs packaged).
  */
@@ -289,7 +360,10 @@ function createRegistrationDependencies() {
     platform: process.platform,
     registry: createRegExeRegistry(),
     fileSystem: createNodeFileSystem(),
-    logger: (message: string) => console.error(message)
+    logger: (message: string) => {
+      logWarn(message)
+      if (!app.isPackaged) console.error(message)
+    }
   }
 }
 
@@ -391,6 +465,7 @@ function exitToStub(): boolean {
     return false
   }
   traceStartup('idle stub hand-off: starting native tray stub')
+  logInfo('Idle: handing the tray to the native stub')
   spawnIdleStub(
     decision.executable,
     idleStubShowArgs(process.execPath, decision.icon),
@@ -656,6 +731,8 @@ if (unregisterRequested) {
   app.whenReady().then(async () => {
     const result = await unregisterNativeHost(createRegistrationDependencies())
     if (result.lastError !== null) {
+      // Installer cleanup runs before the app is ready, so there is no log file
+      // to own; stderr is the only channel and the installer shows it.
       console.error(`Browser extension cleanup failed: ${result.lastError}`)
     }
     app.exit(0)
@@ -669,6 +746,10 @@ if (unregisterRequested) {
   if (!hasSingleInstanceLock) {
     app.quit()
   } else {
+    // One writer per profile: the lock above guarantees no other instance of
+    // this app is appending to the same file.
+    startFileLogging()
+    installCrashLogging()
     if (smoke === null) {
       app.on('second-instance', () => {
         // A second launch focuses the existing app, including after close-to-tray.
@@ -678,6 +759,7 @@ if (unregisterRequested) {
 
     app.whenReady().then(async () => {
       traceStartup('app ready')
+      logStartup()
       if (smoke === null) app.setAppUserModelId('com.dondownload.app')
       const downloadDir =
         smoke !== null
@@ -711,7 +793,8 @@ if (unregisterRequested) {
       // Keep the app usable if storage is unavailable; downloads still work but
       // history will not survive a relaunch. Do not log URLs or payloads.
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Download history is unavailable: ${detail}`)
+      logError('Download history is unavailable: %s', detail)
+      if (!app.isPackaged) console.error(`Download history is unavailable: ${detail}`)
     }
     traceStartup(
       'history database opened and migrated',
@@ -1115,6 +1198,77 @@ if (unregisterRequested) {
       nativeHostRegistrar = createNativeHostRegistrar(createRegistrationDependencies())
       void nativeHostRegistrar.repair()
     }
+
+    // Facts for the diagnostics copy; see diagnosticsInput below.
+    /** Re-read the browser registration state; null when registration is off. */
+    const currentExtensionStatus = async (): Promise<BrowserExtensionStatus | null> => {
+      if (nativeHostRegistrar === null) return null
+      try {
+        return await nativeHostRegistrar.getStatus()
+      } catch {
+        return null
+      }
+    }
+
+    const diagnosticsBlock = async (): Promise<string> =>
+      buildDiagnostics({
+        ...diagnosticsInput(),
+        extension: await currentExtensionStatus()
+      })
+
+    /**
+     * Facts for the diagnostics copy. Every value is renderer-safe already;
+     * the log tail is redacted once more as a backstop, and no history,
+     * settings path or tool path is read. Evaluated on demand so the copy
+     * always describes the current state.
+     */
+    const diagnosticsInput = (): Parameters<typeof buildDiagnostics>[0] => {
+      const aria2State = aria2?.getState()
+      const mediaTool = mediaJobs?.getMediaSnapshot().tool
+      const currentSettings = settings.getSettings()
+      const currentDesktop = desktopSettingsManager?.getSettings()
+      return {
+        appVersion: app.getVersion(),
+        windowsVersion: os.version(),
+        windowsBuild: os.release(),
+        arch: process.arch,
+        packaged: app.isPackaged,
+        runtime: {
+          electron: process.versions.electron ?? 'unknown',
+          chrome: process.versions.chrome ?? 'unknown',
+          node: process.versions.node
+        },
+        tools: {
+          aria2: {
+            version: aria2State?.version ?? null,
+            status: aria2State?.status ?? 'stopped'
+          },
+          media: {
+            version: mediaTool?.version ?? null,
+            status: mediaTool?.status ?? 'unknown'
+          }
+        },
+        ytdlpUpdate: mediaUpdater?.getState() ?? null,
+        appUpdate: appUpdate?.getState() ?? null,
+        downloadSettings: {
+          maxConcurrentDownloads: currentSettings.maxConcurrentDownloads,
+          perHostConnections: currentSettings.perHostConnections,
+          theme: currentSettings.theme
+        },
+        desktopSettings: {
+          exitToTrayStubWhenIdle: currentDesktop?.exitToTrayStubWhenIdle ?? false,
+          watchClipboard: currentDesktop?.watchClipboard ?? false
+        },
+        dbSchemaVersion: database?.schemaVersion ?? null,
+        debugLogging: getLogger()?.enabled('debug') ?? false,
+        logLines: recentLogLines(DIAGNOSTICS_LOG_LINES),
+        redactOptions: {
+          userPaths: defaultUserPaths(),
+          secretValues: defaultSecretValues()
+        }
+      }
+    }
+
     // GitHub Releases application updater. The source and signing key come from
     // src/shared/release.ts; a build with either missing makes no network
     // request and reports the source as not configured.
@@ -1163,6 +1317,14 @@ if (unregisterRequested) {
       ...(scanQueue === null ? {} : { scanQueue }),
       ...(manualMatchService === null ? {} : { manualMatch: manualMatchService }),
       requestSnapshotResync,
+      // The log folder is main's own path (app data under the user profile);
+      // the renderer never supplies one.
+      openLogFolder: async () => {
+        const directory = logDirectory() ?? path.join(app.getPath('logs'))
+        await fsPromises.mkdir(directory, { recursive: true })
+        return directory
+      },
+      buildDiagnostics: diagnosticsBlock,
       getWindow: () => mainWindow
     })
     traceStartup('IPC registered; managers ready')
@@ -1228,7 +1390,10 @@ if (unregisterRequested) {
           void settingsManager?.setGlobalSpeedLimit(bps).catch((error) => {
             const detail =
               error instanceof Error ? error.message : 'unknown error'
-            console.error(`Speed limit could not be changed: ${detail}`)
+            logError('Speed limit could not be changed: %s', detail)
+            if (!app.isPackaged) {
+              console.error(`Speed limit could not be changed: ${detail}`)
+            }
           })
         }
       })
@@ -1333,7 +1498,10 @@ if (unregisterRequested) {
           manager: bridgeManager,
           mediaBridge: bridgeMediaJobs,
           userDataPath: app.getPath('userData'),
-          logger: (message) => console.error(message),
+          logger: (message) => {
+            logDebug(message)
+            if (!app.isPackaged) console.error(message)
+          },
           ...(scanner === null ? {} : { scanner }),
           ...(browserMatchService === null
             ? {}
@@ -1393,7 +1561,10 @@ if (unregisterRequested) {
         traceStartup('native bridge ready', startupNow() - bridgeStartedAt)
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'unknown error'
-        console.error(`Browser bridge is unavailable: ${detail}`)
+        logError('Browser bridge is unavailable: %s', detail)
+        if (!app.isPackaged) {
+          console.error(`Browser bridge is unavailable: ${detail}`)
+        }
       }
     }
 
@@ -1516,7 +1687,10 @@ if (unregisterRequested) {
     scheduleAfterFirstPaint(window, () => {
       // A quit that began while the window was loading owns the shutdown; do
       // not start background probes or registry work behind it.
-      if (quitRequested || cleanupStarted) return
+      if (quitRequested || cleanupStarted) {
+        logDebug('startup probes skipped: a quit already owns the process')
+        return
+      }
       traceStartup('deferred startup work started')
       if (nativeHostRegistrar !== null) {
         const registrationStartedAt = startupNow()
@@ -1527,14 +1701,28 @@ if (unregisterRequested) {
           )
         })
       }
-      const probeStartedAt = startupNow()
-      void mediaJobs?.refreshToolState().finally(() => {
-        traceStartup('media tool probe', startupNow() - probeStartedAt)
-      })
       // At most one background check per 24 hours. Both are disabled in smoke
       // mode by their updater options, and neither can delay the window now.
-      void mediaUpdater?.autoCheck()
-      void appUpdate?.autoCheck()
+      // The probe and both checks only run outside smoke: a smoke run quits as
+      // soon as its checks pass, so their log lines would race the quit.
+      if (smoke === null) {
+        const probeStartedAt = startupNow()
+        void mediaJobs?.refreshToolState().then((state) => {
+          logInfo('Media tools: %s (%s)', state.version ?? 'unavailable', state.status)
+        }).finally(() => {
+          traceStartup('media tool probe', startupNow() - probeStartedAt)
+        })
+        void mediaUpdater?.autoCheck().then((state) => {
+          logInfo('yt-dlp update check: %s', state.status)
+        })
+        void appUpdate?.autoCheck().then((state) => {
+          logInfo(
+            'App update check: %s (%s)',
+            state.status,
+            state.configured ? `current ${state.currentVersion}` : 'no update source'
+          )
+        })
+      }
     })
 
     app.on('activate', () => {
@@ -1664,6 +1852,14 @@ if (unregisterRequested) {
         // The window may already be destroyed.
       }
       taskbarProgress = null
+      // Record the orderly shutdown, then write every buffered line and stop
+      // the flush timer before the process exits.
+      logInfo('Shutting down')
+      try {
+        await closeLogger()
+      } catch {
+        // The log file must never block quitting.
+      }
       // Mark the sequence complete immediately before the final internal
       // quit, so that this one request is allowed through.
       cleanupFinished = true

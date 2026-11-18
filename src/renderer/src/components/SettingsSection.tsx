@@ -63,6 +63,10 @@ const SELECT =
 const KBD =
   'rounded border border-white/10 px-1 text-[10px] leading-4 text-zinc-500'
 
+/** The public bug-report form, opened in the user's browser. */
+const BUG_REPORT_URL =
+  'https://github.com/AVNNT/dondownload/issues/new?template=bug_report.yml'
+
 function updateStatusLabel(state: YtdlpUpdateState | null): string {
   if (!state) return 'Not checked yet'
   switch (state.status) {
@@ -199,6 +203,11 @@ export function SettingsSection(): JSX.Element {
   const [desktopDraft, setDesktopDraft] = useState<DesktopSettings>(
     defaultDesktopSettings()
   )
+  /** Help & diagnostics: the last action's outcome, shown under the buttons. */
+  const [diagnosticsMessage, setDiagnosticsMessage] = useState<string | null>(
+    null
+  )
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
 
   /** Latest saved download settings, readable from async callbacks. */
   const savedRef = useRef<DownloadSettings | null>(null)
@@ -728,6 +737,43 @@ export function SettingsSection(): JSX.Element {
     }
   }
 
+  /**
+   * Help & diagnostics actions. The copied block is assembled in main from
+   * renderer-safe values and already-redacted log lines, and copied through
+   * `copyText` so the clipboard watcher does not offer it back as a link.
+   */
+  const copyDiagnostics = async (): Promise<void> => {
+    setDiagnosticsBusy(true)
+    setDiagnosticsMessage(null)
+    try {
+      const result = await window.donDownload.getDiagnostics()
+      if (!result.ok) {
+        setDiagnosticsMessage(result.error.message)
+        return
+      }
+      const copied = await window.donDownload.copyText(result.value)
+      setDiagnosticsMessage(
+        copied.ok
+          ? 'Diagnostics copied. Paste them into the report.'
+          : copied.error.message
+      )
+    } catch (error) {
+      setDiagnosticsMessage(
+        error instanceof Error
+          ? error.message
+          : 'The diagnostics could not be copied.'
+      )
+    } finally {
+      setDiagnosticsBusy(false)
+    }
+  }
+
+  const openLogFolder = async (): Promise<void> => {
+    setDiagnosticsMessage(null)
+    const result = await window.donDownload.openLogFolder()
+    if (!result.ok) setDiagnosticsMessage(result.error.message)
+  }
+
   if (!draft) {
     return (
       <div aria-labelledby="settings-heading" className="space-y-6">
@@ -1217,6 +1263,64 @@ export function SettingsSection(): JSX.Element {
         {appUpdateError ? (
           <p role="alert" className="mt-2 text-xs text-red-400">
             {appUpdateError}
+          </p>
+        ) : null}
+      </section>
+
+      <section aria-labelledby="settings-diagnostics">
+        <SectionHeading
+          id="settings-diagnostics"
+          title="Help & diagnostics"
+          description="Logs stay on this PC. They never contain links, file names or folders."
+        />
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <SettingRow
+            title="Copy diagnostics"
+            description="App version, Windows build, tool versions, the browser connection and the last 100 log lines. Paste it into a bug report."
+          >
+            <button
+              type="button"
+              onClick={() => void copyDiagnostics()}
+              disabled={diagnosticsBusy}
+              className={BTN_PRIMARY}
+            >
+              {diagnosticsBusy ? 'Preparing…' : 'Copy diagnostics'}
+            </button>
+          </SettingRow>
+          <SettingRow
+            title="Open log folder"
+            description="The main log, kept to three rotating files."
+          >
+            <button
+              type="button"
+              onClick={() => void openLogFolder()}
+              className={BTN_GHOST}
+            >
+              Open log folder
+            </button>
+          </SettingRow>
+          <SettingRow
+            title="Report a bug"
+            description="Opens the bug report form on GitHub in your browser."
+          >
+            <a
+              href={BUG_REPORT_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={BTN_GHOST}
+            >
+              <Icon name="external" size={14} />
+              Report a bug
+            </a>
+          </SettingRow>
+        </div>
+        {diagnosticsMessage ? (
+          <p
+            role="status"
+            aria-live="polite"
+            className="mt-2 text-xs text-zinc-400"
+          >
+            {diagnosticsMessage}
           </p>
         ) : null}
       </section>

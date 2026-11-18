@@ -1986,7 +1986,10 @@ export function createPreviewApi(
     onScanUpdated: (listener) => {
       scanListeners.add(listener)
       return () => scanListeners.delete(listener)
-    }
+    },
+    openLogFolder: async () => ok(null),
+    getDiagnostics: async () =>
+      ok('DonDownload diagnostics\nApp version: preview (fixture data)')
   }
 }
 

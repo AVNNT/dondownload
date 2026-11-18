@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as logger from '../src/main/logging'
 import {
   defaultDownloadSettings,
   type DownloadSettings
@@ -74,6 +75,7 @@ describe('SettingsManager', () => {
 
   it('falls back to defaults when the store cannot load settings', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const logged = vi.spyOn(logger, 'logError').mockImplementation(() => undefined)
     const store = {
       loadSettings: vi.fn(() => {
         throw new Error('corrupt settings row')
@@ -83,10 +85,12 @@ describe('SettingsManager', () => {
     const manager = new SettingsManager({ store, aria2: null })
 
     expect(manager.getSettings()).toEqual(defaultDownloadSettings())
-    expect(error).toHaveBeenCalledTimes(1)
-    expect(String(error.mock.calls[0]?.[0])).toContain(
+    expect(error).not.toHaveBeenCalled()
+    expect(logged).toHaveBeenCalledTimes(1)
+    expect(String(logged.mock.calls[0]?.[0])).toContain(
       'Download settings could not be loaded'
     )
+    logged.mockRestore()
     error.mockRestore()
   })
 

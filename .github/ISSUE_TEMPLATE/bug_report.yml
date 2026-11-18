@@ -92,13 +92,22 @@ body:
     attributes:
       label: Logs and diagnostics
       description: |
-        DonDownload writes no log files. Its messages (including the browser
-        bridge, aria2 and media errors) are printed to the terminal you started
-        it from, so paste the relevant lines here.
+        On the machine where the problem happened, open
+        **Settings → Help & diagnostics** and click **Copy diagnostics**, then
+        paste the result here. It contains the app version, Windows build,
+        bundled tool versions, the browser extension state, a few non-personal
+        settings and the last 100 log lines.
+
+        Logs stay on your PC in `%APPDATA%\dondownload\logs` (`main.log` and two
+        rotated copies). URLs, file names and paths are removed before anything
+        is written, but please read the text once before posting it.
 
         Downloaded files, history and settings live in
         `%USERPROFILE%\Downloads\DonDownload` and `%APPDATA%\dondownload`.
-        Please redact URLs, tokens and personal paths before pasting.
+      placeholder: |
+        DonDownload diagnostics
+        App version: 1.0.0
+        Windows: ...
       render: text
     validations:
       required: false

@@ -4,6 +4,7 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import { AppError } from '../errors'
+import { logError } from '../logging'
 
 /** Minimal persistence port; `DownloadDatabase` satisfies this shape. */
 export interface SettingsStore {
@@ -100,7 +101,7 @@ export class SettingsManager {
     } catch (error) {
       // Keep the app usable with safe defaults. Do not log settings values.
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Download settings could not be loaded: ${detail}`)
+      logError('Download settings could not be loaded: %s', detail)
     }
   }
 
@@ -243,7 +244,7 @@ export class SettingsManager {
       // Persisted and cached state are still `previous`; only aria2 may keep a
       // partially applied option set. Never mask the original failure.
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Download settings rollback failed: ${detail}`)
+      logError('Download settings rollback failed: %s', detail)
     }
   }
 }

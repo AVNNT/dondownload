@@ -109,5 +109,10 @@ export const IPC = {
   probeUrlSize: 'download:probe-url-size',
   scanOpenInBrowser: 'scan:open-in-browser',
   scanPickMatchVideo: 'scan:pick-match-video',
-  scanMarkAsVideo: 'scan:mark-as-video'
+  scanMarkAsVideo: 'scan:mark-as-video',
+  // Help & diagnostics (additive). Both channels are no-payload actions that
+  // resolve a fixed, app-owned folder or URL; "copy diagnostics" returns the
+  // redacted text for the renderer to copy through `copyText`.
+  openLogFolder: 'diagnostics:open-log-folder',
+  copyDiagnostics: 'diagnostics:copy'
 } as const

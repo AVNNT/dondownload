@@ -6,6 +6,7 @@ import path from 'node:path'
 import type { Aria2State } from '@shared/types'
 import { AppError } from '../errors'
 import { createNoopHost, type CoreHost } from '../host'
+import { logDebug, logError, logInfo, logWarn } from '../logging'
 import { buildAria2Args } from './args'
 import { Aria2Client } from './client'
 import { locateAria2c } from './locator'
@@ -179,6 +180,9 @@ export class Aria2Service {
     })
     this.child = child
     lowerProcessPriority(child.pid)
+    // Diagnostics only: the executable's name and the pid. The command line
+    // carries the RPC secret and the download folder, so it is never logged.
+    logInfo('aria2 started (pid %d) from %s', child.pid ?? -1, path.basename(binaryPath))
 
     child.once('error', (error) => {
       spawnError = error
@@ -194,8 +198,10 @@ export class Aria2Service {
       }
       // Ignore exits from a process we intentionally stopped or replaced.
       if (this.stopping || !isCurrent) {
+        logDebug('aria2 exited after a stop request (code %s)', String(code))
         return
       }
+      logError('aria2 exited unexpectedly (code %s)', String(code))
       this.setState({
         status: 'error',
         version: this.state.version,
@@ -265,6 +271,7 @@ export class Aria2Service {
         message: null,
         hint: null
       })
+      logInfo('aria2 ready, version %s', version.version)
       return client
     }
 
@@ -299,6 +306,9 @@ export class Aria2Service {
       message,
       hint: 'Check that aria2c.exe runs from a terminal and that the download folder is writable, then restart aria2.'
     })
+    // The reason may quote aria2's own stderr, which can name a file path;
+    // logWarn redacts it. The cancel branch above already returned.
+    logWarn('aria2 failed to start: %s', reason || message)
     throw new AppError('ARIA2_START_FAILED', message, this.state.hint ?? undefined)
   }
 

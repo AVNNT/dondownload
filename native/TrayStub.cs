@@ -78,12 +78,14 @@ internal static class TrayStub
         {
             fullAppPath = Path.GetFullPath(appPath);
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            CompanionLog.Write("stub.log", "invalid --app path (" + error.GetType().Name + ")");
             return 1;
         }
         if (!File.Exists(fullAppPath))
         {
+            CompanionLog.Write("stub.log", "the --app executable does not exist");
             return 1;
         }
 
@@ -152,6 +154,7 @@ internal static class TrayStub
                         opening = true;
                         if (StartApp(appPath))
                         {
+                            CompanionLog.Write("stub.log", "woke DonDownload and exited");
                             Application.Exit();
                         }
                         else
@@ -244,10 +247,11 @@ internal static class TrayStub
             Process.Start(startInfo);
             return true;
         }
-        catch (Exception)
+        catch (Exception error)
         {
             // Keep the icon so the user can try again instead of losing both
             // the app and the tray entry.
+            CompanionLog.Write("stub.log", "could not start the app (" + error.GetType().Name + ")");
             return false;
         }
     }
@@ -302,4 +306,45 @@ internal static class TrayStub
         IntPtr process,
         IntPtr minimumWorkingSetSize,
         IntPtr maximumWorkingSetSize);
+}
+
+// DonDownload companion log.
+//
+// The tray stub and the native messaging host are separate executables, so they
+// cannot share the Electron logger. Each appends one line to its own small file
+// in the same folder the app uses (%APPDATA%\dondownload\logs), capped at
+// 256 KB by starting over once it grows past that. Nothing personal is ever
+// written: only the event, an exit code or an exception type name.
+internal static class CompanionLog
+{
+    private const long MaxBytes = 256 * 1024;
+
+    internal static void Write(string fileName, string message)
+    {
+        try
+        {
+            string root = Environment.GetFolderPath(
+                Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(root))
+            {
+                return;
+            }
+            string directory = Path.Combine(root, "dondownload", "logs");
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, fileName);
+            FileInfo info = new FileInfo(path);
+            if (info.Exists && info.Length > MaxBytes)
+            {
+                // One generation is enough for a stub or a host; keep it simple.
+                File.Delete(path);
+            }
+            string line = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") +
+                " " + message + Environment.NewLine;
+            File.AppendAllText(path, line);
+        }
+        catch (Exception)
+        {
+            // Logging must never break the stub or the host.
+        }
+    }
 }

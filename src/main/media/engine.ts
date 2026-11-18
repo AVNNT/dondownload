@@ -78,6 +78,7 @@ import { createJsRuntime, needsJsRuntime } from './jsRuntime'
 import type { JsRuntime } from './jsRuntime'
 import { createToolchainResolver } from './toolchain'
 import { lowerProcessPriority } from '../processPriority'
+import { logDebug } from '../logging'
 
 export type { MediaDirectDownload } from './analysis'
 export type { MediaCollectionTarget } from './collections'
@@ -930,7 +931,6 @@ export function createMediaEngine(
       }
       job.child = child
       lowerProcessPriority(child.pid)
-
       child.stdout?.on('data', (chunk: unknown) =>
         progress.handleStdoutText(typeof chunk === 'string' ? chunk : String(chunk))
       )
@@ -944,6 +944,9 @@ export function createMediaEngine(
       })
       child.on('close', (code: number | null) => {
         progress.flush()
+        // One line per finished child, at most: enough for a bug report to show
+        // that yt-dlp (or the ffmpeg it spawned) exited, without any output.
+        logDebug('yt-dlp exited (%s)', String(code))
         if (job.pauseRequested) {
           void finalize('paused')
         } else if (job.cancelRequested) {

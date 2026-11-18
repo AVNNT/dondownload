@@ -5,6 +5,28 @@ All notable changes to DonDownload are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Local log files in `%APPDATA%\dondownload\logs\main.log`, rotated at 1 MB and
+  kept to three files. Writes are buffered, flushed on a timer and on quit, and
+  never happen per progress update.
+- Every log line is redacted: only a site's host survives from a URL, the user
+  profile becomes `%USERPROFILE%`, other paths keep only an extension, and
+  cookies, tokens and `Authorization` values become `[redacted]`. Set
+  `DONDOWNLOAD_DEBUG_LOG=1` for verbose (still redacted) records.
+- Settings → Help & diagnostics: "Copy diagnostics" (app version, Windows
+  build, aria2/yt-dlp/FFmpeg versions, browser extension state, key non-personal
+  settings, database schema version and the last 100 redacted log lines), "Open
+  log folder" and a "Report a bug" link.
+
+### Changed
+
+- Problem reports from the main process (aria2 and yt-dlp crashes, browser
+  bridge errors, history and settings failures, uncaught exceptions) go to the
+  log file instead of only stderr. Development builds still print them.
+
 ## [1.0.0] - 2026-11-18
 
 First public release.

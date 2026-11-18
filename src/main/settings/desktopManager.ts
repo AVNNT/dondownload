@@ -4,6 +4,7 @@ import {
   type DesktopSettings
 } from '@shared/desktopSettings'
 import { AppError } from '../errors'
+import { logError } from '../logging'
 
 /** Minimal persistence port; `DownloadDatabase` satisfies this shape. */
 export interface DesktopSettingsStore {
@@ -43,7 +44,7 @@ export class DesktopSettingsManager {
     } catch (error) {
       // Keep safe defaults; never log settings values.
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Desktop settings could not be loaded: ${detail}`)
+      logError('Desktop settings could not be loaded: %s', detail)
     }
   }
 

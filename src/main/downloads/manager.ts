@@ -78,6 +78,7 @@ import {
 } from './perHostConnections'
 import { nextPollDelay } from './pollInterval'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
+import { logError } from '../logging'
 
 /** Progress is flushed at most this often; critical transitions write at once. */
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
@@ -2343,8 +2344,9 @@ export class DownloadManager {
       this.publish()
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(
-        `A completed download could not be sorted into its type folder: ${detail}`
+      logError(
+        'A completed download could not be sorted into its type folder: %s',
+        detail
       )
     }
   }
@@ -2512,7 +2514,7 @@ export class DownloadManager {
     this.persistenceErrorLogged = true
     const detail = error instanceof Error ? error.message : 'unknown error'
     // Never include download URLs (or any payload) in logs.
-    console.error(`Download history ${context}: ${detail}`)
+    logError(`Download history ${context}: %s`, detail)
   }
 
   private ensurePolling(): void {
