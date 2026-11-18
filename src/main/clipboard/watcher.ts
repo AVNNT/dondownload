@@ -61,6 +61,9 @@ export class ClipboardWatcher {
 
   start(): void {
     if (this.running) return
+    // Watching disabled in settings means no timer at all, not an idle one:
+    // a timer that fires only to bail still wakes the main process.
+    if (!this.isEnabled()) return
     this.running = true
     this.scheduleNext()
   }
@@ -82,6 +85,13 @@ export class ClipboardWatcher {
     if (!this.running || this.timer !== null) return
     this.timer = setTimeout(() => {
       this.timer = null
+      // The setting can be flipped without a `setEnabled` call reaching this
+      // watcher (e.g. a store write elsewhere); drop the chain instead of
+      // re-arming a timer that would only bail out.
+      if (!this.isEnabled()) {
+        this.running = false
+        return
+      }
       try {
         this.poll()
       } finally {

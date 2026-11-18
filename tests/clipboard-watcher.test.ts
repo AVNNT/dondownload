@@ -44,6 +44,51 @@ describe('clipboard watcher scheduling', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('arms no timer when started while watching is already disabled', () => {
+    vi.useFakeTimers()
+    const state = { enabled: false, hasWindow: true }
+    const readText = vi.fn(() => '')
+    const watcher = new ClipboardWatcher({
+      readText,
+      isEnabled: () => state.enabled,
+      onUrl: () => undefined
+    })
+
+    // Startup path: the persisted setting is off, so no timer may exist at all.
+    watcher.start()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(60_000)
+    expect(readText).not.toHaveBeenCalled()
+
+    state.enabled = true
+    watcher.setEnabled(true)
+    expect(vi.getTimerCount()).toBe(1)
+    vi.advanceTimersByTime(CLIPBOARD_POLL_INTERVAL_MS)
+    expect(readText).toHaveBeenCalledTimes(1)
+
+    watcher.stop()
+  })
+
+  it('drops its timer when the setting turns off without a setEnabled call', () => {
+    vi.useFakeTimers()
+    const { watcher, readText, state } = createWatcher()
+
+    state.hasWindow = false
+    watcher.setEnabled(true)
+    expect(vi.getTimerCount()).toBe(1)
+
+    // Flipped behind the watcher's back: the next tick must not re-arm.
+    state.enabled = false
+    vi.advanceTimersByTime(CLIPBOARD_TRAY_POLL_INTERVAL_MS)
+    expect(readText).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+
+    vi.advanceTimersByTime(60_000)
+    expect(vi.getTimerCount()).toBe(0)
+
+    watcher.stop()
+  })
+
   it('polls at the normal cadence while a window exists', () => {
     vi.useFakeTimers()
     const { watcher, readText } = createWatcher()
