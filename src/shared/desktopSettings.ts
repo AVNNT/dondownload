@@ -18,6 +18,11 @@ export const DEFAULT_SHOW_NOTIFICATIONS = false
 export const DEFAULT_WATCH_CLIPBOARD = false
 export const DEFAULT_LAUNCH_AT_LOGIN = false
 export const DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE = true
+/**
+ * The first-start guide is shown once. A fresh profile (and an upgraded one)
+ * starts with `false`; closing or skipping the guide persists `true`.
+ */
+export const DEFAULT_WELCOME_GUIDE_SEEN = false
 
 /** Non-secret command-line argument used by the login item to start hidden. */
 export const START_HIDDEN_ARG = '--hidden'
@@ -37,6 +42,8 @@ export interface DesktopSettings {
    * with nothing to do, freeing most of its memory.
    */
   exitToTrayStubWhenIdle: boolean
+  /** True once the first-start guide has been shown and dismissed. */
+  welcomeGuideSeen: boolean
   /** Renderer zoom percentage. */
   interfaceSizePercent: InterfaceSize
 }
@@ -48,6 +55,7 @@ export function defaultDesktopSettings(): DesktopSettings {
     watchClipboard: DEFAULT_WATCH_CLIPBOARD,
     launchAtLogin: DEFAULT_LAUNCH_AT_LOGIN,
     exitToTrayStubWhenIdle: DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE,
+    welcomeGuideSeen: DEFAULT_WELCOME_GUIDE_SEEN,
     interfaceSizePercent: DEFAULT_INTERFACE_SIZE
   }
 }
@@ -139,6 +147,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     'watchClipboard',
     'launchAtLogin',
     'exitToTrayStubWhenIdle',
+    'welcomeGuideSeen',
     'interfaceSizePercent'
   ])
   return {
@@ -150,6 +159,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     watchClipboard: booleanValue(record, 'watchClipboard'),
     launchAtLogin: booleanValue(record, 'launchAtLogin'),
     exitToTrayStubWhenIdle: booleanValue(record, 'exitToTrayStubWhenIdle'),
+    welcomeGuideSeen: booleanValue(record, 'welcomeGuideSeen'),
     interfaceSizePercent: parseInterfaceSize(record.interfaceSizePercent)
   }
 }

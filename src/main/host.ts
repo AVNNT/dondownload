@@ -9,11 +9,20 @@
 export interface HostNotificationOptions {
   title: string
   body: string
+  /**
+   * Windows-only raw toast XML. Used for completion notifications because
+   * Electron's `actions` list has no Windows button support.
+   */
+  toastXml?: string
+  /** Windows toast tag; must be unique per visible notification. */
+  id?: string
 }
 
 /** The small notification surface the core uses; Electron's class fits it. */
 export interface HostNotification {
   on(event: 'click', listener: () => void): void
+  /** Button activation; `actionIndex` is the index in the toast's actions. */
+  onAction(listener: (actionIndex: number) => void): void
   show(): void
 }
 
@@ -59,6 +68,7 @@ export function createNoopHost(): CoreHost {
     isNotificationSupported: () => false,
     createNotification: () => ({
       on: () => undefined,
+      onAction: () => undefined,
       show: () => undefined
     })
   }

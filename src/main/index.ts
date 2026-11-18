@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog } from 'electron'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { IPC } from '@shared/ipc'
+import { APP_USER_MODEL_ID } from '@shared/appIdentity'
 import { isAllowedAt } from '@shared/schedule'
 import { typeFolderDirectory } from '@shared/typeFolders'
 import { DEFAULT_THEME, type AppTheme } from '@shared/settings'
@@ -45,6 +46,8 @@ import { ClipboardWatcher } from './clipboard/watcher'
 import { AppError } from './errors'
 import { createElectronHost } from './electronHost'
 import { CompletionNotificationService } from './notifications/service'
+import { detectInstalledBrowsers } from './browsers/detect'
+import { buildWelcomeInfo } from './welcome/info'
 import { loginItemSettings, shouldManageLoginItem } from './desktop/loginItem'
 import {
   decideBeforeQuit,
@@ -678,7 +681,12 @@ if (unregisterRequested) {
 
     app.whenReady().then(async () => {
       traceStartup('app ready')
-      if (smoke === null) app.setAppUserModelId('com.dondownload.app')
+      if (smoke === null) {
+        // Windows toast buttons activate through this id. It must match the
+        // NSIS shortcut created from electron-builder's appId
+        // (see src/shared/appIdentity.ts and tests/app-identity.test.ts).
+        app.setAppUserModelId(APP_USER_MODEL_ID)
+      }
       const downloadDir =
         smoke !== null
           ? path.join(app.getPath('userData'), 'smoke-downloads')
@@ -777,11 +785,21 @@ if (unregisterRequested) {
         process.env.DONDOWNLOAD_INTERACTIVE_SMOKE !== '1' &&
         process.env.DONDOWNLOAD_SMOKE_TEST !== '1' &&
         (desktopSettingsManager?.getSettings().showNotifications ?? false),
-      onActivate: (kind, id) => {
+      onActivate: (kind, id, action) => {
         showMainWindow()
-        sendToMainWindow((window) =>
+        sendToMainWindow((window) => {
           window.webContents.send(IPC.revealRow, `${kind}:${id}`)
-        )
+          // The toast button runs through the same validated open/show IPC the
+          // renderer already uses, so a file that moved or was deleted shows
+          // the existing "file missing" banner instead of failing silently.
+          if (action !== 'activate') {
+            window.webContents.send(IPC.notificationAction, {
+              kind,
+              id,
+              action
+            })
+          }
+        })
       }
     })
 
@@ -1142,6 +1160,37 @@ if (unregisterRequested) {
       }
     })
 
+    // First-start guide data is built on demand, never at startup: detecting
+    // browsers is a handful of synchronous file probes, and the native-host
+    // status is the same cached value Settings → Browser extension reads.
+    let welcomeBrowsers: ReturnType<typeof detectInstalledBrowsers> | null =
+      null
+    const welcome = {
+      getInfo: async () => {
+        if (welcomeBrowsers === null) {
+          welcomeBrowsers = detectInstalledBrowsers({
+            platform: process.platform,
+            env: process.env
+          })
+        }
+        let extension: Awaited<
+          ReturnType<NativeHostRegistrar['getStatus']>
+        > | null = null
+        if (nativeHostRegistrar !== null) {
+          try {
+            extension = await nativeHostRegistrar.getStatus()
+          } catch {
+            extension = nativeHostRegistrar.peekStatus()
+          }
+        }
+        return buildWelcomeInfo({
+          downloadDir,
+          browsers: welcomeBrowsers,
+          extension
+        })
+      }
+    }
+
     registerIpc({
       manager,
       aria2,
@@ -1150,6 +1199,7 @@ if (unregisterRequested) {
       checksums,
       settings,
       desktopSettings: desktopSettingsManager,
+      welcome,
       clipboardWriter: {
         writeText: (text: string) => {
           clipboard.writeText(text)

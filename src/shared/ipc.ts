@@ -76,6 +76,13 @@ export const IPC = {
   copyText: 'clipboard:copy-text',
   clipboardLink: 'clipboard:link-detected',
   revealRow: 'app:reveal-row',
+  // Completion-toast button press (open / show in folder). Main supplies the
+  // opaque job id it captured; toast XML arguments are never forwarded.
+  notificationAction: 'app:notification-action',
+  // First-start guide (additive). Detection and folder paths stay in main; the
+  // renderer receives labels, the download folder and connection state only.
+  getWelcomeInfo: 'welcome:get-info',
+  openWelcomeReleases: 'welcome:open-releases',
   // Managed yt-dlp updater (additive). Settings persist separately from the
   // aria2 download settings; state and manual checks never expose a URL/path.
   getMediaToolSettings: 'media-tools:get-settings',

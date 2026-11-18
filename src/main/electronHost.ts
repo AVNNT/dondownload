@@ -21,7 +21,38 @@ export function createElectronHost(): CoreHost {
     getResourcesPath: () => process.resourcesPath,
     getPath: (name) => app.getPath(name),
     isNotificationSupported: () => Notification.isSupported(),
-    createNotification: (options: HostNotificationOptions): HostNotification =>
-      new Notification({ title: options.title, body: options.body })
+    createNotification: (
+      options: HostNotificationOptions
+    ): HostNotification => {
+      const notification = new Notification({
+        title: options.title,
+        body: options.body,
+        // Only Windows understands raw toast XML; passing it elsewhere would
+        // simply be ignored, but the service only sets it on win32.
+        ...(options.toastXml === undefined
+          ? {}
+          : { toastXml: options.toastXml }),
+        ...(options.id === undefined ? {} : { id: options.id })
+      })
+
+      // The core only needs clicks and action indices. Electron's Windows
+      // toast implementation reports the pressed button index through the
+      // `action` event, including for custom toast XML.
+      return {
+        on: (event, listener) => {
+          if (event === 'click') {
+            notification.on('click', () => listener())
+          }
+        },
+        onAction: (listener) => {
+          notification.on('action', (details) => {
+            listener(details.actionIndex)
+          })
+        },
+        show: () => {
+          notification.show()
+        }
+      }
+    }
   }
 }

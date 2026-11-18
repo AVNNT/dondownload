@@ -5,7 +5,9 @@
  * desktop session. Only a transition into `complete` or `error` is announced;
  * `cancelled` (and any user-cancelled job) is intentionally silent.
  */
-export type NotificationJobKind = 'download' | 'media'
+import type { NotificationJobKind } from '@shared/notifications'
+
+export type { NotificationJobKind }
 
 export interface NotificationDecisionInput {
   enabled: boolean

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A short first-start guide: where downloads go, connecting your browser
+  (detected from the usual Windows install folders with the existing
+  native-messaging status), and the key shortcuts. It is shown once, can be
+  replayed from Settings → Getting started, and can be skipped with Esc.
+- Completion notifications on Windows now have "Open" and "Show in folder"
+  buttons. Clicking the toast body still reveals the finished row; a file that
+  was moved or deleted shows the normal missing-file message.
 - GitHub Actions release workflow (`.github/workflows/release.yml`): pushing a
   `v*` tag builds the installer on `windows-latest`, signs `SHA256SUMS.txt` with
   the `UPDATE_SIGNING_KEY` secret and creates a draft GitHub release for manual
@@ -19,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The persisted desktop settings gained a first-run flag (SQLite schema v22).
 - `scripts/stage-vendor.ps1` is self-contained: when no `DONDOWNLOAD_*` override,
   local installation or verified cache exists, it downloads the pinned official
   aria2 and FFmpeg release archives (in addition to yt-dlp) and verifies a

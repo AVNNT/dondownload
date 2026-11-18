@@ -85,7 +85,7 @@ describe('v17 history indexes', () => {
     const filePath = await makeDatabasePath()
     const database = open(filePath)
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(21)
+    expect(SCHEMA_VERSION).toBe(22)
 
     // Inspect the live connection that DownloadDatabase owns.
     const raw = (database as unknown as { db: DatabaseSync }).db
@@ -177,7 +177,7 @@ describe('v17 history indexes', () => {
     raw.close()
 
     const upgraded = open(filePath)
-    expect(upgraded.schemaVersion).toBe(21)
+    expect(upgraded.schemaVersion).toBe(22)
     const verify = (upgraded as unknown as { db: DatabaseSync }).db
     expect(indexNames(verify, 'downloads')).toContain(
       'downloads_created_at_updated_at_idx'

@@ -176,7 +176,11 @@ function errorMessage(error: unknown, fallback: string): string {
     : fallback
 }
 
-export function SettingsSection(): JSX.Element {
+export function SettingsSection({
+  onShowWelcomeGuide
+}: {
+  onShowWelcomeGuide?: () => void
+} = {}): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [draft, setDraft] = useState<DownloadSettings | null>(null)
   const [speedInput, setSpeedInput] = useState('')
@@ -1145,6 +1149,29 @@ export function SettingsSection(): JSX.Element {
                 commitDesktop({ exitToTrayStubWhenIdle: checked })
               }
             />
+          </SettingRow>
+        </div>
+      </section>
+
+      <section aria-labelledby="settings-getting-started">
+        <SectionHeading
+          id="settings-getting-started"
+          title="Getting started"
+          description="The guided setup shown on your first launch."
+        />
+        <div className="rounded-xl border border-white/10 surface-card divide-y divide-white/[0.07]">
+          <SettingRow
+            title="Welcome guide"
+            description="Where downloads go, connecting your browser, and the shortcuts worth knowing."
+          >
+            <button
+              type="button"
+              onClick={onShowWelcomeGuide}
+              disabled={onShowWelcomeGuide === undefined}
+              className={BTN_GHOST}
+            >
+              Show the welcome guide again
+            </button>
           </SettingRow>
         </div>
       </section>

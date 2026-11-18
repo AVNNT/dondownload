@@ -527,7 +527,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(21)
+    expect(SCHEMA_VERSION).toBe(22)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -1511,6 +1511,47 @@ describe('v5 migration rollback', () => {  it('rolls back added columns and sett
   })
 })
 
+describe('v21 to v22 first-start guide flag', () => {
+  it('adds the flag defaulted off and persists both values', async () => {
+    const filePath = await makeDatabasePath()
+    const seed = open(filePath)
+    expect(seed.loadDesktopSettings().welcomeGuideSeen).toBe(false)
+    close(seed)
+
+    // Simulate a profile created before the first-start guide existed.
+    const legacy = new DatabaseSync(filePath)
+    legacy.exec(`
+      ALTER TABLE desktop_settings DROP COLUMN welcome_guide_seen;
+      PRAGMA user_version = 21;
+    `)
+    legacy.close()
+
+    const migrated = open(filePath)
+    expect(migrated.schemaVersion).toBe(22)
+    expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
+    expect(migrated.loadDesktopSettings().welcomeGuideSeen).toBe(false)
+    migrated.saveDesktopSettings({
+      ...defaultDesktopSettings(),
+      welcomeGuideSeen: true
+    })
+    close(migrated)
+
+    const reopened = open(filePath)
+    expect(reopened.loadDesktopSettings().welcomeGuideSeen).toBe(true)
+    close(reopened)
+
+    const verify = new DatabaseSync(filePath)
+    expect(userVersion(verify)).toBe(SCHEMA_VERSION)
+    expect(columnNames(verify, 'desktop_settings')).toContain(
+      'welcome_guide_seen'
+    )
+    expect(rowsOf(verify, 'desktop_settings')[0]).toMatchObject({
+      welcome_guide_seen: 1
+    })
+    verify.close()
+  })
+})
+
 describe('v20 to v21 idle tray stub setting', () => {
   it('adds the setting defaulted on and round-trips both values', async () => {
     const filePath = await makeDatabasePath()
@@ -1527,7 +1568,7 @@ describe('v20 to v21 idle tray stub setting', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(21)
+    expect(migrated.schemaVersion).toBe(22)
     expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
     expect(migrated.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(true)
 

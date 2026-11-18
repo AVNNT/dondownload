@@ -170,6 +170,11 @@ const ShortcutsDialog = lazy(() =>
     default: module.ShortcutsDialog
   }))
 )
+const WelcomeGuide = lazy(() =>
+  import('./components/WelcomeGuide').then((module) => ({
+    default: module.WelcomeGuide
+  }))
+)
 const ContextMenu = lazy(() =>
   import('./components/ContextMenu').then((module) => ({
     default: module.ContextMenu
@@ -289,6 +294,7 @@ export default function App(): JSX.Element {
   const [settings, setSettings] = useState<DownloadSettings | null>(null)
   const [showReleaseNotes, setShowReleaseNotes] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
   /** Rows hidden by a pending (undoable) removal, plus that removal's plan. */
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemovalState>(
     EMPTY_PENDING_REMOVAL
@@ -325,6 +331,12 @@ export default function App(): JSX.Element {
         setSettings(result.value)
         applyRendererTheme(result.value.theme)
       }
+    })
+    // The first-start guide is decided by one persisted desktop flag. The
+    // guide component (and its browser probe) mounts only when it is shown.
+    void window.donDownload.getDesktopSettings().then((result) => {
+      if (cancelled || !result.ok) return
+      if (!result.value.welcomeGuideSeen) setWelcomeOpen(true)
     })
     void window.donDownload.getAppUpdateState().then((result) => {
       if (!cancelled && result.ok) setAppUpdate(result.value)
@@ -450,6 +462,51 @@ export default function App(): JSX.Element {
       unsubscribe()
     }
   }, [refreshAll])
+
+  // Completion-toast buttons. Main sends back the opaque id it captured from
+  // the finished job; the existing open/show channels resolve and validate the
+  // recorded path, so a moved or deleted file lands in the normal error banner.
+  useEffect(() => {
+    const unsubscribe = window.donDownload.onNotificationAction((request) => {
+      const action =
+        request.kind === 'download'
+          ? request.action === 'open'
+            ? window.donDownload.openFile(request.id)
+            : window.donDownload.showInFolder(request.id)
+          : request.action === 'open'
+            ? window.donDownload.openMediaFile(request.id)
+            : window.donDownload.showMediaInFolder(request.id)
+      void action
+        .then((result) => {
+          if (!result.ok) setBanner(result.error)
+        })
+        .catch(() => {
+          setBanner({
+            code: 'FILE_OPEN_FAILED',
+            message: 'The finished file could not be opened.'
+          })
+        })
+    })
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
+  const closeWelcomeGuide = useCallback((): void => {
+    setWelcomeOpen(false)
+    // Persist the one-time flag only after the user has actually seen the
+    // guide, so a crash before closing still shows it on the next launch.
+    void window.donDownload
+      .getDesktopSettings()
+      .then((result) => {
+        if (!result.ok || result.value.welcomeGuideSeen) return
+        return window.donDownload.updateDesktopSettings({
+          ...result.value,
+          welcomeGuideSeen: true
+        })
+      })
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1765,7 +1822,7 @@ export default function App(): JSX.Element {
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="mx-auto w-full max-w-3xl">
               <Suspense fallback={<LazyFallback label="Loading settings…" />}>
-                <SettingsSection />
+                <SettingsSection onShowWelcomeGuide={() => setWelcomeOpen(true)} />
                 <BrowserExtensionSection />
               </Suspense>
             </div>
@@ -1833,6 +1890,12 @@ export default function App(): JSX.Element {
       {shortcutsOpen ? (
         <Suspense fallback={null}>
           <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+        </Suspense>
+      ) : null}
+
+      {welcomeOpen ? (
+        <Suspense fallback={null}>
+          <WelcomeGuide onClose={closeWelcomeGuide} />
         </Suspense>
       ) : null}
 

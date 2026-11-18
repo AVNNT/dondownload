@@ -58,10 +58,13 @@ import { AppError } from '../errors'
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 21
+export const SCHEMA_VERSION = 22
 
 /** Column added by the v21 "free memory when idle in the tray" migration. */
 const COLUMN_EXIT_TO_TRAY_STUB = 'exit_to_tray_stub_when_idle'
+
+/** Column added by the v22 first-start guide migration. */
+const COLUMN_WELCOME_GUIDE_SEEN = 'welcome_guide_seen'
 
 const DOWNLOAD_STATUSES: ReadonlySet<string> = new Set<DownloadStatus>([
   'queued',
@@ -763,6 +766,30 @@ export const MIGRATIONS: readonly Migration[] = [
       UPDATE desktop_settings
         SET ${COLUMN_EXIT_TO_TRAY_STUB} = COALESCE(${COLUMN_EXIT_TO_TRAY_STUB}, 1);
     `
+  },
+  {
+    // Additive only: the first-start guide is an ordinary persisted preference.
+    // Existing installations see it once after upgrading (default 0), exactly
+    // like a fresh profile, and can re-open it from Settings afterwards.
+    version: 22,
+    prepare: (db) => {
+      // A database recreated by an earlier migration from the current schema
+      // text can already carry the column; adding it twice would fail.
+      if (tableHasColumn(db, 'desktop_settings', COLUMN_WELCOME_GUIDE_SEEN)) {
+        return
+      }
+      db.exec(`
+        ALTER TABLE desktop_settings
+          ADD COLUMN ${COLUMN_WELCOME_GUIDE_SEEN} INTEGER NOT NULL DEFAULT 0
+          CHECK (${COLUMN_WELCOME_GUIDE_SEEN} IN (0, 1))
+      `)
+    },
+    // The column is added by `prepare`; this keeps the statement list
+    // non-empty for the migrator's uniform BEGIN/COMMIT handling.
+    sql: `
+      UPDATE desktop_settings
+        SET ${COLUMN_WELCOME_GUIDE_SEEN} = COALESCE(${COLUMN_WELCOME_GUIDE_SEEN}, 0);
+    `
   }
 ]
 
@@ -968,6 +995,7 @@ function rowToDesktopSettings(row: Record<string, unknown>): DesktopSettings {
     watchClipboard: number(row, 'watch_clipboard', 0) === 1,
     launchAtLogin: number(row, 'launch_at_login', 0) === 1,
     exitToTrayStubWhenIdle: number(row, 'exit_to_tray_stub_when_idle', 1) === 1,
+    welcomeGuideSeen: number(row, 'welcome_guide_seen', 0) === 1,
     interfaceSizePercent: number(row, 'interface_size_percent', 100)
   })
 }
@@ -1245,8 +1273,8 @@ export class DownloadDatabase {
         INSERT INTO desktop_settings (
           id, resume_interrupted_on_startup, show_notifications,
           watch_clipboard, launch_at_login, exit_to_tray_stub_when_idle,
-          interface_size_percent, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+          welcome_guide_seen, interface_size_percent, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           resume_interrupted_on_startup =
             excluded.resume_interrupted_on_startup,
@@ -1254,6 +1282,7 @@ export class DownloadDatabase {
           watch_clipboard = excluded.watch_clipboard,
           launch_at_login = excluded.launch_at_login,
           exit_to_tray_stub_when_idle = excluded.exit_to_tray_stub_when_idle,
+          welcome_guide_seen = excluded.welcome_guide_seen,
           interface_size_percent = excluded.interface_size_percent,
           updated_at = excluded.updated_at
       `)
@@ -1707,6 +1736,7 @@ export class DownloadDatabase {
         parsed.watchClipboard ? 1 : 0,
         parsed.launchAtLogin ? 1 : 0,
         parsed.exitToTrayStubWhenIdle ? 1 : 0,
+        parsed.welcomeGuideSeen ? 1 : 0,
         parsed.interfaceSizePercent,
         Date.now()
       )
