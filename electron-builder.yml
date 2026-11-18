@@ -35,6 +35,10 @@ extraResources:
   # Compiled native messaging host. Produced by scripts/build-native-host.ps1.
   - from: native/dondownload-native-host.exe
     to: native/dondownload-native-host.exe
+  # Tiny native tray stub Electron hands the tray icon to before it quits an
+  # idle app. Produced by scripts/build-tray-stub.ps1.
+  - from: native/dondownload-tray.exe
+    to: native/dondownload-tray.exe
   # Unpacked Manifest V3 extension assets for manual loading.
   - from: extension
     to: extension

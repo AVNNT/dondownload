@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 // DonDownload native messaging host.
@@ -40,6 +42,11 @@ using System.Web.Script.Serialization;
 // endpoint, and POSTs only the validated fields to loopback with a bearer
 // token. It never accepts commands, paths, file names, raw format selectors or
 // filesystem input. All diagnostics go to stderr and never include URLs.
+//
+// When a bridge request fails because the app is not running, the host starts
+// <install>\DonDownload.exe once with --hidden and retries for up to 15 s while
+// the app boots. Development builds have no such executable, so they simply
+// report the failure as before.
 internal static class NativeHost
 {
     private const int MaxFrameBytes = 1024 * 1024;
@@ -89,6 +96,17 @@ internal static class NativeHost
     // already bounds at 60 seconds. The host must allow that plus bridge
     // overhead instead of cutting a valid analysis off at the regular timeout.
     private const int AnalyzeMediaTimeoutMilliseconds = 90000;
+    // When the app is not running this host starts it once and then polls the
+    // bridge endpoint until it answers. 250 ms keeps the wait responsive without
+    // spinning, and 15 s covers Electron start-up on a slow disk.
+    private const int WakeRetryIntervalMilliseconds = 250;
+    private const int WakeTimeoutMilliseconds = 15000;
+    // The desktop app reads this as "start without showing the window".
+    private const string HiddenStartArgument = "--hidden";
+    // The packaged layout puts the host in <install>\resources\native and the
+    // app at <install>\DonDownload.exe. A development checkout has no such exe,
+    // so a dev host never tries to start anything.
+    private const string AppExecutableName = "DonDownload.exe";
 
     private static readonly Regex TokenPattern =
         new Regex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
@@ -269,12 +287,140 @@ internal static class NativeHost
             }
         }
 
-        Dictionary<string, object> response = DispatchMessage(message);
+        Dictionary<string, object> response = WithAppWake(
+            delegate { return DispatchMessage(message); });
         if (requestId != null)
         {
             response[RequestIdKey] = requestId;
         }
         return response;
+    }
+
+    /// <summary>
+    /// Runs one request and, when the desktop bridge is unavailable, starts the
+    /// app once and then retries the request while it boots. Later requests use
+    /// the single wake window opened by that first attempt instead of starting
+    /// the app again or waiting a fresh 15 s each.
+    /// </summary>
+    private static Dictionary<string, object> WithAppWake(
+        Func<Dictionary<string, object>> operation)
+    {
+        Dictionary<string, object> response = operation();
+        if (!IsAppNotRunning(response))
+        {
+            return response;
+        }
+
+        DateTime deadline;
+        if (!TryStartAppAndGetRetryDeadline(out deadline))
+        {
+            return response;
+        }
+
+        while (DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(WakeRetryIntervalMilliseconds);
+            // Re-running the request re-reads the per-user bridge state file,
+            // which only exists while the app is running.
+            response = operation();
+            if (!IsAppNotRunning(response))
+            {
+                return response;
+            }
+        }
+        return response;
+    }
+
+    private static bool IsAppNotRunning(Dictionary<string, object> response)
+    {
+        if (response == null)
+        {
+            return false;
+        }
+
+        object okValue;
+        if (!response.TryGetValue("ok", out okValue) || !(okValue is bool) || (bool)okValue)
+        {
+            return false;
+        }
+
+        Dictionary<string, object> error = response.ContainsKey("error")
+            ? response["error"] as Dictionary<string, object>
+            : null;
+        return error != null &&
+            error.ContainsKey("code") &&
+            (error["code"] as string) == "APP_NOT_RUNNING";
+    }
+
+    // The app is started at most once per host process, and only when the
+    // packaged layout actually has it. A development checkout never does.
+    private static readonly object WakeLock = new object();
+    private static bool wakeAttempted;
+    private static DateTime wakeRetryDeadline = DateTime.MinValue;
+
+    private static bool TryStartAppAndGetRetryDeadline(out DateTime deadline)
+    {
+        lock (WakeLock)
+        {
+            if (!wakeAttempted)
+            {
+                wakeAttempted = true;
+                string executable = ResolveAppExecutable();
+                if (executable != null)
+                {
+                    try
+                    {
+                        ProcessStartInfo startInfo = new ProcessStartInfo(
+                            executable,
+                            HiddenStartArgument);
+                        // ShellExecute keeps the browser's native messaging
+                        // pipes out of the child entirely. A plain CreateProcess
+                        // would let the started app inherit this host's stdin
+                        // and stdout, which would keep the port open after the
+                        // host exits.
+                        startInfo.UseShellExecute = true;
+                        startInfo.WorkingDirectory = Path.GetDirectoryName(executable);
+                        Process.Start(startInfo);
+                        wakeRetryDeadline = DateTime.UtcNow.AddMilliseconds(
+                            WakeTimeoutMilliseconds);
+                    }
+                    catch (Exception)
+                    {
+                        // Starting the app is best effort. The caller still gets
+                        // the existing "not running" answer.
+                        wakeRetryDeadline = DateTime.MinValue;
+                    }
+                }
+            }
+
+            deadline = wakeRetryDeadline;
+            return deadline != DateTime.MinValue && DateTime.UtcNow < deadline;
+        }
+    }
+
+    private static string ResolveAppExecutable()
+    {
+        try
+        {
+            // <install>\resources\native\dondownload-native-host.exe means the
+            // app executable is two directories above the host.
+            string hostPath = typeof(NativeHost).Assembly.Location;
+            string hostDirectory = string.IsNullOrEmpty(hostPath)
+                ? AppDomain.CurrentDomain.BaseDirectory
+                : Path.GetDirectoryName(hostPath);
+            if (string.IsNullOrEmpty(hostDirectory))
+            {
+                return null;
+            }
+
+            string candidate = Path.GetFullPath(
+                Path.Combine(hostDirectory, "..", "..", AppExecutableName));
+            return File.Exists(candidate) ? candidate : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static Dictionary<string, object> DispatchMessage(Dictionary<string, object> message)

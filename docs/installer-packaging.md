@@ -81,9 +81,12 @@ If npm's `allow-scripts` policy skips Electron's postinstall step, run
 installs the already-declared Electron development dependency.
 
 `build:installer` runs the existing `build:native-host` script, then
-`stage:vendor`, then the existing `build` script (typecheck plus electron-vite
-production build), then electron-builder for the NSIS x64 target. No other
-package scripts are added by this baseline.
+`build:tray-stub`, then `stage:vendor`, then the existing `build` script
+(typecheck plus electron-vite production build), then electron-builder for the
+NSIS x64 target. `scripts/build-tray-stub.ps1` compiles `native/TrayStub.cs`
+into the windowed `native/dondownload-tray.exe` that is shipped next to the
+native messaging host in `resources/native/`. No other package scripts are
+added by this baseline.
 
 ## Vendor staging
 

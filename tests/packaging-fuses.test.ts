@@ -39,3 +39,26 @@ describe('packaged Electron fuses', () => {
     expect(scalar(fuses as string, 'runAsNode')).toBe('false')
   })
 })
+
+describe('packaged native helpers', () => {
+  const extraResources = mappingBody(builderConfig, 'extraResources') ?? ''
+
+  it('ships the tray stub beside the native messaging host', () => {
+    expect(extraResources).toContain('from: native/dondownload-native-host.exe')
+    expect(extraResources).toContain('to: native/dondownload-native-host.exe')
+    // The idle app hands its tray icon to this stub before quitting, so it must
+    // land in resources/native/ next to the host.
+    expect(extraResources).toContain('from: native/dondownload-tray.exe')
+    expect(extraResources).toContain('to: native/dondownload-tray.exe')
+  })
+
+  it('builds the tray stub with the native host before packaging', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+    ) as { scripts: Record<string, string> }
+
+    expect(manifest.scripts['build:tray-stub']).toContain('build-tray-stub.ps1')
+    expect(manifest.scripts['build:installer']).toContain('build:tray-stub')
+    expect(manifest.scripts['build:installer']).toContain('build:native-host')
+  })
+})
