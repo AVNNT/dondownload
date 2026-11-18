@@ -60,6 +60,7 @@ import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
 import { isUnsafeLocalPath } from '../scanner/manualMatch'
 import type { PickedVideoFolder } from '../scanner/manualMatch'
+import { isFileSystemRoot, isPathInside } from '../pathContainment'
 import {
   checkDeleteTarget,
   deleteTargetError,
@@ -104,15 +105,6 @@ function etaFor(status: Aria2StatusSnapshot): number | null {
   const remaining = status.totalLength - status.completedLength
   if (remaining <= 0) return 0
   return Math.ceil(remaining / status.downloadSpeed)
-}
-
-function isInsideDirectory(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate))
-  return (
-    relative.length > 0 &&
-    !relative.startsWith('..') &&
-    !path.isAbsolute(relative)
-  )
 }
 
 function isGidNotFound(error: unknown): boolean {
@@ -671,7 +663,7 @@ export class DownloadManager {
   ): void {
     const picked = this.resolvePairingFolder?.(token) ?? null
     if (picked === null) return
-    if (!isInsideDirectory(picked.directory, filePath)) return
+    if (!isPathInside(picked.directory, filePath)) return
     this.adoptRecordFile(id, filePath)
   }
 
@@ -1389,7 +1381,7 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(record.dir, record.filePath)) {
+    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'
@@ -1420,7 +1412,7 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(record.dir, record.filePath)) {
+    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'
@@ -1467,7 +1459,7 @@ export class DownloadManager {
     }
 
     const check = checkDeleteTarget({
-      root: record.dir,
+      root: this.recordContainmentRoot(record),
       filePath: record.filePath,
       finished: record.status === 'complete',
       entry
@@ -1501,7 +1493,7 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(record.dir, record.filePath)) {
+    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'
@@ -1842,8 +1834,13 @@ export class DownloadManager {
         // A download saved into an explicitly picked folder may live outside
         // the default root; remember it so retry/resume keep working after a
         // restart. A scanned script placed beside its video is one-shot and
-        // needs no such recovery.
-        if (!this.isInsideDownloadRoot(stored.record.dir)) {
+        // needs no such recovery. A drive-root directory is never trusted as a
+        // Save-to folder: retry then falls back to the normal root requirement
+        // and file actions use that same folder for containment.
+        if (
+          !isFileSystemRoot(stored.record.dir) &&
+          !this.isInsideDownloadRoot(stored.record.dir)
+        ) {
           this.customFolderIds.add(stored.record.id)
         }
         if (stored.record.status === 'active') {
@@ -1926,12 +1923,17 @@ export class DownloadManager {
   }
 
   private isInsideDownloadRoot(candidate: string): boolean {
-    const root = path.resolve(this.downloadDir)
-    const relative = path.relative(root, path.resolve(candidate))
-    return (
-      relative === '' ||
-      (!relative.startsWith('..') && !path.isAbsolute(relative))
-    )
+    return isPathInside(this.downloadDir, candidate, { allowEqual: true })
+  }
+
+  /**
+   * The folder that may authorise a recorded output for open/show/checksum/
+   * delete. A database row naming a drive root would otherwise authorise every
+   * file on that drive, so such a row is checked against the configured
+   * download folder instead.
+   */
+  private recordContainmentRoot(record: DownloadItem): string {
+    return isFileSystemRoot(record.dir) ? this.downloadDir : record.dir
   }
 
   /** Only a pairing script or an explicitly picked "Save to" folder may write outside the root. */

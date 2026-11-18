@@ -438,6 +438,103 @@ describe('chosen download folder', () => {
   })
 })
 
+describe('recorded output folder trust', () => {
+  function persistedRecord(
+    overrides: Partial<DownloadItem> & Pick<DownloadItem, 'id' | 'dir' | 'filePath'>
+  ): DownloadItem {
+    const now = Date.UTC(2026, 10, 4, 9, 30)
+    return {
+      gid: '0123456789abcdef',
+      url: 'https://example.com/files/sample.zip',
+      filename: 'sample.zip',
+      status: 'complete',
+      totalBytes: 10,
+      completedBytes: 10,
+      speedBps: 0,
+      etaSeconds: null,
+      errorMessage: null,
+      attempts: 1,
+      maxAttempts: 3,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+      ...overrides
+    }
+  }
+
+  it('refuses a drive-root dir that would authorise an arbitrary file', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const outside = path.join(path.dirname(downloadDir), 'outside.bin')
+    await writeFile(outside, 'not part of the download')
+    const id = '77777777-7777-4777-8777-777777777777'
+    database.save({
+      record: persistedRecord({
+        id,
+        dir: path.parse(outside).root,
+        filePath: outside
+      }),
+      explicitFilename: null
+    })
+
+    const trashItem = vi.fn(async () => undefined)
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      createTestHost({ trashItem })
+    )
+
+    await expect(manager.deleteFile(id)).rejects.toMatchObject({
+      code: 'FILE_OUTSIDE_DOWNLOAD_DIR'
+    })
+    await expect(manager.openFile(id)).rejects.toMatchObject({
+      code: 'FILE_OUTSIDE_DOWNLOAD_DIR'
+    })
+    await expect(manager.showInFolder(id)).rejects.toMatchObject({
+      code: 'FILE_OUTSIDE_DOWNLOAD_DIR'
+    })
+    await expect(manager.checksumTarget(id)).rejects.toMatchObject({
+      code: 'FILE_OUTSIDE_DOWNLOAD_DIR'
+    })
+    expect(trashItem).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the global download folder for a drive-root dir', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    await mkdir(downloadDir, { recursive: true })
+    const inside = path.join(downloadDir, 'inside.bin')
+    await writeFile(inside, 'downloaded file')
+    const id = '88888888-8888-4888-8888-888888888888'
+    database.save({
+      record: persistedRecord({
+        id,
+        dir: path.parse(downloadDir).root,
+        filePath: inside
+      }),
+      explicitFilename: null
+    })
+
+    const trashItem = vi.fn(async () => undefined)
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings,
+      undefined,
+      createTestHost({ trashItem })
+    )
+
+    await manager.deleteFile(id)
+    expect(trashItem).toHaveBeenCalledWith(inside)
+  })
+})
+
 describe('per-host connection back-off', () => {
   it('lowers the connections for the failing host only and retries there', async () => {
     vi.useFakeTimers()

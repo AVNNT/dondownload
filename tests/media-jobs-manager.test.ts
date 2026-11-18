@@ -1279,6 +1279,54 @@ describe('MediaJobsManager removal and show-in-folder', () => {
     expect(showItemInFolder).toHaveBeenCalledWith(filePath)
   })
 
+  it('does not let a persisted drive-root dir authorise an arbitrary file', async () => {
+    const mediaDir = await makeTempDir()
+    const outside = path.join(os.tmpdir(), 'outside-trusted-media.mp4')
+    await writeFile(outside, 'outside')
+    const id = '99999999-9999-4999-8999-999999999999'
+    const database = new FakePersistence()
+    database.seed(
+      recordFixture({
+        id,
+        status: 'complete',
+        dir: path.parse(mediaDir).root,
+        filePath: outside,
+        completedAt: 1
+      })
+    )
+    try {
+      const harness = await createHarness({ database, mediaDir })
+      await expect(
+        harness.manager.showMediaInFolder(id)
+      ).rejects.toMatchObject({ code: 'FILE_OUTSIDE_MEDIA_DIR' })
+      await expect(harness.manager.openMediaFile(id)).rejects.toMatchObject({
+        code: 'FILE_OUTSIDE_MEDIA_DIR'
+      })
+    } finally {
+      await rm(outside, { force: true })
+    }
+  })
+
+  it('falls back to the media folder for a drive-root dir', async () => {
+    const mediaDir = await makeTempDir()
+    const inside = path.join(mediaDir, 'trusted.mp4')
+    await writeFile(inside, 'media bytes')
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const database = new FakePersistence()
+    database.seed(
+      recordFixture({
+        id,
+        status: 'complete',
+        dir: path.parse(mediaDir).root,
+        filePath: inside,
+        completedAt: 1
+      })
+    )
+
+    const harness = await createHarness({ database, mediaDir })
+    await expect(harness.manager.openMediaFile(id)).resolves.toBeNull()
+  })
+
   it('rejects incomplete, outside-directory and missing files', async () => {
     const harness = await createHarness()
     const pending = await queueVideo(harness)

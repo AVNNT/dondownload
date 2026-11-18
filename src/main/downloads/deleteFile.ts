@@ -1,4 +1,4 @@
-import path from 'node:path'
+import { isFileSystemRoot, isPathInside } from '../pathContainment'
 
 /**
  * Safety policy for the "Delete file" action.
@@ -25,15 +25,6 @@ export interface DeleteTargetEntry {
 export type DeleteTargetCheck =
   | { ok: true }
   | { ok: false; problem: DeleteTargetProblem }
-
-function isInsideDirectory(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate))
-  return (
-    relative.length > 0 &&
-    !relative.startsWith('..') &&
-    !path.isAbsolute(relative)
-  )
-}
 
 export interface DeleteTargetErrorInfo {
   code: string
@@ -94,7 +85,13 @@ export function checkDeleteTarget(input: {
   if (input.filePath === null || input.filePath.trim().length === 0) {
     return { ok: false, problem: 'missing-path' }
   }
-  if (!isInsideDirectory(input.root, input.filePath)) {
+  // A drive root as the recorded folder would authorise every file on the
+  // drive. The caller passes a trusted folder for such rows; this is the last
+  // line of defence for any other caller.
+  if (isFileSystemRoot(input.root)) {
+    return { ok: false, problem: 'outside-directory' }
+  }
+  if (!isPathInside(input.root, input.filePath)) {
     return { ok: false, problem: 'outside-directory' }
   }
   if (input.entry === null) return { ok: false, problem: 'missing' }

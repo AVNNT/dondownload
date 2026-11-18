@@ -37,6 +37,7 @@ import {
 import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
 import { logError } from '../logging'
+import { isPathInside, safeContainmentRoot } from '../pathContainment'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -243,15 +244,6 @@ function isTerminalStatus(status: MediaJobStatus): boolean {
   return TERMINAL_STATUSES.has(status)
 }
 
-function isInsideDirectory(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate))
-  return (
-    relative.length > 0 &&
-    !relative.startsWith('..') &&
-    !path.isAbsolute(relative)
-  )
-}
-
 function nonNegativeInteger(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     return fallback
@@ -421,6 +413,15 @@ export class MediaJobsManager {
   getJob(id: string): MediaJob | null {
     const job = this.jobs.get(id)
     return job ? this.toMediaJob(job) : null
+  }
+
+  /**
+   * Folder that may authorise a recorded media output. A tampered row naming a
+   * drive root falls back to the configured media folder, so open/show/delete
+   * can never reach an arbitrary file on the drive.
+   */
+  private mediaContainmentRoot(record: MediaJobRecord): string {
+    return safeContainmentRoot(record.dir, this.outputRootDir)
   }
 
   /**
@@ -610,7 +611,7 @@ export class MediaJobsManager {
     if (
       destinationDir === undefined &&
       path.resolve(jobDir) !== path.resolve(this.outputRootDir) &&
-      !isInsideDirectory(this.outputRootDir, jobDir)
+      !isPathInside(this.outputRootDir, jobDir)
     ) {
       throw new AppError(
         'MEDIA_OUTPUT_UNAVAILABLE',
@@ -988,7 +989,7 @@ export class MediaJobsManager {
     }
 
     const check = checkDeleteTarget({
-      root: record.dir,
+      root: this.mediaContainmentRoot(record),
       filePath: record.filePath,
       finished: record.status === 'complete',
       entry
@@ -1148,7 +1149,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(record.dir, record.filePath)) {
+    if (!isPathInside(this.mediaContainmentRoot(record), record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
@@ -1176,7 +1177,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(record.dir, record.filePath)) {
+    if (!isPathInside(this.mediaContainmentRoot(record), record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
