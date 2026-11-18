@@ -118,7 +118,7 @@ export type AppUpdateStatus = (typeof APP_UPDATE_STATUSES)[number]
 /** Renderer-safe status of the application updater. */
 export interface AppUpdateState {
   status: AppUpdateStatus
-  /** False when `UPDATE_REPO` is null; every action reports not-configured. */
+  /** False when no usable release source or signing key is configured. */
   configured: boolean
   /** Running application version. */
   currentVersion: string

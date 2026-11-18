@@ -1115,8 +1115,9 @@ if (unregisterRequested) {
       nativeHostRegistrar = createNativeHostRegistrar(createRegistrationDependencies())
       void nativeHostRegistrar.repair()
     }
-    // GitHub Releases application updater. `UPDATE_REPO` is null until a
-    // public repository exists, so ordinary builds make no network request.
+    // GitHub Releases application updater. The source and signing key come from
+    // src/shared/release.ts; a build with either missing makes no network
+    // request and reports the source as not configured.
     appUpdate = createAppUpdateChecker({
       userDataPath: app.getPath('userData'),
       appVersion: app.getVersion(),

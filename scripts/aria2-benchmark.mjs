@@ -332,7 +332,7 @@ function baseArguments(root, split, maxConnections) {
     '--summary-interval=0',
     '--console-log-level=warn',
     '--download-result=hide',
-    '--user-agent=DonDownload/0.1.0'
+    '--user-agent=DonDownload/1.0.0'
   ]
 }
 

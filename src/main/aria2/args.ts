@@ -60,6 +60,6 @@ export function buildAria2Args(config: Aria2LaunchConfig): string[] {
     '--summary-interval=0',
     '--console-log-level=warn',
     '--download-result=hide',
-    '--user-agent=DonDownload/0.1.0'
+    '--user-agent=DonDownload/1.0.0'
   ]
 }

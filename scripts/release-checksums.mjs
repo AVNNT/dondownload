@@ -1,31 +1,37 @@
 #!/usr/bin/env node
 /**
- * Write dist/SHA256SUMS.txt for the NSIS installers in dist/.
+ * Write dist/SHA256SUMS.txt for the release installers and extension packages
+ * in dist/.
  *
  * Usage:
  *   npm run build:installer
  *   npm run release:checksums
  *
  * Each line is `<sha256>  <filename>` (two spaces), which is the format the
- * application updater parses before it accepts a GitHub release asset.
+ * application updater parses before it accepts a GitHub release asset. The
+ * installer lines come first; extension packages are appended so a simple
+ * parser that stops at the first line still sees the installer.
  *
  * When DONDOWNLOAD_UPDATE_SIGNING_KEY points to a PKCS#8 PEM Ed25519 private
  * key, the exact bytes of SHA256SUMS.txt are signed and the base64 signature is
  * written to SHA256SUMS.txt.sig. Without it the release cannot be served as an
  * automatic update.
+ *
+ * Run this only after every checksummed asset exists: changing any asset after
+ * signing invalidates the published signature.
  */
 import { createHash, createPrivateKey, sign } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { selectChecksumFiles } from './release-lib.mjs'
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..'
 )
 const distDirectory = path.join(repositoryRoot, 'dist')
-const installerPattern = /^DonDownload-\d+\.\d+\.\d+-x64-setup\.exe$/
 
 function hashFile(filePath) {
   return new Promise((resolve, reject) => {
@@ -45,18 +51,22 @@ async function main() {
     throw new Error(`The dist directory does not exist: ${distDirectory}`)
   }
 
-  const installers = names
-    .filter((name) => installerPattern.test(name))
-    .sort((left, right) => left.localeCompare(right))
+  const { installers, extensions, all } = selectChecksumFiles(names)
 
   if (installers.length === 0) {
     throw new Error(
       'No DonDownload-<version>-x64-setup.exe files were found in dist/. Run npm run build:installer first.'
     )
   }
+  if (extensions.length === 0) {
+    process.stderr.write(
+      'Warning: no dondownload-extension-<browser>-<version> packages were found in dist/, so ' +
+        'SHA256SUMS.txt covers the installers only. Run npm run release to build them.\n'
+    )
+  }
 
   const lines = []
-  for (const name of installers) {
+  for (const name of all) {
     const digest = await hashFile(path.join(distDirectory, name))
     lines.push(`${digest}  ${name}`)
   }
@@ -66,6 +76,8 @@ async function main() {
   process.stdout.write(
     `Wrote ${outputPath} for ${installers.length} installer${
       installers.length === 1 ? '' : 's'
+    } and ${extensions.length} extension package${
+      extensions.length === 1 ? '' : 's'
     }.\n`
   )
 

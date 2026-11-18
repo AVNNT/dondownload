@@ -148,7 +148,7 @@ function requestOnce(
         ? 'application/json, application/ld+json;q=0.9'
         : 'text/html, application/xhtml+xml;q=0.9',
     'Accept-Encoding': 'identity',
-    'User-Agent': 'DonDownload/0.1.0'
+    'User-Agent': 'DonDownload/1.0.0'
   }
   if (input.cookie !== undefined && isCookieHopSafe(cookieOrigin, parsed)) {
     headers.Cookie = input.cookie

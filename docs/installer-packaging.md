@@ -252,18 +252,17 @@ include those source archives; it is a build-verification artifact.
 ## Application updates
 
 The application can check GitHub Releases for a newer DonDownload installer.
-The source is deliberately opt-in: `src/shared/release.ts` exports
-`UPDATE_REPO`, and while it is `null` every update surface shows
-"Update source not configured" and no network request is made. Set it to a
-validated `{ owner, repo }` only when the repository and release assets are
-public.
+The source is fixed in `src/shared/release.ts`: `UPDATE_REPO` points at the
+public `AVNNT/dondownload` repository and `UPDATE_SIGNING_PUBLIC_KEY` holds the
+Ed25519 key that authenticates the release. Removing either value disables the
+updater: it reports the source as not configured and makes no network request.
 
 Updates are authenticated as well as integrity-checked. Every release must
 include a raw 64-byte Ed25519 signature over the exact bytes of
 `SHA256SUMS.txt`, base64 encoded as `SHA256SUMS.txt.sig`. The matching public
 key goes in `UPDATE_SIGNING_PUBLIC_KEY` as an SPKI PEM or its base64 SPKI DER.
-If `UPDATE_REPO` is set while the public key is `null`, the checker makes no
-request and reports **"Update signing key not configured"**.
+If a repository is configured while the public key is `null`, the checker makes
+no request and reports **"Update signing key not configured"**.
 
 When configured, the main process:
 
@@ -296,46 +295,56 @@ Release notes are shown as plain text only, truncated to 4 KiB.
 
 ### Publishing an update
 
-1. Bump `version` in `package.json`.
-2. Build the installer:
+`scripts/release.mjs` performs the whole local sequence and is the supported
+path; see [release-readiness.md](release-readiness.md) for the full checklist.
+
+1. Bump `version` in `package.json` and `extension/manifest.json`, and add the
+   matching `## [<version>] - <date>` section to `CHANGELOG.md`.
+2. Keep the Ed25519 update signing key pair outside this repository at
+   `%USERPROFILE%\.dondownload-release\update-signing-key.pem` (or point
+   `DONDOWNLOAD_UPDATE_SIGNING_KEY` at it) and back it up. Generate it once:
 
    ```powershell
-   npm run build:installer
-   ```
-
-3. Generate an Ed25519 update signing key pair outside this repository, once,
-   and keep the private key secret:
-
-   ```powershell
-   node scripts/generate-update-signing-key.mjs C:\secure\dondownload-update-key.pem
+   node scripts/generate-update-signing-key.mjs "$env:USERPROFILE\.dondownload-release\update-signing-key.pem"
    ```
 
    The script refuses paths inside the repository. It prints the public key as
    base64 SPKI DER; paste that into `UPDATE_SIGNING_PUBLIC_KEY` in
    `src/shared/release.ts`. Never commit the private key.
-
-4. Generate the checksum file for every `dist/DonDownload-*-setup.exe` and sign
-   it in the same step:
+3. Build and verify locally:
 
    ```powershell
-   $env:DONDOWNLOAD_UPDATE_SIGNING_KEY = 'C:\secure\dondownload-update-key.pem'
-   npm run release:checksums
+   npm run release
    ```
 
-   This writes `dist/SHA256SUMS.txt` in `<sha256>  <filename>` format and
-   `dist/SHA256SUMS.txt.sig` (base64 of the raw 64-byte Ed25519 signature over
-   the exact `SHA256SUMS.txt` bytes). Without the environment variable the
-   checksum file is written unsigned and a warning explains that the release
+   This refuses unless `master` is clean and matches `origin/master`, runs
+   `npm run build:installer`, builds
+   `dist/dondownload-extension-chromium-<version>.zip` and
+   `dist/dondownload-extension-firefox-<version>.xpi`, then writes and signs
+   `dist/SHA256SUMS.txt` (installers and extension packages) and writes
+   `dist/THIRD-PARTY-SOURCES.txt`. It prints the asset list without tagging,
+   pushing or uploading anything.
+
+   To run only part of it: `npm run build:installer`, then
+   `npm run release:checksums` with `DONDOWNLOAD_UPDATE_SIGNING_KEY` set. That
+   lower-level script hashes every `dist/DonDownload-<version>-x64-setup.exe`
+   and `dist/dondownload-extension-<browser>-<version>.(zip|xpi)`; the installer
+   line is first, which is the line the updater looks for. Without the
+   environment variable it writes an unsigned file and warns that the release
    cannot be served as an automatic update.
+4. Create the draft release (lightweight tag `v<version>`, pushed, then
+   `gh release create --draft`) with every asset: installer, its `.blockmap`
+   when present, both extension packages, `SHA256SUMS.txt`,
+   `SHA256SUMS.txt.sig` and `THIRD-PARTY-SOURCES.txt`, plus any source archives
+   under `%USERPROFILE%\.dondownload-release\sources\`.
 
-5. Create a GitHub release whose tag matches the app version (`vX.Y.Z` or
-   `X.Y.Z`) and upload all three:
-   - `dist/DonDownload-<version>-x64-setup.exe`
-   - `dist/SHA256SUMS.txt`
-   - `dist/SHA256SUMS.txt.sig`
+   ```powershell
+   npm run release -- --publish
+   ```
 
-6. Point `UPDATE_REPO` at that public repository. The installed app checks it
-   on the next startup at most once per 24 hours.
+5. Review the draft, verify the signature and hashes, then publish it on
+   GitHub manually. Drafts are invisible to the updater. The installed app then
+   checks the published release at most once per 24 hours.
 
 ## Verification
 
@@ -410,13 +419,17 @@ testing as a manual step.
   after any source change before release.
 - FFprobe is not staged and not invoked; the header read uses FFmpeg.
 - The installer is not code-signed. Public distribution requires signing.
-- No auto-update, publish provider or telemetry is configured. The application
-  updater exists but stays inert while `UPDATE_REPO` is `null`.
+- No publish provider or telemetry is configured in `electron-builder.yml`
+  (`publish: null`). The application updater reads GitHub Releases for
+  `AVNNT/dondownload` and needs a signed `SHA256SUMS.txt`; releases are created
+  locally with `npm run release -- --publish` and published manually.
 - No installer icon/branding is supplied; electron-builder may use its default
   icon until branded assets are added.
-- GPL corresponding-source archives are not bundled or published by this
-  baseline. A release owner must complete the source-offer strategy before any
-  redistribution.
+- GPL corresponding-source archives are not downloaded or bundled by the build.
+  `scripts/release.mjs` attaches archives from
+  `%USERPROFILE%\.dondownload-release\sources\` when present and always writes
+  `dist/THIRD-PARTY-SOURCES.txt`. A release owner must still complete the
+  source-offer strategy before any redistribution.
 - Browser native-host registration remains manual and is not performed by the
   installer.
 - The local artifact is built from locally installed tools; it is not a

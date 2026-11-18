@@ -68,6 +68,14 @@ distribution model. At minimum:
    corresponding-source sufficiency, notices, source-offer wording and the
    intended installer/distribution model.
 
+`scripts/release.mjs` implements the mechanical part of item 6: it writes
+`dist/THIRD-PARTY-SOURCES.txt` for every release and attaches any source
+archives the release owner placed in
+`%USERPROFILE%\.dondownload-release\sources\`. That file lists each GPL
+component with its exact shipped version and upstream source URL, and records
+the SHA-256 of every attached archive. It does not establish that the archives
+are complete corresponding source for the shipped binaries.
+
 Current status: the repository contains readable notices and candidate upstream
 source URLs, but it does **not** contain/publish complete corresponding-source
 archives or a reviewed written offer. Redistribution clearance is therefore
