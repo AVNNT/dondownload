@@ -1367,6 +1367,9 @@ describe('batch children', () => {
 
 describe('automatic retry after a transient failure', () => {
   it('waits 3 s and retries a broken connection once, resuming the partial file', async () => {
+    // Fake timers: the backoff is exercised exactly, never by sleeping in real
+    // time and hoping the retry lands inside a wall-clock deadline.
+    vi.useFakeTimers()
     const { database, downloadDir } = await makeWorkspace()
     const clock = { value: at(9, 30) }
     const settings = { value: settingsWithHours(false) }
@@ -1376,46 +1379,50 @@ describe('automatic retry after a transient failure', () => {
       clock,
       settings
     )
-    const url = 'https://example.com/flaky.bin'
 
-    await manager.add({ url })
-    const first = itemByUrl(manager, url)
-    aria2.fail(first.gid, 6, 'Connection reset by peer')
+    try {
+      const url = 'https://example.com/flaky.bin'
 
-    await manager.refreshPolicy()
-    const waiting = itemByUrl(manager, url)
-    expect(waiting).toMatchObject({
-      status: 'error',
-      errorMessage: 'The connection was interrupted.',
-      errorDetail: 'aria2 code 6: Connection reset by peer',
-      attempts: 1
-    })
-    expect(waiting.retryAt).toBe(clock.value + 3_000)
-    expect(aria2.addUriCalls).toHaveLength(1)
+      await manager.add({ url })
+      const first = itemByUrl(manager, url)
+      aria2.fail(first.gid, 6, 'Connection reset by peer')
 
-    // The scheduled retry re-adds the job after the backoff.
-    await vi.waitFor(
-      () => expect(itemByUrl(manager, url).attempts).toBe(2),
-      { timeout: 5_000 }
-    )
-    const retried = itemByUrl(manager, url)
-    expect(retried).toMatchObject({
-      status: 'queued',
-      errorMessage: null,
-      errorDetail: null,
-      retryAt: null
-    })
-    expect(aria2.addUriCalls).toHaveLength(2)
+      await manager.refreshPolicy()
+      const waiting = itemByUrl(manager, url)
+      expect(waiting).toMatchObject({
+        status: 'error',
+        errorMessage: 'The connection was interrupted.',
+        errorDetail: 'aria2 code 6: Connection reset by peer',
+        attempts: 1
+      })
+      expect(waiting.retryAt).toBe(clock.value + 3_000)
+      expect(aria2.addUriCalls).toHaveLength(1)
 
-    // A second transient failure waits the longer backoff.
-    aria2.fail(retried.gid, 2, 'Timeout.')
-    await manager.refreshPolicy()
-    expect(itemByUrl(manager, url)).toMatchObject({
-      status: 'error',
-      errorMessage: 'The server stopped responding.',
-      attempts: 2,
-      retryAt: clock.value + 10_000
-    })
+      // The scheduled retry re-adds the job once the backoff elapses.
+      await vi.advanceTimersByTimeAsync(3_000)
+      await vi.waitFor(() => expect(itemByUrl(manager, url).attempts).toBe(2))
+      const retried = itemByUrl(manager, url)
+      expect(retried).toMatchObject({
+        status: 'queued',
+        errorMessage: null,
+        errorDetail: null,
+        retryAt: null
+      })
+      expect(aria2.addUriCalls).toHaveLength(2)
+
+      // A second transient failure waits the longer backoff.
+      aria2.fail(retried.gid, 2, 'Timeout.')
+      await manager.refreshPolicy()
+      expect(itemByUrl(manager, url)).toMatchObject({
+        status: 'error',
+        errorMessage: 'The server stopped responding.',
+        attempts: 2,
+        retryAt: clock.value + 10_000
+      })
+    } finally {
+      manager.close()
+      vi.useRealTimers()
+    }
   })
 
   it('never retries a non-transient failure automatically', async () => {
@@ -1446,6 +1453,7 @@ describe('automatic retry after a transient failure', () => {
   })
 
   it('cancels a pending automatic retry when the download is removed', async () => {
+    vi.useFakeTimers()
     const { database, downloadDir } = await makeWorkspace()
     const clock = { value: at(9, 30) }
     const settings = { value: settingsWithHours(false) }
@@ -1455,19 +1463,30 @@ describe('automatic retry after a transient failure', () => {
       clock,
       settings
     )
-    const url = 'https://example.com/removed.bin'
 
-    await manager.add({ url })
-    const item = itemByUrl(manager, url)
-    aria2.fail(item.gid, 5, 'Too slow')
+    try {
+      const url = 'https://example.com/removed.bin'
 
-    await manager.refreshPolicy()
-    expect(itemByUrl(manager, url).retryAt).not.toBeNull()
+      await manager.add({ url })
+      const item = itemByUrl(manager, url)
+      aria2.fail(item.gid, 5, 'Too slow')
 
-    await manager.remove(item.id)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(manager.getSnapshot().downloads).toHaveLength(0)
-    expect(aria2.addUriCalls).toHaveLength(1)
+      await manager.refreshPolicy()
+      expect(itemByUrl(manager, url).retryAt).not.toBeNull()
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+      await manager.remove(item.id)
+
+      // The retry timer is gone with the row, so nothing is left to fire and
+      // the job is never handed back to aria2, however long we wait.
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(manager.getSnapshot().downloads).toHaveLength(0)
+      expect(aria2.addUriCalls).toHaveLength(1)
+    } finally {
+      manager.close()
+      vi.useRealTimers()
+    }
   })
 })
 
