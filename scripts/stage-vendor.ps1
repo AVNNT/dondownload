@@ -4,10 +4,25 @@
 Stages verified third-party Windows executables for the DonDownload installer.
 
 .DESCRIPTION
-Copies only the expected executables from an explicit DONDOWNLOAD_*_PATH
-override or a verified local installation path into the ignored build\vendor
-staging directory. It never installs, upgrades or modifies a tool, the registry,
-the firewall or an existing DonDownload installation.
+Stages the pinned third-party Windows executables into the ignored build\vendor
+directory. It never installs, upgrades or modifies a tool, the registry, the
+firewall or an existing DonDownload installation.
+
+Each tool is resolved from the first of these that exists:
+
+  1. an explicit DONDOWNLOAD_*_PATH executable override, or the matching
+     DONDOWNLOAD_*_ZIP_PATH release-archive override;
+  2. a documented local installation path, then a PATH lookup;
+  3. a verified release archive cached below
+     %LOCALAPPDATA%\DonDownload\vendor;
+  4. the pinned official upstream release archive, downloaded from the exact
+     URL hard-coded below and accepted only when its SHA-256 matches the pinned
+     value.
+
+Step 4 is what makes the installer build self-contained: a clean Windows
+machine or a GitHub Actions runner needs only Node.js, npm and the .NET
+Framework compiler. Only the pinned URLs below are ever downloaded, and nothing
+is extracted before its checksum matches.
 
 Only aria2, yt-dlp and FFmpeg are staged. FFprobe and Deno are not: the app
 reads stream headers with FFmpeg itself and downloads Deno on demand for YouTube
@@ -15,11 +30,8 @@ JS challenges.
 
 yt-dlp is staged as the official Windows one-folder build (`yt-dlp.exe` plus
 `_internal\`) because it starts much faster than the PyInstaller one-file
-executable. A verified local `yt-dlp_win.zip` may be supplied with
-DONDOWNLOAD_YTDLP_ZIP_PATH (or a cached copy may exist below
-%LOCALAPPDATA%\DonDownload\vendor). When neither is present, the script downloads
-only the pinned yt-dlp archive URL below and requires its SHA-256 to match the
-pinned value; no other download is performed.
+executable. aria2 and FFmpeg are staged as single executables taken from their
+official Windows release archives.
 
 Every tool is executed with a read-only version flag and its version must match
 the pinned version below. A missing tool, a mismatched version, a missing
@@ -32,8 +44,18 @@ metadata for each staged file.
 Optional staging directory. It must be a child of the repository's build\
 directory. Defaults to build\vendor.
 
+.PARAMETER ForceArchiveDownload
+Skip every local executable path and every DONDOWNLOAD_*_ZIP_PATH override, and
+resolve each tool from its verified cached or downloaded upstream release
+archive. This exists so the download path can be verified on a machine that also
+has the tools installed; CI runners need no flag because they have no local
+installations.
+
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1 -ForceArchiveDownload
 
 .EXAMPLE
 $env:DONDOWNLOAD_YTDLP_ZIP_PATH = 'D:\downloads\yt-dlp_win.zip'
@@ -45,10 +67,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stage-vendor.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [switch]$ForceArchiveDownload
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-WebRequest's progress bar makes the multi-megabyte vendor downloads
+# dramatically slower on Windows PowerShell 5.1.
+$ProgressPreference = 'SilentlyContinue'
 
 $root = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
@@ -88,6 +114,15 @@ $tools = @(
         KnownPaths           = @(
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\aria2.aria2_Microsoft.Winget.Source_8wekyb3d8bbwe\aria2-1.37.0-win-64bit-build1\aria2c.exe'
         )
+        # Official Windows release asset for the pinned version. The checksum
+        # below was computed from this exact asset; there is no other download
+        # source for aria2.
+        ArchiveEnvOverride   = 'DONDOWNLOAD_ARIA2_ZIP_PATH'
+        CacheFileName        = 'aria2-1.37.0-win-64bit-build1.zip'
+        ArchiveFileName      = 'aria2-1.37.0-win-64bit-build1.zip'
+        ArchiveUrl           = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
+        ArchiveSha256        = '67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288'
+        ArchiveEntry         = 'aria2-1.37.0-win-64bit-build1/aria2c.exe'
         License              = 'GPL-2.0-or-later'
         LicenseFiles         = @(
             'third-party\licenses\aria2-COPYING.txt',
@@ -111,6 +146,7 @@ $tools = @(
         # every launch. It is staged as `yt-dlp\yt-dlp.exe` plus `_internal\`.
         Layout               = 'onedir'
         ArchiveEnvOverride   = 'DONDOWNLOAD_YTDLP_ZIP_PATH'
+        CacheFileName        = 'yt-dlp_win-2026.10.26.zip'
         ArchiveFileName      = 'yt-dlp_win.zip'
         ArchiveUrl           = 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip'
         ArchiveSha256        = 'fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419'
@@ -140,9 +176,13 @@ $tools = @(
         KnownPaths           = @(
             # Gyan "essentials" build: about half the size of the full build and
             # covers every muxer/codec DonDownload uses (mp4/mkv/webm merges,
-            # mp3/m4a/opus extraction, HLS over https). Extracted from
+            # mp3/m4a/opus extraction, HLS over https). The build is the same
+            # bytes whether it comes from
             # https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip
+            # or from the GyanD/codexffmpeg GitHub release used below
             # (SHA-256 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba).
+            # The GitHub release asset is pinned because it is the more stable
+            # download location for CI.
             #
             # This stays the smallest build that can be verified here. The
             # "essentials" variant is already Gyan's reduced build: the shared
@@ -155,6 +195,15 @@ $tools = @(
             (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'),
             'C:\Users\PC\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe'
         )
+        # GyanD/codexffmpeg release asset for the pinned FFmpeg version. It is
+        # byte-identical to the gyan.dev package and is the stable mirror for
+        # automated builds.
+        ArchiveEnvOverride   = 'DONDOWNLOAD_FFMPEG_ZIP_PATH'
+        CacheFileName        = 'ffmpeg-9.0.2-essentials_build.zip'
+        ArchiveFileName      = 'ffmpeg-9.0.2-essentials_build.zip'
+        ArchiveUrl           = 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip'
+        ArchiveSha256        = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
+        ArchiveEntry         = 'ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe'
         License              = 'GPL-3.0-or-later (Gyan essentials build)'
         LicenseFiles         = @(
             'third-party\licenses\ffmpeg-GPLv3.txt',
@@ -167,18 +216,40 @@ $tools = @(
     }
 )
 
-function Resolve-ToolSource {
+function Test-ToolProperty {
+    param(
+        [pscustomobject]$Tool,
+        [string]$Name
+    )
+    return ($Tool.PSObject.Properties.Name -contains $Name)
+}
+
+function Get-VendorCacheDirectory {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        return (Join-Path ([System.IO.Path]::GetTempPath()) 'DonDownload\vendor')
+    }
+    return (Join-Path $env:LOCALAPPDATA 'DonDownload\vendor')
+}
+
+function Resolve-ConfiguredPath {
+    param([string]$Path)
+
+    $raw = $Path.Trim().Trim('"')
+    if ([System.IO.Path]::IsPathRooted($raw)) {
+        return [System.IO.Path]::GetFullPath($raw)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $root $raw))
+}
+
+# Returns a verified local executable, or $null when this machine has no usable
+# local copy. A DONDOWNLOAD_*_PATH override that points at a missing file still
+# fails loudly; only the documented fallback paths may be absent.
+function Find-ToolSource {
     param([pscustomobject]$Tool)
 
     $override = [Environment]::GetEnvironmentVariable($Tool.EnvOverride)
     if (-not [string]::IsNullOrWhiteSpace($override)) {
-        $raw = $override.Trim().Trim('"')
-        $candidate = if ([System.IO.Path]::IsPathRooted($raw)) {
-            $raw
-        } else {
-            Join-Path $root $raw
-        }
-        $candidate = [System.IO.Path]::GetFullPath($candidate)
+        $candidate = Resolve-ConfiguredPath -Path $override
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             throw "$($Tool.Name): $($Tool.EnvOverride) points to a missing file: $candidate"
         }
@@ -211,7 +282,7 @@ function Resolve-ToolSource {
         }
     }
 
-    throw "$($Tool.Name): no executable found. Set $($Tool.EnvOverride), install the verified version locally, or add it to PATH. Nothing is downloaded by this script."
+    return $null
 }
 
 function Get-ToolVersion {
@@ -261,7 +332,11 @@ function Expand-VerifiedZip {
     param(
         [string]$ZipPath,
         [string]$Destination,
-        [pscustomobject]$Tool
+        [pscustomobject]$Tool,
+        # When set, every entry is still validated and size-capped, but only this
+        # one relative entry (with `/` separators) is written. The large
+        # upstream FFmpeg archive needs one executable out of 49 entries.
+        [string]$OnlyRelativePath
     )
 
     # Caps mirror the runtime updater: reject oversized archives before any
@@ -269,6 +344,12 @@ function Expand-VerifiedZip {
     $maxEntries = 20000
     $maxTotalBytes = [long](300 * 1024 * 1024)
     $maxEntryBytes = [long](300 * 1024 * 1024)
+
+    $wanted = $null
+    if (-not [string]::IsNullOrWhiteSpace($OnlyRelativePath)) {
+        $wanted = $OnlyRelativePath.Replace('\', '/')
+    }
+    $found = $false
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $destinationFull = [System.IO.Path]::GetFullPath($Destination)
@@ -304,6 +385,17 @@ function Expand-VerifiedZip {
             if ($entry.Length -gt $maxEntryBytes) {
                 throw "$($Tool.Name): archive entry exceeds the extraction size limit: $name"
             }
+
+            if ($null -ne $wanted) {
+                if (-not [string]::Equals($name, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+                $found = $true
+            }
+
+            # Only count what is actually written: the FFmpeg archive holds
+            # ffmpeg, ffprobe and ffplay, and one extracted executable is all
+            # this script ever stages.
             $totalBytes += $entry.Length
             if ($totalBytes -gt $maxTotalBytes) {
                 throw "$($Tool.Name): archive expands beyond the extraction size limit."
@@ -321,53 +413,37 @@ function Expand-VerifiedZip {
     } finally {
         $zip.Dispose()
     }
+
+    if ($null -ne $wanted -and -not $found) {
+        throw "$($Tool.Name): the verified archive does not contain the expected entry: $wanted"
+    }
 }
 
-function Resolve-YtdlpOnedir {
-    param([pscustomobject]$Tool)
+# Resolve a pinned upstream release archive from the first available source:
+# an explicit *_ZIP_PATH override, a verified cache below
+# %LOCALAPPDATA%\DonDownload\vendor, or the pinned upstream URL. Every source is
+# SHA-256 checked before it can be extracted.
+function Resolve-ToolArchive {
+    param(
+        [pscustomobject]$Tool,
+        [switch]$IgnoreOverride
+    )
 
-    $cacheDir = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        Join-Path ([System.IO.Path]::GetTempPath()) 'DonDownload\vendor'
-    } else {
-        Join-Path $env:LOCALAPPDATA 'DonDownload\vendor'
-    }
-    $cachePath = Join-Path $cacheDir ("yt-dlp_win-{0}.zip" -f $Tool.ExpectedVersion)
+    $cacheDirectory = Get-VendorCacheDirectory
+    $cachePath = Join-Path $cacheDirectory $Tool.CacheFileName
 
-    $override = [Environment]::GetEnvironmentVariable($Tool.ArchiveEnvOverride)
-    if (-not [string]::IsNullOrWhiteSpace($override)) {
-        $raw = $override.Trim().Trim('"')
-        $candidate = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $root $raw }
-        $candidate = [System.IO.Path]::GetFullPath($candidate)
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            throw "$($Tool.Name): $($Tool.ArchiveEnvOverride) points to a missing file: $candidate"
-        }
-        Assert-Sha256 -Path $candidate -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) archive" | Out-Null
-        return [pscustomobject]@{
-            ZipPath   = $candidate
-            Directory = $null
-            Kind      = 'environment-override'
-            Origin    = $Tool.ArchiveEnvOverride
-        }
-    }
-
-    # A staged one-folder installation can be pointed at directly.
-    $exeCandidates = New-Object System.Collections.Generic.List[string]
-    $exeOverride = [Environment]::GetEnvironmentVariable($Tool.EnvOverride)
-    if (-not [string]::IsNullOrWhiteSpace($exeOverride)) {
-        $raw = $exeOverride.Trim().Trim('"')
-        $exeCandidates.Add($(if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $root $raw }))
-    }
-    foreach ($known in $Tool.KnownPaths) { $exeCandidates.Add($known) }
-    foreach ($candidate in $exeCandidates) {
-        $exePath = [System.IO.Path]::GetFullPath($candidate)
-        if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) { continue }
-        $directory = Split-Path -Parent $exePath
-        if (Test-Path -LiteralPath (Join-Path $directory '_internal') -PathType Container) {
+    if (-not $IgnoreOverride -and (Test-ToolProperty -Tool $Tool -Name 'ArchiveEnvOverride')) {
+        $override = [Environment]::GetEnvironmentVariable($Tool.ArchiveEnvOverride)
+        if (-not [string]::IsNullOrWhiteSpace($override)) {
+            $candidate = Resolve-ConfiguredPath -Path $override
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                throw "$($Tool.Name): $($Tool.ArchiveEnvOverride) points to a missing file: $candidate"
+            }
+            Assert-Sha256 -Path $candidate -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) archive" | Out-Null
             return [pscustomobject]@{
-                ZipPath   = $null
-                Directory = $directory
-                Kind      = 'verified-local-onedir'
-                Origin    = 'documented one-folder installation'
+                ZipPath = $candidate
+                Kind    = 'environment-override'
+                Origin  = $Tool.ArchiveEnvOverride
             }
         }
     }
@@ -375,16 +451,17 @@ function Resolve-YtdlpOnedir {
     if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
         Assert-Sha256 -Path $cachePath -Expected $Tool.ArchiveSha256 -Description "$($Tool.Name) cached archive" | Out-Null
         return [pscustomobject]@{
-            ZipPath   = $cachePath
-            Directory = $null
-            Kind      = 'verified-local-cache'
-            Origin    = $cachePath
+            ZipPath = $cachePath
+            Kind    = 'verified-local-cache'
+            Origin  = $cachePath
         }
     }
 
     # No verified local copy: fetch only the pinned official archive URL.
-    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
-    $tempDownload = Join-Path $cacheDir ('.yt-dlp-download-{0}.zip' -f [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $cacheDirectory | Out-Null
+    $tempDownload = Join-Path $cacheDirectory (
+        '.{0}-{1}.zip' -f [System.IO.Path]::GetFileNameWithoutExtension($Tool.CacheFileName), [guid]::NewGuid().ToString('N')
+    )
     try {
         Write-Host "Downloading pinned $($Tool.ArchiveFileName) from $($Tool.ArchiveUrl)"
         Invoke-WebRequest -Uri $Tool.ArchiveUrl -OutFile $tempDownload -UseBasicParsing
@@ -398,10 +475,53 @@ function Resolve-YtdlpOnedir {
     }
 
     return [pscustomobject]@{
-        ZipPath   = $cachePath
+        ZipPath = $cachePath
+        Kind    = 'verified-upstream-archive'
+        Origin  = $Tool.ArchiveUrl
+    }
+}
+
+function Resolve-YtdlpOnedir {
+    param(
+        [pscustomobject]$Tool,
+        [bool]$SkipLocal
+    )
+
+    if (-not $SkipLocal) {
+        # A zip override or a staged one-folder installation always wins over
+        # the cache and the pinned download.
+        $override = [Environment]::GetEnvironmentVariable($Tool.ArchiveEnvOverride)
+        if (-not [string]::IsNullOrWhiteSpace($override)) {
+            return Resolve-ToolArchive -Tool $Tool
+        }
+
+        $exeCandidates = New-Object System.Collections.Generic.List[string]
+        $exeOverride = [Environment]::GetEnvironmentVariable($Tool.EnvOverride)
+        if (-not [string]::IsNullOrWhiteSpace($exeOverride)) {
+            $exeCandidates.Add((Resolve-ConfiguredPath -Path $exeOverride))
+        }
+        foreach ($known in $Tool.KnownPaths) { $exeCandidates.Add($known) }
+        foreach ($candidate in $exeCandidates) {
+            $exePath = [System.IO.Path]::GetFullPath($candidate)
+            if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) { continue }
+            $directory = Split-Path -Parent $exePath
+            if (Test-Path -LiteralPath (Join-Path $directory '_internal') -PathType Container) {
+                return [pscustomobject]@{
+                    ZipPath   = $null
+                    Directory = $directory
+                    Kind      = 'verified-local-onedir'
+                    Origin    = 'documented one-folder installation'
+                }
+            }
+        }
+    }
+
+    $archive = Resolve-ToolArchive -Tool $Tool -IgnoreOverride:$SkipLocal
+    return [pscustomobject]@{
+        ZipPath   = $archive.ZipPath
         Directory = $null
-        Kind      = 'verified-github-archive'
-        Origin    = $Tool.ArchiveUrl
+        Kind      = $archive.Kind
+        Origin    = $archive.Origin
     }
 }
 
@@ -432,7 +552,7 @@ foreach ($tool in $tools) {
 
     if ($isOnedir) {
         # Stage the official one-folder build: `yt-dlp.exe` plus `_internal\`.
-        $archive = Resolve-YtdlpOnedir -Tool $tool
+        $archive = Resolve-YtdlpOnedir -Tool $tool -SkipLocal:$ForceArchiveDownload
         $sourceDirectory = $archive.Directory
         if ($null -eq $sourceDirectory) {
             $stagingWork = Join-Path ([System.IO.Path]::GetTempPath()) ('dondownload-stage-{0}-{1}' -f $tool.Name, [guid]::NewGuid().ToString('N'))
@@ -492,24 +612,74 @@ foreach ($tool in $tools) {
             }
         }
     } else {
-        $source = Resolve-ToolSource -Tool $tool
-        $version = Get-ToolVersion -Tool $tool -Path $source.Path
-
-        $target = Join-Path $OutputDirectory $tool.TargetRelativePath
-        $targetDirectory = Split-Path -Parent $target
-        New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
-        Copy-Item -LiteralPath $source.Path -Destination $target -Force
-
-        $sourceHash = Get-Sha256 -Path $source.Path
-        $stagedHash = Get-Sha256 -Path $target
-        if ($sourceHash -ne $stagedHash) {
-            throw "$($tool.Name): staged copy hash does not match the source hash."
+        # Single-executable tool: an explicit archive override wins, then a local
+        # executable, then the verified cache or the pinned upstream archive.
+        $archive = $null
+        $source = $null
+        if ($ForceArchiveDownload) {
+            $archive = Resolve-ToolArchive -Tool $tool -IgnoreOverride
+        } else {
+            $archiveOverride = [Environment]::GetEnvironmentVariable($tool.ArchiveEnvOverride)
+            if (-not [string]::IsNullOrWhiteSpace($archiveOverride)) {
+                $archive = Resolve-ToolArchive -Tool $tool
+            } else {
+                $source = Find-ToolSource -Tool $tool
+                if ($null -eq $source) {
+                    $archive = Resolve-ToolArchive -Tool $tool
+                }
+            }
         }
 
-        $item = Get-Item -LiteralPath $target
-        $sourceKind = $source.Kind
-        $sourcePath = $source.Path
-        $sourceOrigin = $source.Origin
+        try {
+            if ($null -ne $source) {
+                $sourceExe = $source.Path
+                $sourceKind = $source.Kind
+                $sourcePath = $source.Path
+                $sourceOrigin = $source.Origin
+            } else {
+                $stagingWork = Join-Path ([System.IO.Path]::GetTempPath()) ('dondownload-stage-{0}-{1}' -f $tool.Name, [guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Force -Path $stagingWork | Out-Null
+                Expand-VerifiedZip -ZipPath $archive.ZipPath -Destination $stagingWork -Tool $tool -OnlyRelativePath $tool.ArchiveEntry
+                $sourceExe = [System.IO.Path]::GetFullPath(
+                    (Join-Path $stagingWork $tool.ArchiveEntry.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+                )
+                if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+                    throw "$($tool.Name): the verified archive did not contain $($tool.ArchiveEntry)."
+                }
+                $sourceKind = $archive.Kind
+                $sourcePath = $archive.ZipPath
+                $sourceOrigin = $archive.Origin
+            }
+
+            $version = Get-ToolVersion -Tool $tool -Path $sourceExe
+
+            $target = Join-Path $OutputDirectory $tool.TargetRelativePath
+            $targetDirectory = Split-Path -Parent $target
+            New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
+            Copy-Item -LiteralPath $sourceExe -Destination $target -Force
+
+            $sourceHash = Get-Sha256 -Path $sourceExe
+            $stagedHash = Get-Sha256 -Path $target
+            if ($sourceHash -ne $stagedHash) {
+                throw "$($tool.Name): staged copy hash does not match the source hash."
+            }
+
+            $item = Get-Item -LiteralPath $target
+        } finally {
+            if ($null -ne $stagingWork -and (Test-Path -LiteralPath $stagingWork)) {
+                Remove-Item -LiteralPath $stagingWork -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        if ($null -ne $archive) {
+            $extra['archive'] = [ordered]@{
+                name      = $tool.ArchiveFileName
+                url       = $tool.ArchiveUrl
+                sha256    = $tool.ArchiveSha256
+                sizeBytes = (Get-Item -LiteralPath $archive.ZipPath).Length
+                entry     = $tool.ArchiveEntry
+            }
+        }
     }
 
     $manifestItem = [ordered]@{

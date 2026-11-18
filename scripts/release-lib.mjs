@@ -49,6 +49,19 @@ export function releaseTag(version) {
   return `v${requireReleaseVersion(version)}`
 }
 
+/**
+ * True when `tag` is exactly the release tag for `version`. The CI release
+ * workflow uses this to refuse a tag that does not match `package.json`.
+ */
+export function releaseTagMatchesVersion(tag, version) {
+  if (typeof tag !== 'string' || typeof version !== 'string') return false
+  try {
+    return tag === releaseTag(version)
+  } catch {
+    return false
+  }
+}
+
 /** `DonDownload-1.0.0-x64-setup.exe` */
 export function installerAssetName(version) {
   return `DonDownload-${requireReleaseVersion(version)}-x64-setup.exe`
@@ -330,6 +343,13 @@ export function renderThirdPartySourcesText(input) {
       lines.push(`  Build information: ${component.buildInfo}`)
     }
     lines.push(`  Shipped binary: ${component.binary}`)
+    if (component.binaryUrl) {
+      lines.push(
+        `  Shipped binary download: ${component.binaryUrl}${
+          component.binarySha256 ? ` (SHA-256 ${component.binarySha256})` : ''
+        }`
+      )
+    }
   }
 
   lines.push('', 'Attached source archives', '------------------------')

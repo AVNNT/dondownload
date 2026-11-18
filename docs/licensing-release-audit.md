@@ -7,10 +7,12 @@ advice, a compliance opinion, or authorization to redistribute the installer.
 
 The checked build was produced from the local, version-pinned WinGet tool paths
 through `scripts/stage-vendor.ps1`. The script checks each executable's reported
-version, computes SHA-256, records its local path and hashes the bundled license
-files. It does not download tools or independently authenticate their origin.
-The observed `source.kind` for each binary was `verified-local-path`; no upstream
-signature or reproducible-build attestation was verified in this audit.
+version, computes SHA-256, records its source and hashes the bundled license
+files. Since 2026-11-18 it can also download each pinned official upstream
+release archive and verify a hard-coded SHA-256 before extraction; the observed
+`source.kind` then reads `verified-upstream-archive` (or `verified-local-cache`
+for a cached download) instead of `verified-local-path`. No upstream signature or
+reproducible-build attestation is verified in this audit.
 
 The built installer was checked with Windows Authenticode inspection and is
 **NotSigned**. Vendor executable hashes in the staged manifest matched the
@@ -20,6 +22,25 @@ The manifest and the executable hashes are build-specific; the staged binaries
 are ignored and must not be committed. The FFmpeg/ffprobe rows record the
 SHA-256 values of the staged Gyan **essentials** build used by the current
 staging script.
+
+## Pinned upstream download sources
+
+`scripts/stage-vendor.ps1` downloads only these URLs. Each has a hard-coded
+SHA-256 in the script and in `third-party/NOTICE.md`; an archive that does not
+match is rejected before extraction.
+
+| Tool | Pinned upstream release asset | SHA-256 |
+| --- | --- | --- |
+| aria2 1.37.0 | <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip> | `67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288` |
+| yt-dlp 2026.10.26 | <https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip> | `fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419` |
+| FFmpeg 9.0.2 Gyan essentials build | <https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip> (same bytes as <https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip>) | `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` |
+
+The GitHub FFmpeg asset publishes the same SHA-256 digest in its release
+metadata and is byte-identical to the gyan.dev package; it is pinned because it
+is the stable URL for CI. The aria2 hash was computed from the official asset
+and the staged `aria2c.exe` hash is unchanged from the earlier local
+installation (`be2099c2…`). None of this constitutes upstream signature
+verification.
 
 ## Binary inventory
 
@@ -50,9 +71,12 @@ distribution model. At minimum:
    and source commit used for 9.0.2; determine whether any separately distributed
    external assets and their licenses are implicated. Do not substitute the
    FFmpeg project license page for the build-specific notice.
-3. **aria2 Windows executable:** identify the WinGet package recipe and full
-   linked-library inventory for the exact executable, including the recorded
-   OpenSSL notice and any other applicable notices/source obligations.
+3. **aria2 Windows executable:** the exact binary now comes from the official
+   aria2 1.37.0 win-64bit release asset listed above, so the build recipe
+   question narrows to that release's linked-library inventory, including the
+   recorded OpenSSL notice and any other applicable notices/source
+   obligations. The project source alone is still not the complete
+   corresponding source for the Windows executable.
 4. **yt-dlp standalone:** retain the exact upstream release source and the
    standalone packaging/build recipe; confirm that the shipped aggregated
    third-party license file matches the executable version and satisfies each

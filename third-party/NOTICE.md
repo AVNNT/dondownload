@@ -11,10 +11,13 @@ The application does not download these tools at runtime, with two documented
 exceptions that write only below the user data directory: the managed yt-dlp
 updater, and the on-demand Deno runtime for YouTube JS challenges. FFprobe is no
 longer staged or invoked at all; the bounded header read that labels an
-unlabeled stream uses FFmpeg itself. The staging script copies locally installed, version-checked
-executables into the git-ignored `build/vendor/` directory; for yt-dlp it stages
-the official one-folder release archive (`yt-dlp.exe` plus `_internal/`). The
-installer then includes that directory as `resources/vendor/`.
+unlabeled stream uses FFmpeg itself. The staging script resolves each executable
+from a local installation or cache when one exists, otherwise it downloads the
+pinned official upstream release archive and verifies its hard-coded SHA-256
+before extraction, then copies only the version-checked executable into the
+git-ignored `build/vendor/` directory; for yt-dlp it stages the official
+one-folder release archive (`yt-dlp.exe` plus `_internal/`). The installer then
+includes that directory as `resources/vendor/`.
 
 ## Inventory
 
@@ -25,10 +28,27 @@ installer then includes that directory as `resources/vendor/`.
 | FFmpeg (`ffmpeg.exe`) | 9.0.2 Gyan essentials build | `vendor/ffmpeg/ffmpeg.exe` | GPL-3.0-or-later | <https://ffmpeg.org/> | <https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz> |
 | Deno (`deno.exe`) | 2.9.8 | not bundled; downloaded on demand into `<userData>/tools/deno/2.9.8/deno.exe` | MIT | <https://github.com/denoland/deno> | <https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz> |
 
-The exact staged hashes, sizes, local source paths and license-file hashes are
+The exact staged hashes, sizes, source paths and license-file hashes are
 recorded in `build/vendor/manifest.json` by `scripts/stage-vendor.ps1`. This
-manifest records the files staged from local verified-version paths; it does not
-authenticate the upstream origin or prove a reproducible build.
+manifest records the files staged from local verified-version paths or from the
+pinned upstream release archives; it does not authenticate the upstream origin
+beyond the pinned SHA-256 or prove a reproducible build.
+
+## Pinned binary download sources
+
+When no local copy or cache is available, the staging script downloads only
+these official upstream release assets. Each SHA-256 is hard-coded in
+`scripts/stage-vendor.ps1` and checked before extraction.
+
+| Tool | Pinned upstream release asset | SHA-256 |
+| --- | --- | --- |
+| aria2 1.37.0 | <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip> | `67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288` |
+| yt-dlp 2026.10.26 | <https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip> | `fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419` |
+| FFmpeg 9.0.2 Gyan essentials build | <https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip> | `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` |
+
+The FFmpeg asset is byte-identical to the gyan.dev package
+<https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip>;
+the GitHub mirror is pinned because it is the stable URL for CI.
 
 ## aria2
 
@@ -36,10 +56,14 @@ authenticate the upstream origin or prove a reproducible build.
   the local WinGet package are included in
   `third-party/licenses/aria2-COPYING.txt` and
   `third-party/licenses/aria2-LICENSE.OpenSSL.txt`.
-- The Windows build may include additional libraries from its MinGW build
-  environment. A distributor must verify the complete dependency list for the
-  exact binary and provide the complete corresponding source for that binary,
-  not only the aria2 project source.
+- The Windows executable is extracted from the official aria2 1.37.0 win-64bit
+  release asset
+  <https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip>
+  (SHA-256 `67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288`)
+  when no verified local copy exists. The build may include additional
+  libraries from its MinGW build environment. A distributor must verify the
+  complete dependency list for the exact binary and provide the complete
+  corresponding source for that binary, not only the aria2 project source.
 - aria2 is used as a separate subprocess over loopback JSON-RPC. Do not describe
   the combined installer as MIT-only.
 
@@ -65,6 +89,12 @@ authenticate the upstream origin or prove a reproducible build.
 - The Gyan build README identifies the exact FFmpeg source commit
   (`946fcce07b`) and the build configuration. The essentials build
   enables GPL-covered components; it is not an LGPL build.
+- The shipped executable is extracted from the pinned GyanD/codexffmpeg 9.0.2
+  essentials release asset
+  <https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip>
+  (SHA-256 `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba`),
+  which is byte-identical to
+  <https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip>.
 - A distributor must provide the complete corresponding source for the exact
   binary, including the build scripts and configuration needed to reproduce it,
   plus the GPLv3 notice. Verify whether any external assets listed in the Gyan

@@ -1,0 +1,108 @@
+# Build and draft a DonDownload release on GitHub-hosted Windows.
+#
+# The maintainer's flow (see docs/release-readiness.md):
+#   1. bump package.json + extension/manifest.json and add a CHANGELOG.md section
+#   2. commit to master and push
+#   3. git tag vX.Y.Z && git push origin vX.Y.Z
+#   4. this workflow builds, signs SHA256SUMS.txt and creates a DRAFT release
+#   5. review the draft, then publish it manually
+#
+# Nothing here needs a maintainer machine: scripts/stage-vendor.ps1 downloads
+# the pinned aria2, yt-dlp and FFmpeg archives from their official upstream
+# releases and verifies a hard-coded SHA-256 for each one.
+#
+# The update signing key is the UPDATE_SIGNING_KEY repository secret: the
+# Ed25519 private key as PKCS#8 PEM text. A fork without the secret fails the
+# job on purpose instead of publishing an unsigned SHA256SUMS.txt.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (must match package.json, for example v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and draft the release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify the tag matches package.json
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/check-release-tag.mjs "$env:RELEASE_TAG"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Fast tests
+        run: npm run test:fast
+
+      - name: Extension tests
+        run: npm run test:extension
+
+      - name: Write the update signing key
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:UPDATE_SIGNING_KEY)) {
+            throw 'The UPDATE_SIGNING_KEY repository secret is missing. Releases must carry a signed SHA256SUMS.txt, so an unsigned release is never published. Add the Ed25519 private key as PKCS#8 PEM text to the secret, or run only a local build with `npm run build:installer`.'
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'update-signing-key.pem'
+          [System.IO.File]::WriteAllText($keyPath, $env:UPDATE_SIGNING_KEY, (New-Object System.Text.UTF8Encoding($false)))
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & icacls $keyPath /inheritance:r /grant:r "${identity}:F" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not restrict permissions on $keyPath."
+          }
+          # Only the path is exported; the key text is never echoed.
+          Add-Content -Path $env:GITHUB_ENV -Value "DONDOWNLOAD_UPDATE_SIGNING_KEY=$keyPath"
+
+      - name: Build, sign and draft the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release.mjs --ci --publish
+
+      - name: Delete the update signing key
+        if: always()
+        shell: pwsh
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP 'update-signing-key.pem'
+          if (Test-Path -LiteralPath $keyPath) {
+            Remove-Item -LiteralPath $keyPath -Force
+          }

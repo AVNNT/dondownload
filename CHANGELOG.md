@@ -5,6 +5,26 @@ All notable changes to DonDownload are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- GitHub Actions release workflow (`.github/workflows/release.yml`): pushing a
+  `v*` tag builds the installer on `windows-latest`, signs `SHA256SUMS.txt` with
+  the `UPDATE_SIGNING_KEY` secret and creates a draft GitHub release for manual
+  review. `scripts/release.mjs --ci` skips the local `master`/`origin` check but
+  still requires a clean tree.
+- Documentation for building your own installer and for running a fork with its
+  own update key or with the updater disabled.
+
+### Changed
+
+- `scripts/stage-vendor.ps1` is self-contained: when no `DONDOWNLOAD_*` override,
+  local installation or verified cache exists, it downloads the pinned official
+  aria2 and FFmpeg release archives (in addition to yt-dlp) and verifies a
+  hard-coded SHA-256 before extraction. `npm run build:installer` no longer
+  needs locally installed tools.
+
 ## [1.0.0] - 2026-11-18
 
 First public release.

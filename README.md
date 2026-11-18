@@ -210,7 +210,11 @@ A development checkout does not bundle the third-party tools. Install aria2
 (for example `winget install aria2.aria2`) or point the app at a binary with
 `DONDOWNLOAD_ARIA2_PATH`; yt-dlp and FFmpeg are only needed for media
 downloads. If a required tool is missing, the app says so instead of failing
-silently.
+silently. Building the installer needs none of them: `npm run build:installer`
+downloads the pinned, SHA-256 verified aria2, yt-dlp and FFmpeg release
+archives from their official upstream URLs. See
+[docs/release-readiness.md](docs/release-readiness.md) to build your own or run
+a fork with its own update feed.
 
 Further reading:
 

@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { generateKeyPairSync, verify } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import {
   copyFile,
   mkdir,
@@ -24,6 +25,7 @@ import {
   isChecksummedAssetName,
   isExtensionPackageFile,
   releaseTag,
+  releaseTagMatchesVersion,
   renderThirdPartySourcesText,
   selectChecksumFiles,
   selectExtensionFiles
@@ -357,6 +359,89 @@ describe('release checksum script', () => {
   })
 })
 
+describe('release tag verification', () => {
+  it('accepts only the exact v-prefixed tag for the version', () => {
+    expect(releaseTagMatchesVersion('v1.0.0', '1.0.0')).toBe(true)
+    expect(releaseTagMatchesVersion('v1.0.0-beta.1', '1.0.0-beta.1')).toBe(true)
+    expect(releaseTagMatchesVersion('1.0.0', '1.0.0')).toBe(false)
+    expect(releaseTagMatchesVersion('v1.0.1', '1.0.0')).toBe(false)
+    expect(releaseTagMatchesVersion('v1.0.0', '1.0.1')).toBe(false)
+    expect(releaseTagMatchesVersion('v1.0.0', '1.0')).toBe(false)
+    expect(releaseTagMatchesVersion('', '1.0.0')).toBe(false)
+    expect(
+      releaseTagMatchesVersion(
+        'v1.0.0',
+        undefined as unknown as string
+      )
+    ).toBe(false)
+  })
+})
+
+describe('release tag check script', () => {
+  const script = path.join(process.cwd(), 'scripts', 'check-release-tag.mjs')
+  const version = JSON.parse(
+    readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
+  ).version as string
+
+  it('accepts the exact v-prefixed package version', () => {
+    const result = spawnSync(process.execPath, [script, `v${version}`], {
+      encoding: 'utf8'
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain(
+      `Release tag v${version} matches package.json version ${version}.`
+    )
+  })
+
+  it('fails for a mismatched or missing tag', () => {
+    const mismatched = spawnSync(process.execPath, [script, 'v0.0.0'], {
+      encoding: 'utf8'
+    })
+    expect(mismatched.status).toBe(1)
+    expect(mismatched.stderr).toContain('does not match')
+
+    const missing = spawnSync(process.execPath, [script], {
+      encoding: 'utf8'
+    })
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('(missing)')
+  })
+})
+
+describe('vendor staging pins', () => {
+  it('pins every downloaded archive to an official https URL and a SHA-256', async () => {
+    const script = await readFile(
+      path.join(process.cwd(), 'scripts', 'stage-vendor.ps1'),
+      'utf8'
+    )
+    const urls = [...script.matchAll(/ArchiveUrl\s*=\s*'([^']+)'/g)].map(
+      (match) => match[1] as string
+    )
+    const hashes = [...script.matchAll(/ArchiveSha256\s*=\s*'([^']+)'/g)].map(
+      (match) => match[1] as string
+    )
+
+    // aria2, yt-dlp and FFmpeg are the only downloadable tools.
+    expect(urls).toHaveLength(3)
+    expect(hashes).toHaveLength(3)
+    for (const url of urls) {
+      expect(url).toMatch(/^https:\/\/(github\.com|www\.gyan\.dev)\//)
+    }
+    for (const hash of hashes) {
+      expect(hash).toMatch(/^[0-9a-f]{64}$/)
+    }
+    expect(urls).toContain(
+      'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
+    )
+    expect(urls).toContain(
+      'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip'
+    )
+    expect(urls).toContain(
+      'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip'
+    )
+  })
+})
+
 describe('third-party source pointer', () => {
   const components = [
     {
@@ -365,7 +450,10 @@ describe('third-party source pointer', () => {
       license: 'GPL-2.0-or-later',
       sourceUrl:
         'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2',
-      binary: 'resources/vendor/aria2/aria2c.exe'
+      binary: 'resources/vendor/aria2/aria2c.exe',
+      binaryUrl:
+        'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip',
+      binarySha256: 'b'.repeat(64)
     }
   ]
 
@@ -378,6 +466,10 @@ describe('third-party source pointer', () => {
     expect(text).toContain('aria2 1.37.0')
     expect(text).toContain('GPL-2.0-or-later')
     expect(text).toContain('aria2-1.37.0.tar.bz2')
+    expect(text).toContain(
+      'Shipped binary download: https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
+    )
+    expect(text).toContain(`SHA-256 ${'b'.repeat(64)}`)
     expect(text).toContain('No source archive was attached')
   })
 

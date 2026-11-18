@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 /**
- * Local, idempotent DonDownload release runner.
+ * Idempotent DonDownload release runner.
  *
  * Usage:
  *   npm run release              # build installer, extension packages, checksums + signature, dry run
  *   npm run release -- --publish # the same, then tag, push the tag and create a DRAFT GitHub release
+ *   node scripts/release.mjs --ci --publish
+ *                                # the CI form used by .github/workflows/release.yml:
+ *                                # skip the "on master and in sync with origin" check,
+ *                                # require the already-pushed tag to point at HEAD
  *
- * Why local: `scripts/stage-vendor.ps1` stages aria2, yt-dlp and FFmpeg from
- * locally installed, version-checked binaries, so the installer cannot be built
- * in CI without redistributing those binaries through the runner. This script
- * never signs the installer with an Authenticode certificate: the installer
- * stays unsigned until the code-signing blocker in docs/release-readiness.md is
- * resolved.
+ * `scripts/stage-vendor.ps1` downloads each pinned third-party archive from its
+ * official upstream URL, verifies a hard-coded SHA-256 and extracts it, so the
+ * installer is reproducible on a clean Windows runner or a GitHub Actions
+ * `windows-latest` host. CI supplies the update signing key through the
+ * `UPDATE_SIGNING_KEY` secret.
+ *
+ * This script never signs the installer with an Authenticode certificate: the
+ * installer stays unsigned until the code-signing blocker in
+ * docs/release-readiness.md is resolved.
  *
  * Ordering matters: the extension packages are built before `release-checksums`
  * so SHA256SUMS.txt covers them, and SHA256SUMS.txt is signed only after every
@@ -55,9 +62,10 @@ const DEFAULT_SIGNING_KEY_PATH = path.join(
 const DEFAULT_SOURCES_DIRECTORY = path.join(RELEASE_HOME_DIRECTORY, 'sources')
 
 /**
- * GPL-covered components shipped in the installer. Versions and paths mirror
- * scripts/stage-vendor.ps1 and docs/licensing-release-audit.md; update all
- * three together when a bundled tool is bumped.
+ * GPL-covered components shipped in the installer. Versions, paths and the
+ * pinned upstream release assets mirror scripts/stage-vendor.ps1 and
+ * docs/licensing-release-audit.md; update all three together when a bundled
+ * tool is bumped.
  */
 const GPL_COMPONENTS = [
   {
@@ -68,7 +76,11 @@ const GPL_COMPONENTS = [
       'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.bz2',
     buildInfo:
       'Windows build inputs and linked libraries are inventoried in docs/licensing-release-audit.md.',
-    binary: 'resources/vendor/aria2/aria2c.exe'
+    binary: 'resources/vendor/aria2/aria2c.exe',
+    binaryUrl:
+      'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip',
+    binarySha256:
+      '67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288'
   },
   {
     name: 'FFmpeg (Gyan essentials build)',
@@ -77,7 +89,11 @@ const GPL_COMPONENTS = [
     sourceUrl: 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz',
     buildInfo:
       'Gyan build scripts and configuration: https://www.gyan.dev/ffmpeg/builds/ . Preserve the build README shipped in third-party/licenses/.',
-    binary: 'resources/vendor/ffmpeg/ffmpeg.exe'
+    binary: 'resources/vendor/ffmpeg/ffmpeg.exe',
+    binaryUrl:
+      'https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip',
+    binarySha256:
+      '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
   },
   {
     name: 'ffprobe (Gyan essentials build)',
@@ -85,8 +101,8 @@ const GPL_COMPONENTS = [
     license: 'GPL-3.0-or-later',
     sourceUrl: 'https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.tar.gz',
     buildInfo:
-      'Built from the same FFmpeg commit as ffmpeg; see docs/licensing-release-audit.md.',
-    binary: 'resources/vendor/ffmpeg/ffprobe.exe'
+      'Not staged or invoked by DonDownload; listed for completeness only. See docs/licensing-release-audit.md.',
+    binary: 'not shipped'
   }
 ]
 
@@ -199,12 +215,17 @@ async function resolveSigningKeyPath() {
     ? path.resolve(configured)
     : DEFAULT_SIGNING_KEY_PATH
   if (!(await fileExists(candidate))) {
+    const ciHint =
+      process.env.GITHUB_ACTIONS === 'true'
+        ? '\nIn GitHub Actions, add the private key as the UPDATE_SIGNING_KEY repository secret; the release workflow writes it to a temporary file.'
+        : ''
     fail(
       `the update signing key is missing: ${candidate}\n` +
         'Generate it once outside this repository with\n' +
         '  node scripts/generate-update-signing-key.mjs "%USERPROFILE%\\.dondownload-release\\update-signing-key.pem"\n' +
         'and back it up. Set DONDOWNLOAD_UPDATE_SIGNING_KEY to use a different path.\n' +
-        'A release without the key cannot be served as an authenticated update.'
+        'A release without the key cannot be served as an authenticated update.' +
+        ciHint
     )
   }
   return candidate
@@ -215,16 +236,28 @@ function sourcesDirectory() {
   return configured ? path.resolve(configured) : DEFAULT_SOURCES_DIRECTORY
 }
 
-/** Refuse unless master is checked out cleanly and matches origin/master. */
-function verifyGitState() {
-  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
-  if (branch !== 'master') {
-    fail(`releases are cut from master; the current branch is "${branch}".`)
+/**
+ * Refuse unless the working tree is clean. Locally the script also requires
+ * master to match origin/master. In CI the tag has already been pushed, so the
+ * branch/remote-sync check does not apply; the tag/HEAD check replaces it.
+ */
+function verifyGitState(ci) {
+  if (!ci) {
+    const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
+    if (branch !== 'master') {
+      fail(`releases are cut from master; the current branch is "${branch}".`)
+    }
   }
 
   const status = git(['status', '--porcelain']).stdout.trim()
   if (status !== '') {
     fail(`the working tree is not clean:\n${status}`)
+  }
+
+  const head = git(['rev-parse', 'HEAD']).stdout.trim()
+  if (ci) {
+    log(`git state ok: clean tree at ${head} (CI mode).`)
+    return head
   }
 
   const fetched = run('git', ['fetch', '--quiet', 'origin', 'master'])
@@ -236,7 +269,6 @@ function verifyGitState() {
     )
   }
 
-  const head = git(['rev-parse', 'HEAD']).stdout.trim()
   const remote = git(['rev-parse', 'origin/master']).stdout.trim()
   if (head !== remote) {
     fail(
@@ -246,6 +278,40 @@ function verifyGitState() {
   }
   log(`git state ok: master at ${head}.`)
   return head
+}
+
+/**
+ * CI mode never creates or pushes a tag. The release workflow starts from a
+ * pushed `v<version>` tag, so only confirm that the tag is this commit and that
+ * the checked-out ref is that tag.
+ */
+function verifyCiTag(version, head) {
+  const tag = releaseTag(version)
+  // On a tag push GITHUB_REF_NAME is the tag; on workflow_dispatch it is the
+  // branch the run started from, which says nothing about the checkout, so the
+  // refs/tags check below is the authoritative one.
+  if (process.env.GITHUB_REF_TYPE === 'tag') {
+    const refName = process.env.GITHUB_REF_NAME
+    if (refName && refName !== tag) {
+      fail(
+        `the workflow was started from tag "${refName}" but package.json declares ${version} (tag ${tag}).`
+      )
+    }
+  }
+  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`])
+  if (existing.status !== 0) {
+    fail(
+      `tag ${tag} does not exist in this checkout. The release workflow must run from the pushed tag.`
+    )
+  }
+  const commit = existing.stdout.trim()
+  if (commit !== head) {
+    fail(
+      `tag ${tag} points at ${commit}, not at HEAD ${head}. ` +
+        'Refusing to build a release from a different commit.'
+    )
+  }
+  log(`tag ${tag} matches HEAD ${commit}.`)
 }
 
 function buildInstaller() {
@@ -513,10 +579,12 @@ function publishDraftRelease(version, assets, notesPath) {
 }
 
 function parseArguments(argv) {
-  const options = { publish: false, help: false }
+  const options = { publish: false, ci: false, help: false }
   for (const argument of argv) {
     if (argument === '--publish') {
       options.publish = true
+    } else if (argument === '--ci') {
+      options.ci = true
     } else if (argument === '--help' || argument === '-h') {
       options.help = true
     } else {
@@ -529,7 +597,7 @@ function parseArguments(argv) {
 function printHelp() {
   log(
     [
-      'Usage: npm run release [-- --publish]',
+      'Usage: npm run release [-- --publish | --ci]',
       '',
       'Without --publish: build the installer, the extension packages and the',
       'signed checksum file, then print the exact assets and commands that a',
@@ -537,7 +605,12 @@ function printHelp() {
       '',
       'With --publish: the same build, then create and push the tag and create a',
       'DRAFT GitHub release with every asset. Publish the draft manually after',
-      'review.'
+      'review.',
+      '',
+      'With --ci (or when GITHUB_ACTIONS=true): skip the "on master and in sync',
+      'with origin" check, require the already-pushed tag to point at HEAD, and',
+      'never create or push a tag. .github/workflows/release.yml uses this form.',
+      '--ci --publish drafts the GitHub release from the existing tag.'
     ].join('\n')
   )
 }
@@ -549,11 +622,19 @@ async function main() {
     return
   }
 
+  const ci = options.ci || process.env.GITHUB_ACTIONS === 'true'
   const version = await readVersion()
   const tag = releaseTag(version)
-  log(`Preparing DonDownload ${version} (tag ${tag}).`)
+  log(
+    ci
+      ? `Preparing DonDownload ${version} (tag ${tag}) in CI mode.`
+      : `Preparing DonDownload ${version} (tag ${tag}).`
+  )
 
-  const head = verifyGitState()
+  const head = verifyGitState(ci)
+  if (ci) {
+    verifyCiTag(version, head)
+  }
   const signingKeyPath = await resolveSigningKeyPath()
   log(`Using update signing key ${signingKeyPath}.`)
   if (options.publish) {
@@ -579,8 +660,10 @@ async function main() {
   if (!options.publish) {
     log('')
     log('Dry run: nothing was tagged, pushed or uploaded. A publish run would:')
-    log(`  git tag ${tag}`)
-    log(`  git push origin refs/tags/${tag}`)
+    if (!ci) {
+      log(`  git tag ${tag}`)
+      log(`  git push origin refs/tags/${tag}`)
+    }
     log(
       `  gh release create ${tag} --draft --title "DonDownload ${version}" --notes-file "${notesPath}" <assets>`
     )
@@ -590,7 +673,9 @@ async function main() {
     return
   }
 
-  ensureTag(version, head)
+  if (!ci) {
+    ensureTag(version, head)
+  }
   publishDraftRelease(version, assets, notesPath)
   log('')
   log(
