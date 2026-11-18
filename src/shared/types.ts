@@ -322,6 +322,8 @@ export interface DonDownloadApi {
    * `requestSnapshotResync`.
    */
   onSnapshotChanged: (listener: (delta: AppSnapshotDelta) => void) => () => void
+  /** Tray "Settings" entry: switch the visible page to Settings. */
+  onOpenSettings: (listener: () => void) => () => void
   /** Ask main to resend full snapshots for downloads, media and batches. */
   requestSnapshotResync: () => Promise<ApiResult<null>>
 

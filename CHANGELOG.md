@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A more useful tray menu: a status line ("3 downloading · 4.2 MB/s" or
+  "Nothing downloading"), Pause all / Resume all, the speed-limit presets, a
+  Recent submenu (the last five finished downloads, plus "Show in folder" for
+  the newest), "Add from clipboard" (enabled only while the clipboard holds a
+  URL — checked when the menu opens, never on a timer), "Settings" and Quit.
+  The menu is built only as it opens, never per progress update, and the tray
+  tooltip ("DonDownload · 3 downloading · 42%") updates at most every two
+  seconds and only while something is downloading, so an idle tray keeps no
+  timers of its own. The idle native tray stub keeps just "Open DonDownload"
+  and "Quit", matching the app's wording.
+
 ## [1.1.0] - 2026-11-18
 
 First public release.

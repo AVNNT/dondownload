@@ -166,7 +166,7 @@ internal static class TrayStub
                     EventHandler quit = delegate { Application.Exit(); };
 
                     menu.Items.Add("Open DonDownload", null, open);
-                    menu.Items.Add("Quit DonDownload", null, quit);
+                    menu.Items.Add("Quit", null, quit);
 
                     tray.Icon = icon;
                     tray.Text = Tooltip;

@@ -677,6 +677,115 @@ function hideMainWindow(): void {
   refreshTray()
 }
 
+/* ------------------------------------------------------------------------- *
+ * Tray menu actions
+ *
+ * The menu only ever names rows by id; opening and revealing a finished file
+ * go through the download manager's own validated id → record → path methods,
+ * exactly like the renderer's "Open" and "Show in folder" actions.
+ * ------------------------------------------------------------------------- */
+
+/** Pause-all through the same per-row manager calls the toolbar uses. */
+async function pauseAllDownloads(): Promise<void> {
+  const current = manager
+  if (current !== null) {
+    const rows = current
+      .getSnapshot()
+      .downloads.filter(
+        (item) =>
+          item.status === 'active' ||
+          item.status === 'queued' ||
+          item.status === 'waiting'
+      )
+    for (const row of rows) {
+      try {
+        await current.pause(row.id)
+      } catch (error) {
+        logTrayActionError('A download could not be paused', error)
+      }
+    }
+  }
+  for (const job of mediaJobs?.getMediaSnapshot().jobs ?? []) {
+    if (
+      job.status !== 'queued' &&
+      job.status !== 'analyzing' &&
+      job.status !== 'downloading' &&
+      job.status !== 'merging'
+    ) {
+      continue
+    }
+    try {
+      await mediaJobs?.pauseMedia(job.id)
+    } catch (error) {
+      logTrayActionError('A media job could not be paused', error)
+    }
+  }
+  refreshTray()
+}
+
+/** Resume-all through the same per-row manager calls the toolbar uses. */
+async function resumeAllDownloads(): Promise<void> {
+  const current = manager
+  if (current !== null) {
+    const rows = current
+      .getSnapshot()
+      .downloads.filter((item) => item.status === 'paused')
+    for (const row of rows) {
+      try {
+        await current.resume(row.id)
+      } catch (error) {
+        logTrayActionError('A download could not be resumed', error)
+      }
+    }
+  }
+  for (const job of mediaJobs?.getMediaSnapshot().jobs ?? []) {
+    if (job.status !== 'paused') continue
+    try {
+      await mediaJobs?.resumeMedia(job.id)
+    } catch (error) {
+      logTrayActionError('A media job could not be resumed', error)
+    }
+  }
+  refreshTray()
+}
+
+function openTrayDownload(id: string): void {
+  void manager?.openFile(id).catch((error) => {
+    logTrayActionError('A finished file could not be opened', error)
+  })
+}
+
+function showTrayDownloadInFolder(id: string): void {
+  void manager?.showInFolder(id).catch((error) => {
+    logTrayActionError('A finished file could not be revealed', error)
+  })
+}
+
+/** "Settings" in the tray shows the window on the Settings page. */
+function openSettingsFromTray(): void {
+  showMainWindow()
+  sendToMainWindow((window) => window.webContents.send(IPC.openSettings))
+}
+
+/** "Add from clipboard" hands the checked URL to the renderer's Add dialog. */
+function addFromClipboardFromTray(url: string): void {
+  showMainWindow()
+  const window = mainWindow
+  if (window === null || window.isDestroyed()) return
+  sendToMainWindow((target) => target.webContents.send(IPC.clipboardLink, url))
+}
+
+function logTrayActionError(message: string, error: unknown): void {
+  const detail = error instanceof Error ? error.message : 'unknown error'
+  logError('%s: %s', message, detail)
+  if (!app.isPackaged) console.error(`${message}: ${detail}`)
+}
+
+/** Feed one published download/media state to the tray's tooltip throttle. */
+function refreshTrayDownloads(): void {
+  appTray?.onDownloadStateChanged()
+}
+
 /**
  * Deliver one message to the current window, waiting for a freshly created
  * renderer to finish loading. A window recreated after close-to-tray has no
@@ -954,6 +1063,8 @@ if (unregisterRequested) {
           rows: snapshot.downloads
         })
         updateTaskbarProgress()
+        // Tooltip only, at most every two seconds; the menu builds on open.
+        refreshTrayDownloads()
         // A download starting, finishing or queueing changes whether the app
         // may hand over to the idle tray stub.
         refreshIdleStub()
@@ -1072,6 +1183,8 @@ if (unregisterRequested) {
           rows: snapshot.jobs
         })
         updateTaskbarProgress()
+        // Media jobs share the tray's pause/resume-all and status counts.
+        refreshTrayDownloads()
         refreshIdleStub()
       }
     })
@@ -1434,6 +1547,13 @@ if (unregisterRequested) {
           app.quit()
         },
         isWindowVisible: isMainWindowVisible,
+        openSettings: openSettingsFromTray,
+        pauseAll: () => {
+          void pauseAllDownloads()
+        },
+        resumeAll: () => {
+          void resumeAllDownloads()
+        },
         getSpeedLimitBps: () =>
           settingsManager?.getSettings().globalSpeedLimitBps ?? 0,
         setSpeedLimitBps: (bps) => {
@@ -1445,7 +1565,16 @@ if (unregisterRequested) {
               console.error(`Speed limit could not be changed: ${detail}`)
             }
           })
-        }
+        },
+        // Read through the live managers; the tray never caches a snapshot.
+        getDownloads: () => manager?.getSnapshot().downloads ?? [],
+        getMediaJobs: () => mediaJobs?.getMediaSnapshot().jobs ?? [],
+        openDownload: openTrayDownload,
+        showDownloadInFolder: showTrayDownloadInFolder,
+        addFromClipboard: addFromClipboardFromTray,
+        // One clipboard read per menu open; never a timer of its own. The tray
+        // host already tolerates a rejected/locked clipboard read.
+        readClipboardText: () => clipboard.readText()
       })
       if (startHidden && appTray === null) {
         // Hidden-start was requested but the tray is unavailable; showing the
