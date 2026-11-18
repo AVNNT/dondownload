@@ -30,6 +30,22 @@ loopback route are separate:
 Nothing in the bridge touches the browser downloads API. The extension is the
 only side that may cancel, and only after the receipt above.
 
+## Firefox difference
+
+Firefox does not implement `chrome.downloads.onDeterminingFilename`, the
+Chromium-only event that lets the extension decide before the transfer starts.
+On Firefox the worker feature-detects the event, registers `downloads.onCreated`
+and `downloads.onChanged` anyway, and takes the onCreated path: the browser
+starts the download, the extension re-reads it, waits for the durable receipt,
+then cancels/erases the browser copy. The same size/type preflight, duplicate
+protection and "leave the browser download running on any failure" rules apply.
+Manual capture, the overlay, scans and native messaging are unchanged.
+
+Firefox also passes different native-messaging launch arguments (the app
+manifest path plus the add-on ID, rather than a `chrome-extension://` origin), so
+the native host accepts either caller pair and the Firefox app manifest uses
+`allowed_extensions` with the fixed `dondownload@dondownload.app` ID.
+
 ## Browser-side behavior
 
 The extension declares `downloads` in the required `permissions` list, so the

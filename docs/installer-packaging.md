@@ -197,17 +197,19 @@ In the installed application the same files are under
 
 Registration is deliberately manual and current-user only. The installer does
 not edit
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge` or
-`HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.dondownload.bridge`, and
-it does not write a Helium-specific key.
+`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.dondownload.bridge`,
+`HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.dondownload.bridge` or
+`HKCU\Software\Mozilla\NativeMessagingHosts\com.dondownload.bridge`, and it
+does not write a Helium-specific key.
 
 The included helper is the existing `scripts/register-native-host.ps1`, copied
 to `resources/registration/register-native-host.ps1`. It writes only under
-`HKCU` and only the exact `chrome-extension://<32-character-id>/` origins passed
-by the user. Helium is supported through the same verified
-Chromium-compatible Chrome current-user key used by the existing registration
-script; no Helium-specific key is written. Do not include a wildcard origin and
-do not auto-register during install.
+`HKCU`, only the exact `chrome-extension://<32-character-id>/` origins passed by
+the user, and for Firefox only the exact `allowed_extensions` add-on IDs it is
+given. Helium is supported through the same verified Chromium-compatible Chrome
+current-user key used by the existing registration script; no Helium-specific
+key is written. Do not include a wildcard origin or add-on ID and do not
+auto-register during install.
 
 Example manual registration with explicit IDs:
 

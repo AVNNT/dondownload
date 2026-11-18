@@ -4,13 +4,16 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   DONDOWNLOAD_EXTENSION_ID,
+  DONDOWNLOAD_FIREFOX_ADDON_ID,
   extensionIdFromDigestHex,
-  isExtensionId
+  isExtensionId,
+  isFirefoxAddonId
 } from '../src/shared/extensionId'
 
 interface Manifest {
   key?: string
   allowed_origins?: string[]
+  browser_specific_settings?: { gecko?: { id?: string } }
 }
 
 describe('stable extension ID', () => {
@@ -34,5 +37,19 @@ describe('stable extension ID', () => {
     expect(isExtensionId('*')).toBe(false)
     expect(isExtensionId('abc')).toBe(false)
     expect(() => extensionIdFromDigestHex('zzzz')).toThrow()
+  })
+
+  it('keeps the Firefox add-on ID in the manifest and the native host in sync', () => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'extension', 'manifest.json'), 'utf8')
+    ) as Manifest
+
+    expect(manifest.browser_specific_settings?.gecko?.id).toBe(
+      DONDOWNLOAD_FIREFOX_ADDON_ID
+    )
+    expect(isFirefoxAddonId(DONDOWNLOAD_FIREFOX_ADDON_ID)).toBe(true)
+    for (const invalid of ['*', 'not-an-id', `${'a'.repeat(256)}@b.c`, 'a@']) {
+      expect(isFirefoxAddonId(invalid)).toBe(false)
+    }
   })
 })

@@ -724,6 +724,25 @@ describeWindows('Windows native messaging host', () => {
     expect(run.stdout).toHaveLength(0)
   })
 
+  it('accepts the Firefox manifest-path and add-on-ID launch arguments', async () => {
+    const run = await runHost([], {
+      args: [
+        'C:\\Users\\test\\AppData\\Roaming\\DonDownload\\native-messaging\\com.dondownload.bridge.firefox.json',
+        'dondownload@dondownload.app'
+      ]
+    })
+    expect(run.code).toBe(0)
+    expect(run.stdout).toHaveLength(0)
+  })
+
+  it('rejects a Firefox launch with a different add-on ID', async () => {
+    const run = await runHost([], {
+      args: ['C:\\manifest.json', 'other@example.org']
+    })
+    expect(run.code).toBe(3)
+    expect(run.stdout).toHaveLength(0)
+  })
+
   it('forwards analyze-media with the exact route, auth and body', async () => {
     const app = await startFakeApp(
       jsonRespond({ ok: true, operation: 'analyze-media', analysis: mediaAnalysis() })

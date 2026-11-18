@@ -2,13 +2,16 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   CHROME_NATIVE_HOST_REGISTRY_KEY,
-  EDGE_NATIVE_HOST_REGISTRY_KEY
+  DONDOWNLOAD_NATIVE_HOST_ADDON,
+  EDGE_NATIVE_HOST_REGISTRY_KEY,
+  FIREFOX_NATIVE_HOST_REGISTRY_KEY
 } from '../src/shared/browserExtension'
 import {
   DONDOWNLOAD_EXTENSION_ID
 } from '../src/shared/extensionId'
 import {
   createRegExeRegistry,
+  firefoxManifestPath,
   nativeManifestPath,
   registerNativeHost,
   unregisterNativeHost,
@@ -20,6 +23,7 @@ import {
 
 const APP_DATA = 'C:\\Users\\test\\AppData\\Roaming'
 const MANIFEST_PATH = nativeManifestPath(APP_DATA)
+const FIREFOX_MANIFEST_PATH = firefoxManifestPath(APP_DATA)
 const EXTENSION_ORIGIN = `chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`
 const VALID_ID = 'a'.repeat(32)
 const ROOT = 'C:\\repo'
@@ -112,8 +116,20 @@ function readManifest(fs: FakeFileSystem): {
   return JSON.parse(raw) as ReturnType<typeof readManifest>
 }
 
+function readFirefoxManifest(fs: FakeFileSystem): {
+  name: string
+  description: string
+  path: string
+  type: string
+  allowed_extensions: string[]
+} {
+  const raw = fs.files.get(FIREFOX_MANIFEST_PATH)
+  if (raw === undefined) throw new Error('Firefox manifest was not written')
+  return JSON.parse(raw) as ReturnType<typeof readFirefoxManifest>
+}
+
 describe('native messaging auto-registration', () => {
-  it('writes a fresh manifest with only the fixed exact origin and both keys', async () => {
+  it('writes fresh Chromium and Firefox manifests and all three keys', async () => {
     const { deps, registry, fs } = dependencies()
 
     const status = await registerNativeHost(deps)
@@ -124,19 +140,33 @@ describe('native messaging auto-registration', () => {
       path.join(RESOURCES, 'native', 'dondownload-native-host.exe')
     )
     expect(status.allowedOrigins).toEqual([EXTENSION_ORIGIN])
+    expect(status.firefoxManifestPath).toBe(FIREFOX_MANIFEST_PATH)
+    expect(status.firefoxAddonId).toBe(DONDOWNLOAD_NATIVE_HOST_ADDON)
+    expect(status.allowedExtensions).toEqual([DONDOWNLOAD_NATIVE_HOST_ADDON])
     expect(status.browsers).toEqual([
       expect.objectContaining({ browser: 'Chrome', registered: true }),
       expect.objectContaining({ browser: 'Helium', registered: true }),
-      expect.objectContaining({ browser: 'Edge', registered: true })
+      expect.objectContaining({ browser: 'Edge', registered: true }),
+      expect.objectContaining({ browser: 'Firefox', registered: true })
     ])
 
     const manifest = readManifest(fs)
     expect(manifest.path.endsWith('dondownload-native-host.exe')).toBe(true)
     expect(manifest.allowed_origins).toEqual([EXTENSION_ORIGIN])
     expect(manifest.allowed_origins.join(',')).not.toContain('*')
+
+    const firefoxManifest = readFirefoxManifest(fs)
+    expect(firefoxManifest.path).toBe(manifest.path)
+    expect(firefoxManifest.allowed_extensions).toEqual([
+      DONDOWNLOAD_NATIVE_HOST_ADDON
+    ])
+    expect(firefoxManifest.allowed_extensions.join(',')).not.toContain('*')
+    expect(firefoxManifest).not.toHaveProperty('allowed_origins')
+
     expect(registry.writes).toEqual([
       { key: CHROME_NATIVE_HOST_REGISTRY_KEY, value: MANIFEST_PATH },
-      { key: EDGE_NATIVE_HOST_REGISTRY_KEY, value: MANIFEST_PATH }
+      { key: EDGE_NATIVE_HOST_REGISTRY_KEY, value: MANIFEST_PATH },
+      { key: FIREFOX_NATIVE_HOST_REGISTRY_KEY, value: FIREFOX_MANIFEST_PATH }
     ])
   })
 
@@ -169,6 +199,49 @@ describe('native messaging auto-registration', () => {
     ])
     expect(status.allowedOrigins).toEqual(manifest.allowed_origins)
     expect(manifest.allowed_origins).not.toContain('*')
+  })
+
+  it('keeps existing valid Firefox add-on IDs and drops invalid or wildcard entries', async () => {
+    const { deps, fs } = dependencies()
+    fs.files.set(
+      FIREFOX_MANIFEST_PATH,
+      JSON.stringify({
+        name: 'com.dondownload.bridge',
+        path: path.join(RESOURCES, 'native', 'dondownload-native-host.exe'),
+        allowed_extensions: [
+          'legacy@example.org',
+          '*',
+          'not an id',
+          'https://example.org/',
+          'legacy@example.org'
+        ]
+      })
+    )
+
+    const status = await registerNativeHost(deps)
+    const manifest = readFirefoxManifest(fs)
+
+    expect(manifest.allowed_extensions).toEqual([
+      'legacy@example.org',
+      DONDOWNLOAD_NATIVE_HOST_ADDON
+    ])
+    expect(status.allowedExtensions).toEqual(manifest.allowed_extensions)
+    expect(manifest.allowed_extensions.join(',')).not.toContain('*')
+  })
+
+  it('marks the Firefox row unregistered when its key cannot be written', async () => {
+    const { deps, registry } = dependencies()
+    registry.failWriteKey = FIREFOX_NATIVE_HOST_REGISTRY_KEY
+
+    const status = await registerNativeHost(deps)
+
+    expect(status.registered).toBe(false)
+    expect(
+      status.browsers.find((browser) => browser.browser === 'Firefox')?.registered
+    ).toBe(false)
+    expect(status.browsers.find((browser) => browser.browser === 'Chrome')?.registered).toBe(
+      true
+    )
   })
 
   it('does not rewrite the manifest or registry on a second identical run', async () => {
@@ -246,12 +319,21 @@ describe('native messaging uninstall cleanup', () => {
         allowed_origins: [EXTENSION_ORIGIN]
       })
     )
+    fs.files.set(
+      FIREFOX_MANIFEST_PATH,
+      JSON.stringify({
+        name: 'com.dondownload.bridge',
+        path: pathValue,
+        allowed_extensions: [DONDOWNLOAD_NATIVE_HOST_ADDON]
+      })
+    )
     registry.data.set(CHROME_NATIVE_HOST_REGISTRY_KEY, MANIFEST_PATH)
     registry.data.set(EDGE_NATIVE_HOST_REGISTRY_KEY, MANIFEST_PATH)
+    registry.data.set(FIREFOX_NATIVE_HOST_REGISTRY_KEY, FIREFOX_MANIFEST_PATH)
     return { deps, registry, fs }
   }
 
-  it('removes both keys and the manifest when the path is inside the install dir', async () => {
+  it('removes every key and both manifests when the path is inside the install dir', async () => {
     const { deps, registry, fs } = seeded(
       path.join(installDir, 'native', 'dondownload-native-host.exe')
     )
@@ -261,13 +343,15 @@ describe('native messaging uninstall cleanup', () => {
     expect(result).toEqual({ removed: true, reason: 'removed', lastError: null })
     expect(registry.removes).toEqual([
       CHROME_NATIVE_HOST_REGISTRY_KEY,
-      EDGE_NATIVE_HOST_REGISTRY_KEY
+      EDGE_NATIVE_HOST_REGISTRY_KEY,
+      FIREFOX_NATIVE_HOST_REGISTRY_KEY
     ])
-    expect(fs.removed).toEqual([MANIFEST_PATH])
+    expect(fs.removed).toEqual([MANIFEST_PATH, FIREFOX_MANIFEST_PATH])
     expect(registry.data.size).toBe(0)
+    expect(fs.files.size).toBe(0)
   })
 
-  it('leaves a dev registration and both keys alone when the path is outside the install dir', async () => {
+  it('leaves a dev registration and every key alone when the path is outside the install dir', async () => {
     const { deps, registry, fs } = seeded(
       path.join(ROOT, 'native', 'dondownload-native-host.exe')
     )
@@ -279,6 +363,7 @@ describe('native messaging uninstall cleanup', () => {
     expect(registry.removes).toEqual([])
     expect(fs.removed).toEqual([])
     expect(fs.files.has(MANIFEST_PATH)).toBe(true)
+    expect(fs.files.has(FIREFOX_MANIFEST_PATH)).toBe(true)
   })
 
   it('does nothing when no manifest exists', async () => {

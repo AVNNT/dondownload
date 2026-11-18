@@ -10,14 +10,35 @@
  */
 export const DONDOWNLOAD_EXTENSION_ID = 'mikinloaillialkiannpcejdbmfbljhm'
 
+/**
+ * The Firefox add-on ID. Firefox has no manifest `key`, so native messaging
+ * authorization uses this fixed ID: the extension declares it in
+ * `browser_specific_settings.gecko.id`, and the app manifest lists it in
+ * `allowed_extensions`.
+ */
+export const DONDOWNLOAD_FIREFOX_ADDON_ID = 'dondownload@dondownload.app'
+
 /** Exact native messaging origin for the stable extension ID. */
 export const DONDOWNLOAD_EXTENSION_ORIGIN = `chrome-extension://${DONDOWNLOAD_EXTENSION_ID}/`
 
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/
+const FIREFOX_ADDON_ID_PATTERN = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+$/
 
 /** True only for an exact 32-character Chromium extension ID. */
 export function isExtensionId(value: unknown): value is string {
   return typeof value === 'string' && EXTENSION_ID_PATTERN.test(value)
+}
+
+/**
+ * True only for a plausible Firefox add-on ID (`name@domain`). The native host
+ * app manifest uses this instead of a Chromium origin.
+ */
+export function isFirefoxAddonId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 255 &&
+    FIREFOX_ADDON_ID_PATTERN.test(value)
+  )
 }
 
 /**

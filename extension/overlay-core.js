@@ -20,7 +20,16 @@
   var MIN_IFRAME_HEIGHT = 135
   var PANEL_WIDTH = 292
   var PANEL_HEIGHT_ESTIMATE = 258
-  var SHORTCUT_LABEL = 'chrome://extensions/shortcuts'
+  // Firefox opens the command editor from the add-on manager instead of the
+  // Chromium extensions page. The injected UI must not send Firefox users to a
+  // chrome:// URL, which does not exist there.
+  var IS_FIREFOX =
+    typeof navigator !== 'undefined' &&
+    typeof navigator.userAgent === 'string' &&
+    /Firefox\//.test(navigator.userAgent)
+  var SHORTCUT_LABEL = IS_FIREFOX
+    ? 'about:addons > Manage Extension Shortcuts'
+    : 'chrome://extensions/shortcuts'
   var MEDIA_SIZE_UNKNOWN = 'Size unknown'
 
   function isFiniteNumber(value) {
