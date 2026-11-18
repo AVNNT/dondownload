@@ -1,4 +1,5 @@
 import { ValidationError } from './validation'
+import { isDownloadDestinationToken } from './downloadDestination'
 
 /**
  * Shared, renderer-safe media contracts for Milestone 3A.
@@ -231,6 +232,11 @@ export interface MediaQueueInput {
   outputFormat?: MediaOutputFormat
   /** Must match the analysis' cookie use; memory-only. */
   cookie?: string
+  /**
+   * Opaque token for a folder the user chose in the Add dialog's "Save to"
+   * picker. Omitted means the normal media folder (or the type folder).
+   */
+  destinationToken?: string
 }
 
 /**
@@ -839,9 +845,21 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     'force',
     'maxBytes',
     'outputFormat',
-    'cookie'
+    'cookie',
+    'destinationToken'
   ])
   const cookie = optionalCookie(record)
+
+  let destinationToken: string | undefined
+  if (
+    Object.prototype.hasOwnProperty.call(record, 'destinationToken') &&
+    record.destinationToken !== null
+  ) {
+    if (!isDownloadDestinationToken(record.destinationToken)) {
+      throw new ValidationError('The chosen download folder is invalid.')
+    }
+    destinationToken = record.destinationToken
+  }
 
   let force = false
   if (Object.prototype.hasOwnProperty.call(record, 'force')) {
@@ -871,6 +889,7 @@ export function parseMediaQueueInput(value: unknown): MediaQueueInput {
     ...(force ? { force: true as const } : {}),
     ...(maxBytes === undefined ? {} : { maxBytes }),
     ...(outputFormat === undefined ? {} : { outputFormat }),
-    ...(cookie === undefined ? {} : { cookie })
+    ...(cookie === undefined ? {} : { cookie }),
+    ...(destinationToken === undefined ? {} : { destinationToken })
   }
 }

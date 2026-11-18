@@ -357,6 +357,87 @@ describe('per-download aria2 options', () => {
   })
 })
 
+describe('chosen download folder', () => {
+  it('downloads into a picked folder outside the default root and remembers it after a restart', async () => {
+    const { database, downloadDir, databasePath } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const chosen = path.join(path.dirname(downloadDir), 'chosen folder')
+    await mkdir(chosen, { recursive: true })
+
+    const first = createManager(database, downloadDir, clock, settings)
+    const url = 'https://example.com/picked.bin'
+    const added = await first.manager.addToDestination(
+      {
+        url,
+        controls: controls({ scheduledAt: at(12) })
+      },
+      chosen
+    )
+    const item = added.downloads.find((entry) => entry.url === url)
+    expect(item?.status).toBe('waiting')
+    expect(item?.dir).toBe(chosen)
+    expect(database.loadAll()[0]?.record.dir).toBe(chosen)
+
+    // A scheduled job was never handed to aria2. Reopening the database must
+    // remember that this record may write outside the default root so Start
+    // Now still works from the picked folder.
+    first.manager.close()
+    const reopened = openDownloadDatabase(databasePath)
+    const second = createManager(reopened, downloadDir, clock, settings)
+    const started = await second.manager.startNow(item?.id)
+    const options = second.aria2.addUriCalls[0]?.params[1] as
+      | Record<string, string>
+      | undefined
+    expect(options?.dir).toBe(chosen)
+    expect(started.downloads.find((entry) => entry.id === item?.id)?.status).toBe(
+      'queued'
+    )
+  })
+
+  it('passes the picked folder to aria2 for an immediate add', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const chosen = path.join(path.dirname(downloadDir), 'elsewhere')
+    await mkdir(chosen, { recursive: true })
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await manager.addToDestination(
+      { url: 'https://example.com/immediate.bin' },
+      chosen
+    )
+
+    const options = aria2.addUriCalls[0]?.params[1] as Record<string, string>
+    expect(options.dir).toBe(chosen)
+  })
+
+  it('refuses a relative folder instead of resolving it against the cwd', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager, aria2 } = createManager(
+      database,
+      downloadDir,
+      clock,
+      settings
+    )
+
+    await expect(
+      manager.addToDestination(
+        { url: 'https://example.com/relative.bin' },
+        'relative-folder'
+      )
+    ).rejects.toMatchObject({ code: 'DOWNLOAD_FOLDER_INVALID' })
+    expect(aria2.addUriCalls).toHaveLength(0)
+  })
+})
+
 describe('per-host connection back-off', () => {
   it('lowers the connections for the failing host only and retries there', async () => {
     vi.useFakeTimers()

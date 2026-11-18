@@ -404,6 +404,47 @@ describe('MediaJobsManager analysis and opaque selection', () => {
     ])
   })
 
+  it('downloads a media job into a user-picked folder outside the media root', async () => {
+    const root = await makeTempDir()
+    const mediaDir = path.join(root, 'Media')
+    const chosen = path.join(root, 'Elsewhere', 'Picked')
+    const harness = await createHarness({ mediaDir, outputRootDir: root })
+    const analysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+
+    const job = await harness.manager.queueMedia(
+      {
+        analysisId: analysis.analysisId,
+        optionId: VIDEO_OPTION_ID
+      },
+      chosen
+    )
+    await flushMicrotasks()
+
+    expect(harness.engine.pending.request.dir).toBe(chosen)
+    expect(harness.database.rows.get(job.id)?.dir).toBe(chosen)
+    expect(harness.manager.getJobDirectory(job.id)).toBe(chosen)
+  })
+
+  it('refuses a relative media destination instead of trusting the caller', async () => {
+    const harness = await createHarness()
+    const analysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+
+    await expect(
+      harness.manager.queueMedia(
+        {
+          analysisId: analysis.analysisId,
+          optionId: VIDEO_OPTION_ID
+        },
+        'relative-folder'
+      )
+    ).rejects.toMatchObject({ code: 'DOWNLOAD_FOLDER_INVALID' })
+    expect(harness.engine.downloads).toHaveLength(0)
+  })
+
   it('satisfies the MediaBridgeTarget interface structurally', async () => {
     const harness = await createHarness()
     const target: MediaBridgeTarget = harness.manager

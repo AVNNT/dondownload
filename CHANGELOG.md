@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Choose where each download is saved ("Save to") in the Add and Quick add
+  dialogs. The chosen folder applies to that one download; the default folder,
+  sort-into-type folders and all other downloads are unchanged.
+
 ### Changed
 
 - The Firefox extension in releases is now signed by Mozilla and installs

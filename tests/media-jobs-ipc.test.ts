@@ -148,12 +148,20 @@ function createWindow(): FakeWindow {
   return { window, frame, webContents }
 }
 
-function register(mediaJobs?: FakeMediaManager, windowOverride?: FakeWindow) {
+function register(
+  mediaJobs?: FakeMediaManager,
+  windowOverride?: FakeWindow,
+  downloadDestinations?: {
+    choose: () => Promise<{ token: string; path: string } | null>
+    resolve: (token: string) => string | null
+  }
+) {
   const fakeWindow = windowOverride ?? createWindow()
   const context = {
     manager: {} as DownloadManager,
     aria2: {} as Aria2Service,
     mediaJobs: mediaJobs as unknown as MediaJobsManager | undefined,
+    ...(downloadDestinations === undefined ? {} : { downloadDestinations }),
     getWindow: () => fakeWindow.window as never
   }
   registerIpc(context)
@@ -240,6 +248,49 @@ describe('media IPC security and results', () => {
 
     const shown = await handler(IPC.showMediaInFolder)(event, media.job.id)
     expect(shown).toEqual({ ok: true, value: null })
+  })
+
+  it('routes a chosen destination token to the media queue in main', async () => {
+    const media = createMediaManager()
+    const token = 'a'.repeat(32)
+    const fakeWindow = register(media, undefined, {
+      choose: vi.fn(async () => null),
+      resolve: (value) => (value === token ? 'D:\\Chosen media' : null)
+    })
+
+    const result = await handler(IPC.queueMedia)(trustedEvent(fakeWindow), {
+      analysisId: media.analysis.analysisId,
+      optionId: 'option_video_0123456789',
+      destinationToken: token
+    })
+
+    expect(result.ok).toBe(true)
+    expect(media.queueMedia).toHaveBeenCalledWith(
+      {
+        analysisId: media.analysis.analysisId,
+        optionId: 'option_video_0123456789',
+        destinationToken: token
+      },
+      'D:\\Chosen media'
+    )
+  })
+
+  it('reports an expired media folder instead of queueing into the default', async () => {
+    const media = createMediaManager()
+    const fakeWindow = register(media, undefined, {
+      choose: vi.fn(async () => null),
+      resolve: () => null
+    })
+
+    const result = await handler(IPC.queueMedia)(trustedEvent(fakeWindow), {
+      analysisId: media.analysis.analysisId,
+      optionId: 'option_video_0123456789',
+      destinationToken: 'b'.repeat(32)
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('DOWNLOAD_FOLDER_EXPIRED')
+    expect(media.queueMedia).not.toHaveBeenCalled()
   })
 
   it('rejects a sender that is not the application window', async () => {

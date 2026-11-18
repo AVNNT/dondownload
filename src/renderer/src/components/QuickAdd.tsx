@@ -39,6 +39,10 @@ interface QuickAddProps {
   onUrlChange?: (value: string) => void
   /** Lets the dialog footer trigger this component's submit handler. */
   registerSubmit?: (submit: (() => void) | null) => void
+  /** Opaque token for a folder chosen in the dialog's "Save to" picker. */
+  destinationToken?: string
+  /** Human label for the save location shown under the form. */
+  savedToLabel?: string
 }
 
 const MAX_SPEED_MIB = 1024
@@ -109,7 +113,9 @@ export function QuickAdd({
   defaultConnections = DEFAULT_PER_HOST_CONNECTIONS,
   url,
   onUrlChange,
-  registerSubmit
+  registerSubmit,
+  destinationToken,
+  savedToLabel
 }: QuickAddProps): JSX.Element {
   const controlled = onUrlChange !== undefined
   const [internalUrl, setInternalUrl] = useState(initialUrl ?? '')
@@ -220,7 +226,8 @@ export function QuickAdd({
         ...(trimmedName.length > 0
           ? { filename: sanitizeFilename(trimmedName) }
           : {}),
-        ...(controls ? { controls } : {})
+        ...(controls ? { controls } : {}),
+        ...(destinationToken === undefined ? {} : { destinationToken })
       }
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : 'Check the URL.')
@@ -589,7 +596,7 @@ export function QuickAdd({
 
       <div className="flex items-start justify-between gap-3 px-0.5">
         <p className="text-[11px] leading-5 text-zinc-400">
-          Saved to Downloads\DonDownload.
+          Saved to {savedToLabel ?? 'Downloads\\DonDownload'}.
         </p>
         {localError ? (
           <p role="alert" className="text-right text-[11px] leading-5 text-red-400">

@@ -247,6 +247,12 @@ export class DownloadManager {
   private readonly startNowIds = new Set<string>()
   /** Records downloaded into a validated user-chosen pairing folder token. */
   private readonly pairingFileIds = new Set<string>()
+  /**
+   * Records the user saved into a folder chosen in the Add dialog's "Save to"
+   * picker. Kept apart from pairing scripts so a normal download can still be
+   * retried after a restart when its folder is outside the default root.
+   */
+  private readonly customFolderIds = new Set<string>()
   private readonly submittingIds = new Set<string>()
   private readonly now: () => number
   private readonly host: CoreHost
@@ -524,6 +530,34 @@ export class DownloadManager {
 
   async add(rawInput: unknown): Promise<AppSnapshot> {
     await this.addInternal(rawInput, false)
+    return this.getSnapshot()
+  }
+
+  /**
+   * Add one download into a folder the user chose in the native "Save to"
+   * dialog. The IPC layer resolves the opaque token first, so no renderer path
+   * ever reaches this method. Outside the normal root is deliberate here: the
+   * user explicitly picked the folder.
+   */
+  async addToDestination(
+    rawInput: unknown,
+    directory: string
+  ): Promise<AppSnapshot> {
+    // Main's token store already guarantees this, but the manager is the last
+    // line of defence: a relative path would silently anchor to the process
+    // working directory, so refuse it instead of resolving it.
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) {
+      throw new AppError(
+        'DOWNLOAD_FOLDER_INVALID',
+        'That download folder cannot be used.'
+      )
+    }
+    const record = await this.addInternal(rawInput, false, directory, {
+      allowOutsideRoot: true
+    })
+    if (!this.isInsideDownloadRoot(record.dir)) {
+      this.customFolderIds.add(record.id)
+    }
     return this.getSnapshot()
   }
 
@@ -996,6 +1030,7 @@ export class DownloadManager {
     this.startNowIds.delete(id)
     this.submittingIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.customFolderIds.delete(id)
     this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
     this.persistedSignatures.delete(id)
@@ -1257,7 +1292,7 @@ export class DownloadManager {
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
       record.dir,
-      this.pairingFileIds.has(record.id)
+      this.allowsOutsideRoot(record.id)
     )
 
     this.updateRecord(record, {
@@ -1354,10 +1389,10 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+    if (!isInsideDirectory(record.dir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
-        'The reported file is outside the configured download folder.'
+        'The reported file is outside this download’s folder.'
       )
     }
 
@@ -1385,10 +1420,10 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+    if (!isInsideDirectory(record.dir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
-        'The reported file is outside the configured download folder.'
+        'The reported file is outside this download’s folder.'
       )
     }
 
@@ -1458,18 +1493,18 @@ export class DownloadManager {
   /**
    * Resolve a renderer-supplied download id to that download's own completed
    * file. This is the only path source for hashing: an arbitrary renderer path
-   * is never accepted, and the recorded path is re-validated against the
-   * configured download folder before a stream is opened.
+   * is never accepted, and the recorded path is re-validated against the job's
+   * own output folder before a stream is opened.
    */
   async checksumTarget(rawId: unknown): Promise<ChecksumTarget> {
     const record = this.getRecord(rawId)
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isInsideDirectory(this.downloadDir, record.filePath)) {
+    if (!isInsideDirectory(record.dir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
-        'The reported file is outside the configured download folder.'
+        'The reported file is outside this download’s folder.'
       )
     }
 
@@ -1613,7 +1648,7 @@ export class DownloadManager {
         this.requestHeaders.get(record.id),
         this.cookieHosts.get(record.id),
         record.dir,
-        this.pairingFileIds.has(record.id)
+        this.allowsOutsideRoot(record.id)
       )
       this.updateRecord(record, {
         gid,
@@ -1804,6 +1839,13 @@ export class DownloadManager {
     try {
       for (const stored of this.database.loadAll()) {
         this.records.set(stored.record.id, stored.record)
+        // A download saved into an explicitly picked folder may live outside
+        // the default root; remember it so retry/resume keep working after a
+        // restart. A scanned script placed beside its video is one-shot and
+        // needs no such recovery.
+        if (!this.isInsideDownloadRoot(stored.record.dir)) {
+          this.customFolderIds.add(stored.record.id)
+        }
         if (stored.record.status === 'active') {
           this.activeIds.add(stored.record.id)
         }
@@ -1892,6 +1934,11 @@ export class DownloadManager {
     )
   }
 
+  /** Only a pairing script or an explicitly picked "Save to" folder may write outside the root. */
+  private allowsOutsideRoot(id: string): boolean {
+    return this.pairingFileIds.has(id) || this.customFolderIds.has(id)
+  }
+
   private async ensureDownloadDirectory(
     directory: string = this.downloadDir
   ): Promise<void> {
@@ -1927,7 +1974,7 @@ export class DownloadManager {
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
       record.dir,
-      this.pairingFileIds.has(record.id)
+      this.allowsOutsideRoot(record.id)
     )
 
     this.updateRecord(record, {
@@ -2568,6 +2615,7 @@ export class DownloadManager {
     this.blockReasons.delete(id)
     this.startNowIds.delete(id)
     this.pairingFileIds.delete(id)
+    this.customFolderIds.delete(id)
     this.pendingTypeSortIds.delete(id)
     this.dirtyIds.delete(id)
     this.persistedSignatures.delete(id)

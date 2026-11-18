@@ -8,6 +8,9 @@ export const IPC = {
   // Advisory duplicate lookup before an add. Indexed by normalized URL and
   // returns only renderer-safe fields (no path or header).
   checkDuplicate: 'download:check-duplicate',
+  // Native "Save to" folder picker for the next download. The dialog runs in
+  // main; only an opaque token plus a display path are returned.
+  chooseDownloadFolder: 'download:choose-folder',
   pauseDownload: 'download:pause',
   // Stop an in-flight transfer but keep its row (and partial file) so the user
   // can Retry later. Distinct from pause, which is resumable, and remove.

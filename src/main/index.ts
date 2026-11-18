@@ -17,6 +17,7 @@ import {
 } from '@shared/desktopSettings'
 import type { AppSnapshot, Aria2State, DownloadItem } from '@shared/types'
 import type { BrowserExtensionStatus } from '@shared/browserExtension'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type { MediaJob, MediaToolState } from '@shared/media'
 import type { Batch } from '@shared/batches'
 import {
@@ -29,6 +30,7 @@ import { BatchManager } from './batches/manager'
 import { ChecksumService } from './checksum/service'
 import { openDownloadDatabase, resolveDownloadDatabasePath } from './db/database'
 import { DownloadManager } from './downloads/manager'
+import { DownloadDestinationStore } from './downloads/destination'
 import { HistoryCleanupService } from './history/cleanup'
 import { createPixeldrainAdapter } from './hosts/pixeldrain'
 import { createMegaAdapter } from './hosts/mega'
@@ -999,6 +1001,26 @@ if (unregisterRequested) {
     // crosses IPC; both the download manager and batch renames resolve it here.
     const manualMatchStore = new ManualMatchStore()
 
+    // Main-only token store for the Add dialog's "Save to" picker. The folder
+    // dialog returns a path exactly once; the renderer gets only a token and a
+    // display label, and the token is resolved again by `download:add`.
+    const downloadDestinationStore = new DownloadDestinationStore()
+    const chooseDownloadFolder = async (): Promise<DownloadFolderChoice | null> => {
+      const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+      const options: Electron.OpenDialogOptions = {
+        title: 'Choose where DonDownload saves this download',
+        defaultPath: downloadDir,
+        properties: ['openDirectory', 'createDirectory']
+      }
+      const result =
+        owner === null
+          ? await dialog.showOpenDialog(options)
+          : await dialog.showOpenDialog(owner, options)
+      if (result.canceled || result.filePaths.length === 0) return null
+      const picked = result.filePaths[0]
+      return picked === undefined ? null : downloadDestinationStore.register(picked)
+    }
+
     // Windows taskbar progress. The window is created further below, so the
     // controller reads it through a getter; smoke/E2E runs never touch the
     // shell taskbar. Updates are throttled inside the controller.
@@ -1484,6 +1506,10 @@ if (unregisterRequested) {
       ...(scanner === null ? {} : { scanner }),
       ...(scanQueue === null ? {} : { scanQueue }),
       ...(manualMatchService === null ? {} : { manualMatch: manualMatchService }),
+      downloadDestinations: {
+        choose: chooseDownloadFolder,
+        resolve: (token) => downloadDestinationStore.resolve(token)
+      },
       requestSnapshotResync,
       // The log folder is main's own path (app data under the user profile);
       // the renderer never supplies one.

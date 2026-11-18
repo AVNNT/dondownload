@@ -40,6 +40,7 @@ import type {
   ChecksumResult
 } from '../shared/checksum'
 import type { DesktopSettings } from '../shared/desktopSettings'
+import type { DownloadFolderChoice } from '../shared/downloadDestination'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -68,6 +69,10 @@ const api: DonDownloadApi = {
   checkDuplicate: (url: string) =>
     ipcRenderer.invoke(IPC.checkDuplicate, url) as Promise<
       ApiResult<DuplicateWarning | null>
+    >,
+  chooseDownloadFolder: () =>
+    ipcRenderer.invoke(IPC.chooseDownloadFolder) as Promise<
+      ApiResult<DownloadFolderChoice | null>
     >,
   pauseDownload: (id: string) =>
     ipcRenderer.invoke(IPC.pauseDownload, id) as Promise<ApiResult<AppSnapshot>>,

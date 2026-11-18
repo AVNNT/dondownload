@@ -122,6 +122,26 @@ the pure `src/shared/typeFolders.ts` module. Only new downloads are affected:
 existing rows are never moved, and a download with an explicitly picked folder
 is never re-sorted.
 
+### Choosing a folder for one download
+
+The Add dialog shows the save folder above the primary button. **Change** opens
+the native folder picker in the main process; **Use default** clears it. The
+choice applies to the one download the dialog adds — a direct aria2 download or
+a media (yt-dlp) job — and Quick add shows the same folder. The picked folder
+may be outside the default download root.
+
+The renderer never sends a path. Main keeps the picked path behind a short-lived
+opaque token and returns only the token plus a display label. When the download
+is added, main resolves the token, re-checks that the path is still an absolute,
+existing, writable local directory (UNC, device and relative paths are refused)
+and only then hands it to aria2 or yt-dlp. An expired token fails with a clear
+error instead of quietly falling back to the default folder, so a download never
+lands somewhere the user did not choose.
+
+A download in a picked folder bypasses type sorting. Its folder is stored with
+the job in the history row (`dir`), so retry, resume, Start now, Open and Show in
+folder keep using it after a restart.
+
 ### Automatic history cleanup
 
 `historyRetentionDays` keeps the download list small without touching files on

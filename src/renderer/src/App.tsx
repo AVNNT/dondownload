@@ -19,6 +19,7 @@ import type {
   AppSnapshot,
   DownloadItem
 } from '@shared/types'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type {
   MediaAnalysis,
   MediaJob,
@@ -775,6 +776,12 @@ export default function App(): JSX.Element {
     [applyDownloadResult]
   )
 
+  const handleChooseDownloadFolder = useCallback(
+    (): Promise<ApiResult<DownloadFolderChoice | null>> =>
+      window.donDownload.chooseDownloadFolder(),
+    []
+  )
+
   const handleAnalyzeMedia = useCallback(
     (url: string): Promise<ApiResult<MediaAnalysis>> =>
       window.donDownload.analyzeMedia({ url }),
@@ -787,12 +794,16 @@ export default function App(): JSX.Element {
       optionId: string
       outputFormat: MediaOutputFormat
       maxBytes: number | null
+      destinationToken?: string
     }): Promise<ApiResult<MediaSnapshot>> => {
       const result = await window.donDownload.queueMedia({
         analysisId: input.analysisId,
         optionId: input.optionId,
         outputFormat: input.outputFormat,
-        ...(input.maxBytes === null ? {} : { maxBytes: input.maxBytes })
+        ...(input.maxBytes === null ? {} : { maxBytes: input.maxBytes }),
+        ...(input.destinationToken === undefined
+          ? {}
+          : { destinationToken: input.destinationToken })
       })
       if (result.ok) {
         if (mediaStoreRef.current) {
@@ -1890,6 +1901,7 @@ export default function App(): JSX.Element {
               onScanOpen={openScanSheet}
               onClose={() => setAddRequest(null)}
               onAdd={handleAdd}
+              onChooseFolder={handleChooseDownloadFolder}
               onAnalyze={handleAnalyzeMedia}
               onQueue={handleQueueMedia}
             />

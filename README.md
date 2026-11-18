@@ -24,6 +24,7 @@
 | 🔎 **Link scanner** | Paste forum or page links, get every download on them |
 | 🪶 **Light** | ~1 MB when idle in the tray |
 | 🔒 **Private** | No accounts, no telemetry, signed updates |
+| 📁 **Save to** | Pick any folder for a single download in the Add dialog |
 
 <table>
   <tr>

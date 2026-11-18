@@ -536,12 +536,21 @@ export class MediaJobsManager {
    * new job and start it. Returns the queued job only; callers that need the
    * whole list use `getMediaSnapshot`.
    */
-  async queueMedia(rawInput: unknown): Promise<MediaJob> {
+  async queueMedia(rawInput: unknown, destinationDir?: string): Promise<MediaJob> {
     if (this.closed) {
       throw new AppError('MEDIA_UNAVAILABLE', 'Media support is shutting down.')
     }
     const input = parseMediaQueueInput(rawInput)
     const cached = this.requireAnalysis(input.analysisId)
+    // A folder picked in the Add dialog comes from main's token store, never
+    // from the renderer. It must still be an absolute local path; anything else
+    // is a programming error and is refused rather than trusted.
+    if (destinationDir !== undefined && !path.isAbsolute(destinationDir)) {
+      throw new AppError(
+        'DOWNLOAD_FOLDER_INVALID',
+        'That download folder cannot be used.'
+      )
+    }
     if (cached.usedCookies !== (input.cookie !== undefined)) {
       throw new AppError(
         'MEDIA_ANALYSIS_MISMATCH',
@@ -592,6 +601,22 @@ export class MediaJobsManager {
     }
 
     const createdAt = this.now()
+    // An explicit "Save to" folder wins; otherwise type sorting (or the media
+    // folder) decides. A type folder must stay inside the configured root, so a
+    // bad setting can never send a media job somewhere unexpected.
+    const jobDir =
+      destinationDir ??
+      this.outputDirFor(option.kind === 'audio' ? 'audio' : 'video')
+    if (
+      destinationDir === undefined &&
+      path.resolve(jobDir) !== path.resolve(this.outputRootDir) &&
+      !isInsideDirectory(this.outputRootDir, jobDir)
+    ) {
+      throw new AppError(
+        'MEDIA_OUTPUT_UNAVAILABLE',
+        'The media download folder is invalid.'
+      )
+    }
     const formatSize = option.outputSizes?.[outputFormat]
     const knownTotalBytes =
       formatSize !== undefined
@@ -613,7 +638,7 @@ export class MediaJobsManager {
       totalBytes:
         knownTotalBytes !== null && knownTotalBytes > 0 ? knownTotalBytes : null,
       errorMessage: null,
-      dir: this.outputDirFor(option.kind === 'audio' ? 'audio' : 'video'),
+      dir: jobDir,
       filePath: null,
       maxBytes: input.maxBytes ?? null,
       outputFormat,
@@ -1123,7 +1148,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(this.outputRootDir, record.filePath)) {
+    if (!isInsideDirectory(record.dir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
@@ -1151,7 +1176,7 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isInsideDirectory(this.outputRootDir, record.filePath)) {
+    if (!isInsideDirectory(record.dir, record.filePath)) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'

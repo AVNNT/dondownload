@@ -303,6 +303,27 @@ describe('media public schema', () => {
     ).toEqual({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID })
 
     expect(() => parseMediaQueueInput({ analysisId: 'bestvideo+bestaudio', optionId: VIDEO_OPTION_ID })).toThrow()
+    const token = 'a'.repeat(32)
+    expect(
+      parseMediaQueueInput({
+        analysisId: ANALYSIS_ID,
+        optionId: VIDEO_OPTION_ID,
+        destinationToken: token
+      })
+    ).toEqual({
+      analysisId: ANALYSIS_ID,
+      optionId: VIDEO_OPTION_ID,
+      destinationToken: token
+    })
+    for (const destinationToken of ['short', 'C:\\Windows\\System32', 42]) {
+      expect(() =>
+        parseMediaQueueInput({
+          analysisId: ANALYSIS_ID,
+          optionId: VIDEO_OPTION_ID,
+          destinationToken
+        })
+      ).toThrow(/download folder/)
+    }
     for (const maxBytes of [0, -1, 1.5, 100 * 1024 ** 3 + 1]) {
       expect(() => parseMediaQueueInput({ analysisId: ANALYSIS_ID, optionId: VIDEO_OPTION_ID, maxBytes })).toThrow()
     }

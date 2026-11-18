@@ -2,11 +2,12 @@ import { BrowserWindow, clipboard, ipcMain, shell, type IpcMainInvokeEvent } fro
 import path from 'node:path'
 import { IPC } from '@shared/ipc'
 import type { BrowserExtensionStatus } from '@shared/browserExtension'
-import type {
-  MediaAnalysis,
-  MediaJob,
-  MediaJobDetails,
-  MediaSnapshot
+import {
+  parseMediaQueueInput,
+  type MediaAnalysis,
+  type MediaJob,
+  type MediaJobDetails,
+  type MediaSnapshot
 } from '@shared/media'
 import type {
   Batch,
@@ -21,8 +22,10 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import { parseAddDownloadInput } from '@shared/validation'
 import type { DuplicateWarning } from '@shared/duplicates'
 import { parseDuplicateCheckUrl } from '@shared/duplicates'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type { ChecksumResult } from '@shared/checksum'
 import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
@@ -94,6 +97,11 @@ export interface IpcContext {
   manualMatch?: ManualMatchService
   /** First-start guide data; detection and folder resolution stay in main. */
   welcome?: { getInfo: () => Promise<WelcomeInfo> }
+  /**
+   * Main-only "Save to" folder port. The renderer receives a short-lived token
+   * and its display path; only the token travels back with `download:add`.
+   */
+  downloadDestinations?: DownloadDestinationPort
   /** Send fresh full deltas for every snapshot stream after a renderer gap. */
   requestSnapshotResync?: () => void
   /**
@@ -104,6 +112,11 @@ export interface IpcContext {
   openLogFolder?: () => Promise<string>
   buildDiagnostics?: () => string | Promise<string>
   getWindow: () => BrowserWindow | null
+}
+
+export interface DownloadDestinationPort {
+  choose: () => Promise<DownloadFolderChoice | null>
+  resolve: (token: string) => string | null
 }
 
 function assertTrustedSender(
@@ -161,14 +174,43 @@ export function registerIpc(context: IpcContext): void {
     return context.manager.getSnapshot()
   })
 
-  invoke<AppSnapshot>(IPC.addDownload, (_event, input) =>
-    context.manager.add(input)
+  invoke<DownloadFolderChoice | null>(
+    IPC.chooseDownloadFolder,
+    async () => {
+      if (!context.downloadDestinations) {
+        throw new AppError(
+          'DOWNLOAD_FOLDER_UNAVAILABLE',
+          'Choosing a download folder is not available.'
+        )
+      }
+      return context.downloadDestinations.choose()
+    }
   )
   // Advisory only: the renderer sends one URL; main validates it before the
   // indexed history lookup. Nothing is queued by this channel.
   invoke<DuplicateWarning | null>(IPC.checkDuplicate, async (_event, url) => {
     const normalized = parseDuplicateCheckUrl(url)
     return context.manager.checkDuplicate(normalized)
+  })
+
+  invoke<AppSnapshot>(IPC.addDownload, (_event, rawInput) => {
+    // Validate before resolving the folder token, so a malformed payload never
+    // touches the destination store. A save-to token is optional; without one
+    // the normal, root-scoped add path is used unchanged.
+    const input = parseAddDownloadInput(rawInput)
+    if (input.destinationToken === undefined) {
+      return context.manager.add(input)
+    }
+    const directory =
+      context.downloadDestinations?.resolve(input.destinationToken) ?? null
+    if (directory === null) {
+      throw new AppError(
+        'DOWNLOAD_FOLDER_EXPIRED',
+        'The chosen download folder is no longer available.',
+        'Choose the folder again.'
+      )
+    }
+    return context.manager.addToDestination(input, directory)
   })
   invoke<AppSnapshot>(IPC.pauseDownload, (_event, id) =>
     context.manager.pause(id)
@@ -241,9 +283,29 @@ export function registerIpc(context: IpcContext): void {
     media().checkDuplicate(input)
   )
 
-  invoke<MediaSnapshot>(IPC.queueMedia, async (_event, input) => {
+  invoke<MediaSnapshot>(IPC.queueMedia, async (_event, rawInput) => {
     const manager = media()
-    await manager.queueMedia(input)
+    // Same rule as a direct add: validate first, then turn the opaque token
+    // into a folder main itself registered through the native picker.
+    const input = parseMediaQueueInput(rawInput)
+    let directory: string | undefined
+    if (input.destinationToken !== undefined) {
+      const resolved =
+        context.downloadDestinations?.resolve(input.destinationToken) ?? null
+      if (resolved === null) {
+        throw new AppError(
+          'DOWNLOAD_FOLDER_EXPIRED',
+          'The chosen download folder is no longer available.',
+          'Choose the folder again.'
+        )
+      }
+      directory = resolved
+    }
+    if (directory === undefined) {
+      await manager.queueMedia(input)
+    } else {
+      await manager.queueMedia(input, directory)
+    }
     return manager.getMediaSnapshot()
   })
 

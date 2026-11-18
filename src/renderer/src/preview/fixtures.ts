@@ -26,6 +26,7 @@ import {
   type ChecksumAlgorithm
 } from '@shared/checksum'
 import type { DownloadSettings } from '@shared/settings'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import { parseDownloadSettings } from '@shared/settings'
 import {
   defaultDesktopSettings,
@@ -1249,6 +1250,12 @@ export function createPreviewApi(
       return ok<UrlSizeProbe>({ size: 1_500_000 + (hash % 998_500_000) })
     },
 
+    chooseDownloadFolder: async () =>
+      ok<DownloadFolderChoice | null>({
+        token: 'preview-folder-token-0001',
+        path: 'D:\\Preview downloads'
+      }),
+
     addDownload: async (input: AddDownloadInput) => {
       let url: string
       try {
@@ -1282,7 +1289,10 @@ export function createPreviewApi(
         gid: nextId('preview-gid'),
         url,
         filename: input.filename ?? filenameOf(url),
-        dir: 'Downloads/DonDownload',
+        dir:
+          input.destinationToken === undefined
+            ? 'Downloads/DonDownload'
+            : 'D:/Preview downloads',
         filePath: null,
         status: blocked ? 'waiting' : 'queued',
         totalBytes: 0,
