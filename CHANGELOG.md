@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - If the folder chosen for one download is no longer available, the Add dialog
   now says so and asks you to choose it again instead of quietly using the
   default folder.
+- Save to refuses a whole drive (like `D:\`) and asks for a folder on it
+  instead, so the download can still be opened, revealed and deleted.
 - Diagnostics and log files now also hide drive paths that appear inside
   another word.
 

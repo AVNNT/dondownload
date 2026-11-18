@@ -533,6 +533,39 @@ describe('recorded output folder trust', () => {
     await manager.deleteFile(id)
     expect(trashItem).toHaveBeenCalledWith(inside)
   })
+
+  it('allows open and show when the global download folder is a drive root', async () => {
+    // A drive root is an accepted Settings default download folder: it is the
+    // fallback root itself, so a file inside it can still be opened and shown.
+    const { database, downloadDir } = await makeWorkspace()
+    await mkdir(downloadDir, { recursive: true })
+    const file = path.join(downloadDir, 'inside-global-root.bin')
+    await writeFile(file, 'downloaded file')
+    const driveRoot = path.parse(downloadDir).root
+    const id = '99999999-9999-4999-8999-999999999999'
+    database.save({
+      record: persistedRecord({ id, dir: driveRoot, filePath: file }),
+      explicitFilename: null
+    })
+
+    const openPath = vi.fn(async () => '')
+    const showItemInFolder = vi.fn()
+    const clock = { value: at(9, 30) }
+    const settings = { value: settingsWithHours(false) }
+    const { manager } = createManager(
+      database,
+      driveRoot,
+      clock,
+      settings,
+      undefined,
+      createTestHost({ openPath, showItemInFolder })
+    )
+
+    await manager.openFile(id)
+    await manager.showInFolder(id)
+    expect(openPath).toHaveBeenCalledWith(file)
+    expect(showItemInFolder).toHaveBeenCalledWith(file)
+  })
 })
 
 describe('per-host connection back-off', () => {

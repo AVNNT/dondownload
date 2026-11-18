@@ -115,4 +115,49 @@ describe('AddDialog save-to expiry', () => {
     expect(onAdd).toHaveBeenCalledTimes(2)
     expect(onAdd.mock.calls[1]?.[0]?.destinationToken).toBe(token)
   })
+
+  it('shows the choose-a-folder message when a whole drive is picked', async () => {
+    const message =
+      'Choose a folder, not a whole drive (for example D:\\Downloads).'
+    const onChooseFolder = vi.fn(
+      async (): Promise<ApiResult<DownloadFolderChoice | null>> => ({
+        ok: false,
+        error: {
+          code: 'DOWNLOAD_FOLDER_INVALID',
+          message,
+          hint: 'Open the drive and choose a folder inside it.'
+        }
+      })
+    )
+
+    await act(async () => {
+      root.render(
+        <AddDialog
+          tab="direct"
+          initialUrl="https://example.com/file.zip"
+          onClose={() => undefined}
+          onAdd={async () => ({ ok: true, value: EMPTY_SNAPSHOT })}
+          onChooseFolder={onChooseFolder}
+          onScanOpen={() => undefined}
+          onAnalyze={async () => ({
+            ok: false,
+            error: { code: 'UNUSED', message: 'unused' }
+          })}
+          onQueue={async () => ({ ok: false, error: { code: 'UNUSED', message: 'unused' } })}
+        />
+      )
+    })
+
+    await act(async () => {
+      button('Change').click()
+    })
+
+    // The refusal is explained inline and the default folder stays selected,
+    // because main registered no token for the drive.
+    const alerts = [...container.querySelectorAll('[role="alert"]')].map(
+      (element) => element.textContent ?? ''
+    )
+    expect(alerts.some((text) => text === message)).toBe(true)
+    expect(container.textContent).toContain('Downloads\\DonDownload')
+  })
 })

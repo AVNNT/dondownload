@@ -734,7 +734,10 @@ async function checkSaveToDestination() {
     missingFolder: path.join(runDir, 'folder-that-does-not-exist'),
     relativePath: 'relative-folder',
     uncPath: '\\\\server\\share',
-    extendedPath: '\\\\?\\C:\\Windows'
+    extendedPath: '\\\\?\\C:\\Windows',
+    // A whole drive is refused so file actions never have to reject the
+    // download a moment after it was saved.
+    driveRoot: path.parse(runDir).root
   })) {
     const result = await hookCall(
       `return h.registerDestination(${JSON.stringify(candidate)})`
