@@ -46,6 +46,9 @@ export interface GplComponentEntry {
   sourceUrl: string
   buildInfo?: string
   binary: string
+  /** Exact upstream release asset the shipped binary was extracted from. */
+  binaryUrl?: string
+  binarySha256?: string
 }
 
 export interface ThirdPartySourcesInput {
@@ -56,6 +59,7 @@ export interface ThirdPartySourcesInput {
 
 export function requireReleaseVersion(version: unknown): string
 export function releaseTag(version: string): string
+export function releaseTagMatchesVersion(tag: string, version: string): boolean
 export function installerAssetName(version: string): string
 export function installerBlockmapAssetName(version: string): string
 export function extensionAssetNames(version: string): ReleaseAssetNames

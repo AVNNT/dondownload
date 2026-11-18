@@ -31,7 +31,9 @@ Out of scope for this baseline:
 ## Pinned tools
 
 The staging script pins the versions verified on the development machine and
-documented in [media-tools.md](media-tools.md):
+documented in [media-tools.md](media-tools.md). The same pins are the download
+pins: each version has one official upstream release archive and one hard-coded
+SHA-256.
 
 | Tool | Version | Expected staged path |
 | --- | --- | --- |
@@ -53,15 +55,22 @@ arguments a machine without Deno would use.
 ## Prerequisites
 
 - Windows 10/11 x64.
-- Node.js 24+ and npm 10+.
-- The .NET Framework C# compiler (`csc.exe`) for the native messaging host. It
-  ships with Windows; no .NET SDK, Visual Studio or NuGet package is required.
-- Locally installed, pinned versions of aria2, yt-dlp and FFmpeg. They are not
-  installed or downloaded by this repository.
+- Node.js 24+ and npm 10+ locally (the release workflow uses Node.js 22).
+- The .NET Framework C# compiler (`csc.exe`) for the native messaging host and
+  the tray stub. It ships with Windows 10/11 and with `windows-latest` GitHub
+  Actions runners; no .NET SDK, Visual Studio or NuGet package is required.
+- No locally installed aria2, yt-dlp or FFmpeg. `scripts/stage-vendor.ps1`
+  downloads each pinned upstream release archive, verifies its hard-coded
+  SHA-256 and extracts only the expected executable. A clean checkout plus an
+  internet connection is enough, which is what makes the GitHub Actions release
+  workflow possible.
 
-The staging script never runs `winget`, an installer, a package manager or a
-network download. It only executes each candidate executable with a read-only
-version flag and copies the verified file.
+The staging script never runs `winget`, an installer or a package manager, and
+it never executes a downloaded installer. It only downloads the pinned archive
+URLs, hashes the archive, extracts the expected executable after the safe-zip
+checks, executes that executable with a read-only version flag and copies the
+verified file. An explicit `DONDOWNLOAD_*_PATH` override or an existing verified
+cache entry skips the download entirely.
 
 ## Commands
 
@@ -70,6 +79,10 @@ npm ci --include=dev      # restore the exact locked build toolchain
 npm run stage:vendor      # stage and verify binaries into build/vendor
 npm run build:installer   # native host + stage + app build + NSIS x64 installer
 ```
+
+The first `stage-vendor` run downloads roughly 140 MB of pinned archives into
+`%LOCALAPPDATA%\DonDownload\vendor` (override the base with `LOCALAPPDATA`).
+Later runs reuse the cached archives after re-verifying their SHA-256.
 
 `electron-builder` is a development dependency required by the installer script.
 The lockfile pins it at 26.18.0; using `npm ci --include=dev` ensures a clean
@@ -92,24 +105,51 @@ added by this baseline.
 
 `scripts/stage-vendor.ps1`:
 
-- Resolves each tool from an explicit environment override first:
-  `DONDOWNLOAD_ARIA2_PATH`, `DONDOWNLOAD_YTDLP_PATH`,
-  `DONDOWNLOAD_FFMPEG_PATH`, `DONDOWNLOAD_FFPROBE_PATH` and
-  `DONDOWNLOAD_DENO_PATH`.
-- Otherwise uses the documented local installation path, then a `PATH` lookup.
-- Executes the candidate with `--version` or `-version` and requires an exact
-  version match with the pinned version.
+- Resolves each tool from the first available source:
+  1. an explicit environment override: `DONDOWNLOAD_ARIA2_PATH`,
+     `DONDOWNLOAD_YTDLP_PATH`, `DONDOWNLOAD_FFMPEG_PATH`, or the matching
+     archive override `DONDOWNLOAD_ARIA2_ZIP_PATH`,
+     `DONDOWNLOAD_YTDLP_ZIP_PATH`, `DONDOWNLOAD_FFMPEG_ZIP_PATH`;
+  2. the documented local installation path, then a `PATH` lookup;
+  3. a verified release archive cached below
+     `%LOCALAPPDATA%\DonDownload\vendor`;
+  4. the pinned official upstream release archive, downloaded from the exact
+     URL below and accepted only when its SHA-256 matches the pinned value.
+- Uses these pinned download sources:
+
+  | Tool | Upstream release asset | SHA-256 |
+  | --- | --- | --- |
+  | aria2 1.37.0 | `https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip` | `67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288` |
+  | yt-dlp 2026.10.26 | `https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip` | `fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419` |
+  | FFmpeg 9.0.2 (Gyan essentials) | `https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip` | `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` |
+
+  The FFmpeg asset is the GyanD/codexffmpeg GitHub mirror of the gyan.dev
+  package `https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip`;
+  both downloads are byte-identical and share the SHA-256 above. The GitHub
+  release is pinned because it is the more stable URL for CI.
+- Rejects an archive whose SHA-256 does not match, before anything is
+  extracted. Every archive entry name is validated for zip-slip safety and
+  size-capped; the FFmpeg archive is 49 entries and only `bin/ffmpeg.exe` is
+  written.
+- Executes the extracted or local candidate with `--version`/`-version` and
+  requires an exact version match with the pinned version.
 - Refuses to continue when a tool is missing, a version differs, a license or
   notice file is missing, or the staging directory is outside the repository's
   ignored `build/` directory.
 - Deletes and recreates `build/vendor/` so stale executables cannot leak into a
   build.
 - Copies only executables. No installers, archives, caches or source trees are
-  copied.
+  copied into `build/vendor/`. Downloaded archives stay in the local cache.
 - Writes `build/vendor/manifest.json` with, per tool: name, executable, staged
   path, version, expected version, SHA-256, size, source kind/path/origin,
-  license, license-file hashes, upstream URL, source version, source archive and
-  notice text.
+  license, license-file hashes, upstream URL, source version, source archive,
+  notice text and, when the tool came from an archive, the pinned archive name,
+  URL, SHA-256, size and extracted entry.
+
+`-ForceArchiveDownload` skips the local executable lookups and the
+`DONDOWNLOAD_*_ZIP_PATH` overrides so the cache, download and checksum path can
+be verified on a machine that also has the tools installed. CI runners do not
+need it: they have no local installations.
 
 The manifest is deterministic for the same inputs: it has no timestamp and the
 tool order is fixed. The staged executables and manifest are git-ignored. They
@@ -295,56 +335,31 @@ Release notes are shown as plain text only, truncated to 4 KiB.
 
 ### Publishing an update
 
-`scripts/release.mjs` performs the whole local sequence and is the supported
-path; see [release-readiness.md](release-readiness.md) for the full checklist.
+Releases are built by GitHub Actions when a tag is pushed; see
+[release-readiness.md](release-readiness.md) for the full checklist. The
+maintainer flow is:
 
 1. Bump `version` in `package.json` and `extension/manifest.json`, and add the
-   matching `## [<version>] - <date>` section to `CHANGELOG.md`.
-2. Keep the Ed25519 update signing key pair outside this repository at
-   `%USERPROFILE%\.dondownload-release\update-signing-key.pem` (or point
-   `DONDOWNLOAD_UPDATE_SIGNING_KEY` at it) and back it up. Generate it once:
+   matching `## [<version>] - <date>` section to `CHANGELOG.md`. Commit and push
+   to `master`.
+2. `git tag v<version> && git push origin v<version>`. The `Release` workflow
+   checks that the tag equals `v` + the `package.json` version, runs typecheck,
+   lint, `test:fast` and `test:extension`, builds the installer (staging the
+   pinned vendor archives), signs `SHA256SUMS.txt` with the `UPDATE_SIGNING_KEY`
+   secret and creates a **draft** GitHub release with every asset and notes from
+   the changelog section.
+3. Review the draft, verify the signature and hashes, then publish it manually.
+   Drafts are invisible to the updater. The installed app checks the published
+   release at most once per 24 hours.
 
-   ```powershell
-   node scripts/generate-update-signing-key.mjs "$env:USERPROFILE\.dondownload-release\update-signing-key.pem"
-   ```
-
-   The script refuses paths inside the repository. It prints the public key as
-   base64 SPKI DER; paste that into `UPDATE_SIGNING_PUBLIC_KEY` in
-   `src/shared/release.ts`. Never commit the private key.
-3. Build and verify locally:
-
-   ```powershell
-   npm run release
-   ```
-
-   This refuses unless `master` is clean and matches `origin/master`, runs
-   `npm run build:installer`, builds
-   `dist/dondownload-extension-chromium-<version>.zip` and
-   `dist/dondownload-extension-firefox-<version>.xpi`, then writes and signs
-   `dist/SHA256SUMS.txt` (installers and extension packages) and writes
-   `dist/THIRD-PARTY-SOURCES.txt`. It prints the asset list without tagging,
-   pushing or uploading anything.
-
-   To run only part of it: `npm run build:installer`, then
-   `npm run release:checksums` with `DONDOWNLOAD_UPDATE_SIGNING_KEY` set. That
-   lower-level script hashes every `dist/DonDownload-<version>-x64-setup.exe`
-   and `dist/dondownload-extension-<browser>-<version>.(zip|xpi)`; the installer
-   line is first, which is the line the updater looks for. Without the
-   environment variable it writes an unsigned file and warns that the release
-   cannot be served as an automatic update.
-4. Create the draft release (lightweight tag `v<version>`, pushed, then
-   `gh release create --draft`) with every asset: installer, its `.blockmap`
-   when present, both extension packages, `SHA256SUMS.txt`,
-   `SHA256SUMS.txt.sig` and `THIRD-PARTY-SOURCES.txt`, plus any source archives
-   under `%USERPROFILE%\.dondownload-release\sources\`.
-
-   ```powershell
-   npm run release -- --publish
-   ```
-
-5. Review the draft, verify the signature and hashes, then publish it on
-   GitHub manually. Drafts are invisible to the updater. The installed app then
-   checks the published release at most once per 24 hours.
+`npm run release` still runs the same build locally without tagging or
+uploading, and `npm run release -- --publish` is the manual fallback; both need
+the update signing key at
+`%USERPROFILE%\.dondownload-release\update-signing-key.pem` (or
+`DONDOWNLOAD_UPDATE_SIGNING_KEY`). Generate a key pair once with
+`node scripts/generate-update-signing-key.mjs <path>` and paste the printed
+public key into `UPDATE_SIGNING_PUBLIC_KEY` in `src/shared/release.ts`. Never
+commit the private key.
 
 ## Verification
 
@@ -405,6 +420,23 @@ testing as a manual step.
   and Helium**.
 - The installer is still unsigned and was not signed by these checks.
 
+### Verification record (2026-11-18)
+
+- `scripts/stage-vendor.ps1` was run with `LOCALAPPDATA` pointed at an empty
+  directory and no `DONDOWNLOAD_*` overrides, so all three archives were really
+  downloaded from the pinned URLs and checked against the pinned SHA-256 before
+  extraction. `-ForceArchiveDownload` bypassed the local installations for the
+  verification run.
+- Staged results: aria2 1.37.0 (`be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2`),
+  yt-dlp 2026.10.26 (`08e30ae43a9f0c2d3ed716ef05a95fc7b4ee9d93862148e344bad3de51b93f3c`)
+  and FFmpeg 9.0.2 (`3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec`).
+  The aria2 and FFmpeg executable hashes match the ones previously staged from
+  local installations.
+- A second run with the populated cache succeeded without a download.
+- `.github/workflows/release.yml` was parsed and validated locally; the
+  workflow itself was not executed on GitHub in this change.
+- Install and uninstall behaviour is unchanged by this change.
+
 ## Known gaps
 
 - Deno is optional and not bundled. It is located from the explicit
@@ -421,8 +453,9 @@ testing as a manual step.
 - The installer is not code-signed. Public distribution requires signing.
 - No publish provider or telemetry is configured in `electron-builder.yml`
   (`publish: null`). The application updater reads GitHub Releases for
-  `AVNNT/dondownload` and needs a signed `SHA256SUMS.txt`; releases are created
-  locally with `npm run release -- --publish` and published manually.
+  `AVNNT/dondownload` and needs a signed `SHA256SUMS.txt`; the `Release`
+  workflow drafts them when a `v*` tag is pushed and the maintainer publishes
+  the draft manually.
 - No installer icon/branding is supplied; electron-builder may use its default
   icon until branded assets are added.
 - GPL corresponding-source archives are not downloaded or bundled by the build.
@@ -432,5 +465,6 @@ testing as a manual step.
   source-offer strategy before any redistribution.
 - Browser native-host registration remains manual and is not performed by the
   installer.
-- The local artifact is built from locally installed tools; it is not a
-  reproducible build of the upstream tool binaries themselves.
+- The installer build is self-contained (pinned, checksum-verified vendor
+  archives), but the upstream tool binaries themselves are still not
+  reproducible builds of their sources.

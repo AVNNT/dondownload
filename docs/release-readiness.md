@@ -1,18 +1,20 @@
 # DonDownload release-readiness checklist
 
-Status: **1.0.0 release prepared locally; not yet published.** The application
-and browser extension are version 1.0.0, the updater points at the public
-`AVNNT/dondownload` repository and its Ed25519 update signing key is configured.
-The installer is still **unsigned**. Code-signing, the extension store listing
-and human legal review remain open. This checklist is not legal clearance.
+Status: **1.0.0 release prepared; releases are built by GitHub Actions.** The
+application and browser extension are version 1.0.0, the updater points at the
+public `AVNNT/dondownload` repository and its Ed25519 update signing key is
+configured. The installer is still **unsigned**. Code-signing, the extension
+store listing and human legal review remain open. This checklist is not legal
+clearance.
 
 ## Verified
 
 - [x] Latest locally verified installer (2026-11-06 build):
       `dist/DonDownload-0.1.0-x64-setup.exe`, approximately **234 MB**. The
-      1.0.0 installer is produced by `npm run release`; record its size and
-      SHA-256 in the release handoff rather than in this document. The payload
-      uses the Gyan FFmpeg/ffprobe essentials build.
+      1.0.0 installer is produced by the `Release` workflow (or a local
+      `npm run release`); record its size and SHA-256 in the release handoff
+      rather than in this document. The payload uses the Gyan FFmpeg essentials
+      build.
 - [x] Silent per-user install into a fresh temporary folder, verified on
       **2026-11-06**. The installer did not require elevation.
 - [x] The installed application passed the packaged smoke test against an
@@ -59,19 +61,46 @@ and human legal review remain open. This checklist is not legal clearance.
       that counsel approves. `dist/THIRD-PARTY-SOURCES.txt` records what was
       attached.
 
-## Release pipeline (1.0.0)
+## Release pipeline (from 1.0.0)
 
-The release is built locally, not in CI: `scripts/stage-vendor.ps1` stages
-aria2, yt-dlp and FFmpeg from locally installed, version-checked binaries, so a
-CI runner would need those binaries redistributed into the workflow.
+The release is built by GitHub Actions, not on a maintainer machine.
+`scripts/stage-vendor.ps1` downloads the pinned aria2, yt-dlp and FFmpeg
+release archives from their official upstream URLs and verifies a hard-coded
+SHA-256 for each one, so a `windows-latest` runner needs nothing but Node.js,
+npm and the .NET Framework compiler that ships with Windows.
 
-`npm run release` (that is `node scripts/release.mjs`) is local, idempotent and
-does, in this order:
+### Maintainer release flow
 
-1. Refuse to continue unless the working tree is clean, `master` is checked out
-   and it matches `origin/master`.
-2. Run `npm run build:installer` (native host, tray stub, vendor staging,
-   typecheck, electron-vite build, NSIS x64 installer).
+1. Bump `version` in `package.json` and `extension/manifest.json`, and add the
+   matching `## [<version>] - <date>` section to `CHANGELOG.md`.
+2. Commit and push to `master`.
+3. `git tag v<version> && git push origin v<version>`. Pushing the tag starts
+   `.github/workflows/release.yml`.
+4. The workflow checks out the tag, requires the tag to equal `v` +
+   `package.json` version, runs `npm ci`, typecheck, lint, `test:fast`,
+   `test:extension`, then `node scripts/release.mjs --ci --publish`.
+5. Review the draft GitHub release: every asset must be present (installer, its
+   `.blockmap` when present, both extension packages, `SHA256SUMS.txt`,
+   `SHA256SUMS.txt.sig`, `THIRD-PARTY-SOURCES.txt`), the notes must match the
+   changelog section and the signature must verify. Publish the draft manually.
+   Drafts are invisible to the updater.
+6. The installed app then checks the published release at most once per 24
+   hours.
+
+The workflow also accepts a manual `workflow_dispatch` run with a `tag` input,
+for rebuilding a draft for an existing tag. It never moves or creates a tag.
+
+### What the release build does
+
+`release.mjs` (`--ci` in Actions) does, in this order:
+
+1. Refuse to continue unless the working tree is clean. Locally it also requires
+   `master` and `origin/master` to match; in CI (`--ci` or
+   `GITHUB_ACTIONS=true`) that check is skipped and the already-pushed tag must
+   point at `HEAD` instead.
+2. Run `npm run build:installer` (native host, tray stub, pinned vendor
+   downloads with checksum verification, typecheck, electron-vite build, NSIS
+   x64 installer).
 3. Build the browser extension packages from `extension/`:
    - `dist/dondownload-extension-chromium-<version>.zip` — extract it and use
      "Load unpacked" (or load `extension/` directly from a checkout).
@@ -87,28 +116,33 @@ does, in this order:
    below) and, if the optional sources directory exists, list the GPL source
    archives found there.
 6. Without `--publish`, print the exact asset list and the commands a publish
-   run would use. Nothing is tagged, pushed or uploaded.
+   run would use. Nothing is tagged, pushed or uploaded. With `--publish`, run
+   `gh release create v<version> --draft --title "DonDownload <version>"
+   --notes-file ...` with every asset. If a draft for the tag already exists,
+   its assets are re-uploaded with `--clobber`; an already published release is
+   never modified.
 
-`npm run release -- --publish` additionally creates the lightweight tag
-`v<version>` if it is missing, pushes it, and runs
-`gh release create v<version> --draft --title "DonDownload <version>"
---notes-file ...` with every asset. If a draft for the tag already exists, its
-assets are re-uploaded with `--clobber`; an already published release is never
-modified.
+Locally, `npm run release` is the same build without tagging or uploading, and
+`npm run release -- --publish` is the manual fallback if Actions is unavailable.
 
 ### Update signing key
 
-- The Ed25519 private key lives **outside the repository** at
+- CI reads the key from the **`UPDATE_SIGNING_KEY` repository secret**: the
+  Ed25519 private key as PKCS#8 PEM text. The workflow writes it to
+  `%RUNNER_TEMP%\update-signing-key.pem`, restricts its ACL to the runner user,
+  points `DONDOWNLOAD_UPDATE_SIGNING_KEY` at it and deletes it in an `always()`
+  step. The key text is never echoed.
+- If the secret is missing (for example on a fork), the job **fails** with a
+  clear message instead of publishing an unsigned `SHA256SUMS.txt`.
+- Locally the key lives **outside the repository** at
   `%USERPROFILE%\.dondownload-release\update-signing-key.pem`. Override the
-  location with `DONDOWNLOAD_UPDATE_SIGNING_KEY` if it is stored elsewhere
-  (for example on removable media).
+  location with `DONDOWNLOAD_UPDATE_SIGNING_KEY` if it is stored elsewhere.
 - `npm run release` refuses to run when the key is missing: an unsigned
   `SHA256SUMS.txt` cannot be served as an authenticated update.
 - **Back the key up.** Losing it prevents every future authenticated update for
   installed copies; every existing installation would have to be replaced by a
-  manual download. Store at least one offline copy separate from the build
-  machine, and never commit it, paste it into an issue or attach it to a
-  release.
+  manual download. Keep one copy in the Actions secret and at least one offline
+  copy. Never commit it, paste it into an issue or attach it to a release.
 - The matching public key is committed in `src/shared/release.ts`
   (`UPDATE_SIGNING_PUBLIC_KEY`, base64 SPKI DER). Rotating the key requires a
   new release that ships the new public key before it can be used.
@@ -125,8 +159,8 @@ SmartScreen warnings and document them honestly.
 
 ### Draft releases must be published manually
 
-`npm run release -- --publish` only creates a **draft**. Drafts are invisible to
-the application updater and to users. After review:
+`release.mjs --publish` only creates a **draft**, locally or in CI. Drafts are
+invisible to the application updater and to users. After review:
 
 1. Confirm all assets are attached: installer, its `.blockmap` when present,
    both extension packages, `SHA256SUMS.txt`, `SHA256SUMS.txt.sig` and
@@ -150,19 +184,64 @@ supply the source before distribution. Complete corresponding source for the
 exact shipped binaries — including build inputs for the aria2 Windows build and
 the Gyan FFmpeg configuration — remains a legal gate, not just a packaging step.
 
+## Build your own
+
+The installer build is self-contained. A clean checkout builds offline from a
+warm npm cache; the first build downloads the pinned, checksum-verified vendor
+archives.
+
+```powershell
+npm ci
+npm run build:installer
+```
+
+The result is `dist/DonDownload-<version>-x64-setup.exe`. This needs no update
+signing key and no GitHub access. The compiled-in updater still points at the
+official `AVNNT/dondownload` releases, so a local build only accepts updates
+signed by the official key. That is safe, but a fork should either configure
+its own repository and key (below) or disable the updater.
+
+**Fork with your own releases.** Nothing in the official repository is needed:
+
+1. Build (above) and confirm the app runs.
+2. Generate your own update signing key pair outside the repository:
+
+   ```powershell
+   node scripts/generate-update-signing-key.mjs "$env:USERPROFILE\.dondownload-release\update-signing-key.pem"
+   ```
+
+3. In `src/shared/release.ts`, set `UPDATE_REPO` to your `{ owner, repo }` and
+   paste the printed public key into `UPDATE_SIGNING_PUBLIC_KEY`. Rebuild; the
+   updater only accepts releases from that repository signed by that key.
+4. Add the private key as the `UPDATE_SIGNING_KEY` Actions secret (PKCS#8 PEM
+   text) in your fork. The release workflow then signs and drafts its own
+   releases when you push a `v*` tag.
+5. Tag and push as in the maintainer flow above.
+
+**Fork without releases.** Set `UPDATE_REPO` to `null` (or
+`UPDATE_SIGNING_PUBLIC_KEY` to `null`) in `src/shared/release.ts`. The updater
+then reports the source as not configured and makes no network request. No key
+or secret is required.
+
+Do not reuse the maintainer's public key with a different repository: the
+updater would reject every release, and distributing a build that trusts a key
+you do not control is unsafe.
+
 ## Release owner actions
 
 1. Provide access to an authorized signing certificate through the approved
    secure process, then sign and verify the final installer.
 2. Back up the update signing private key
    (`%USERPROFILE%\.dondownload-release\update-signing-key.pem`) to offline
-   storage before the first publish, and confirm the committed
+   storage before the first publish, confirm the `UPDATE_SIGNING_KEY` Actions
+   secret holds the same key, and confirm the committed
    `UPDATE_SIGNING_PUBLIC_KEY` matches it.
 3. Put the reviewed GPL source archives in
    `%USERPROFILE%\.dondownload-release\sources\` (or provide counsel-approved
    written-offer wording) before distribution.
-4. Run `npm run release`, review the dry-run asset list, then
-   `npm run release -- --publish` and publish the draft after verification.
+4. Push the `v<version>` tag, review the draft release the workflow creates, and
+   publish it after verification. Use `npm run release` for a local dry run when
+   needed.
 5. Decide the extension distribution path (Chrome Web Store and/or a
    Chromium-compatible listing) and submit the listing for review.
 
