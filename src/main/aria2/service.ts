@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import path from 'node:path'
 import type { Aria2State } from '@shared/types'
 import { AppError } from '../errors'
+import { createNoopHost, type CoreHost } from '../host'
 import { buildAria2Args } from './args'
 import { Aria2Client } from './client'
 import { locateAria2c } from './locator'
@@ -61,7 +62,10 @@ export class Aria2Service {
    */
   onBeforeReady: ((client: Aria2Client) => Promise<void>) | null = null
 
-  constructor(private readonly downloadDir: () => string) {}
+  constructor(
+    private readonly downloadDir: () => string,
+    private readonly host: CoreHost = createNoopHost()
+  ) {}
 
   getState(): Aria2State {
     return { ...this.state }
@@ -98,7 +102,7 @@ export class Aria2Service {
 
     let binaryPath: string
     try {
-      binaryPath = await locateAria2c()
+      binaryPath = await locateAria2c(this.host)
     } catch (error) {
       const info =
         error instanceof AppError

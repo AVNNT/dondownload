@@ -1,6 +1,6 @@
-import { Notification } from 'electron'
 import type { AppSnapshot } from '@shared/types'
 import type { MediaSnapshot } from '@shared/media'
+import { createNoopHost, type CoreHost } from '../host'
 import {
   decideCompletionNotification,
   type NotificationJobKind
@@ -8,10 +8,12 @@ import {
 
 export interface CompletionNotificationOptions {
   isEnabled: () => boolean
-  /** Injectable for tests; production uses `Notification.isSupported()`. */
+  /** Injectable for tests; production asks the host. */
   isSupported?: () => boolean
   /** Show/select the finished row when the notification is clicked. */
   onActivate?: (kind: NotificationJobKind, id: string) => void
+  /** Desktop shell port for notifications; Electron wires it in main. */
+  host?: CoreHost
 }
 
 /** A status that can never move again without a new explicit user action. */
@@ -37,6 +39,7 @@ const TERMINAL_STATUSES = new Set([
  */
 export class CompletionNotificationService {
   private readonly isEnabled: () => boolean
+  private readonly host: CoreHost
   private readonly isSupported: () => boolean
   private readonly onActivate:
     | ((kind: NotificationJobKind, id: string) => void)
@@ -47,7 +50,9 @@ export class CompletionNotificationService {
 
   constructor(options: CompletionNotificationOptions) {
     this.isEnabled = options.isEnabled
-    this.isSupported = options.isSupported ?? (() => Notification.isSupported())
+    this.host = options.host ?? createNoopHost()
+    this.isSupported =
+      options.isSupported ?? (() => this.host.isNotificationSupported())
     this.onActivate = options.onActivate ?? null
   }
 
@@ -125,7 +130,7 @@ export class CompletionNotificationService {
     if (!decision.notify) return
 
     try {
-      const notification = new Notification({
+      const notification = this.host.createNotification({
         title: decision.title,
         body: decision.body
       })

@@ -1,25 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import type { AppSnapshot, DownloadItem } from '../src/shared/types'
 import type { MediaJob, MediaSnapshot } from '../src/shared/media'
 
-const shown = vi.hoisted(() => [] as Array<{ title: string; body: string }>)
-
-vi.mock('electron', () => ({
-  Notification: class {
-    static isSupported(): boolean {
-      return true
-    }
-    constructor(options: { title: string; body: string }) {
-      shown.push(options)
-    }
-    on(): void {
-      // Click handling is irrelevant to transition tracking.
-    }
-    show(): void {}
-  }
-}))
-
+import { createTestHost } from './fakes/host'
 import { CompletionNotificationService } from '../src/main/notifications/service'
+
+const shown: Array<{ title: string; body: string }> = []
 
 const NOW = Date.UTC(2026, 10, 4, 12, 0, 0)
 
@@ -86,6 +72,17 @@ function mediaSnapshot(...rows: MediaJob[]): MediaSnapshot {
 
 function service(): CompletionNotificationService {
   return new CompletionNotificationService({
+    host: createTestHost({
+      isNotificationSupported: () => true,
+      createNotification: (options) => {
+        shown.push(options)
+        return {
+          // Click handling is irrelevant to transition tracking.
+          on: () => undefined,
+          show: () => undefined
+        }
+      }
+    }),
     isEnabled: () => true,
     isSupported: () => true
   })

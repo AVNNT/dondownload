@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { shell } from 'electron'
 import {
   MAX_BATCH_SOURCES,
   MAX_BATCH_TITLE_LENGTH,
@@ -69,6 +68,7 @@ import type {
 import { decryptMegaFile } from '../hosts/megaDecrypt'
 import { isMegaHost } from '@shared/urlFragment'
 import { AppError } from '../errors'
+import { createNoopHost, type CoreHost } from '../host'
 import {
   PAIR_RENAME_FAILED,
   PAIR_RENAME_SCRIPT_FAILED,
@@ -279,6 +279,11 @@ export interface BatchManagerOptions {
   pollIntervalMs?: number
   previewTtlMs?: number
   openExternal?: (url: string) => Promise<void> | void
+  /**
+   * Desktop shell port; only used when `openExternal` is not injected so the
+   * core stays importable without Electron.
+   */
+  host?: CoreHost
   /**
    * Scanner video output folder. Paired funscript downloads are placed here so
    * they sit next to the video and can be renamed in place. Must be inside
@@ -862,7 +867,8 @@ export class BatchManager {
       options.progressPersistIntervalMs ?? PROGRESS_PERSIST_INTERVAL_MS
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.previewTtlMs = options.previewTtlMs ?? PREVIEW_TTL_MS
-    this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
+    const host = options.host ?? createNoopHost()
+    this.openExternal = options.openExternal ?? ((url) => host.openExternal(url))
     this.scanMediaDir = options.scanMediaDir ?? null
     this.scanRootDir = options.scanRootDir ?? null
     this.resolvePairingFolder = options.resolvePairingFolder ?? null

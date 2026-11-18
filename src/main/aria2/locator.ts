@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { app } from 'electron'
 import { AppError } from '../errors'
+import { createNoopHost, type CoreHost } from '../host'
 
 const ARIA2_MISSING_HINT =
   'Install aria2 (for example: winget install aria2.aria2), place aria2c.exe in vendor/aria2/, or set DONDOWNLOAD_ARIA2_PATH. aria2 is GPL-2.0-or-later software and is not bundled with DonDownload.'
@@ -36,7 +36,9 @@ async function pathCandidates(): Promise<string[]> {
  * Locate aria2c without invoking a shell. The explicit override wins, then a
  * local vendor directory, then PATH. Binaries are never downloaded at runtime.
  */
-export async function locateAria2c(): Promise<string> {
+export async function locateAria2c(
+  host: CoreHost = createNoopHost()
+): Promise<string> {
   const override = process.env.DONDOWNLOAD_ARIA2_PATH?.trim()
   const candidates: string[] = []
 
@@ -54,12 +56,14 @@ export async function locateAria2c(): Promise<string> {
     )
   }
 
-  if (app.isPackaged) {
-    candidates.push(path.join(process.resourcesPath, 'vendor', 'aria2', 'aria2c.exe'))
+  if (host.isPackaged()) {
+    candidates.push(
+      path.join(host.getResourcesPath(), 'vendor', 'aria2', 'aria2c.exe')
+    )
   }
   candidates.push(
-    path.join(app.getAppPath(), 'vendor', 'aria2', 'aria2c.exe'),
-    path.join(app.getAppPath(), 'vendor', 'aria2', 'aria2c')
+    path.join(host.getAppPath(), 'vendor', 'aria2', 'aria2c.exe'),
+    path.join(host.getAppPath(), 'vendor', 'aria2', 'aria2c')
   )
   candidates.push(...(await pathCandidates()))
 
