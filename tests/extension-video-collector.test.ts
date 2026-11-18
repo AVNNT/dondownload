@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resetNativeBridgeForTests } from '../extension/bridge'
 import { runVideoScan } from '../extension/video-scan'
 
@@ -298,9 +298,9 @@ describe('video collector DOM reading', () => {
 
     expect(api.startRun(doc, windowFor(PAGE_URL), { waitMs: 0 })).toBe(true)
     const run = sandbox[api.RUN_KEY] as { result: CollectedMedia | null }
-    for (let attempt = 0; attempt < 50 && run.result === null; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    // Poll until the collector has published; a fixed number of 5 ms slices is
+    // not a reliable deadline on a loaded machine.
+    await vi.waitFor(() => expect(run.result).not.toBeNull())
     expect(run.result?.sources).toHaveLength(2)
   })
 })
