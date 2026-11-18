@@ -77,6 +77,9 @@ export const IPC = {
   settingsChanged: 'settings:changed',
   getDesktopSettings: 'desktop-settings:get',
   updateDesktopSettings: 'desktop-settings:update',
+  // Narrow first-start flag update. The renderer never sends a whole settings
+  // object, so a stale read cannot revert another field.
+  markWelcomeGuideSeen: 'desktop-settings:mark-welcome-seen',
   desktopSettingsChanged: 'desktop-settings:changed',
   // Desktop integration (additive). `clipboardLink` and `revealRow` are
   // main-to-renderer only; `copyText` records the app's own clipboard write so

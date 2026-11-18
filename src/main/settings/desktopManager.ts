@@ -70,4 +70,28 @@ export class DesktopSettingsManager {
     }
     return clone(this.current)
   }
+
+  /**
+   * Mark the first-start guide as seen without sending the whole settings
+   * object through the renderer. A read-modify-write from the UI could revert a
+   * concurrent change (for example a notification toggle) to a stale value.
+   */
+  markWelcomeGuideSeen(): DesktopSettings {
+    if (!this.store) {
+      throw new AppError(
+        'SETTINGS_UNAVAILABLE',
+        'Desktop settings cannot be saved because storage is unavailable.'
+      )
+    }
+    if (this.current.welcomeGuideSeen) return clone(this.current)
+    const next: DesktopSettings = { ...this.current, welcomeGuideSeen: true }
+    this.store.saveDesktopSettings(next)
+    this.current = next
+    try {
+      this.onChanged?.(this.getSettings())
+    } catch {
+      // A side-effect listener must never turn a saved update into an error.
+    }
+    return clone(this.current)
+  }
 }

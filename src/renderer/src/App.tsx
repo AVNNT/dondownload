@@ -508,17 +508,9 @@ export default function App(): JSX.Element {
   const closeWelcomeGuide = useCallback((): void => {
     setWelcomeOpen(false)
     // Persist the one-time flag only after the user has actually seen the
-    // guide, so a crash before closing still shows it on the next launch.
-    void window.donDownload
-      .getDesktopSettings()
-      .then((result) => {
-        if (!result.ok || result.value.welcomeGuideSeen) return
-        return window.donDownload.updateDesktopSettings({
-          ...result.value,
-          welcomeGuideSeen: true
-        })
-      })
-      .catch(() => undefined)
+    // guide, so a crash before closing still shows it on the next launch. Main
+    // merges this single field, so a concurrent preference change is kept.
+    void window.donDownload.markWelcomeGuideSeen().catch(() => undefined)
   }, [])
 
   useEffect(() => {

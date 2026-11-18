@@ -1781,6 +1781,11 @@ export function createPreviewApi(
       return ok({ ...desktopSettings })
     },
 
+    markWelcomeGuideSeen: async () => {
+      desktopSettings = { ...desktopSettings, welcomeGuideSeen: true }
+      return ok({ ...desktopSettings })
+    },
+
     onDesktopSettingsChanged: () => () => undefined,
 
     copyText: async (_text: string) => ok(null),

@@ -434,6 +434,11 @@ export interface DonDownloadApi {
   updateDesktopSettings: (
     settings: DesktopSettings
   ) => Promise<ApiResult<DesktopSettings>>
+  /**
+   * Mark the first-start guide as seen. Main merges this one field into its
+   * current settings, so closing the guide cannot revert a concurrent change.
+   */
+  markWelcomeGuideSeen: () => Promise<ApiResult<DesktopSettings>>
   onDesktopSettingsChanged: (
     listener: (settings: DesktopSettings) => void
   ) => () => void

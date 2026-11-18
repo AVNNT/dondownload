@@ -278,6 +278,10 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.updateDesktopSettings, settings) as Promise<
       ApiResult<DesktopSettings>
     >,
+  markWelcomeGuideSeen: () =>
+    ipcRenderer.invoke(IPC.markWelcomeGuideSeen) as Promise<
+      ApiResult<DesktopSettings>
+    >,
   onDesktopSettingsChanged: (listener: (settings: DesktopSettings) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

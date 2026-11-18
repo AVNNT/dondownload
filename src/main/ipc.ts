@@ -473,6 +473,13 @@ export function registerIpc(context: IpcContext): void {
     desktopSettings().update(input)
   )
 
+  // One-field update used when the first-start guide is closed. Keeping the
+  // merge in main means a stale renderer snapshot cannot revert another
+  // preference changed while the guide was open.
+  invoke<DesktopSettings>(IPC.markWelcomeGuideSeen, () =>
+    desktopSettings().markWelcomeGuideSeen()
+  )
+
   invoke<null>(IPC.copyText, (_event, rawText) => {
     if (
       typeof rawText !== 'string' ||
