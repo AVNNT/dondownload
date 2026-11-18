@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Firefox extension in releases is now signed by Mozilla and installs
+  permanently.
+
 ## [1.2.0] - 2026-11-18
 
 ### Added

@@ -16,27 +16,53 @@
  * `windows-latest` host. CI supplies the update signing key through the
  * `UPDATE_SIGNING_KEY` secret.
  *
+ * The Firefox xpi is signed by Mozilla (addons.mozilla.org, "AMO") before the
+ * checksums are written, so `SHA256SUMS.txt` covers the signed bytes. The AMO
+ * key and secret arrive as the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`
+ * environment variables (repository secrets in CI) and are handed to web-ext
+ * through its own `WEB_EXT_*` variables; they are never part of a command line
+ * or a log line. With `--ci --publish`, missing credentials fail the run
+ * instead of silently shipping an unsigned extension; `--skip-amo` makes an
+ * unsigned build explicit for forks without AMO access.
+ *
  * This script never signs the installer with an Authenticode certificate: the
  * installer stays unsigned until the code-signing blocker in
  * docs/release-readiness.md is resolved.
  *
- * Ordering matters: the extension packages are built before `release-checksums`
- * so SHA256SUMS.txt covers them, and SHA256SUMS.txt is signed only after every
- * checksummed asset exists.
+ * Ordering matters: the extension packages are built (and the Firefox one is
+ * signed) before `release-checksums`, so SHA256SUMS.txt covers the final bytes,
+ * and SHA256SUMS.txt is signed only after every checksummed asset exists.
  */
 import { createHash } from 'node:crypto'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  AMO_SIGNATURE_ENTRIES,
   THIRD_PARTY_SOURCES_ASSET_NAME,
+  WEB_EXT_VERSION,
+  amoSignArguments,
+  amoSignEnvironment,
   buildReleaseAssetList,
   createZipArchive,
   extensionAssetNames,
   extractChangelogSection,
+  findAmoSignatureEntry,
   installerBlockmapAssetName,
+  listZipEntryNames,
+  planAmoSigning,
+  readAmoCredentials,
   releaseTag,
   renderThirdPartySourcesText,
   selectExtensionFiles
@@ -143,6 +169,16 @@ function npmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'
 }
 
+function npxCommand() {
+  return process.platform === 'win32' ? 'npx.cmd' : 'npx'
+}
+
+/** Quote one argument for the single `cmd.exe` command line used for .cmd shims. */
+function quoteShellArgument(argument) {
+  const text = String(argument)
+  return /\s|"/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repositoryRoot,
@@ -171,10 +207,11 @@ function runChecked(command, args, options = {}) {
 function runInteractive(command, args, options = {}) {
   log(`$ ${command} ${args.join(' ')}`)
   // Node refuses to spawn .cmd files without a shell (CVE-2024-27980). Callers
-  // pass fixed strings only, so a single shell command line is safe here.
+  // pass fixed strings only, so a single shell command line is safe here; each
+  // argument is still quoted so paths with spaces survive.
   const viaShell = command.endsWith('.cmd')
   const result = viaShell
-    ? spawnSync([command, ...args].join(' '), {
+    ? spawnSync([command, ...args].map(quoteShellArgument).join(' '), {
         cwd: repositoryRoot,
         stdio: 'inherit',
         shell: true,
@@ -346,9 +383,12 @@ async function listFiles(directory, prefix = '') {
 }
 
 /**
- * Build the Chromium zip and the unsigned Firefox xpi. Both contain the same
- * files with `manifest.json` at the archive root; the image and CSS assets are
- * included, and `.d.ts`/test/source-map files are not.
+ * Build the Chromium zip and the Firefox xpi from the same files. Both contain
+ * the same content with `manifest.json` at the archive root; the image and CSS
+ * assets are included, and `.d.ts`/test/source-map files are not.
+ *
+ * The entries are returned so the Firefox package can be signed from exactly
+ * the same source tree that was zipped.
  */
 async function buildExtensionPackages(version) {
   const relativePaths = selectExtensionFiles(
@@ -368,16 +408,80 @@ async function buildExtensionPackages(version) {
   }
   const archive = createZipArchive(entries)
   const names = extensionAssetNames(version)
-  const outputs = []
-  for (const name of [names.chromium, names.firefox]) {
-    const target = path.join(distDirectory, name)
+  const chromiumPath = path.join(distDirectory, names.chromium)
+  const firefoxPath = path.join(distDirectory, names.firefox)
+  for (const target of [chromiumPath, firefoxPath]) {
     await writeFile(target, archive)
-    outputs.push(target)
   }
   log(
     `Packaged ${relativePaths.length} extension files into ${names.chromium} and ${names.firefox}.`
   )
-  return outputs
+  return { names, entries, chromiumPath, firefoxPath }
+}
+
+/**
+ * Sign the Firefox package with Mozilla (AMO, unlisted channel) and replace
+ * `dist/dondownload-extension-firefox-<version>.xpi` with the signed bytes,
+ * keeping the asset name. Runs before the checksums so the signature covers
+ * the signed file.
+ *
+ * Credentials are passed only through the environment: they never appear in
+ * the command line, the printed `$ …` line or an error message.
+ */
+async function signFirefoxExtension(extensionBuild, credentials) {
+  const workDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'dondownload-amo-sign-')
+  )
+  try {
+    const sourceDirectory = path.join(workDirectory, 'source')
+    const artifactsDirectory = path.join(workDirectory, 'artifacts')
+    await mkdir(sourceDirectory, { recursive: true })
+    await mkdir(artifactsDirectory, { recursive: true })
+    for (const entry of extensionBuild.entries) {
+      const target = path.join(sourceDirectory, ...entry.path.split('/'))
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, entry.data)
+    }
+
+    log(
+      `Signing the Firefox extension with addons.mozilla.org (web-ext ${WEB_EXT_VERSION}, ` +
+        'unlisted channel); the approval request can wait up to 15 minutes…'
+    )
+    runInteractive(
+      npxCommand(),
+      amoSignArguments({ sourceDirectory, artifactsDirectory }),
+      { env: amoSignEnvironment(credentials, process.env) }
+    )
+
+    const produced = (await readdir(artifactsDirectory)).filter((name) =>
+      name.toLowerCase().endsWith('.xpi')
+    )
+    if (produced.length !== 1) {
+      fail(
+        `expected exactly one signed .xpi in ${artifactsDirectory}, found ` +
+          `${produced.length}${produced.length > 0 ? `: ${produced.join(', ')}` : ''}.`
+      )
+    }
+    const signedPath = path.join(artifactsDirectory, produced[0])
+    const bytes = await readFile(signedPath)
+    const entryNames = listZipEntryNames(bytes)
+    const signatureEntry = findAmoSignatureEntry(entryNames)
+    if (!signatureEntry) {
+      fail(
+        `AMO returned ${produced[0]} without a Mozilla signature ` +
+          `(${AMO_SIGNATURE_ENTRIES.join(' or ')}). Refusing to publish an ` +
+          'unsigned Firefox extension.'
+      )
+    }
+
+    await copyFile(signedPath, extensionBuild.firefoxPath)
+    log(
+      `Signed ${extensionBuild.names.firefox} with Mozilla (${signatureEntry}); ` +
+        'the signed bytes replace the unsigned package.'
+    )
+  } finally {
+    await rm(workDirectory, { recursive: true, force: true })
+  }
 }
 
 /**
@@ -591,12 +695,14 @@ function publishDraftRelease(version, assets, notesPath) {
 }
 
 function parseArguments(argv) {
-  const options = { publish: false, ci: false, help: false }
+  const options = { publish: false, ci: false, skipAmo: false, help: false }
   for (const argument of argv) {
     if (argument === '--publish') {
       options.publish = true
     } else if (argument === '--ci') {
       options.ci = true
+    } else if (argument === '--skip-amo') {
+      options.skipAmo = true
     } else if (argument === '--help' || argument === '-h') {
       options.help = true
     } else {
@@ -609,7 +715,7 @@ function parseArguments(argv) {
 function printHelp() {
   log(
     [
-      'Usage: npm run release [-- --publish | --ci]',
+      'Usage: npm run release [-- --publish | --ci] [--skip-amo]',
       '',
       'Without --publish: build the installer, the extension packages and the',
       'signed checksum file, then print the exact assets and commands that a',
@@ -622,7 +728,12 @@ function printHelp() {
       'With --ci (or when GITHUB_ACTIONS=true): skip the "on master and in sync',
       'with origin" check, require the already-pushed tag to point at HEAD, and',
       'never create or push a tag. .github/workflows/release.yml uses this form.',
-      '--ci --publish drafts the GitHub release from the existing tag.'
+      '--ci --publish drafts the GitHub release from the existing tag.',
+      '',
+      'The Firefox xpi is signed by Mozilla when AMO_JWT_ISSUER and AMO_JWT_SECRET',
+      'are set (unlisted channel, pinned web-ext). --ci --publish fails without',
+      'them; --skip-amo ships the unsigned xpi on purpose (forks without AMO',
+      'access).'
     ].join('\n')
   )
 }
@@ -643,6 +754,27 @@ async function main() {
       : `Preparing DonDownload ${version} (tag ${tag}).`
   )
 
+  // Decide on AMO signing before the long installer build so missing
+  // credentials fail in seconds, not after 30 minutes of packaging.
+  const amoCredentials = readAmoCredentials(process.env)
+  const amoPlan = planAmoSigning({
+    credentials: amoCredentials,
+    ci,
+    publish: options.publish,
+    skipAmo: options.skipAmo
+  })
+  if (amoPlan.action === 'sign') {
+    log('AMO signing credentials are set; the Firefox xpi will be signed.')
+  } else if (amoPlan.reason === 'skip-flag') {
+    warn(
+      '--skip-amo: the Firefox xpi will ship unsigned. Firefox then only installs it temporarily (about:debugging) or from a build with signature checks disabled.'
+    )
+  } else {
+    warn(
+      'AMO_JWT_ISSUER and AMO_JWT_SECRET are not set: the Firefox xpi will ship unsigned. Set both to sign it with Mozilla, or pass --skip-amo to make this explicit.'
+    )
+  }
+
   const head = verifyGitState(ci)
   if (ci) {
     verifyCiTag(version, head)
@@ -654,7 +786,10 @@ async function main() {
   }
 
   buildInstaller()
-  await buildExtensionPackages(version)
+  const extensionBuild = await buildExtensionPackages(version)
+  if (amoPlan.action === 'sign') {
+    await signFirefoxExtension(extensionBuild, amoCredentials)
+  }
   writeChecksums(signingKeyPath)
 
   const sourceArchives = await collectSourceArchives()

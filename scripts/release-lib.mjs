@@ -73,8 +73,9 @@ export function installerBlockmapAssetName(version) {
 }
 
 /**
- * The two extension packages: a Chromium "load unpacked" zip and an unsigned
- * Firefox `.xpi`. Both contain the same files with `manifest.json` at the root.
+ * The two extension packages: a Chromium "load unpacked" zip and a Firefox
+ * `.xpi` (signed by Mozilla when the release runs with AMO credentials). Both
+ * contain the same files with `manifest.json` at the root.
  */
 export function extensionAssetNames(version) {
   const safe = requireReleaseVersion(version)
@@ -388,4 +389,190 @@ export function renderThirdPartySourcesText(input) {
     ''
   )
   return lines.join('\n')
+}
+
+/* ------------------------------------------------------------------------- *
+ * Mozilla (addons.mozilla.org, "AMO") signing of the Firefox package.
+ *
+ * A Firefox `.xpi` installs permanently only when Mozilla signs it. The
+ * release build signs the exact extension source through the AMO API with
+ * `web-ext sign` (unlisted channel) and replaces the xpi with the signed
+ * output. Credentials arrive through the environment, never on a command line.
+ * ------------------------------------------------------------------------- */
+
+/** Unlisted: Mozilla signs the file without listing it in the public gallery. */
+export const AMO_SIGNING_CHANNEL = 'unlisted'
+
+/** Pinned: 8.3.0 fails with "Unsupported file type"; never float this version. */
+export const WEB_EXT_VERSION = '8.9.0'
+
+/** AMO allows a signature request to wait for automatic approval. */
+export const AMO_APPROVAL_TIMEOUT_MS = 900000
+
+/** The two repository secrets/environment variables that hold AMO credentials. */
+export const AMO_CREDENTIAL_ENV_VARS = ['AMO_JWT_ISSUER', 'AMO_JWT_SECRET']
+
+/**
+ * Entries Mozilla adds to a signed package. `mozilla.rsa` is the classic
+ * PKCS#7 signature; newer packages may carry a COSE signature instead.
+ */
+export const AMO_SIGNATURE_ENTRIES = [
+  'META-INF/mozilla.rsa',
+  'META-INF/cose.sig'
+]
+
+function readEnvString(env, name) {
+  const value = env?.[name]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * Credentials from the environment, or null when neither variable is set.
+ * Setting only one is a configuration error, not an unsigned build.
+ */
+export function readAmoCredentials(env = {}) {
+  const [keyVariable, secretVariable] = AMO_CREDENTIAL_ENV_VARS
+  const apiKey = readEnvString(env, keyVariable)
+  const apiSecret = readEnvString(env, secretVariable)
+  if (apiKey === '' && apiSecret === '') return null
+  if (apiKey === '' || apiSecret === '') {
+    throw new Error(
+      `AMO signing is misconfigured: set both ${keyVariable} and ${secretVariable} ` +
+        '(or neither). A half-configured pair would silently produce an unsigned xpi.'
+    )
+  }
+  return { apiKey, apiSecret }
+}
+
+/**
+ * Decide whether this run signs the Firefox package.
+ *
+ * - credentials and no `--skip-amo` -> sign
+ * - `--skip-amo` without credentials -> skip, explicitly unsigned
+ * - no credentials in `--ci --publish` -> throw: a release never ships unsigned
+ * - no credentials locally -> skip with a warning
+ */
+export function planAmoSigning(options) {
+  const { credentials = null, ci = false, publish = false, skipAmo = false } = options
+  if (skipAmo) {
+    if (credentials) {
+      throw new Error(
+        '--skip-amo was passed but AMO_JWT_ISSUER/AMO_JWT_SECRET are set. ' +
+          'Passing both is contradictory: remove --skip-amo to sign the Firefox ' +
+          'extension, or unset the credentials to ship it unsigned on purpose.'
+      )
+    }
+    return { action: 'skip', reason: 'skip-flag' }
+  }
+  if (credentials) return { action: 'sign', reason: 'credentials' }
+  if (ci && publish) {
+    throw new Error(
+      'the AMO signing credentials are missing. A release must not ship an ' +
+        'unsigned Firefox xpi, because Firefox then only installs it temporarily.\n' +
+        'Add the addons.mozilla.org API key and secret as the AMO_JWT_ISSUER and ' +
+        'AMO_JWT_SECRET repository secrets. Forks without AMO access can pass ' +
+        '--skip-amo to ship the unsigned xpi on purpose.'
+    )
+  }
+  return { action: 'skip', reason: 'missing-credentials' }
+}
+
+/**
+ * The fixed `npx web-ext` command line. It never contains credentials: web-ext
+ * reads WEB_EXT_API_KEY / WEB_EXT_API_SECRET from the environment.
+ */
+export function amoSignArguments(options) {
+  const sourceDirectory = String(options.sourceDirectory)
+  const artifactsDirectory = String(options.artifactsDirectory)
+  if (sourceDirectory === '' || artifactsDirectory === '') {
+    throw new Error('AMO signing needs a source directory and an artifacts directory.')
+  }
+  return [
+    '-y',
+    `web-ext@${WEB_EXT_VERSION}`,
+    'sign',
+    '--source-dir',
+    sourceDirectory,
+    '--artifacts-dir',
+    artifactsDirectory,
+    '--channel',
+    AMO_SIGNING_CHANNEL,
+    '--approval-timeout',
+    String(AMO_APPROVAL_TIMEOUT_MS),
+    '--no-input'
+  ]
+}
+
+/** Environment for the web-ext process: the parent environment plus the credentials. */
+export function amoSignEnvironment(credentials, env = {}) {
+  if (!credentials || !credentials.apiKey || !credentials.apiSecret) {
+    throw new Error('AMO signing needs both an API key and an API secret.')
+  }
+  return {
+    ...env,
+    WEB_EXT_API_KEY: credentials.apiKey,
+    WEB_EXT_API_SECRET: credentials.apiSecret
+  }
+}
+
+/**
+ * List the entry names of a ZIP archive by reading its central directory. The
+ * release script uses it to confirm Mozilla's signature is inside the xpi it
+ * received from AMO; it never extracts the archive.
+ */
+export function listZipEntryNames(bytes) {
+  const buffer = Buffer.from(bytes)
+  const minimum = 22
+  if (buffer.byteLength < minimum) {
+    throw new Error('not a zip archive: the file is too small')
+  }
+  let endOfCentralDirectory = -1
+  const earliest = Math.max(0, buffer.byteLength - minimum - 0xffff)
+  for (let offset = buffer.byteLength - minimum; offset >= earliest; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
+      endOfCentralDirectory = offset
+      break
+    }
+  }
+  if (endOfCentralDirectory < 0) {
+    throw new Error('not a zip archive: no end of central directory record')
+  }
+  const count = buffer.readUInt16LE(endOfCentralDirectory + 10)
+  const size = buffer.readUInt32LE(endOfCentralDirectory + 12)
+  const start = buffer.readUInt32LE(endOfCentralDirectory + 16)
+  if (start + size > buffer.byteLength) {
+    throw new Error('not a zip archive: the central directory is truncated')
+  }
+
+  const names = []
+  let cursor = start
+  for (let index = 0; index < count; index += 1) {
+    if (cursor + 46 > buffer.byteLength) {
+      throw new Error('not a zip archive: a central directory entry is truncated')
+    }
+    if (buffer.readUInt32LE(cursor) !== ZIP_CENTRAL_SIGNATURE) {
+      throw new Error('not a zip archive: bad central directory entry')
+    }
+    const nameLength = buffer.readUInt16LE(cursor + 28)
+    const extraLength = buffer.readUInt16LE(cursor + 30)
+    const commentLength = buffer.readUInt16LE(cursor + 32)
+    const nameStart = cursor + 46
+    if (nameStart + nameLength > buffer.byteLength) {
+      throw new Error('not a zip archive: an entry name is truncated')
+    }
+    names.push(buffer.subarray(nameStart, nameStart + nameLength).toString('utf8'))
+    cursor = nameStart + nameLength + extraLength + commentLength
+  }
+  return names
+}
+
+/** The Mozilla signature entry in a signed package, or null when unsigned. */
+export function findAmoSignatureEntry(entryNames) {
+  const signed = new Set(AMO_SIGNATURE_ENTRIES.map((name) => name.toLowerCase()))
+  for (const name of entryNames ?? []) {
+    if (typeof name !== 'string') continue
+    const normalized = name.replace(/\\/g, '/').toLowerCase()
+    if (signed.has(normalized)) return name
+  }
+  return null
 }

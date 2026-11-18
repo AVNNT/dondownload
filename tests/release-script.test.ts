@@ -15,15 +15,23 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { extractZipArchive } from '../src/main/media/updater'
 import {
+  AMO_SIGNATURE_ENTRIES,
+  WEB_EXT_VERSION,
+  amoSignArguments,
+  amoSignEnvironment,
   buildReleaseAssetList,
   createZipArchive,
   crc32,
   extractChangelogSection,
   extensionAssetNames,
+  findAmoSignatureEntry,
   installerAssetName,
   installerBlockmapAssetName,
   isChecksummedAssetName,
   isExtensionPackageFile,
+  listZipEntryNames,
+  planAmoSigning,
+  readAmoCredentials,
   releaseTag,
   releaseTagMatchesVersion,
   renderThirdPartySourcesText,
@@ -456,6 +464,163 @@ describe('vendor staging pins', () => {
     expect(script).toContain('\\chocolatey\\bin\\')
     expect(script).toContain('\\scoop\\shims\\')
     expect(script).toContain('Test-StagedExecutable')
+  })
+})
+
+describe('Mozilla (AMO) signing of the Firefox package', () => {
+  const credentials = { apiKey: 'user:12345', apiSecret: 's3cret' }
+
+  it('pins the web-ext version that can sign the package', () => {
+    expect(WEB_EXT_VERSION).toBe('8.9.0')
+    expect(AMO_SIGNATURE_ENTRIES).toEqual([
+      'META-INF/mozilla.rsa',
+      'META-INF/cose.sig'
+    ])
+  })
+
+  it('reads both credentials from the environment and trims them', () => {
+    expect(readAmoCredentials({})).toBeNull()
+    expect(
+      readAmoCredentials({
+        AMO_JWT_ISSUER: ' user:12345 ',
+        AMO_JWT_SECRET: 's3cret'
+      })
+    ).toEqual(credentials)
+  })
+
+  it('rejects a half-configured credential pair instead of shipping unsigned', () => {
+    expect(() => readAmoCredentials({ AMO_JWT_ISSUER: 'user:1' })).toThrow(
+      /AMO_JWT_SECRET/
+    )
+    expect(() => readAmoCredentials({ AMO_JWT_SECRET: 's3cret' })).toThrow(
+      /AMO_JWT_ISSUER/
+    )
+  })
+
+  it('signs only when both credentials are present', () => {
+    expect(planAmoSigning({ credentials })).toEqual({
+      action: 'sign',
+      reason: 'credentials'
+    })
+    expect(
+      planAmoSigning({ credentials, ci: true, publish: true }).action
+    ).toBe('sign')
+  })
+
+  it('fails a publish run without credentials and skips a local dry run', () => {
+    expect(() =>
+      planAmoSigning({ credentials: null, ci: true, publish: true })
+    ).toThrow(/AMO_JWT_ISSUER and AMO_JWT_SECRET/)
+    expect(planAmoSigning({ credentials: null })).toEqual({
+      action: 'skip',
+      reason: 'missing-credentials'
+    })
+    expect(
+      planAmoSigning({ credentials: null, ci: true, publish: false })
+    ).toEqual({ action: 'skip', reason: 'missing-credentials' })
+  })
+
+  it('treats --skip-amo as an explicit unsigned build', () => {
+    expect(
+      planAmoSigning({
+        credentials: null,
+        skipAmo: true,
+        ci: true,
+        publish: true
+      })
+    ).toEqual({ action: 'skip', reason: 'skip-flag' })
+    expect(() => planAmoSigning({ credentials, skipAmo: true })).toThrow(
+      /--skip-amo/
+    )
+  })
+
+  it('builds a pinned, secret-free web-ext command line', () => {
+    const args = amoSignArguments({
+      sourceDirectory: 'C:\\tmp dir\\source',
+      artifactsDirectory: 'C:\\tmp dir\\artifacts'
+    })
+    const commandLine = args.join(' ')
+
+    expect(args).toContain(`web-ext@${WEB_EXT_VERSION}`)
+    expect(args).toContain('sign')
+    expect(commandLine).toContain('--channel unlisted')
+    expect(commandLine).toContain('--approval-timeout 900000')
+    expect(commandLine).toContain('--no-input')
+    expect(commandLine).not.toContain('--api-key')
+    expect(commandLine).not.toContain('--api-secret')
+    expect(commandLine).not.toContain(credentials.apiKey)
+    expect(commandLine).not.toContain(credentials.apiSecret)
+  })
+
+  it('passes the credentials through the web-ext environment only', () => {
+    const env = amoSignEnvironment(credentials, { PATH: 'C:\\Windows' })
+    expect(env.WEB_EXT_API_KEY).toBe(credentials.apiKey)
+    expect(env.WEB_EXT_API_SECRET).toBe(credentials.apiSecret)
+    expect(env.PATH).toBe('C:\\Windows')
+    expect(() =>
+      amoSignEnvironment({ apiKey: '', apiSecret: '' })
+    ).toThrow(/API key/)
+  })
+
+  it('finds the Mozilla signature in a signed package and not in an unsigned one', () => {
+    const unsigned = createZipArchive([
+      { path: 'manifest.json', data: Buffer.from('{}') }
+    ])
+    expect(listZipEntryNames(unsigned)).toEqual(['manifest.json'])
+    expect(findAmoSignatureEntry(listZipEntryNames(unsigned))).toBeNull()
+
+    const signed = createZipArchive([
+      { path: 'manifest.json', data: Buffer.from('{}') },
+      { path: 'META-INF/mozilla.rsa', data: Buffer.from([1, 2, 3]) }
+    ])
+    expect(listZipEntryNames(signed)).toEqual([
+      'META-INF/mozilla.rsa',
+      'manifest.json'
+    ])
+    expect(findAmoSignatureEntry(listZipEntryNames(signed))).toBe(
+      'META-INF/mozilla.rsa'
+    )
+
+    const cose = createZipArchive([
+      { path: 'META-INF/cose.sig', data: Buffer.from([4]) }
+    ])
+    expect(findAmoSignatureEntry(listZipEntryNames(cose))).toBe(
+      'META-INF/cose.sig'
+    )
+  })
+
+  it('signs the Firefox package before the checksums are written', async () => {
+    const script = await readFile(
+      path.join(process.cwd(), 'scripts', 'release.mjs'),
+      'utf8'
+    )
+    const signIndex = script.indexOf(
+      'await signFirefoxExtension(extensionBuild'
+    )
+    const checksumIndex = script.indexOf('\n  writeChecksums(signingKeyPath)')
+
+    expect(signIndex).toBeGreaterThan(-1)
+    expect(checksumIndex).toBeGreaterThan(signIndex)
+    expect(script).toContain("'--skip-amo'")
+    expect(script).not.toContain('--api-key')
+    expect(script).toContain('amoSignEnvironment(credentials, process.env)')
+  })
+
+  it('passes the AMO secrets to the release step only', async () => {
+    const workflow = await readFile(
+      path.join(process.cwd(), '.github', 'workflows', 'release.yml'),
+      'utf8'
+    )
+    expect(
+      workflow.match(/AMO_JWT_ISSUER: \$\{\{ secrets\.AMO_JWT_ISSUER \}\}/g)
+    ).toHaveLength(1)
+    expect(
+      workflow.match(/AMO_JWT_SECRET: \$\{\{ secrets\.AMO_JWT_SECRET \}\}/g)
+    ).toHaveLength(1)
+    expect(workflow).toContain(
+      'UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}'
+    )
+    expect(workflow).toContain('node scripts/release.mjs --ci --publish')
   })
 })
 
