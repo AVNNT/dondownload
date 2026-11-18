@@ -312,7 +312,9 @@ describe('adaptive download polling', () => {
     // and the manager switches back to the active cadence.
     clock.value = start + 60_000
     await advance(IDLE_POLL_INTERVAL_MS)
-    expect(aria2.addUriCalls).toHaveLength(1)
+    // Submitting does real (unfaked) fs work, which a slow CI runner may not
+    // finish within the faked timer tick.
+    await vi.waitFor(() => expect(aria2.addUriCalls).toHaveLength(1))
     expect(manager.getSnapshot().downloads[0]?.status).toBe('queued')
 
     const before = port.pumpPolicy.mock.calls.length
