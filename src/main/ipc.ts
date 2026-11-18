@@ -21,6 +21,7 @@ import type {
   UrlSizeProbe
 } from '@shared/types'
 import type { DownloadSettings } from '@shared/settings'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type { ChecksumResult } from '@shared/checksum'
 import type { DesktopSettings } from '@shared/desktopSettings'
 import type {
@@ -56,6 +57,7 @@ import type { ScanQueueService } from './scanner/queue'
 import type { ManualMatchService } from './scanner/manualMatch'
 import { isPublicOpenableUrl } from './scanner/openExternal'
 import { applyThemeToWindow } from './settings/theme'
+import { parseAddDownloadInput } from '@shared/validation'
 
 export interface IpcContext {
   manager: DownloadManager
@@ -88,9 +90,19 @@ export interface IpcContext {
   scanQueue?: ScanQueueService
   /** Manual "Match to video file…" support. */
   manualMatch?: ManualMatchService
+  /**
+   * Main-only "Save to" folder port. The renderer receives a short-lived token
+   * and its display path; only the token travels back with `download:add`.
+   */
+  downloadDestinations?: DownloadDestinationPort
   /** Send fresh full deltas for every snapshot stream after a renderer gap. */
   requestSnapshotResync?: () => void
   getWindow: () => BrowserWindow | null
+}
+
+export interface DownloadDestinationPort {
+  choose: () => Promise<DownloadFolderChoice | null>
+  resolve: (token: string) => string | null
 }
 
 function assertTrustedSender(
@@ -148,9 +160,38 @@ export function registerIpc(context: IpcContext): void {
     return context.manager.getSnapshot()
   })
 
-  invoke<AppSnapshot>(IPC.addDownload, (_event, input) =>
-    context.manager.add(input)
+  invoke<DownloadFolderChoice | null>(
+    IPC.chooseDownloadFolder,
+    async () => {
+      if (!context.downloadDestinations) {
+        throw new AppError(
+          'DOWNLOAD_FOLDER_UNAVAILABLE',
+          'Choosing a download folder is not available.'
+        )
+      }
+      return context.downloadDestinations.choose()
+    }
   )
+
+  invoke<AppSnapshot>(IPC.addDownload, (_event, rawInput) => {
+    // Validate before resolving the folder token, so a malformed payload never
+    // touches the destination store. A save-to token is optional; without one
+    // the normal, root-scoped add path is used unchanged.
+    const input = parseAddDownloadInput(rawInput)
+    if (input.destinationToken === undefined) {
+      return context.manager.add(input)
+    }
+    const directory =
+      context.downloadDestinations?.resolve(input.destinationToken) ?? null
+    if (directory === null) {
+      throw new AppError(
+        'DOWNLOAD_FOLDER_EXPIRED',
+        'The chosen download folder is no longer available.',
+        'Choose the folder again.'
+      )
+    }
+    return context.manager.addToDestination(input, directory)
+  })
   invoke<AppSnapshot>(IPC.pauseDownload, (_event, id) =>
     context.manager.pause(id)
   )

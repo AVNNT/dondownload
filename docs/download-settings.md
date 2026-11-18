@@ -122,6 +122,16 @@ the pure `src/shared/typeFolders.ts` module. Only new downloads are affected:
 existing rows are never moved, and a download with an explicitly picked folder
 is never re-sorted.
 
+### Choosing a folder for one download
+
+The Add dialog shows the save folder above the primary button. **Change** opens
+the native folder picker and applies the choice to that one direct download;
+**Use default** clears it. The picked folder may be outside the default download
+root. Main keeps the path behind a short-lived opaque token, resolves it again
+when the download is added, and re-checks that the folder still exists. A
+download in a picked folder bypasses type sorting, and its retry/resume path
+also remembers the folder after a restart.
+
 ### Automatic history cleanup
 
 `historyRetentionDays` keeps the download list small without touching files on

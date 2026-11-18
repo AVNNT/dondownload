@@ -101,6 +101,28 @@ describe('parseAddDownloadInput', () => {
     ).toEqual({ url: 'https://example.com/a' })
   })
 
+  it('accepts only a valid opaque destination token', () => {
+    const token = 'a'.repeat(32)
+    expect(
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        destinationToken: token
+      })
+    ).toEqual({ url: 'https://example.com/a', destinationToken: token })
+    expect(() =>
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        destinationToken: 'short'
+      })
+    ).toThrow(ValidationError)
+    expect(() =>
+      parseAddDownloadInput({
+        url: 'https://example.com/a',
+        destinationToken: 42
+      })
+    ).toThrow(ValidationError)
+  })
+
   it('accepts only exact-key per-download controls', () => {
     const controls = {
       scheduledAt: Date.UTC(2026, 10, 4, 12, 30),

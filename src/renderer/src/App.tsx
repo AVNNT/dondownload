@@ -19,6 +19,7 @@ import type {
   AppSnapshot,
   DownloadItem
 } from '@shared/types'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import type {
   MediaAnalysis,
   MediaJob,
@@ -704,6 +705,12 @@ export default function App(): JSX.Element {
       }
     },
     [applyDownloadResult]
+  )
+
+  const handleChooseDownloadFolder = useCallback(
+    (): Promise<ApiResult<DownloadFolderChoice | null>> =>
+      window.donDownload.chooseDownloadFolder(),
+    []
   )
 
   const handleAnalyzeMedia = useCallback(
@@ -1805,6 +1812,7 @@ export default function App(): JSX.Element {
               onScanOpen={openScanSheet}
               onClose={() => setAddRequest(null)}
               onAdd={handleAdd}
+              onChooseFolder={handleChooseDownloadFolder}
               onAnalyze={handleAnalyzeMedia}
               onQueue={handleQueueMedia}
             />

@@ -20,6 +20,7 @@ import type {
   ChecksumResult
 } from './checksum'
 import type { DownloadControls, DownloadSettings } from './settings'
+import type { DownloadFolderChoice } from './downloadDestination'
 import type { DesktopSettings } from './desktopSettings'
 import type {
   MediaToolSettings,
@@ -201,6 +202,12 @@ export interface AddDownloadInput {
    * unscheduled, unlimited and aria2's global connection setting.
    */
   controls?: DownloadControls
+  /**
+   * Opaque token for a folder the user chose in the native "Save to" dialog.
+   * Omitted means the normal download folder. Only the desktop Add dialog sets
+   * this; the browser bridge never does.
+   */
+  destinationToken?: string
 }
 
 export interface AppSnapshot {
@@ -272,6 +279,13 @@ export interface SmartBatchSubmitResult {
 export interface DonDownloadApi {
   getSnapshot: () => Promise<ApiResult<AppSnapshot>>
   addDownload: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
+  /**
+   * Ask for a destination folder for the next download. Returns null when the
+   * dialog is cancelled. The path is display-only; only the token is sent back.
+   */
+  chooseDownloadFolder: () => Promise<
+    ApiResult<DownloadFolderChoice | null>
+  >
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   /**
    * Stop an in-flight download and keep its row in the terminal `cancelled`

@@ -5,6 +5,14 @@ All notable changes to DonDownload are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A **Save to** choice in the Add dialog: pick any folder for one download
+  instead of always using `Downloads\DonDownload`. The default folder,
+  sort-into-type folders and all other downloads are unchanged.
+
 ## [1.0.0] - 2026-11-18
 
 First public release.

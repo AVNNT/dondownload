@@ -38,6 +38,7 @@ import type {
   ChecksumResult
 } from '../shared/checksum'
 import type { DesktopSettings } from '../shared/desktopSettings'
+import type { DownloadFolderChoice } from '../shared/downloadDestination'
 import type {
   MediaToolSettings,
   YtdlpUpdateState
@@ -61,6 +62,10 @@ const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
   addDownload: (input: AddDownloadInput) =>
     ipcRenderer.invoke(IPC.addDownload, input) as Promise<ApiResult<AppSnapshot>>,
+  chooseDownloadFolder: () =>
+    ipcRenderer.invoke(IPC.chooseDownloadFolder) as Promise<
+      ApiResult<DownloadFolderChoice | null>
+    >,
   pauseDownload: (id: string) =>
     ipcRenderer.invoke(IPC.pauseDownload, id) as Promise<ApiResult<AppSnapshot>>,
   cancelDownload: (id: string) =>

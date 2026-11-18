@@ -1,5 +1,6 @@
 import type { AddDownloadInput, DownloadRequestHeaders } from './types'
 import { ValidationError } from './errors'
+import { isDownloadDestinationToken } from './downloadDestination'
 import { keepsUrlFragment } from './urlFragment'
 import {
   defaultDownloadControls,
@@ -251,6 +252,14 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
     resolvedUrl = normalizeHttpUrl(record.resolvedUrl)
   }
 
+  let destinationToken: string | undefined
+  if (record.destinationToken !== undefined && record.destinationToken !== null) {
+    if (!isDownloadDestinationToken(record.destinationToken)) {
+      throw new ValidationError('The chosen download folder is invalid.')
+    }
+    destinationToken = record.destinationToken
+  }
+
   return {
     url,
     ...(filename === undefined ? {} : { filename }),
@@ -260,7 +269,8 @@ export function parseAddDownloadInput(value: unknown): AddDownloadInput {
       ? {}
       : { controls }),
     ...(requestHeaders === undefined ? {} : { requestHeaders }),
-    ...(resolvedUrl === undefined ? {} : { resolvedUrl })
+    ...(resolvedUrl === undefined ? {} : { resolvedUrl }),
+    ...(destinationToken === undefined ? {} : { destinationToken })
   }
 }
 

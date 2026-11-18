@@ -13,6 +13,7 @@ import type {
   AppErrorInfo,
   AppSnapshot
 } from '@shared/types'
+import type { DownloadFolderChoice } from '@shared/downloadDestination'
 import { formatBytes } from '@shared/format'
 import { DEFAULT_PER_HOST_CONNECTIONS } from '@shared/settings'
 import {
@@ -49,6 +50,8 @@ export interface AddDialogProps {
   onScanOpen: (url: string) => void
   onClose: () => void
   onAdd: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
+  /** Opens the native folder dialog for the next direct download. */
+  onChooseFolder: () => Promise<ApiResult<DownloadFolderChoice | null>>
   onAnalyze: (url: string) => Promise<ApiResult<MediaAnalysis>>
   onQueue: (input: {
     analysisId: string
@@ -88,6 +91,7 @@ export function AddDialog({
   onScanOpen,
   onClose,
   onAdd,
+  onChooseFolder,
   onAnalyze,
   onQueue
 }: AddDialogProps): JSX.Element {
@@ -106,6 +110,10 @@ export function AddDialog({
   const [notice, setNotice] = useState<string | null>(null)
   const [queuingOptionId, setQueuingOptionId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [destination, setDestination] =
+    useState<DownloadFolderChoice | null>(null)
+  const [choosingFolder, setChoosingFolder] = useState(false)
+  const [destinationError, setDestinationError] = useState<string | null>(null)
 
   const registerQuickSubmit = useCallback(
     (submit: (() => void) | null): void => {
@@ -156,6 +164,24 @@ export function AddDialog({
     setText(value)
     setForcedFile(false)
   }, [])
+
+  const chooseFolder = useCallback(async (): Promise<void> => {
+    if (choosingFolder) return
+    setChoosingFolder(true)
+    setDestinationError(null)
+    try {
+      const result = await onChooseFolder()
+      if (!result.ok) {
+        setDestinationError(result.error.message)
+        return
+      }
+      if (result.value !== null) setDestination(result.value)
+    } catch {
+      setDestinationError('The folder could not be chosen.')
+    } finally {
+      setChoosingFolder(false)
+    }
+  }, [choosingFolder, onChooseFolder])
 
   const handleAnalyze = useCallback(
     async (url: string): Promise<ApiResult<MediaAnalysis>> => {
@@ -313,6 +339,8 @@ export function AddDialog({
           describeDuplicate={describeDuplicate}
           onResumeDuplicate={onResumeDuplicate}
           defaultConnections={defaultConnections}
+          destinationToken={destination?.token}
+          savedToLabel={destination?.path ?? 'Downloads\\DonDownload'}
         />
       </div>
     )
@@ -477,11 +505,50 @@ export function AddDialog({
         </div>
 
         <div className="flex shrink-0 items-center gap-3 border-t border-white/[0.07] px-4 py-3">
-          <span className="flex items-center gap-1.5 text-[12px] text-zinc-400">
-            <Icon name="folder" size={14} />
-            Downloads\DonDownload
-          </span>
-          <span className="ml-auto flex items-center gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-1.5 text-[12px] text-zinc-400">
+              <Icon name="folder" size={14} className="shrink-0" />
+              <span
+                className={`min-w-0 truncate ${destination ? 'text-zinc-200' : ''}`}
+                title={destination?.path ?? 'Downloads\\DonDownload'}
+              >
+                {destination?.path ?? 'Downloads\\DonDownload'}
+              </span>
+              {fileMode ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void chooseFolder()
+                    }}
+                    disabled={busy || choosingFolder}
+                    className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-accent-300 transition hover:bg-accent-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {choosingFolder ? 'Choosing…' : 'Change'}
+                  </button>
+                  {destination !== null ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDestination(null)
+                        setDestinationError(null)
+                      }}
+                      disabled={busy}
+                      className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Use default
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+            {destinationError !== null ? (
+              <p role="alert" className="truncate text-[10px] text-red-400">
+                {destinationError}
+              </p>
+            ) : null}
+          </div>
+          <span className="ml-auto flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={onClose}

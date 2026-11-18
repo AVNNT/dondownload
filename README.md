@@ -71,7 +71,8 @@ Get-FileHash .\DonDownload-1.0.0-x64-setup.exe -Algorithm SHA256
 DonDownload needs Windows 10 or 11 on x64. The installer bundles aria2, yt-dlp
 and FFmpeg, so nothing else has to be installed. Downloads are saved to
 `%USERPROFILE%\Downloads\DonDownload` by default, with an optional
-"sort into folders by type" setting.
+"sort into folders by type" setting. In the Add dialog, **Change** next to the
+folder sends that one download to any folder you pick instead.
 
 Uninstalling through Windows Settings removes the app and its shortcuts but
 never deletes your downloaded files or your history.

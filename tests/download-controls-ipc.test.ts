@@ -131,4 +131,81 @@ describe('download control IPC', () => {
     expect(result.error?.code).toBe('UNTRUSTED_SENDER')
     expect(startNow).not.toHaveBeenCalled()
   })
+
+  it('routes a chosen destination token to the destination add path', async () => {
+    const add = vi.fn(async () => snapshot)
+    const addToDestination = vi.fn(async () => snapshot)
+    const manager = { add, addToDestination } as unknown as DownloadManager
+    const window = fakeWindow()
+    const token = 'a'.repeat(32)
+    registerIpc({
+      manager,
+      aria2: {} as Aria2Service,
+      downloadDestinations: {
+        choose: vi.fn(async () => null),
+        resolve: (value) => (value === token ? 'D:\\Chosen' : null)
+      },
+      getWindow: () => window.window as never
+    })
+
+    const result = await handler(IPC.addDownload)(trustedEvent(window), {
+      url: 'https://example.com/file.bin',
+      destinationToken: token
+    })
+
+    expect(result).toEqual({ ok: true, value: snapshot })
+    expect(addToDestination).toHaveBeenCalledWith(
+      expect.objectContaining({ destinationToken: token }),
+      'D:\\Chosen'
+    )
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('reports an expired chosen folder instead of falling back to the default', async () => {
+    const add = vi.fn(async () => snapshot)
+    const addToDestination = vi.fn(async () => snapshot)
+    const manager = { add, addToDestination } as unknown as DownloadManager
+    const window = fakeWindow()
+    registerIpc({
+      manager,
+      aria2: {} as Aria2Service,
+      downloadDestinations: {
+        choose: vi.fn(async () => null),
+        resolve: () => null
+      },
+      getWindow: () => window.window as never
+    })
+
+    const result = await handler(IPC.addDownload)(trustedEvent(window), {
+      url: 'https://example.com/file.bin',
+      destinationToken: 'b'.repeat(32)
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('DOWNLOAD_FOLDER_EXPIRED')
+    expect(add).not.toHaveBeenCalled()
+    expect(addToDestination).not.toHaveBeenCalled()
+  })
+
+  it('returns the native folder picker result through IPC', async () => {
+    const choice = { token: 'c'.repeat(32), path: 'D:\\Picked' }
+    const choose = vi.fn(async () => choice)
+    const window = fakeWindow()
+    registerIpc({
+      manager: {} as DownloadManager,
+      aria2: {} as Aria2Service,
+      downloadDestinations: {
+        choose,
+        resolve: () => null
+      },
+      getWindow: () => window.window as never
+    })
+
+    const result = await handler(IPC.chooseDownloadFolder)(
+      trustedEvent(window)
+    )
+
+    expect(result).toEqual({ ok: true, value: choice })
+    expect(choose).toHaveBeenCalledTimes(1)
+  })
 })
