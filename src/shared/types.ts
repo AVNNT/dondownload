@@ -492,4 +492,10 @@ export interface DonDownloadApi {
     input: ScanManualMatchInput
   ) => Promise<ApiResult<ScanManualMatchResult | null>>
   onScanUpdated: (listener: (session: ScanSession) => void) => () => void
+
+  // Help & diagnostics. Both actions are fixed app-owned targets: the log
+  // folder in the user's app data, and no arguments at all. The returned copy
+  // is already redacted (no URL, file name or path).
+  openLogFolder: () => Promise<ApiResult<null>>
+  getDiagnostics: () => Promise<ApiResult<string>>
 }

@@ -94,6 +94,13 @@ export interface IpcContext {
   welcome?: { getInfo: () => Promise<WelcomeInfo> }
   /** Send fresh full deltas for every snapshot stream after a renderer gap. */
   requestSnapshotResync?: () => void
+  /**
+   * Help & diagnostics. Both are fixed, app-owned targets assembled in main:
+   * the log folder path and a redacted text block. Neither accepts renderer
+   * input, so nothing personal can be smuggled into a report through them.
+   */
+  openLogFolder?: () => Promise<string>
+  buildDiagnostics?: () => string | Promise<string>
   getWindow: () => BrowserWindow | null
 }
 
@@ -645,4 +652,39 @@ export function registerIpc(context: IpcContext): void {
       return service.match(parsed)
     }
   )
+
+  // Help & diagnostics. The folder comes from main's own logger (app data
+  // under the user profile), never from a renderer argument, and the copied
+  // text is built from renderer-safe values and already-redacted log records.
+  const diagnosticsFolder = async (): Promise<string> => {
+    if (!context.openLogFolder) {
+      throw new AppError(
+        'DIAGNOSTICS_UNAVAILABLE',
+        'Diagnostics are not available.'
+      )
+    }
+    return context.openLogFolder()
+  }
+
+  invoke<null>(IPC.openLogFolder, async () => {
+    const folder = await diagnosticsFolder()
+    const failure = await shell.openPath(folder)
+    if (failure) {
+      throw new AppError(
+        'LOG_FOLDER_UNAVAILABLE',
+        'The log folder could not be opened.'
+      )
+    }
+    return null
+  })
+
+  invoke<string>(IPC.copyDiagnostics, async () => {
+    if (!context.buildDiagnostics) {
+      throw new AppError(
+        'DIAGNOSTICS_UNAVAILABLE',
+        'Diagnostics are not available.'
+      )
+    }
+    return context.buildDiagnostics()
+  })
 }

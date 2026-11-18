@@ -10,6 +10,7 @@ import {
   type DownloadSettings
 } from '@shared/settings'
 import type { AppSnapshot, DownloadItem } from '@shared/types'
+import { logError } from '../logging'
 
 /**
  * Automatic history cleanup.
@@ -271,7 +272,7 @@ export class HistoryCleanupService {
           this.store.deleteHistoryEntries(selection)
         } catch {
           // Keep both the rows and the in-memory list when persistence fails.
-          console.error('Old history entries could not be removed.')
+          logError('Old history entries could not be removed.')
           return emptySelection()
         }
       }

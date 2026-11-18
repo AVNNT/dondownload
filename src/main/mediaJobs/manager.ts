@@ -35,6 +35,7 @@ import {
 } from '../downloads/deleteFile'
 import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
+import { logError } from '../logging'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -1787,6 +1788,6 @@ export class MediaJobsManager {
     if (this.persistenceErrorLogged) return
     this.persistenceErrorLogged = true
     // Never include URLs, paths or record payloads in logs.
-    console.error(`Media job history ${context}.`)
+    logError(`Media job history ${context}.`)
   }
 }

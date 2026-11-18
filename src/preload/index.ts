@@ -428,7 +428,11 @@ const api: DonDownloadApi = {
     return () => {
       ipcRenderer.removeListener(IPC.scanUpdated, handler)
     }
-  }
+  },
+  openLogFolder: () =>
+    ipcRenderer.invoke(IPC.openLogFolder) as Promise<ApiResult<null>>,
+  getDiagnostics: () =>
+    ipcRenderer.invoke(IPC.copyDiagnostics) as Promise<ApiResult<string>>
 }
 
 contextBridge.exposeInMainWorld('donDownload', api)

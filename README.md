@@ -161,6 +161,10 @@ the local history because retry and resume need them; query strings can carry
 site-specific tokens, and the database is protected by your Windows user
 profile's permissions rather than by application-level encryption.
 
+Logs stay local too: `%APPDATA%\dondownload\logs` keeps redacted text only
+(host names instead of links, `%USERPROFILE%` instead of your profile path), and
+they are shared with anyone only if you paste them into a report.
+
 The desktop bridge the extension talks to listens only on `127.0.0.1` with a
 random port and a fresh bearer token per launch, and accepts nothing but a URL
 to download.

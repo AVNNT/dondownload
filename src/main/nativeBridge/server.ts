@@ -9,6 +9,7 @@ import {
 } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
+import { logDebug } from '../logging'
 import {
   CAPTURED_SOURCE_CHANNEL,
   capturedSourceExtension,
@@ -376,7 +377,7 @@ function closeServer(server: Server): Promise<void> {
 export async function startNativeBridge(
   options: NativeBridgeOptions
 ): Promise<NativeBridge> {
-  const logger = options.logger ?? ((message: string) => console.error(message))
+  const logger = options.logger ?? ((message: string) => logDebug(message))
   const statePath = path.join(options.userDataPath, NATIVE_BRIDGE_STATE_FILE)
   const token = randomBytes(32).toString('hex')
   let closed = false

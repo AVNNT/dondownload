@@ -2,6 +2,7 @@ import { Menu, Tray, nativeImage, type NativeImage } from 'electron'
 import trayIconPath from './assets/tray.ico?asset'
 import { trayMenuLabel } from './lifecycle'
 import { buildSpeedLimitSubmenu } from './trayMenu'
+import { logError } from './logging'
 
 export interface TrayActions {
   showWindow: () => void
@@ -32,12 +33,12 @@ export function createAppTray(actions: TrayActions): AppTray | null {
     icon = nativeImage.createFromPath(trayIconPath)
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'unknown error'
-    console.error(`Tray icon could not be loaded: ${detail}`)
+    logError('Tray icon could not be loaded: %s', detail)
     return null
   }
 
   if (icon.isEmpty()) {
-    console.error(`Tray icon is missing or invalid: ${trayIconPath}`)
+    logError('Tray icon is missing or invalid: %s', trayIconPath)
     return null
   }
 
@@ -48,7 +49,7 @@ export function createAppTray(actions: TrayActions): AppTray | null {
     tray = new Tray(trayIconPath)
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'unknown error'
-    console.error(`The system tray is unavailable: ${detail}`)
+    logError('The system tray is unavailable: %s', detail)
     return null
   }
 

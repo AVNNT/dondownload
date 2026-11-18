@@ -1,3 +1,4 @@
+import { logError } from '../logging'
 /**
  * Idle tray stub hand-off.
  *
@@ -113,7 +114,7 @@ export function createIdleStubController(
     } catch (error) {
       // A failed spawn must leave the app running, not take it down.
       const detail = error instanceof Error ? error.message : 'unknown error'
-      console.error(`Tray stub could not be started: ${detail}`)
+      logError('Tray stub could not be started: %s', detail)
       // Allow a later idle period to try again.
       fired = false
     }
