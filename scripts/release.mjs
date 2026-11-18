@@ -298,7 +298,7 @@ function verifyCiTag(version, head) {
       )
     }
   }
-  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`])
+  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{commit}`])
   if (existing.status !== 0) {
     fail(
       `tag ${tag} does not exist in this checkout. The release workflow must run from the pushed tag.`
@@ -500,7 +500,7 @@ async function writeReleaseNotes(version) {
 /** Create the tag if needed and push it, without ever moving an existing tag. */
 function ensureTag(version, head) {
   const tag = releaseTag(version)
-  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`])
+  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{commit}`])
   if (existing.status === 0) {
     const commit = existing.stdout.trim()
     if (commit !== head) {
@@ -522,7 +522,9 @@ function ensureTag(version, head) {
     log(`Pushed tag ${tag} to origin.`)
     return
   }
-  const remoteSha = remoteLine.split(/\s+/)[0]
+  // An annotated tag is listed as its tag object; the peeled `^{}` line is the commit.
+  const peeled = git(['ls-remote', '--tags', 'origin', `refs/tags/${tag}^{}`]).stdout.trim()
+  const remoteSha = (peeled || remoteLine).split(/\s+/)[0]
   if (remoteSha !== head) {
     fail(
       `origin already has tag ${tag} at ${remoteSha}, not at HEAD ${head}.`
