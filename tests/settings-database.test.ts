@@ -527,7 +527,7 @@ describe('download settings persistence', () => {
     const database = open(filePath)
 
     expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(23)
+    expect(SCHEMA_VERSION).toBe(24)
     expect(database.loadSettings()).toEqual(defaultDownloadSettings())
     close(database)
 
@@ -1530,7 +1530,7 @@ describe('v21 to v22 first-start guide flag', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(23)
+    expect(migrated.schemaVersion).toBe(24)
     expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
     expect(migrated.loadDesktopSettings().welcomeGuideSeen).toBe(false)
     migrated.saveDesktopSettings({
@@ -1571,7 +1571,7 @@ describe('v20 to v21 idle tray stub setting', () => {
     legacy.close()
 
     const migrated = open(filePath)
-    expect(migrated.schemaVersion).toBe(23)
+    expect(migrated.schemaVersion).toBe(24)
     expect(migrated.loadDesktopSettings()).toEqual(defaultDesktopSettings())
     expect(migrated.loadDesktopSettings().exitToTrayStubWhenIdle).toBe(true)
 

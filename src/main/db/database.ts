@@ -59,7 +59,7 @@ import { normalizeDuplicateUrl, type DuplicateWarning } from '@shared/duplicates
  * module is available to the Vitest process (Node 24) for hermetic tests.
  */
 export const DATABASE_FILENAME = 'downloads.sqlite3'
-export const SCHEMA_VERSION = 23
+export const SCHEMA_VERSION = 24
 
 /** Column added by the v21 "free memory when idle in the tray" migration. */
 const COLUMN_EXIT_TO_TRAY_STUB = 'exit_to_tray_stub_when_idle'
@@ -840,6 +840,43 @@ export const MIGRATIONS: readonly Migration[] = [
       UPDATE desktop_settings
         SET warn_about_duplicates = COALESCE(warn_about_duplicates, 1);
     `
+  },
+  {
+    // v23 dropped every URL fragment, including the decryption key of a public
+    // MEGA link. That made two different MEGA files share one normalized URL.
+    // Recompute the column with the corrected rule. Rows are read in bounded
+    // pages so an upgrade never holds the whole history in memory; the
+    // migrator already wraps this in one transaction.
+    version: 24,
+    prepare: (db) => {
+      const PAGE_SIZE = 500
+      const select = db.prepare(
+        `SELECT rowid AS rowid, id, url FROM downloads
+         WHERE rowid > ?
+         ORDER BY rowid
+         LIMIT ?`
+      )
+      const update = db.prepare(
+        'UPDATE downloads SET normalized_url = ? WHERE id = ?'
+      )
+      let lastRowId = 0
+      for (;;) {
+        const rows = select.all(lastRowId, PAGE_SIZE) as Record<
+          string,
+          unknown
+        >[]
+        if (rows.length === 0) break
+        for (const row of rows) {
+          const rowId = Number(row.rowid)
+          if (Number.isFinite(rowId)) lastRowId = rowId
+          if (typeof row.id !== 'string' || typeof row.url !== 'string') continue
+          const normalized = normalizeDuplicateUrl(row.url)
+          if (normalized !== null) update.run(normalized, row.id)
+        }
+      }
+    },
+    // The work happens in `prepare`; this keeps `exec` valid and self-contained.
+    sql: `SELECT 1;`
   }
 ]
 

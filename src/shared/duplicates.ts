@@ -1,5 +1,6 @@
 import { ValidationError } from './errors'
 import { normalizeHttpUrl } from './validation'
+import { keepsUrlFragment } from './urlFragment'
 
 /**
  * Duplicate-detection contract shared by main and the renderer.
@@ -15,8 +16,12 @@ import { normalizeHttpUrl } from './validation'
  *
  * Lowercases the scheme and host, removes the fragment and any default port,
  * and keeps the query string verbatim. The `URL` parser already lowercases the
- * scheme/host and drops `:80`/`:443`; the fragment is cleared explicitly so a
- * MEGA key or a tracking fragment can never split one file into two records.
+ * scheme/host and drops `:80`/`:443`.
+ *
+ * A public MEGA link keeps its fragment: that fragment is the decryption key,
+ * so two links that differ only there are different files. Dropping it made
+ * two distinct MEGA downloads look identical. Every other host follows the
+ * normal rule and loses tracking/anchor fragments.
  *
  * Returns null for anything that is not a usable http(s) URL instead of
  * throwing, so a repository lookup can never crash on a tampered row.
@@ -38,7 +43,7 @@ export function normalizeDuplicateUrl(value: unknown): string | null {
   // treat `https://user:pass@host/file` as the same resource as the clean URL.
   if (parsed.username || parsed.password) return null
 
-  parsed.hash = ''
+  if (!keepsUrlFragment(parsed.hostname)) parsed.hash = ''
   return parsed.href
 }
 

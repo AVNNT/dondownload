@@ -13,9 +13,11 @@ describe('normalizeDuplicateUrl', () => {
     ['https://example.com:443/file.zip', 'https://example.com/file.zip'],
     ['http://example.com:80/file.zip', 'http://example.com/file.zip'],
     ['https://example.com:8443/file.zip', 'https://example.com:8443/file.zip'],
-    // Fragments are dropped, including a MEGA-style key fragment.
+    // Ordinary fragments are dropped; a MEGA key fragment is the file's key
+    // and must be preserved, or two different files would look identical.
     ['https://example.com/file.zip#section', 'https://example.com/file.zip'],
-    ['https://mega.nz/file/abc#key', 'https://mega.nz/file/abc'],
+    ['https://mega.nz/file/abc#key', 'https://mega.nz/file/abc#key'],
+    ['https://mega.nz/file/abc#other', 'https://mega.nz/file/abc#other'],
     // The query string is significant and preserved.
     ['https://example.com/download?id=7&v=2', 'https://example.com/download?id=7&v=2'],
     ['HTTPS://EXAMPLE.com/download?ID=7#x', 'https://example.com/download?ID=7'],
@@ -44,6 +46,18 @@ describe('normalizeDuplicateUrl', () => {
     )
     expect(() => parseDuplicateCheckUrl('ftp://example.com/a')).toThrow()
     expect(() => parseDuplicateCheckUrl('nope')).toThrow()
+  })
+
+  it('keeps distinct MEGA files apart and the same link stable', () => {
+    const first = normalizeDuplicateUrl('https://mega.nz/file/abc#key-one')
+    const second = normalizeDuplicateUrl('https://mega.nz/file/abc#key-two')
+    expect(first).not.toBeNull()
+    expect(first).not.toBe(second)
+    // The same link, before and after the v23/v24 normalized_url correction.
+    expect(normalizeDuplicateUrl('HTTPS://MEGA.NZ/file/abc#key-one')).toBe(first)
+    expect(
+      normalizeDuplicateUrl('https://mega.nz/file/abc#key-one')
+    ).toBe(first)
   })
 })
 

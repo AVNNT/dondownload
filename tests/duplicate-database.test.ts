@@ -195,9 +195,55 @@ describe('download duplicate repository lookup', () => {
 
     const upgraded = openDownloadDatabase(databasePath)
     databases.push(upgraded)
-    expect(upgraded.schemaVersion).toBe(23)
+    expect(upgraded.schemaVersion).toBe(24)
     expect(
       upgraded.findDuplicate('https://example.com/files/legacy.zip')
     ).toMatchObject({ state: 'finished', filename: 'legacy.zip' })
+  })
+
+  it('keeps different MEGA key fragments apart', async () => {
+    const { database } = await makeDatabase()
+    database.save({
+      record: record({
+        url: 'https://mega.nz/file/abc#key-one',
+        filename: 'one.zip'
+      }),
+      explicitFilename: null
+    })
+
+    expect(
+      database.findDuplicate('https://mega.nz/file/abc#key-one')
+    ).toMatchObject({ state: 'finished', filename: 'one.zip' })
+    expect(
+      database.findDuplicate('https://mega.nz/file/abc#key-two')
+    ).toBeNull()
+  })
+
+  it('recomputes MEGA normalized URLs written by the v23 backfill', async () => {
+    const { database, databasePath } = await makeDatabase()
+    const id = 'b47ac10b-58cc-4372-a567-0e02b2c3d479'
+    database.save({
+      record: record({ id, url: 'https://mega.nz/file/abc#key-one' }),
+      explicitFilename: null
+    })
+    database.close()
+
+    // Simulate a row upgraded by v23, which stripped the key fragment.
+    const raw = new DatabaseSync(databasePath)
+    rawConnections.push(raw)
+    raw
+      .prepare('UPDATE downloads SET normalized_url = ? WHERE id = ?')
+      .run('https://mega.nz/file/abc', id)
+    raw.exec('PRAGMA user_version = 23')
+    raw.close()
+    rawConnections.pop()
+
+    const upgraded = openDownloadDatabase(databasePath)
+    databases.push(upgraded)
+    expect(upgraded.schemaVersion).toBe(24)
+    expect(
+      upgraded.findDuplicate('https://mega.nz/file/abc#key-one')
+    ).toMatchObject({ state: 'finished' })
+    expect(upgraded.findDuplicate('https://mega.nz/file/abc#key-two')).toBeNull()
   })
 })
