@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:preview": "vite --config vite.preview.config.ts",
+    "screenshots": "node scripts/screenshots.mjs",
     "build": "npm run typecheck && electron-vite build",
     "build:native-host": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-host.ps1",
     "build:tray-stub": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-tray-stub.ps1",

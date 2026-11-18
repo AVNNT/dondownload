@@ -268,7 +268,8 @@ if (!import.meta.env.DEV) {
   createRoot(container).render(
     <StrictMode>
       <App />
-      <FixtureControls />
+      {/* `?screenshots` hides the fixture controls for README captures. */}
+      {new URLSearchParams(window.location.search).has('screenshots') ? null : <FixtureControls />}
       <Automation />
     </StrictMode>
   )

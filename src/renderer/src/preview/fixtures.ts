@@ -2015,7 +2015,8 @@ function seedSettings(): DownloadSettings {
       start: '22:00',
       end: '06:00'
     },
-    theme: 'dark',
+    // Matches DEFAULT_THEME so the preview looks like a fresh install.
+    theme: 'oled',
     sortDownloadsByType: false,
     historyRetentionDays: 30
   }

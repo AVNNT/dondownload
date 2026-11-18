@@ -81,6 +81,8 @@ never deletes your downloaded files or your history.
 The extension is optional. The desktop app works on its own: paste a link, drag
 one in, or add one from the clipboard if you turn clipboard watching on.
 
+<img src="docs/screenshots/extension-popup.png" alt="Extension popup on a video page" width="320">
+
 The desktop app registers the browser side of the connection (the native
 messaging host) by itself on every launch, for the current Windows user only, so
 no setup scripts or registry edits are part of the normal path.
