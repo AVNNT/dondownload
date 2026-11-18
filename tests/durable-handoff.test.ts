@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -298,6 +298,99 @@ describe('strict durable hand-off', () => {
       ok: false,
       error: { code: 'HANDOFF_UNAVAILABLE' }
     })
+  })
+
+  it('answers a duplicate browser hand-off with the existing completed receipt and never preflights or downloads again', async () => {
+    const { dir, database, downloadDir } = await makeWorkspace()
+    await mkdir(downloadDir, { recursive: true })
+    const filePath = path.join(downloadDir, 'already-here.zip')
+    await writeFile(filePath, 'data')
+    const now = Date.UTC(2026, 2, 4, 5, 6, 7)
+    database.save({
+      record: {
+        id: DOWNLOAD_ID,
+        gid: '0123456789abcdef',
+        url: 'https://example.com/files/already-here.zip',
+        filename: 'already-here.zip',
+        dir: downloadDir,
+        filePath,
+        status: 'complete',
+        totalBytes: 4,
+        completedBytes: 4,
+        speedBps: 0,
+        etaSeconds: 0,
+        errorMessage: null,
+        attempts: 1,
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: now
+      },
+      explicitFilename: null
+    })
+    const { manager, calls } = createManager(database, downloadDir)
+    const duplicates: unknown[] = []
+    let preflightCalls = 0
+
+    const bridge = await startNativeBridge({
+      manager,
+      userDataPath: dir,
+      logger: () => undefined,
+      publicTargetLookup: async () => [
+        { address: '93.184.216.34', family: 4 }
+      ],
+      publicResourcePreflight: async (input) => {
+        preflightCalls += 1
+        return {
+          finalUrl: input.url,
+          status: 206,
+          contentType: 'application/zip',
+          contentDisposition: null,
+          totalBytes: 4
+        }
+      },
+      onDuplicateHandoff: (duplicate) => {
+        duplicates.push(duplicate)
+      }
+    })
+    bridges.push(bridge)
+    const endpoint = parseNativeBridgeEndpoint(
+      JSON.parse(await readFile(bridge.statePath, 'utf8'))
+    )
+
+    const response = await fetch(
+      `http://127.0.0.1:${endpoint.port}/handoff-download`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${endpoint.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          url: 'HTTPS://Example.com:443/files/already-here.zip#again'
+        })
+      }
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      accepted: true,
+      operation: 'handoff-download',
+      durable: true,
+      receipt: { downloadId: DOWNLOAD_ID, persistedAt: now }
+    })
+    // The indexed local lookup answered before any network probe or job.
+    expect(preflightCalls).toBe(0)
+    expect(calls).toEqual([])
+    expect(duplicates).toHaveLength(1)
+    expect(duplicates[0]).toMatchObject({
+      kind: 'download',
+      state: 'finished',
+      filename: 'already-here.zip',
+      fileExists: true
+    })
+    expect(manager.getSnapshot().downloads).toHaveLength(1)
   })
 
   it('reuses the hand-off preflight final URL so a cross-host redirect reaches aria2 without the cookie', async () => {

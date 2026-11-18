@@ -24,6 +24,7 @@ import {
   type ScanVideoFormat
 } from '@shared/scanner'
 import { ValidationError, normalizeHttpUrl } from '@shared/validation'
+import type { DuplicateWarning } from '@shared/duplicates'
 import {
   assertPublicTarget,
   type PublicTargetLookup
@@ -172,6 +173,12 @@ export interface ScanSessionOptions {
   followPages?: number
   followDepth?: number
   sessionBudgetMs?: number
+  /**
+   * Additive duplicate lookup for a discovered URL. The manager answers with
+   * its indexed history match; a session caches the answer per URL so a scan
+   * refresh never repeats a lookup.
+   */
+  duplicates?: (url: string) => DuplicateWarning | null
   onUpdate: (session: ScanSession) => void
 }
 
@@ -345,6 +352,8 @@ interface StoredScanSession {
   videoResolving: Set<string>
   /** Plain page links added to the collapsed "Other links" group. */
   otherLinks: number
+  /** Per-URL duplicate lookup result; bounded by this session's items. */
+  duplicateCache: Map<string, ScanItem['alreadyDownloaded']>
   controller: AbortController
   run: Promise<void> | null
   /** True once the run actually started; queued sessions wait for a slot. */
@@ -444,6 +453,7 @@ export class ScanSessionManager {
   private readonly followPages: number
   private readonly followDepth: number
   private readonly sessionBudgetMs: number
+  private readonly duplicates: ((url: string) => DuplicateWarning | null) | undefined
   private readonly onUpdate: (session: ScanSession) => void
   private readonly sessions = new Map<string, StoredScanSession>()
   /** Memory-only pending browser hand-offs, keyed by normalized page URL. */
@@ -483,6 +493,7 @@ export class ScanSessionManager {
         ? Math.min(options.sessionBudgetMs, SCAN_SESSION_BUDGET_MS)
         : SCAN_SESSION_BUDGET_MS
     this.onUpdate = options.onUpdate
+    this.duplicates = options.duplicates
   }
 
   /**
@@ -1075,6 +1086,7 @@ export class ScanSessionManager {
       videoAnalyses: 0,
       videoResolving: new Set<string>(),
       otherLinks: 0,
+      duplicateCache: new Map(),
       controller: new AbortController(),
       run: null,
       started: false,
@@ -3334,7 +3346,11 @@ export class ScanSessionManager {
     session.expiresAt = this.now() + this.ttlMs
   }
 
-  private publicItem(item: StoredScanItem): ScanItem {
+  private publicItem(
+    session: StoredScanSession,
+    item: StoredScanItem
+  ): ScanItem {
+    const duplicate = this.duplicateFor(session, item.url)
     return {
       id: item.id,
       category: item.category,
@@ -3367,8 +3383,39 @@ export class ScanSessionManager {
       ...(item.unavailableReason === undefined
         ? {}
         : { unavailableReason: item.unavailableReason }),
-      ...(item.browserMatchPending ? { browserMatchPending: true } : {})
+      ...(item.browserMatchPending ? { browserMatchPending: true } : {}),
+      ...(duplicate === null ? {} : { alreadyDownloaded: duplicate })
     }
+  }
+
+  /**
+   * Cached, indexed history check for one scanned URL. Only the renderer-safe
+   * filename/state/date cross into the DTO; the URL stays main-only.
+   */
+  private duplicateFor(
+    session: StoredScanSession,
+    url: string
+  ): ScanItem['alreadyDownloaded'] {
+    if (this.duplicates === undefined) return null
+    const cached = session.duplicateCache.get(url)
+    if (cached !== undefined) return cached
+    let found: DuplicateWarning | null
+    try {
+      found = this.duplicates(url)
+    } catch {
+      // A history lookup must never break a session publish.
+      found = null
+    }
+    const value =
+      found === null
+        ? null
+        : {
+            state: found.state,
+            filename: found.filename,
+            date: found.date
+          }
+    session.duplicateCache.set(url, value)
+    return value
   }
 
   private fullSnapshot(session: StoredScanSession): ScanSession {
@@ -3376,7 +3423,7 @@ export class ScanSessionManager {
     const items = session.order
       .map((id) => session.items.get(id))
       .filter((item): item is StoredScanItem => item !== undefined)
-      .map((item) => this.publicItem(item))
+      .map((item) => this.publicItem(session, item))
     return {
       sessionId: session.id,
       status: session.status,
@@ -3432,7 +3479,7 @@ export class ScanSessionManager {
     const changed: ScanItem[] = []
     const nextEmitted = new Map<string, string>()
     for (const stored of items) {
-      const item = this.publicItem(stored)
+      const item = this.publicItem(session, stored)
       const serialized = JSON.stringify(item)
       nextEmitted.set(item.id, serialized)
       if (session.emitted.get(item.id) !== serialized) changed.push(item)
@@ -3443,7 +3490,7 @@ export class ScanSessionManager {
     session.emitted = nextEmitted
     session.removed.clear()
 
-    const allPublic = items.map((item) => this.publicItem(item))
+    const allPublic = items.map((item) => this.publicItem(session, item))
     const snapshot: ScanSession = {
       sessionId: session.id,
       status: session.status,

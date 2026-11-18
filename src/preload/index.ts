@@ -14,6 +14,7 @@ import type {
   MediaAnalysis,
   MediaJob,
   MediaJobDetails,
+  MediaOutputFormat,
   MediaQueueInput,
   MediaSnapshot
 } from '../shared/media'
@@ -27,6 +28,7 @@ import type {
   SmartBatchSubmitResult,
   UrlSizeProbe
 } from '../shared/types'
+import type { DuplicateWarning } from '../shared/duplicates'
 import type {
   AppSnapshotDelta,
   BatchSnapshotDelta,
@@ -63,6 +65,10 @@ const api: DonDownloadApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot) as Promise<ApiResult<AppSnapshot>>,
   addDownload: (input: AddDownloadInput) =>
     ipcRenderer.invoke(IPC.addDownload, input) as Promise<ApiResult<AppSnapshot>>,
+  checkDuplicate: (url: string) =>
+    ipcRenderer.invoke(IPC.checkDuplicate, url) as Promise<
+      ApiResult<DuplicateWarning | null>
+    >,
   pauseDownload: (id: string) =>
     ipcRenderer.invoke(IPC.pauseDownload, id) as Promise<ApiResult<AppSnapshot>>,
   cancelDownload: (id: string) =>
@@ -133,6 +139,14 @@ const api: DonDownloadApi = {
     ipcRenderer.invoke(IPC.snapshotResync) as Promise<ApiResult<null>>,
   analyzeMedia: (input: AnalyzeMediaInput) =>
     ipcRenderer.invoke(IPC.analyzeMedia, input) as Promise<ApiResult<MediaAnalysis>>,
+  checkMediaDuplicate: (input: {
+    analysisId: string
+    optionId: string
+    outputFormat?: MediaOutputFormat
+  }) =>
+    ipcRenderer.invoke(IPC.checkMediaDuplicate, input) as Promise<
+      ApiResult<DuplicateWarning | null>
+    >,
   queueMedia: (input: MediaQueueInput) =>
     ipcRenderer.invoke(IPC.queueMedia, input) as Promise<ApiResult<MediaSnapshot>>,
   getMediaSnapshot: () =>

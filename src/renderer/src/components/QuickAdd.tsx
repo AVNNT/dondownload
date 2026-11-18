@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useState,
   type FormEvent,
   type JSX
@@ -9,9 +10,11 @@ import {
   type DownloadControls
 } from '@shared/settings'
 import type { AddDownloadInput, ApiResult, AppSnapshot } from '@shared/types'
+import type { DuplicateWarning } from '@shared/duplicates'
 import { isObviousDirectFileUrl } from '@shared/scanner'
 import { normalizeHttpUrl, sanitizeFilename } from '@shared/validation'
 import { filenameFromUrl } from '../lib/addParse'
+import { duplicateNotice } from '../lib/duplicateNotice'
 
 interface QuickAddProps {
   disabled: boolean
@@ -24,6 +27,8 @@ interface QuickAddProps {
   onResumeDuplicate?: (url: string) => void
   /** Short human summary of an already-queued item, e.g. "paused at 64%". */
   describeDuplicate?: (url: string) => string | null
+  /** Reveals an existing row for the active-duplicate notice. */
+  onShowDuplicate?: (warning: DuplicateWarning) => void
   /** Global connection count shown on the stepper while it stays "Default". */
   defaultConnections?: number
   /**
@@ -100,6 +105,7 @@ export function QuickAdd({
   onScanSuggested,
   onResumeDuplicate,
   describeDuplicate,
+  onShowDuplicate,
   defaultConnections = DEFAULT_PER_HOST_CONNECTIONS,
   url,
   onUrlChange,
@@ -123,7 +129,25 @@ export function QuickAdd({
   const [duplicateInput, setDuplicateInput] = useState<AddDownloadInput | null>(
     null
   )
+  const [duplicateAnswer, setDuplicateAnswer] = useState<{
+    url: string
+    warning: DuplicateWarning | null
+  } | null>(null)
   const [optionsOpen, setOptionsOpen] = useState(false)
+
+  const currentUrl = useMemo(() => {
+    try {
+      return normalizeHttpUrl(value)
+    } catch {
+      return null
+    }
+  }, [value])
+  const duplicateWarning =
+    duplicateAnswer !== null &&
+    currentUrl !== null &&
+    duplicateAnswer.url === currentUrl
+      ? duplicateAnswer.warning
+      : null
 
   const speedPreview = speedLimitPreview(speedMib)
 
@@ -144,6 +168,31 @@ export function QuickAdd({
     return () => window.clearTimeout(timer)
   }, [controlled, onScanSuggested, value])
 
+  useEffect(() => {
+    // Advisory only. Main validates the URL again and returns null when the
+    // user switched duplicate warnings off. The debounce keeps typing cheap.
+    if (currentUrl === null) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await window.donDownload.checkDuplicate(currentUrl)
+          if (cancelled) return
+          setDuplicateAnswer({
+            url: currentUrl,
+            warning: result.ok ? result.value : null
+          })
+        } catch {
+          if (!cancelled) setDuplicateAnswer({ url: currentUrl, warning: null })
+        }
+      })()
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [currentUrl])
+
   function resetDuplicate(): void {
     setDuplicateInput(null)
   }
@@ -161,17 +210,12 @@ export function QuickAdd({
     setConnections(String(next))
   }
 
-  async function handleSubmit(event?: FormEvent<HTMLFormElement>): Promise<void> {
-    event?.preventDefault()
-    setLocalError(null)
-    resetDuplicate()
-
-    let input: AddDownloadInput
+  function buildInput(): AddDownloadInput | null {
     try {
       const normalizedUrl = normalizeHttpUrl(value)
       const trimmedName = filename.trim()
       const controls = parseControls(startAt, speedMib, connections)
-      input = {
+      return {
         url: normalizedUrl,
         ...(trimmedName.length > 0
           ? { filename: sanitizeFilename(trimmedName) }
@@ -180,16 +224,42 @@ export function QuickAdd({
       }
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : 'Check the URL.')
+      return null
+    }
+  }
+
+  function clearForm(): void {
+    setValue('')
+    setFilename('')
+    setStartAt('')
+    setSpeedMib('')
+    setConnections('')
+    setDuplicateAnswer(null)
+  }
+
+  async function handleSubmit(event?: FormEvent<HTMLFormElement>): Promise<void> {
+    event?.preventDefault()
+    setLocalError(null)
+    resetDuplicate()
+
+    // The safe default is explicit: an existing active or finished record is
+    // never submitted again by the primary action. "Show it" / "Download
+    // again" in the notice are the deliberate choices.
+    if (duplicateWarning !== null) {
+      setLocalError(
+        duplicateWarning.state === 'active'
+          ? 'This link is already in your list — use Show it to reveal it.'
+          : 'This link is already downloaded — choose Download again to make a second copy.'
+      )
       return
     }
 
+    const input = buildInput()
+    if (input === null) return
+
     const result = await onAdd(input)
     if (result.ok) {
-      setValue('')
-      setFilename('')
-      setStartAt('')
-      setSpeedMib('')
-      setConnections('')
+      clearForm()
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
       // Keep the entered URL/name and make the intentional repeat explicit.
       setDuplicateInput(input)
@@ -197,20 +267,47 @@ export function QuickAdd({
   }
 
   async function handleDownloadAgain(): Promise<void> {
-    if (disabled || duplicateInput === null) return
+    if (disabled) return
     setLocalError(null)
+    const input = duplicateInput ?? buildInput()
+    if (input === null) return
 
-    const result = await onAdd({ ...duplicateInput, force: true })
+    const result = await onAdd({ ...input, force: true })
     if (result.ok) {
-      setValue('')
-      setFilename('')
-      setStartAt('')
-      setSpeedMib('')
-      setConnections('')
+      clearForm()
       setDuplicateInput(null)
     } else if (result.error.code === 'DUPLICATE_DOWNLOAD') {
-      setDuplicateInput(duplicateInput)
+      setDuplicateInput(input)
     }
+  }
+
+  async function handleOpenDuplicate(): Promise<void> {
+    if (duplicateWarning === null) return
+    setLocalError(null)
+    try {
+      const result = await window.donDownload.openFile(duplicateWarning.id)
+      if (!result.ok) setLocalError(result.error.message)
+    } catch {
+      setLocalError('The finished file could not be opened.')
+    }
+  }
+
+  async function handleShowDuplicateInFolder(): Promise<void> {
+    if (duplicateWarning === null) return
+    setLocalError(null)
+    try {
+      const result = await window.donDownload.showInFolder(duplicateWarning.id)
+      if (!result.ok) setLocalError(result.error.message)
+    } catch {
+      setLocalError('The download folder could not be opened.')
+    }
+  }
+
+  function handleShowExisting(): void {
+    if (duplicateWarning === null || onShowDuplicate === undefined) return
+    const warning = duplicateWarning
+    setDuplicateAnswer(null)
+    onShowDuplicate(warning)
   }
 
   function handleResume(): void {
@@ -223,6 +320,7 @@ export function QuickAdd({
   const duplicateSummary = duplicateInput
     ? describeDuplicate?.(duplicateInput.url) ?? 'in progress'
     : null
+  const notice = duplicateWarning === null ? null : duplicateNotice(duplicateWarning)
 
   // The Add dialog footer hosts the primary action when this component runs in
   // controlled mode; re-register every render so the closure stays current.
@@ -388,6 +486,71 @@ export function QuickAdd({
           are enforced separately in Settings.
         </p>
       </details>
+
+      {notice !== null && duplicateWarning !== null ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2"
+        >
+          <div className="min-w-0 text-[11px] leading-5 text-amber-200">
+            <p className="break-words font-semibold text-amber-100">
+              {notice.title}
+            </p>
+            {notice.detail !== null ? (
+              <p className="mt-0.5 break-words text-amber-200/80">
+                {notice.detail}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center overflow-hidden rounded-md border border-amber-300/30">
+            {notice.actions.includes('open') ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenDuplicate()
+                }}
+                className="h-7 border-r border-amber-300/30 px-2.5 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10"
+              >
+                Open file
+              </button>
+            ) : null}
+            {notice.actions.includes('show') ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleShowDuplicateInFolder()
+                }}
+                className="h-7 border-r border-amber-300/30 px-2.5 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10"
+              >
+                Show in folder
+              </button>
+            ) : null}
+            {notice.actions.includes('reveal') ? (
+              <button
+                type="button"
+                onClick={handleShowExisting}
+                disabled={disabled || onShowDuplicate === undefined}
+                className="h-7 px-2.5 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Show it
+              </button>
+            ) : null}
+            {notice.actions.includes('again') ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleDownloadAgain()
+                }}
+                disabled={disabled}
+                className="h-7 px-2.5 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Download again
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {duplicateInput ? (
         <div

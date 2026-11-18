@@ -96,6 +96,59 @@ export class CompletionNotificationService {
     )
   }
 
+  /**
+   * "Already downloaded" notice for a browser hand-off the desktop answered
+   * with existing history instead of a fresh transfer. It reuses the same
+   * clickable toast XML as a completion, but never affects the completion
+   * baseline map. Body text is the display file name only, never a path.
+   */
+  notifyDuplicate(input: {
+    id: string
+    filename: string
+  }): void {
+    if (!this.isEnabled() || !this.isSupported()) return
+    try {
+      const notificationId =
+        this.platform === 'win32'
+          ? notificationTag(
+              (notificationSequence += 1),
+              Date.now().toString(36)
+            )
+          : null
+      const toastXml =
+        notificationId === null
+          ? undefined
+          : buildCompletionToastXml({
+              title: 'Already downloaded',
+              body: input.filename,
+              notificationId
+            })
+      const notification = this.host.createNotification({
+        title: 'Already downloaded',
+        body: input.filename,
+        ...(toastXml === undefined ? {} : { toastXml }),
+        ...(notificationId === null ? {} : { id: notificationId })
+      })
+      notification.on('click', () => {
+        this.activate('download', input.id, 'activate')
+      })
+      if (toastXml !== undefined) {
+        notification.onAction((actionIndex) => {
+          const action =
+            actionIndex === TOAST_ACTION_OPEN
+              ? 'open'
+              : actionIndex === TOAST_ACTION_SHOW
+                ? 'show'
+                : 'activate'
+          this.activate('download', input.id, action)
+        })
+      }
+      notification.show()
+    } catch {
+      // The browser card already reports the accepted hand-off.
+    }
+  }
+
   private observeAll<T extends { id: string; status: string }>(
     kind: NotificationJobKind,
     statuses: Map<string, string>,

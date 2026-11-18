@@ -12,6 +12,7 @@ import type {
   MediaAnalysis,
   MediaJob,
   MediaJobDetails,
+  MediaOutputFormat,
   MediaQueueInput,
   MediaSnapshot
 } from './media'
@@ -20,6 +21,7 @@ import type {
   ChecksumResult
 } from './checksum'
 import type { DownloadControls, DownloadSettings } from './settings'
+import type { DuplicateWarning } from './duplicates'
 import type { DesktopSettings } from './desktopSettings'
 import type {
   MediaToolSettings,
@@ -274,6 +276,12 @@ export interface SmartBatchSubmitResult {
 export interface DonDownloadApi {
   getSnapshot: () => Promise<ApiResult<AppSnapshot>>
   addDownload: (input: AddDownloadInput) => Promise<ApiResult<AppSnapshot>>
+  /**
+   * Advisory duplicate lookup before adding one direct link. Returns the
+   * existing active/finished row (and whether a finished file still exists) or
+   * null. Never adds or downloads anything.
+   */
+  checkDuplicate: (url: string) => Promise<ApiResult<DuplicateWarning | null>>
   pauseDownload: (id: string) => Promise<ApiResult<AppSnapshot>>
   /**
    * Stop an in-flight download and keep its row in the terminal `cancelled`
@@ -328,6 +336,12 @@ export interface DonDownloadApi {
   // Media (Milestone 3A). These are additive and do not change the download
   // API above. Public media values never contain URLs, paths or raw metadata.
   analyzeMedia: (input: AnalyzeMediaInput) => Promise<ApiResult<MediaAnalysis>>
+  /** Advisory same-source + same-format duplicate check before queueing. */
+  checkMediaDuplicate: (input: {
+    analysisId: string
+    optionId: string
+    outputFormat?: MediaOutputFormat
+  }) => Promise<ApiResult<DuplicateWarning | null>>
   queueMedia: (input: MediaQueueInput) => Promise<ApiResult<MediaSnapshot>>
   getMediaSnapshot: () => Promise<ApiResult<MediaSnapshot>>
   getMediaJob: (jobId: string) => Promise<ApiResult<MediaJob>>

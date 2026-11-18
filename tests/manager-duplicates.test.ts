@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -42,7 +42,7 @@ async function makeWorkspace(): Promise<{
 function createManager(
   database: DownloadDatabase,
   downloadDir: string,
-  options: { addDelayMs?: number } = {}
+  options: { addDelayMs?: number; warnDuplicates?: () => boolean } = {}
 ): { manager: DownloadManager; calls: AddCall[] } {
   const calls: AddCall[] = []
   let nextGid = 0
@@ -85,7 +85,10 @@ function createManager(
     aria2,
     downloadDir,
     () => undefined,
-    database
+    database,
+    options.warnDuplicates === undefined
+      ? {}
+      : { warnDuplicates: options.warnDuplicates }
   )
   managers.push(manager)
   return { manager, calls }
@@ -243,5 +246,97 @@ describe('DownloadManager duplicate policy', () => {
     expect(calls).toHaveLength(1)
     expect(manager.getSnapshot().downloads).toHaveLength(1)
     expect(database.loadAll()).toHaveLength(1)
+  })
+})
+
+describe('DownloadManager duplicate warnings', () => {
+  it('returns a finished warning with fileExists for an existing file', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    await mkdir(downloadDir, { recursive: true })
+    const filePath = path.join(downloadDir, 'finished.zip')
+    await writeFile(filePath, 'data')
+    database.save({
+      record: storedRecord({
+        url: 'https://example.com/files/finished.zip',
+        filename: 'finished.zip',
+        filePath,
+        completedAt: Date.UTC(2026, 1, 2)
+      }),
+      explicitFilename: null
+    })
+    const { manager } = createManager(database, downloadDir)
+
+    const warning = await manager.checkDuplicate(
+      'HTTPS://Example.com:443/files/finished.zip#again'
+    )
+
+    expect(warning).toMatchObject({
+      kind: 'download',
+      state: 'finished',
+      filename: 'finished.zip',
+      fileExists: true
+    })
+  })
+
+  it('returns an active warning without a file check', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    database.save({
+      record: storedRecord({
+        url: 'https://example.com/files/active.zip',
+        filename: 'active.zip',
+        status: 'queued'
+      }),
+      explicitFilename: null
+    })
+    const { manager } = createManager(database, downloadDir)
+
+    await expect(
+      manager.checkDuplicate('https://example.com/files/active.zip')
+    ).resolves.toMatchObject({ state: 'active', fileExists: false })
+  })
+
+  it('returns null when duplicate warnings are switched off', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    database.save({
+      record: storedRecord({
+        url: 'https://example.com/files/finished.zip',
+        status: 'complete'
+      }),
+      explicitFilename: null
+    })
+    const { manager } = createManager(database, downloadDir, {
+      warnDuplicates: () => false
+    })
+
+    await expect(
+      manager.checkDuplicate('https://example.com/files/finished.zip')
+    ).resolves.toBeNull()
+  })
+
+  it('accepts the existing finished row for a browser hand-off only while the file exists', async () => {
+    const { database, downloadDir } = await makeWorkspace()
+    await mkdir(downloadDir, { recursive: true })
+    const filePath = path.join(downloadDir, 'handoff.zip')
+    database.save({
+      record: storedRecord({
+        url: 'https://example.com/files/handoff.zip',
+        filename: 'handoff.zip',
+        filePath
+      }),
+      explicitFilename: null
+    })
+    const { manager, calls } = createManager(database, downloadDir)
+
+    // The file is gone: the browser hand-off must download normally.
+    await expect(
+      manager.findHandoffDuplicate({ url: 'https://example.com/files/handoff.zip' })
+    ).resolves.toBeNull()
+
+    await writeFile(filePath, 'data')
+    const duplicate = await manager.findHandoffDuplicate({
+      url: 'https://example.com/files/handoff.zip'
+    })
+    expect(duplicate).toMatchObject({ state: 'finished', fileExists: true })
+    expect(calls).toHaveLength(0)
   })
 })

@@ -965,6 +965,8 @@ if (unregisterRequested) {
         autoResume: () =>
           desktopSettingsManager?.getSettings().resumeInterruptedOnStartup ??
           false,
+        warnDuplicates: () =>
+          desktopSettingsManager?.getSettings().warnAboutDuplicates ?? true,
         resolvePairingFolder: (token) =>
           manualMatchStore.resolveFolder(token)
       }
@@ -1126,6 +1128,9 @@ if (unregisterRequested) {
     scanner = new ScanSessionManager({
       pixeldrain: createPixeldrainAdapter(),
       mega: createMegaAdapter(),
+      ...(manager === null
+        ? {}
+        : { duplicates: (url: string) => manager!.findDuplicateForBadge(url) }),
       ...(mediaJobs === null
         ? {}
         : {
@@ -1569,6 +1574,16 @@ if (unregisterRequested) {
             sendToMainWindow((window) =>
               window.webContents.send(IPC.revealRow, `download:${downloadId}`)
             )
+          },
+          // An exact duplicate of a finished file was accepted as the existing
+          // row. Raise the same clickable toast a completion would use, with
+          // Open / Show in folder already wired through the notification
+          // service; the browser card shows that row's completion state.
+          onDuplicateHandoff: (duplicate) => {
+            notifications?.notifyDuplicate({
+              id: duplicate.id,
+              filename: duplicate.filename
+            })
           },
           onScanRequested: (session) => {
             // Signed-in pages are scanned from the browser tab. Bringing the

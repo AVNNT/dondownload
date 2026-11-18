@@ -998,6 +998,37 @@ describe('MediaJobsManager duplicate policy', () => {
     expect(forced.id).not.toBe(first.id)
     expect(harness.engine.downloads).toHaveLength(2)
   })
+
+  it('describes the same source+format match without queueing anything', async () => {
+    const harness = await createHarness({ maxActiveJobs: () => 3 })
+    const analysis = await harness.manager.analyzeMedia({
+      url: 'https://example.com/watch?v=1'
+    })
+    const job = await harness.manager.queueMedia({
+      analysisId: analysis.analysisId,
+      optionId: VIDEO_OPTION_ID
+    })
+    await flushMicrotasks()
+
+    expect(
+      harness.manager.checkDuplicate({
+        analysisId: analysis.analysisId,
+        optionId: VIDEO_OPTION_ID
+      })
+    ).toMatchObject({
+      kind: 'media',
+      state: 'active',
+      id: job.id,
+      filename: job.label
+    })
+    // A different format for the same source is not a duplicate.
+    expect(
+      harness.manager.checkDuplicate({
+        analysisId: analysis.analysisId,
+        optionId: AUDIO_OPTION_ID
+      })
+    ).toBeNull()
+  })
 })
 
 describe('MediaJobsManager analysis cache', () => {

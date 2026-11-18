@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Duplicate warnings before adding a direct link. The Add dialog and Quick add
+  show an inline notice for the same normalized URL: "Already downloaded on
+  <date> · <file name>" with Open file, Show in folder and Download again, or
+  "Already in your list" with Show it while a job is still queued. The primary
+  action never starts a duplicate by itself.
+- Duplicate checks use an indexed, normalized-URL column (schema v23), so a
+  lookup never scans download history. Scheme/host case, fragments, default
+  ports and trailing whitespace are ignored; the query string still matters.
+- Browser file hand-off answers an exact duplicate of a finished file that
+  still exists with the existing completion card (and an "Already downloaded"
+  toast on Windows) instead of downloading the bytes again. A missing file
+  downloads normally.
+- Multi-link batches and scanner results mark history duplicates with an
+  "already downloaded" badge and leave them unchecked by default.
+- Media (yt-dlp) duplicate matching uses only the same source URL plus format;
+  the queue action warns first and a second press downloads another copy.
+- Settings → Downloads: "Warn about duplicates" (on by default).
+
 ## [1.1.0] - 2026-11-18
 
 First public release.

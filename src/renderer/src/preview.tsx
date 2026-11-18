@@ -170,6 +170,17 @@ function runPreviewAutomation(): void {
       await wait(300)
       await clickByText('Download')
     }
+    if (state === 'dup-finished') {
+      // Completed history notice: Open file / Show in folder / Download again.
+      if (!(await clickByText('Add'))) return
+      await wait(250)
+      await setTextarea(
+        'https://files.example.org/reports/quarterly-report-2026.pdf'
+      )
+      // Let the debounced duplicate check answer; do not click Download, so the
+      // screenshot shows the safe default with nothing auto-started.
+      await wait(900)
+    }
     if (state === 'scan') {
       if (!(await clickByText('Add'))) return
       await wait(250)

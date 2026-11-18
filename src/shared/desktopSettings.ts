@@ -19,6 +19,11 @@ export const DEFAULT_WATCH_CLIPBOARD = false
 export const DEFAULT_LAUNCH_AT_LOGIN = false
 export const DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE = true
 /**
+ * Warn before adding a URL that history already has. On by default; the
+ * browser hand-off still accepts the job when the recorded file is gone.
+ */
+export const DEFAULT_WARN_ABOUT_DUPLICATES = true
+/**
  * The first-start guide is shown once. A fresh profile (and an upgraded one)
  * starts with `false`; closing or skipping the guide persists `true`.
  */
@@ -42,6 +47,8 @@ export interface DesktopSettings {
    * with nothing to do, freeing most of its memory.
    */
   exitToTrayStubWhenIdle: boolean
+  /** Show a duplicate notice before adding a URL history already has. */
+  warnAboutDuplicates: boolean
   /** True once the first-start guide has been shown and dismissed. */
   welcomeGuideSeen: boolean
   /** Renderer zoom percentage. */
@@ -55,6 +62,7 @@ export function defaultDesktopSettings(): DesktopSettings {
     watchClipboard: DEFAULT_WATCH_CLIPBOARD,
     launchAtLogin: DEFAULT_LAUNCH_AT_LOGIN,
     exitToTrayStubWhenIdle: DEFAULT_EXIT_TO_TRAY_STUB_WHEN_IDLE,
+    warnAboutDuplicates: DEFAULT_WARN_ABOUT_DUPLICATES,
     welcomeGuideSeen: DEFAULT_WELCOME_GUIDE_SEEN,
     interfaceSizePercent: DEFAULT_INTERFACE_SIZE
   }
@@ -147,6 +155,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     'watchClipboard',
     'launchAtLogin',
     'exitToTrayStubWhenIdle',
+    'warnAboutDuplicates',
     'welcomeGuideSeen',
     'interfaceSizePercent'
   ])
@@ -159,6 +168,7 @@ export function parseDesktopSettings(value: unknown): DesktopSettings {
     watchClipboard: booleanValue(record, 'watchClipboard'),
     launchAtLogin: booleanValue(record, 'launchAtLogin'),
     exitToTrayStubWhenIdle: booleanValue(record, 'exitToTrayStubWhenIdle'),
+    warnAboutDuplicates: booleanValue(record, 'warnAboutDuplicates'),
     welcomeGuideSeen: booleanValue(record, 'welcomeGuideSeen'),
     interfaceSizePercent: parseInterfaceSize(record.interfaceSizePercent)
   }

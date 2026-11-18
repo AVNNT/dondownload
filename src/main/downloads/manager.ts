@@ -32,6 +32,10 @@ import {
   parseDownloadIds,
   sanitizeFilename
 } from '@shared/validation'
+import {
+  normalizeDuplicateUrl,
+  type DuplicateWarning
+} from '@shared/duplicates'
 import type { Aria2Client } from '../aria2/client'
 import type { ChecksumTarget } from '../checksum/service'
 import type { ChecksumResult } from '@shared/checksum'
@@ -158,6 +162,12 @@ export interface DownloadManagerOptions {
    * implementation in main; narrow tests use the inert default.
    */
   host?: CoreHost
+  /**
+   * "Warn about duplicates" is a desktop preference. It only decides whether
+   * the advisory lookup is offered; existing active-job protection in `add()`
+   * always applies. Defaults to on for narrow tests and fresh profiles.
+   */
+  warnDuplicates?: () => boolean
 }
 
 export interface CookieTargetResolutionInput {
@@ -241,6 +251,7 @@ export class DownloadManager {
   private readonly now: () => number
   private readonly host: CoreHost
   private readonly autoResumeProvider: () => boolean
+  private readonly warnDuplicates: () => boolean
   private readonly resolveCookieTarget: CookieTargetResolver
   private readonly resolvePairingFolder:
     | ((token: string) => PickedVideoFolder | null)
@@ -315,6 +326,7 @@ export class DownloadManager {
     this.now = options.now ?? Date.now
     this.host = options.host ?? createNoopHost()
     this.autoResumeProvider = options.autoResume ?? (() => false)
+    this.warnDuplicates = options.warnDuplicates ?? (() => true)
     this.resolveCookieTarget =
       options.resolveCookieTarget ?? defaultResolveCookieTarget
     this.resolvePairingFolder = options.resolvePairingFolder ?? null
@@ -650,6 +662,117 @@ export class DownloadManager {
     return {
       downloadId: record.id,
       persistedAt: record.updatedAt
+    }
+  }
+
+  /**
+   * Advisory duplicate lookup for the Add dialog, Quick add and scanner.
+   *
+   * The repository query is an indexed equality match on the normalized URL,
+   * so adding one link never scans download history. A missing database falls
+   * back to the already-loaded in-memory rows (narrow tests and tray-only
+   * hosts); production always has the database.
+   */
+  async checkDuplicate(rawUrl: unknown): Promise<DuplicateWarning | null> {
+    if (!this.warnDuplicates()) return null
+    const normalized = normalizeDuplicateUrl(normalizeHttpUrl(rawUrl))
+    if (normalized === null) return null
+
+    const found = this.lookupDuplicate(normalized)
+    if (found === null) return null
+    if (found.state === 'active') return found
+    return {
+      ...found,
+      fileExists: await this.finishedFileExists(found.id)
+    }
+  }
+
+  /**
+   * Automatic browser hand-off has no UI to ask, so an exact duplicate of a
+   * finished file that still exists is accepted as a receipt for the existing
+   * row. The bridge then shows the existing card/toast instead of downloading
+   * the same bytes again. A missing file (or warnings switched off) returns
+   * null and the normal download path runs.
+   */
+  async findHandoffDuplicate(rawInput: unknown): Promise<DuplicateWarning | null> {
+    const input = parseAddDownloadInput(rawInput)
+    const found = await this.checkDuplicate(input.url)
+    if (found === null || found.state !== 'finished' || !found.fileExists) {
+      return null
+    }
+    return found
+  }
+
+  /** Bridge port name: the strict hand-off asks this before preflighting. */
+  findDuplicate(rawInput: unknown): Promise<DuplicateWarning | null> {
+    return this.findHandoffDuplicate(rawInput)
+  }
+
+  /** Synchronous variant for the scanner's per-item badge (no file stat). */
+  findDuplicateForBadge(url: string): DuplicateWarning | null {
+    if (!this.warnDuplicates()) return null
+    try {
+      const normalized = normalizeDuplicateUrl(normalizeHttpUrl(url))
+      return normalized === null ? null : this.lookupDuplicate(normalized)
+    } catch {
+      return null
+    }
+  }
+
+  private lookupDuplicate(normalizedUrl: string): DuplicateWarning | null {
+    if (this.database !== null) {
+      return this.database.findDuplicate(normalizedUrl)
+    }
+    return this.findDuplicateInMemory(normalizedUrl)
+  }
+
+  /**
+   * Fallback for a manager without a database. It scans only the loaded rows,
+   * never SQLite history, and is never used by the production path.
+   */
+  private findDuplicateInMemory(normalizedUrl: string): DuplicateWarning | null {
+    let finished: DuplicateWarning | null = null
+    for (const record of this.records.values()) {
+      let recordUrl: string | null
+      try {
+        recordUrl = normalizeDuplicateUrl(record.url)
+      } catch {
+        continue
+      }
+      if (recordUrl !== normalizedUrl) continue
+      if (UNFINISHED_STATUSES.has(record.status)) {
+        return {
+          kind: 'download',
+          state: 'active',
+          id: record.id,
+          filename: record.filename,
+          date: record.createdAt,
+          fileExists: false
+        }
+      }
+      if (record.status !== 'complete') continue
+      if (finished === null || record.createdAt > finished.date) {
+        finished = {
+          kind: 'download',
+          state: 'finished',
+          id: record.id,
+          filename: record.filename,
+          date: record.completedAt ?? record.createdAt,
+          fileExists: false
+        }
+      }
+    }
+    return finished
+  }
+
+  private async finishedFileExists(id: string): Promise<boolean> {
+    const filePath = this.records.get(id)?.filePath
+    if (!filePath) return false
+    try {
+      const stat = await fs.stat(filePath)
+      return stat.isFile()
+    } catch {
+      return false
     }
   }
 

@@ -34,6 +34,7 @@ describe('desktop settings contract', () => {
       watchClipboard: false,
       launchAtLogin: false,
       exitToTrayStubWhenIdle: true,
+      warnAboutDuplicates: true,
       welcomeGuideSeen: false,
       interfaceSizePercent: 100
     })
@@ -325,7 +326,7 @@ describe('desktop settings persistence and paused media migration', () => {
     const database = openDownloadDatabase(path.join(dir, 'downloads.sqlite3'))
     try {
       expect(database.schemaVersion).toBe(SCHEMA_VERSION)
-      expect(SCHEMA_VERSION).toBe(22)
+      expect(SCHEMA_VERSION).toBe(23)
       expect(database.loadDesktopSettings()).toEqual(defaultDesktopSettings())
 
       const next = {
@@ -334,6 +335,7 @@ describe('desktop settings persistence and paused media migration', () => {
         watchClipboard: true,
         launchAtLogin: true,
         exitToTrayStubWhenIdle: false,
+        warnAboutDuplicates: false,
         welcomeGuideSeen: true,
         interfaceSizePercent: 125 as const
       }
