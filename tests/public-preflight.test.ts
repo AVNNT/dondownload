@@ -103,10 +103,10 @@ describe('bounded anonymous hand-off preflight', () => {
     expect(seen[1]!.userAgent).toBe('BrowserAgent/1.0')
 
     seen.length = 0
-    // Referer and User-Agent may follow a same-site redirect, but a Cookie must
-    // not cross hosts. The preflight continues anonymously and reports the
-    // final URL so the download manager can hand that target to aria2 without
-    // the cookie.
+    // The User-Agent follows a same-site redirect, but a Cookie must not cross
+    // hosts and the Referer does not leave the original host. The preflight
+    // continues anonymously and reports the final URL so the download manager
+    // can hand that target to aria2 without the cookie.
     const crossHost = await preflightPublicResource(
       {
         url: `http://public.example:${port}/other-host`,
@@ -121,7 +121,11 @@ describe('bounded anonymous hand-off preflight', () => {
     expect(crossHost.finalUrl).toBe(`http://other.example:${port}/file.zip`)
     expect(seen).toHaveLength(2)
     expect(seen[0]!.cookie).toBe('auth=1')
+    expect(seen[0]!.referer).toBe('https://public.example/page')
     expect(seen[1]!.cookie).toBeUndefined()
+    // The Referer names the original page, so it does not follow the hop.
+    expect(seen[1]!.referer).toBeUndefined()
+    expect(seen[1]!.userAgent).toBe('BrowserAgent/1.0')
 
     seen.length = 0
     await preflightPublicResource(
@@ -136,8 +140,9 @@ describe('bounded anonymous hand-off preflight', () => {
     )
     expect(seen).toHaveLength(2)
     expect(seen[0]!.cookie).toBeUndefined()
+    expect(seen[0]!.referer).toBe('https://public.example/page')
     expect(seen[1]!.cookie).toBeUndefined()
-    expect(seen[1]!.referer).toBe('https://public.example/page')
+    expect(seen[1]!.referer).toBeUndefined()
 
     await expect(
       preflightPublicResource(

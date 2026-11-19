@@ -17,9 +17,11 @@ import {
  * and destroys the response immediately. No cookie jar, Authorization header,
  * proxy credential or browser session is used. The automatic browser hand-off
  * may pass the browser's Referer/User-Agent and the cookies for exactly the
- * download URL in memory; those are used for this probe only. Each redirect hop
- * is resolved and revalidated against the public-target policy before it is
- * contacted. A missing, mismatched or ambiguous total fails closed.
+ * download URL in memory; those are used for this probe only. Cookie and
+ * Referer are host-scoped: a redirect to another host or a less secure scheme
+ * is followed anonymously. Each redirect hop is resolved and revalidated
+ * against the public-target policy before it is contacted. A missing,
+ * mismatched or ambiguous total fails closed.
  */
 
 export const PREFLIGHT_TIMEOUT_MS = 10_000
@@ -54,9 +56,9 @@ export interface PublicResourcePreflightInput {
    */
   allowMedia?: boolean
   /**
-   * Opt-in browser headers for the exact download host. A Cookie is attached
-   * only while the hop host and scheme still equal the initial input URL;
-   * Referer and User-Agent may follow a same-site redirect. Nothing is
+   * Opt-in browser headers for the exact download host. A Cookie and the
+   * Referer are attached only while the hop host and scheme still equal the
+   * initial input URL; the User-Agent may follow any hop. Nothing is
    * persisted.
    */
   requestHeaders?: DownloadRequestHeaders
@@ -191,8 +193,13 @@ function requestHeaders(
   const requestHeaders = input.requestHeaders
   if (requestHeaders) {
     // A Cookie is host-scoped: never send it to a redirect on another host.
-    // Referer and User-Agent are ordinary browser context for the same job.
-    if (requestHeaders.referer !== undefined) {
+    // The Referer is just as host-bound (it names the page, and some endpoints
+    // log or reflect it), so it is dropped on a cross-host hop too. The
+    // User-Agent identifies the same browser for the whole job and is safe.
+    if (
+      requestHeaders.referer !== undefined &&
+      isCookieHopSafe(cookieOrigin, parsed)
+    ) {
       headers.Referer = requestHeaders.referer
     }
     if (requestHeaders.userAgent !== undefined) {
