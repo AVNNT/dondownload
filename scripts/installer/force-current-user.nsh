@@ -26,11 +26,11 @@
 ; then on exits immediately instead of being stopped and started again (see
 ; native/NativeHost.cs).
 ;
-; PowerShell 5.1 on Windows 10 supports Get-CimInstance but cannot pipe it into
-; Stop-Process (the pipeline enumerates digits), so all matching processes are
-; stopped again right before the files are written. The checks below treat the
-; extension helper as stopped while the marker exists, and only ask the user
-; about anything else that survives.
+; Every match is also stopped again in customInstall, right before the files are
+; written, to catch a helper the browser started before the marker took effect.
+; The check below treats the extension helper as stopped while the marker that
+; helper honours exists, and only asks the user about anything else that
+; survives.
 ;
 ; The installer and the uninstaller are separate compilations of the same
 ; script, so this file only holds macros: macros come first, then variables and
@@ -40,9 +40,11 @@
 
 ; Processes under $INSTDIR owned by the current user, excluding this installer.
 ; StartsWith on $INSTDIR keeps another user's installation out of a per-user
-; run. The list of executable names is written to stdout for the helper check.
+; run. With the marker in place a live extension helper is ignored too: its
+; next start exits at once (see native/NativeHost.cs). Exits with 1 while a
+; relevant process remains and 0 otherwise, so callers use the exit code.
 !define PS_FIND_INSTALL_PROCESSES \
-    `$$p = Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR', 'CurrentCultureIgnoreCase') -and $$_.ProcessId -ne $$PID }; if ($$p) { $$p | ForEach-Object { $$_.Name } }`
+    `$$p = Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR', 'CurrentCultureIgnoreCase') -and $$_.ProcessId -ne $$PID -and -not ($$_.Name -ieq 'dondownload-native-host.exe' -and (Test-Path -LiteralPath '${DONT_DD_UPDATING_MARKER}')) }; if ($$p) { exit 1 } else { exit 0 }`
 !define PS_STOP_INSTALL_PROCESSES \
     `Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR', 'CurrentCultureIgnoreCase') -and $$_.ProcessId -ne $$PID } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }`
 
@@ -74,9 +76,10 @@ Var dont_dd_wait
 !macroend
 
 ; Asks the app to close without forcing it so it can finish writing. Targets
-; only the current user's DonDownload.exe and never this installer process.
+; only the current user's DonDownload.exe; the installer is not that executable,
+; so no PID filter is needed (and cmd has no $PID to compare against anyway).
 !macro dont_dd_RequestAppClose
-  nsExec::Exec `"$SYSDIR\cmd.exe" /C taskkill /IM "${APP_EXECUTABLE_FILENAME}" /FI "PID ne $$PID" /FI "USERNAME eq %USERNAME%" >NUL 2>NUL`
+  nsExec::Exec `"$SYSDIR\cmd.exe" /C taskkill /IM "${APP_EXECUTABLE_FILENAME}" /FI "USERNAME eq %USERNAME%" >NUL 2>NUL`
   Pop $0
 !macroend
 
@@ -87,34 +90,26 @@ Var dont_dd_wait
     Pop $0
   ${EndIf}
   ; Also covers PowerShell without Get-CimInstance and any path the call above
-  ; missed. These are the executables the installer places under $INSTDIR.
-  nsExec::Exec `"$SYSDIR\cmd.exe" /C for %F in ("${APP_EXECUTABLE_FILENAME}" "Uninstall ${PRODUCT_FILENAME}.exe" "dondownload-native-host.exe" "dondownload-tray.exe" "aria2c.exe" "yt-dlp.exe" "ffmpeg.exe" "ffprobe.exe") do taskkill /F /T /IM "%F" /FI "PID ne $$PID" /FI "USERNAME eq %USERNAME%" >NUL 2>NUL`
+  ; missed. These are the executables the installer places under $INSTDIR, and
+  ; neither this installer nor the uninstaller is one of them, so no PID filter
+  ; is needed.
+  nsExec::Exec `"$SYSDIR\cmd.exe" /C for %F in ("${APP_EXECUTABLE_FILENAME}" "Uninstall ${PRODUCT_FILENAME}.exe" "dondownload-native-host.exe" "dondownload-tray.exe" "aria2c.exe" "yt-dlp.exe" "ffmpeg.exe" "ffprobe.exe") do taskkill /F /T /IM "%F" /FI "USERNAME eq %USERNAME%" >NUL 2>NUL`
   Pop $0
 !macroend
 
 ; Sets $dont_dd_wait to 1 while a process from $INSTDIR, other than this
 ; installer, is running. A live extension helper only counts when the update
-; marker was missing, because a marked helper exits by itself at once.
-; Callers wrap each expansion in !define/!undef DONT_DD_CHECK_DONE, because the
-; macro is expanded several times and each needs its own label.
+; marker is missing; PS_FIND_INSTALL_PROCESSES decides that and reports it in
+; its exit code.
 !macro dont_dd_CheckInstallProcesses
   Push $0
-  Push $1
   StrCpy $dont_dd_wait "0"
   ${If} $dont_dd_powershell_available == 1
-    nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -C "${PS_FIND_INSTALL_PROCESSES}"`
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -C "${PS_FIND_INSTALL_PROCESSES}"`
     Pop $0
-    Pop $1
-    ${If} $1 != ""
+    ${If} $0 == 1
       StrCpy $dont_dd_wait "1"
-      ${If} ${FileExists} "${DONT_DD_UPDATING_MARKER}"
-        ; Only the helper may still be listed; once the marker exists its next
-        ; start exits at once. Win32_Process reports the file name as stored.
-        StrCmp $1 "dondownload-native-host.exe" 0 ${DONT_DD_CHECK_DONE}
-        StrCpy $dont_dd_wait "0"
-      ${EndIf}
     ${EndIf}
-    ${DONT_DD_CHECK_DONE}:
   ${Else}
     ; Same filter and anchored match as electron-builder's own fallback.
     nsExec::Exec `"$SYSDIR\cmd.exe" /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
@@ -123,7 +118,6 @@ Var dont_dd_wait
       StrCpy $dont_dd_wait "1"
     ${EndIf}
   ${EndIf}
-  Pop $1
   Pop $0
 !macroend
 
@@ -144,12 +138,10 @@ Var dont_dd_wait
     ; exits at once instead of being stopped and restarted in a loop.
     !insertmacro dont_dd_CreateUpdatingMarker
 
-    !define DONT_DD_CHECK_DONE dont_dd_first_check_done
     !insertmacro dont_dd_CheckInstallProcesses
     ${If} $dont_dd_wait == 1
       DetailPrint "$(appClosing)"
       !insertmacro dont_dd_RequestAppClose
-      !undef DONT_DD_CHECK_DONE
       ; Give the app a moment to quit and release its files, then stop whatever
       ; is left, including the extension helper that was running.
       Sleep 1500
@@ -161,7 +153,6 @@ Var dont_dd_wait
       ; process that needs a moment to let go of its files.
       StrCpy $R0 0
       dont_dd_settle:
-        !define DONT_DD_CHECK_DONE dont_dd_settle_check_done
         !insertmacro dont_dd_CheckInstallProcesses
         ${If} $dont_dd_wait == 1
           ${If} $dont_dd_powershell_available == 1
@@ -177,7 +168,6 @@ Var dont_dd_wait
           StrCpy $R0 0
           Goto dont_dd_settle
         ${EndIf}
-        !undef DONT_DD_CHECK_DONE
     ${EndIf}
   ${EndIf}
 !macroend
@@ -186,8 +176,8 @@ Var dont_dd_wait
 ; old installation was renamed away, and before the finish page, so the marker
 ; is gone by the time the installer can start the app.
 !macro customInstall
-  ; A helper the browser started since the check above is stopped here. While
-  ; the marker exists it cannot come back, so the remaining checks no longer
+  ; A helper the browser started before the marker took effect is stopped here.
+  ; While the marker exists it cannot come back, so the checks below no longer
   ; wait for it.
   ${If} ${FileExists} "${DONT_DD_UPDATING_MARKER}"
     ${AndIf} $dont_dd_powershell_available == 1
@@ -196,7 +186,6 @@ Var dont_dd_wait
 
     StrCpy $R1 0
     dont_dd_final_settle:
-      !define DONT_DD_CHECK_DONE dont_dd_final_check_done
       !insertmacro dont_dd_CheckInstallProcesses
       ${If} $dont_dd_wait == 1
         !insertmacro dont_dd_StopInstallProcesses
@@ -210,7 +199,6 @@ Var dont_dd_wait
         StrCpy $R1 0
         Goto dont_dd_final_settle
       ${EndIf}
-      !undef DONT_DD_CHECK_DONE
   ${EndIf}
 
   Delete "${DONT_DD_UPDATING_MARKER}"
