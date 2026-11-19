@@ -107,6 +107,9 @@ internal static class NativeHost
     // app at <install>\DonDownload.exe. A development checkout has no such exe,
     // so a dev host never tries to start anything.
     private const string AppExecutableName = "DonDownload.exe";
+    // Written and removed by the installer; see IsUpdating.
+    private const string UpdateMarkerFileName = ".updating";
+    private const int UpdateMarkerMaxAgeMinutes = 10;
 
     private static readonly Regex TokenPattern =
         new Regex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
@@ -190,6 +193,18 @@ internal static class NativeHost
 
     private static int Main(string[] args)
     {
+        // The installer writes this marker next to the host before it stops
+        // everything running from the installation, and removes it when the
+        // files are in place. A browser starts the host again as soon as it
+        // exits; exiting right away here lets the update finish instead of
+        // being stopped and restarted in a loop. A stale marker left by a
+        // crashed installer is ignored so the extension keeps working.
+        if (IsUpdating())
+        {
+            CompanionLog.Write("native-host.log", "update in progress, exiting");
+            return 0;
+        }
+
         try
         {
             // Chromium-compatible browsers (Helium, Chrome, Edge) pass the
@@ -213,6 +228,36 @@ internal static class NativeHost
             CompanionLog.Write("native-host.log", "failed: " + error.GetType().Name);
             Console.Error.WriteLine("DonDownload native host failed: " + error.GetType().Name);
             return 2;
+        }
+    }
+
+    private static bool IsUpdating()
+    {
+        try
+        {
+            string hostPath = typeof(NativeHost).Assembly.Location;
+            string hostDirectory = string.IsNullOrEmpty(hostPath)
+                ? AppDomain.CurrentDomain.BaseDirectory
+                : Path.GetDirectoryName(hostPath);
+            if (string.IsNullOrEmpty(hostDirectory))
+            {
+                return false;
+            }
+
+            string markerPath = Path.Combine(hostDirectory, UpdateMarkerFileName);
+            FileInfo marker = new FileInfo(markerPath);
+            if (!marker.Exists)
+            {
+                return false;
+            }
+
+            DateTime written = marker.LastWriteTimeUtc;
+            return written >= DateTime.UtcNow.AddMinutes(-UpdateMarkerMaxAgeMinutes) &&
+                written <= DateTime.UtcNow.AddMinutes(1);
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Updating no longer stops at "DonDownload cannot be closed" while a browser
+  keeps the extension helper running.
+
 ## [1.3.2] - 2026-11-19
 
 Security and reliability fixes from a full code review.

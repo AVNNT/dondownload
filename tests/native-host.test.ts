@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, rm, writeFile, copyFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, copyFile, utimes } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
@@ -670,6 +670,48 @@ describeWindows('Windows native messaging host', () => {
     // The answer arrives only after the wake retry loop has waited for the
     // state file, never on the first prompt failure.
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_000)
+  })
+
+  it('exits at once without reading a request while the installer updates', async () => {
+    const dir = await makeTempDir()
+    const nativeDir = path.join(dir, 'resources', 'native')
+    await mkdir(nativeDir, { recursive: true })
+
+    // The packaged layout with the installer's update marker in place.
+    const hostCopy = path.join(nativeDir, 'dondownload-native-host.exe')
+    await copyFile(hostExecutable, hostCopy)
+    await writeFile(path.join(nativeDir, '.updating'), 'DonDownload is updating.', 'utf8')
+
+    const startedAt = Date.now()
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'probe' }))],
+      { exe: hostCopy, timeoutMs: 5_000 }
+    )
+
+    expect(run.code).toBe(0)
+    expect(run.stdout).toHaveLength(0)
+    expect(Date.now() - startedAt).toBeLessThan(4_000)
+  })
+
+  it('ignores an update marker left behind by a crashed installer', async () => {
+    const dir = await makeTempDir()
+    const nativeDir = path.join(dir, 'resources', 'native')
+    await mkdir(nativeDir, { recursive: true })
+
+    const hostCopy = path.join(nativeDir, 'dondownload-native-host.exe')
+    await copyFile(hostExecutable, hostCopy)
+    const markerPath = path.join(nativeDir, '.updating')
+    await writeFile(markerPath, 'DonDownload is updating.', 'utf8')
+    const stale = new Date(Date.now() - 30 * 60 * 1000)
+    await utimes(markerPath, stale, stale)
+
+    const run = await runHost(
+      [frame(JSON.stringify({ type: 'probe' }))],
+      { exe: hostCopy }
+    )
+
+    expect(run.code).toBe(0)
+    expect(parseFrames(run.stdout)).toEqual([{ ok: true, operation: 'probe' }])
   })
 
   it('reports failure when no endpoint state exists', async () => {
