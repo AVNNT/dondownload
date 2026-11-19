@@ -10,6 +10,7 @@ vi.mock('electron', () => ({
 import type { Aria2State } from '../src/shared/types'
 import type { Aria2Service } from '../src/main/aria2/service'
 import {
+  defaultResolveCookieTarget,
   DownloadManager,
   type CookieTargetResolver
 } from '../src/main/downloads/manager'
@@ -178,5 +179,69 @@ describe('aria2 one-job cookie redirect scope', () => {
     )
     expect(calls[0]!.url).toBe(finalUrl)
     expect(calls[0]!.options.header).toEqual([`Cookie: ${COOKIE}`])
+  })
+})
+
+describe('production resolver re-validates a caller-resolved target', () => {
+  it('refuses a caller-supplied private final URL instead of handing it to aria2', async () => {
+    // The IPC path drops `resolvedUrl`, but a main-process caller could still
+    // pass one. The production resolver must not forward it unchecked.
+    await expect(
+      defaultResolveCookieTarget({
+        url: ORIGINAL,
+        cookie: COOKIE,
+        resolvedUrl: 'http://169.254.169.254/latest/meta-data/iam/'
+      })
+    ).rejects.toMatchObject({ code: 'MEDIA_TARGET_NOT_PUBLIC' })
+  })
+
+  it('refuses a loopback or localhost caller-supplied target', async () => {
+    for (const target of [
+      'http://127.0.0.1:8787/admin',
+      'http://localhost:3000/file.zip'
+    ]) {
+      await expect(
+        defaultResolveCookieTarget({
+          url: ORIGINAL,
+          cookie: COOKIE,
+          resolvedUrl: target
+        })
+      ).rejects.toMatchObject({ code: 'MEDIA_TARGET_NOT_PUBLIC' })
+    }
+  })
+
+  it('returns a canonicalized public caller-supplied target', async () => {
+    await expect(
+      defaultResolveCookieTarget({
+        url: ORIGINAL,
+        cookie: COOKIE,
+        // example.com resolves here; the path fragment is dropped by URL().href.
+        resolvedUrl: 'https://example.com/files/real.funscript#frag'
+      })
+    ).resolves.toEqual({ finalUrl: 'https://example.com/files/real.funscript' })
+  })
+
+  it('hands aria2 the final validated URL, not the redirecting original', async () => {
+    // H3: aria2 replays --header on download-time redirects, so a Cookie job
+    // must be added with the preflight-observed final URL. The original URL
+    // can legitimately redirect, so it must never be what aria2 receives.
+    const finalUrl = 'https://discuss.example/uploads/real.funscript?token=1'
+    const resolver = vi.fn(async () => ({ finalUrl }))
+    const { manager, calls } = createManager(resolver)
+
+    await manager.add({
+      url: ORIGINAL,
+      requestHeaders: { cookie: COOKIE }
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe(finalUrl)
+    expect(calls[0]!.options.header).toEqual([`Cookie: ${COOKIE}`])
+    // A retry also reuses the already-resolved target, never the original, so
+    // aria2 is still not asked to follow the download-time redirect chain.
+    const record = manager.getSnapshot().downloads[0]!
+    await manager.cancel(record.id)
+    await manager.retry(record.id)
+    expect(calls[calls.length - 1]!.url).toBe(finalUrl)
   })
 })

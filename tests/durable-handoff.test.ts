@@ -395,9 +395,16 @@ describe('strict durable hand-off', () => {
 
   it('reuses the hand-off preflight final URL so a cross-host redirect reaches aria2 without the cookie', async () => {
     const { dir, database, downloadDir } = await makeWorkspace()
-    const { manager, calls } = createManager(database, downloadDir)
     const finalUrl =
       'https://storage.example/bucket/report.zip?X-Amz-Signature=abc'
+    // The bridge's preflight already verified `finalUrl`; the manager receives
+    // it as `resolvedUrl` and must hand exactly that to aria2. The resolver
+    // stands in for the production one, which re-validates the value over DNS.
+    const { manager, calls } = createManager(database, downloadDir, {
+      resolveCookieTarget: async (input) => ({
+        finalUrl: input.resolvedUrl ?? input.url
+      })
+    })
 
     const bridge = await startNativeBridge({
       manager,

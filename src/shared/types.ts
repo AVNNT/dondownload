@@ -190,10 +190,11 @@ export interface AddDownloadInput {
   sortFilename?: string
   requestHeaders?: DownloadRequestHeaders
   /**
-   * Internal: a redirect chain that a trusted caller (the scanner probe or the
-   * browser hand-off preflight) already resolved. DownloadManager still enforces
-   * host and scheme scope before it sends a Cookie; it never trusts this value
-   * to widen a cookie's origin.
+   * Internal: a redirect chain that a trusted main-process caller (the scanner
+   * probe or the browser hand-off preflight) already resolved. The renderer's
+   * add-download channel drops it; a main-process caller's value is still run
+   * through the public-target guard and the manager still enforces host and
+   * scheme scope before it sends a Cookie, so it never widens a cookie's origin.
    */
   resolvedUrl?: string
   /**

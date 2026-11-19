@@ -58,6 +58,7 @@ import { AppError } from '../errors'
 import { createNoopHost, type CoreHost } from '../host'
 import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
+import { assertPublicTarget } from '../net/publicTarget'
 import { isUnsafeLocalPath } from '../scanner/manualMatch'
 import type { PickedVideoFolder } from '../scanner/manualMatch'
 import {
@@ -185,10 +186,19 @@ export type CookieTargetResolver = (
  * Production resolver: reuses a caller's verified final URL when present,
  * otherwise performs the same bounded public preflight as the hand-off path.
  * `allowMedia` is required because the scanner can queue media containers.
+ *
+ * A `resolvedUrl` is never trusted blindly: the IPC path drops it entirely, and
+ * a main-process caller's value is canonicalized and run through the public
+ * target guard again so a private or invented target cannot skip preflight.
+ * The Cookie host/scheme scope is still enforced by the manager afterwards.
  */
-const defaultResolveCookieTarget: CookieTargetResolver = async (input) => {
+export const defaultResolveCookieTarget: CookieTargetResolver = async (input) => {
   if (input.resolvedUrl !== undefined) {
-    return { finalUrl: input.resolvedUrl }
+    const parsed = new URL(input.resolvedUrl)
+    parsed.hash = ''
+    const finalUrl = parsed.href
+    await assertPublicTarget(finalUrl)
+    return { finalUrl }
   }
   const result = await preflightPublicResource({
     url: input.url,
@@ -2248,8 +2258,9 @@ export class DownloadManager {
       if (headers.cookie !== undefined) {
         // Defence in depth: the Cookie may only be emitted for the exact host
         // the resolver approved. Every caller (initial add, policy submit,
-        // retry, history resume) passes that host, so a future caller cannot
-        // bypass the redirect check by supplying raw headers.
+        // retry, history resume) passes that host and the resolver's final URL,
+        // so a future caller cannot pair a credential with an unvalidated
+        // redirecting URL.
         if (cookieHost === undefined || new URL(url).host !== cookieHost) {
           throw new AppError(
             'DOWNLOAD_COOKIE_HOST_UNRESOLVED',
@@ -2258,6 +2269,19 @@ export class DownloadManager {
         }
         options.header = [`Cookie: ${headers.cookie}`]
       }
+      // H3 limitation, documented deliberately. The bundled aria2 1.37.0 has no
+      // option to cap, disable or host-scope redirects, and --header is replayed
+      // on every request it makes, including any redirect it follows at download
+      // time. The mitigation is therefore to hand aria2 only the URL the
+      // hand-off preflight or the manager's resolver already followed and
+      // validated (never the redirecting original), with the Cookie guard above
+      // refusing any other pairing. Residual risk: if that exact URL answers an
+      // un-verified range/redirect request with another redirect at download
+      // time (a signed link rotating mid-download is the realistic case), aria2
+      // will follow it and replay the Cookie. Only an aria2 option that bounds
+      // or scopes redirects, a filtering proxy, or dropping the Cookie entirely
+      // would close that; none is available here. Do not remove this comment
+      // without replacing the mitigation.
     }
 
     // Per-download aria2 options. The effective connection count is the user's

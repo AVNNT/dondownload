@@ -450,6 +450,26 @@ describe('native bridge request handling', () => {
     expect(manager.calls).toEqual([{ url: 'https://example.com/files/app.zip' }])
   })
 
+  it('rejects a private or local queue-download target before the manager', async () => {
+    for (const url of [
+      'http://127.0.0.1:8787/admin',
+      'http://localhost:3000/file.zip',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://192.168.1.1/file.iso',
+      'http://[::1]/file.zip'
+    ]) {
+      const response = await post(JSON.stringify({ url }))
+      expect(response.status).toBe(400)
+      const result = (await response.json()) as {
+        ok: boolean
+        error: { code: string }
+      }
+      expect(result.ok).toBe(false)
+      expect(result.error.code).toBe('MEDIA_TARGET_NOT_PUBLIC')
+    }
+    expect(manager.calls).toHaveLength(0)
+  })
+
   it('reports a duplicate as non-success without accepted:true', async () => {
     const body = JSON.stringify({ url: 'https://example.com/same.zip' })
     const first = await post(body)

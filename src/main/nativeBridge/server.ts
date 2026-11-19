@@ -598,6 +598,18 @@ export async function startNativeBridge(
     }
 
     try {
+      // Same public-target policy as every sibling bridge route: the manager
+      // path below validates shape and persists, but nothing else in this
+      // route would stop a loopback/LAN/metadata URL from reaching aria2.
+      await assertPublicTarget(input.url, options.publicTargetLookup)
+    } catch (error) {
+      const info = toErrorInfo(error)
+      logger(`Native bridge queue-download target rejected (${info.code}).`)
+      sendError(response, 400, info.code, safeErrorMessage(info.message))
+      return
+    }
+
+    try {
       // The existing manager path performs its own URL/input validation,
       // aria2 add, SQLite persistence and snapshot publication.
       await options.manager.add(input)
