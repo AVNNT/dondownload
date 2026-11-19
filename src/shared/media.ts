@@ -209,6 +209,8 @@ export interface MediaToolState {
 export interface MediaSnapshot {
   tool: MediaToolState
   jobs: MediaJob[]
+  /** Revision of the media snapshot stream when this snapshot was built. */
+  revision?: number
 }
 
 export interface AnalyzeMediaInput {
@@ -793,7 +795,7 @@ export function parseMediaToolState(value: unknown): MediaToolState {
 
 export function parseMediaSnapshot(value: unknown): MediaSnapshot {
   const record = asPlainObject(value)
-  exactKeys(record, ['tool', 'jobs'])
+  exactKeys(record, ['tool', 'jobs'], ['revision'])
   const rawJobs = arrayValue(record, 'jobs', MAX_MEDIA_JOBS)
   const jobs = rawJobs.map(parseMediaJob)
   const ids = new Set<string>()
@@ -803,9 +805,13 @@ export function parseMediaSnapshot(value: unknown): MediaSnapshot {
     }
     ids.add(job.id)
   }
+  const revision = record.revision
   return {
     tool: parseMediaToolState(record.tool),
-    jobs
+    jobs,
+    ...(typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0
+      ? { revision }
+      : {})
   }
 }
 

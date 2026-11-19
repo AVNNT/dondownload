@@ -68,7 +68,9 @@ existing native host and authenticated loopback bridge:
   the optional `cookies` permission and records the exact origin. Only then is
   `chrome.cookies.getAll({ url })` called for a detected media URL. The header
   exists in one native message and one aria2/yt-dlp job; it is never stored in
-  extension settings, the app database or logs. The tradeoff is explicit: an
+  extension settings, the app database or logs. yt-dlp receives it only through
+  a short-lived Netscape cookie file (`--cookies`, removed when the child
+  exits). The tradeoff is explicit: an
   opted-in cookie can grant access to the user's logged-in account for that one
   job.
 - The app still applies `assertPublicTarget` to both the media URL and the
@@ -100,7 +102,8 @@ Unit coverage:
   preference, per-tab reset/cap, badge text, filename, queue message.
 - `tests/sniffed-media.test.ts` — app-side parser, public/private and header
   limits, cookie redaction, title-based filenames, aria2 header options and
-  yt-dlp referer/UA/Cookie arguments.
+  yt-dlp referer/UA arguments (a detected-media cookie is only ever a one-job
+  cookie file, never a `--add-header` command-line argument).
 - `tests/native-bridge.test.ts` — detected-file headers, private/non-http/
   oversize rejection, HLS delegation to a media job and cookie-injection
   rejection.

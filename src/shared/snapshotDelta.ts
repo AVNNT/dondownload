@@ -22,6 +22,12 @@ import type {
 export interface SnapshotPayload<Row, Fields> {
   fields: Fields
   rows: Row[]
+  /**
+   * Revision of the stream when this payload was built, for payloads that come
+   * from a plain invoke response rather than a delta. Optional: a response
+   * without one is trusted as-is.
+   */
+  revision?: number
 }
 
 export interface SnapshotClientState<Row, Fields> extends SnapshotPayload<Row, Fields> {
@@ -31,6 +37,13 @@ export interface SnapshotClientState<Row, Fields> extends SnapshotPayload<Row, F
 export interface SnapshotFullDelta<Row, Fields> extends SnapshotPayload<Row, Fields> {
   kind: 'full'
   revision: number
+  /**
+   * Authoritative full snapshot (resync after a gap or after the sending side
+   * dropped its baseline). The receiver replaces its whole state with it even
+   * when its own revision is higher, because the two revision counters may be
+   * unrelated after a window was recreated.
+   */
+  replaces?: boolean
 }
 
 export interface SnapshotPatchDelta<Row, Fields> {
@@ -75,7 +88,11 @@ export type BatchSnapshotDelta = SnapshotDelta<Batch, BatchSnapshotFields>
 export function appSnapshotPayload(
   snapshot: AppSnapshot
 ): SnapshotPayload<DownloadItem, AppSnapshotFields> {
-  return { fields: { aria2: snapshot.aria2 }, rows: snapshot.downloads }
+  return {
+    fields: { aria2: snapshot.aria2 },
+    rows: snapshot.downloads,
+    ...(snapshot.revision === undefined ? {} : { revision: snapshot.revision })
+  }
 }
 
 export function appSnapshotFromState(
@@ -87,7 +104,11 @@ export function appSnapshotFromState(
 export function mediaSnapshotPayload(
   snapshot: MediaSnapshot
 ): SnapshotPayload<MediaJob, MediaSnapshotFields> {
-  return { fields: { tool: snapshot.tool }, rows: snapshot.jobs }
+  return {
+    fields: { tool: snapshot.tool },
+    rows: snapshot.jobs,
+    ...(snapshot.revision === undefined ? {} : { revision: snapshot.revision })
+  }
 }
 
 export function mediaSnapshotFromState(
@@ -203,6 +224,10 @@ function shallowFieldsChanged<Fields extends object>(
 /**
  * Apply one delta. Unchanged rows keep their previous object reference.
  *
+ * A `full` delta always replaces the state, including a marked `replaces` full
+ * whose revision is not newer: the sending side recreated its baseline and the
+ * receiver's revision can no longer be compared with it.
+ *
  * A `resync` result means the receiver must not apply the patch; the caller
  * should request a fresh full snapshot.
  */
@@ -313,7 +338,10 @@ export interface BuiltSnapshotDelta<Row, Fields> {
  *
  * Returns null when neither the rows nor the top-level fields changed; that is
  * the "emit nothing" path. Row change detection is O(rows) cheap-key compares,
- * never a deep equality of the whole history payload.
+ * never a deep equality of the whole history payload. A full delta without
+ * `replaces` (the first one for a stream) means the receiver must have no state;
+ * a forced full always carries `replaces` so a receiver that kept an older
+ * state accepts it.
  */
 export function buildSnapshotDelta<Row extends { id: string }, Fields extends object>(
   previous: SnapshotClientState<Row, Fields> | null,
@@ -332,6 +360,7 @@ export function buildSnapshotDelta<Row extends { id: string }, Fields extends ob
       delta: {
         kind: 'full',
         revision,
+        ...(options.forceFull === true ? { replaces: true } : {}),
         fields: next.fields,
         rows: next.rows
       },

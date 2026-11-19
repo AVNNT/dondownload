@@ -270,6 +270,16 @@ describe('media public schema', () => {
     const snapshot = parseMediaSnapshot({ tool, jobs: [job()] })
     expect(snapshot.jobs[0]?.id).toBe(JOB_ID)
 
+    // An invoke snapshot may carry the stream revision used to discard older
+    // responses in the renderer; a malformed one is simply omitted.
+    expect(parseMediaSnapshot({ tool, jobs: [], revision: 7 }).revision).toBe(7)
+    expect(
+      parseMediaSnapshot({ tool, jobs: [], revision: -1 })
+    ).not.toHaveProperty('revision')
+    expect(
+      parseMediaSnapshot({ tool, jobs: [], revision: 'many' })
+    ).not.toHaveProperty('revision')
+
     expect(() =>
       parseMediaSnapshot({ tool: { ...tool, extra: true }, jobs: [] })
     ).toThrow()

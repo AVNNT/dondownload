@@ -20,10 +20,17 @@ export interface SnapshotDeltaStore<Row extends { id: string }, Fields extends o
   applyDelta: (delta: SnapshotDelta<Row, Fields>) => void
   /**
    * Replace the local data from a full API response (initial load or an action
-   * result). The current revision is retained so later patches still line up;
-   * unchanged rows keep their previous object reference.
+   * result).
+   *
+   * An invoke result reflects the moment main serialized it, which may be older
+   * than a delta that already arrived. `revision` (or `payload.revision`) must
+   * therefore be the revision main had when it built the response, or absent
+   * for a response that predates revisioning: a payload that is less than the
+   * last applied revision is ignored instead of overwriting fresher progress.
+   * The local revision is kept so later patches still line up; unchanged rows
+   * keep their previous object reference.
    */
-  replacePayload: (payload: SnapshotPayload<Row, Fields>) => void
+  replacePayload: (payload: SnapshotPayload<Row, Fields>, revision?: number) => void
   getState: () => SnapshotClientState<Row, Fields> | null
   dispose: () => void
 }
@@ -93,11 +100,34 @@ export function createSnapshotDeltaStore<
     scheduleChange()
   }
 
-  const replacePayload = (payload: SnapshotPayload<Row, Fields>): void => {
+  const replacePayload = (
+    payload: SnapshotPayload<Row, Fields>,
+    explicitRevision?: number
+  ): void => {
     if (disposed) return
 
+    // The payload may carry the revision main had when it built the response;
+    // an explicit argument (when a caller knows better) takes precedence.
+    const revision = explicitRevision ?? payload.revision
+
+    // A response older than the state already applied must not move the UI
+    // backwards (for example an invoke that resolved after two progress
+    // deltas). Unknown revisions are trusted: the caller cannot do better.
+    if (
+      state !== null &&
+      revision !== undefined &&
+      Number.isFinite(revision) &&
+      revision < state.revision
+    ) {
+      return
+    }
+
     if (state === null) {
-      state = { revision: 0, fields: payload.fields, rows: payload.rows }
+      state = {
+        revision: revision !== undefined && Number.isFinite(revision) ? revision : 0,
+        fields: payload.fields,
+        rows: payload.rows
+      }
       scheduleChange()
       return
     }

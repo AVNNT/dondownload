@@ -105,6 +105,13 @@ export interface IpcContext {
   /** Send fresh full deltas for every snapshot stream after a renderer gap. */
   requestSnapshotResync?: () => void
   /**
+   * Current revision of the download snapshot stream. Stamped onto the
+   * download and media `AppSnapshot`/`MediaSnapshot` invoke results after the
+   * handler settles, so the renderer can discard a response that is older than
+   * a delta it already applied.
+   */
+  downloadSnapshotRevision?: () => number
+  /**
    * Help & diagnostics. Both are fixed, app-owned targets assembled in main:
    * the log folder path and a redacted text block. Neither accepts renderer
    * input, so nothing personal can be smuggled into a report through them.
@@ -153,7 +160,24 @@ export function registerIpc(context: IpcContext): void {
     })
   }
 
-  invoke<AppSnapshot>(IPC.getSnapshot, () => context.manager.getSnapshot())
+  // Every invoke response is a full snapshot built at some moment. Stamp the
+  // revision *after* the handler settled: any delta that overtook the call
+  // counts as newer, so the renderer can discard this (older) response instead
+  // of letting it overwrite fresher progress. Manager methods may be sync
+  // (media) or async (downloads), so the stamp is applied after settling.
+  const withRevision = <T extends { revision?: number }>(
+    value: T | Promise<T>
+  ): T | Promise<T> => {
+    if (context.downloadSnapshotRevision === undefined) return value
+    return Promise.resolve(value).then((snapshot) => ({
+      ...snapshot,
+      revision: context.downloadSnapshotRevision?.() ?? 0
+    }))
+  }
+
+  invoke<AppSnapshot>(IPC.getSnapshot, () =>
+    withRevision(context.manager.getSnapshot())
+  )
 
   invoke<null>(IPC.snapshotResync, () => {
     context.requestSnapshotResync?.()
@@ -171,7 +195,7 @@ export function registerIpc(context: IpcContext): void {
     // records become interrupted instead of looking live forever.
     await context.manager.reconcileDownloads()
     context.manager.publish(true)
-    return context.manager.getSnapshot()
+    return withRevision(context.manager.getSnapshot())
   })
 
   invoke<DownloadFolderChoice | null>(
@@ -199,7 +223,7 @@ export function registerIpc(context: IpcContext): void {
     // the normal, root-scoped add path is used unchanged.
     const input = parseAddDownloadInput(rawInput)
     if (input.destinationToken === undefined) {
-      return context.manager.add(input)
+      return withRevision(context.manager.add(input))
     }
     const directory =
       context.downloadDestinations?.resolve(input.destinationToken) ?? null
@@ -210,35 +234,35 @@ export function registerIpc(context: IpcContext): void {
         'Choose the folder again.'
       )
     }
-    return context.manager.addToDestination(input, directory)
+    return withRevision(context.manager.addToDestination(input, directory))
   })
   invoke<AppSnapshot>(IPC.pauseDownload, (_event, id) =>
-    context.manager.pause(id)
+    withRevision(context.manager.pause(id))
   )
   invoke<AppSnapshot>(IPC.cancelDownload, (_event, id) =>
-    context.manager.cancel(id)
+    withRevision(context.manager.cancel(id))
   )
   invoke<AppSnapshot>(IPC.resumeDownload, (_event, id) =>
-    context.manager.resume(id)
+    withRevision(context.manager.resume(id))
   )
   invoke<AppSnapshot>(IPC.startDownloadNow, (_event, id) =>
-    context.manager.startNow(id)
+    withRevision(context.manager.startNow(id))
   )
   invoke<AppSnapshot>(IPC.retryDownload, (_event, id) =>
-    context.manager.retry(id)
+    withRevision(context.manager.retry(id))
   )
   invoke<AppSnapshot>(IPC.removeDownload, (_event, id) =>
-    context.manager.remove(id)
+    withRevision(context.manager.remove(id))
   )
   invoke<AppSnapshot>(IPC.removeDownloads, (_event, ids) =>
-    context.manager.removeMany(ids)
+    withRevision(context.manager.removeMany(ids))
   )
   invoke<null>(IPC.showInFolder, (_event, id) =>
     context.manager.showInFolder(id)
   )
   invoke<null>(IPC.openFile, (_event, id) => context.manager.openFile(id))
   invoke<AppSnapshot>(IPC.deleteDownloadFile, (_event, id) =>
-    context.manager.deleteFile(id)
+    withRevision(context.manager.deleteFile(id))
   )
 
   // Checksum verification. The renderer sends only the opaque download id and
@@ -306,11 +330,11 @@ export function registerIpc(context: IpcContext): void {
     } else {
       await manager.queueMedia(input, directory)
     }
-    return manager.getMediaSnapshot()
+    return withRevision(manager.getMediaSnapshot())
   })
 
   invoke<MediaSnapshot>(IPC.getMediaSnapshot, () =>
-    media().getMediaSnapshot()
+    withRevision(media().getMediaSnapshot())
   )
 
   invoke<MediaJob>(IPC.getMediaJob, (_event, jobId) =>
@@ -325,31 +349,31 @@ export function registerIpc(context: IpcContext): void {
   invoke<MediaSnapshot>(IPC.cancelMedia, async (_event, jobId) => {
     const manager = media()
     await manager.cancelMedia(jobId)
-    return manager.getMediaSnapshot()
+    return withRevision(manager.getMediaSnapshot())
   })
 
   invoke<MediaSnapshot>(IPC.pauseMedia, (_event, jobId) =>
-    media().pauseMedia(jobId)
+    withRevision(media().pauseMedia(jobId))
   )
 
   invoke<MediaSnapshot>(IPC.resumeMedia, (_event, jobId) =>
-    media().resumeMedia(jobId)
+    withRevision(media().resumeMedia(jobId))
   )
 
   invoke<MediaSnapshot>(IPC.retryMedia, (_event, jobId) =>
-    media().retryMedia(jobId)
+    withRevision(media().retryMedia(jobId))
   )
 
   invoke<MediaSnapshot>(IPC.removeMedia, (_event, jobId) =>
-    media().removeMedia(jobId)
+    withRevision(media().removeMedia(jobId))
   )
 
   invoke<MediaSnapshot>(IPC.removeMediaJobs, (_event, ids) =>
-    media().removeMany(ids)
+    withRevision(media().removeMany(ids))
   )
 
   invoke<MediaSnapshot>(IPC.deleteMediaFile, (_event, jobId) =>
-    media().deleteMediaFile(jobId)
+    withRevision(media().deleteMediaFile(jobId))
   )
 
   invoke<null>(IPC.showMediaInFolder, (_event, jobId) =>

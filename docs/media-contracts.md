@@ -49,7 +49,10 @@ pairing/container without transcoding.
   headers or cookies.
 - `MediaToolState`: `status` (`stopped` | `starting` | `ready` |
   `unavailable` | `error`), nullable `version`, `message`, `hint`.
-- `MediaSnapshot`: `{ tool: MediaToolState, jobs: MediaJob[] }`.
+- `MediaSnapshot`: `{ tool: MediaToolState, jobs: MediaJob[], revision?: number }`.
+  `revision` is the media delta-stream revision when an invoke response was
+  built; the renderer uses it to discard a response older than a snapshot delta
+  it already applied.
 - `MediaQueueInput`: `{ analysisId, optionId, force?: true }`.
 
 `MediaJobRecord` in `src/shared/media.ts` is an **internal persistence shape**

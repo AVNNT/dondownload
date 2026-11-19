@@ -217,6 +217,12 @@ export interface AddDownloadInput {
 export interface AppSnapshot {
   aria2: Aria2State
   downloads: DownloadItem[]
+  /**
+   * Revision of the snapshot stream when this snapshot was built. Invoke
+   * results are compared against it so an older response can never overwrite
+   * newer progress deltas in the renderer.
+   */
+  revision?: number
 }
 
 export type ApiResult<T> =

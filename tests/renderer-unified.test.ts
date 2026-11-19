@@ -45,6 +45,7 @@ import {
   planBulkAction,
   planRowAction,
   removalIds,
+  removalKeysToRestore,
   removeConfirmation,
   type ActionApi
 } from '../src/renderer/src/lib/actions'
@@ -863,6 +864,65 @@ describe('context menu and action plans', () => {
     expect(result.errors.map((error) => error.code)).toEqual(['DB_BUSY'])
     // No media ids in the plan: the media channel is never called.
     expect(api.removeMediaJobs).not.toHaveBeenCalled()
+    // The failed channel's rows must be shown again; the other channel has
+    // nothing to restore.
+    expect(result.channels).toEqual({
+      downloads: { ok: false },
+      media: { ok: true }
+    })
+    expect(removalKeysToRestore(plan, result.channels)).toEqual([complete.key])
+  })
+
+  it('restores only the rows of a channel that failed', async () => {
+    const plan = planBulkAction('clear-list', [
+      complete,
+      mediaComplete,
+      mediaFailed
+    ])
+    const api = {
+      removeDownloads: vi.fn(async () => ok(snapshotFixture())),
+      // One source failed entirely: its rows were never removed.
+      removeMediaJobs: vi.fn(async () => {
+        throw new Error('media history is locked')
+      })
+    }
+
+    const result = await executeBulkRemoval(plan, api)
+    expect(result.errors).toHaveLength(1)
+    expect(result.channels).toEqual({
+      downloads: { ok: true },
+      media: { ok: false }
+    })
+    expect(removalKeysToRestore(plan, result.channels)).toEqual([
+      mediaComplete.key,
+      mediaFailed.key
+    ])
+
+    // The reverse case: only the download channel failed.
+    const downloadsFailed = await executeBulkRemoval(plan, {
+      removeDownloads: vi.fn(async () => ({
+        ok: false as const,
+        error: { code: 'DB_BUSY', message: 'nope' }
+      })),
+      removeMediaJobs: vi.fn(async () => ok(mediaFixture()))
+    })
+    expect(removalKeysToRestore(plan, downloadsFailed.channels)).toEqual([
+      complete.key
+    ])
+  })
+
+  it('restores nothing when every channel succeeded', async () => {
+    const plan = planBulkAction('clear-list', [complete, mediaComplete])
+    const result = await executeBulkRemoval(plan, {
+      removeDownloads: vi.fn(async () => ok(snapshotFixture())),
+      removeMediaJobs: vi.fn(async () => ok(mediaFixture()))
+    })
+    expect(result.errors).toEqual([])
+    expect(result.channels).toEqual({
+      downloads: { ok: true },
+      media: { ok: true }
+    })
+    expect(removalKeysToRestore(plan, result.channels)).toEqual([])
   })
 })
 

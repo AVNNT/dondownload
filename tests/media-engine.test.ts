@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import * as nodeFs from 'node:fs'
 import { existsSync, readFileSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
@@ -1193,6 +1194,124 @@ describe('media engine one-job cookie files', () => {
       )
     ).rejects.toMatchObject({ code: 'MEDIA_ANALYSIS_MISMATCH' })
     expect(harness.calls).toHaveLength(callsBefore)
+  })
+
+  it('never puts a detected-media cookie on the yt-dlp command line', async () => {
+    const secret = 'session=top-secret'
+    let downloadCookiePath = ''
+    let downloadCookieBody = ''
+    const harness = await makeHarness({
+      download: (call) => {
+        const candidate = argValue(call.args, '--cookies') ?? ''
+        if (candidate.length > 0) {
+          downloadCookiePath = candidate
+          downloadCookieBody = readFileSync(candidate, 'utf8')
+        }
+        const ext = downloadOutputExt(call)
+        void fs.writeFile(`${outputBase(call)}.${ext}`, Buffer.alloc(64, 1))
+        call.child.close(0)
+      }
+    })
+
+    const result = await harness.engine.download(
+      {
+        jobId: JOB_ID,
+        sourceUrl: 'https://cdn.example.com/master.m3u8',
+        analysisId: 'analysis_direct',
+        optionId: 'option_direct',
+        dir: harness.downloadDir,
+        direct: {
+          kind: 'hls',
+          referer: 'https://example.com/watch?v=1',
+          userAgent: 'Browser UA',
+          cookie: secret,
+          title: 'Detected media'
+        }
+      },
+      () => undefined
+    )
+
+    const call = downloadCall(harness.calls)
+    // The header must never be an argument: any local process can read the
+    // command line of another process.
+    expect(call.args.join(' ')).not.toContain('top-secret')
+    expect(call.args).not.toContain('--add-header')
+    expect(call.args).not.toContain(`Cookie: ${secret}`)
+    // It travels in the one-job Netscape file instead.
+    expect(downloadCookiePath).toContain('.dondownload-cookies-')
+    expect(downloadCookieBody).toContain(
+      '.example.com\tTRUE\t/\tTRUE\t0\tsession\ttop-secret'
+    )
+    expect(existsSync(downloadCookiePath)).toBe(false)
+    expect(result.filePath).toContain('Detected media')
+  })
+
+  it('honours a cancel that arrives while the cookie file is being written', async () => {
+    let releaseWrite: () => void = () => undefined
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    let gatedStagingDir: string | null = null
+    const realWriteFile = nodeFs.promises.writeFile.bind(nodeFs.promises)
+    const writeSpy = vi
+      .spyOn(nodeFs.promises, 'writeFile')
+      .mockImplementation(async (file, data, options) => {
+        if (
+          gatedStagingDir !== null &&
+          path.dirname(String(file)) === gatedStagingDir
+        ) {
+          await writeGate
+        }
+        return realWriteFile(
+          file as Parameters<typeof realWriteFile>[0],
+          data as Parameters<typeof realWriteFile>[1],
+          options as Parameters<typeof realWriteFile>[2]
+        )
+      })
+    try {
+      const harness = await makeHarness({ download: () => undefined })
+      gatedStagingDir = path.join(harness.downloadDir, '.dondownload-' + JOB_ID.slice(0, 36))
+      // The cleanup runs in the constructor, before the analysis is written.
+      await tick()
+      const analysis = await harness.engine.analyze(SOURCE_URL, {
+        cookie: 'session=abc'
+      })
+      const promise = harness.engine.download(
+        downloadRequest(
+          analysis.analysisId,
+          analysis.bestVideoOptionId as string,
+          harness.downloadDir,
+          { cookie: 'session=abc' }
+        ),
+        () => undefined
+      )
+      // Wait until the download reached the cookie-file write, then cancel.
+      await waitFor(() => existsSync(gatedStagingDir as string))
+      await waitFor(() =>
+        writeSpy.mock.calls.some((call) =>
+          gatedStagingDir !== null && path.dirname(String(call[0])) === gatedStagingDir
+        )
+      )
+      harness.engine.cancel(JOB_ID)
+      releaseWrite()
+
+      await expect(promise).rejects.toMatchObject({
+        code: 'MEDIA_DOWNLOAD_CANCELLED'
+      })
+      // No child was ever spawned for a cancelled download, so nothing keeps
+      // running without a row in the UI.
+      expect(harness.calls.some((call) => call.args.includes('--format'))).toBe(
+        false
+      )
+      // The abandoned staging directory and the cookie file are gone.
+      await waitFor(() => !existsSync(gatedStagingDir as string))
+      expect(await fs.readdir(harness.downloadDir)).toEqual([])
+      const cookiesDir = path.join(harness.root, 'media-cookies')
+      const leftovers = await fs.readdir(cookiesDir).catch(() => [])
+      expect(leftovers).toEqual([])
+    } finally {
+      writeSpy.mockRestore()
+    }
   })
 })
 
@@ -2761,6 +2880,92 @@ describe('media engine cancellation and failure cleanup', () => {
 })
 
 describe('media engine staging and final naming', () => {
+  it('keeps a paused job\'s staging data when another job queues in the same folder', async () => {
+    const harness = await makeHarness({ download: () => undefined })
+    const analysis = await harness.engine.analyze(SOURCE_URL)
+    const optionId = analysis.bestVideoOptionId as string
+    const pausedJobId = 'job-paused'
+    const queuedJobId = 'job-queued'
+
+    // Start job A and pause it: yt-dlp stops and the `.part` files stay.
+    const first = harness.engine.download(
+      downloadRequest(analysis.analysisId, optionId, harness.downloadDir, {
+        jobId: pausedJobId
+      }),
+      () => undefined
+    )
+    await waitFor(() =>
+      harness.calls.some((call) => call.args.includes('--format'))
+    )
+    const firstCall = downloadCall(harness.calls)
+    const pausedStagingDir = stagingDirOf(firstCall)
+    await fs.writeFile(`${outputBase(firstCall)}.part`, 'partial bytes')
+    harness.engine.pause(pausedJobId)
+    await expect(first).rejects.toMatchObject({ code: 'MEDIA_DOWNLOAD_PAUSED' })
+    await expect(
+      fs.readFile(`${outputBase(firstCall)}.part`, 'utf8')
+    ).resolves.toBe('partial bytes')
+
+    // Job B starts in the same output folder. Its lazy stale cleanup must not
+    // delete the paused job's staging directory.
+    const second = harness.engine.download(
+      downloadRequest(analysis.analysisId, optionId, harness.downloadDir, {
+        jobId: queuedJobId
+      }),
+      () => undefined
+    )
+    await waitFor(
+      () =>
+        harness.calls.filter((call) => call.args.includes('--format')).length ===
+        2
+    )
+    const secondCall = harness.calls.filter((call) =>
+      call.args.includes('--format')
+    )[1]!
+    expect(stagingDirOf(secondCall)).not.toBe(pausedStagingDir)
+    await expect(fs.stat(stagingDirOf(firstCall))).resolves.toBeDefined()
+    await expect(
+      fs.readFile(`${outputBase(firstCall)}.part`, 'utf8')
+    ).resolves.toBe('partial bytes')
+
+    // Finishing job B cleans only its own directory; the paused data survives.
+    await fs.writeFile(`${outputBase(secondCall)}.mp4`, Buffer.from('second'))
+    secondCall.child.close(0)
+    await expect(second).resolves.toMatchObject({
+      filePath: path.join(harness.downloadDir, 'Example video.mp4')
+    })
+    await expect(
+      fs.readFile(`${outputBase(firstCall)}.part`, 'utf8')
+    ).resolves.toBe('partial bytes')
+
+    // Resuming job A reuses the kept directory, then its completion removes
+    // it, exactly like a normal run.
+    const resumed = harness.engine.download(
+      downloadRequest(analysis.analysisId, optionId, harness.downloadDir, {
+        jobId: pausedJobId
+      }),
+      () => undefined
+    )
+    await waitFor(
+      () =>
+        harness.calls.filter((call) => call.args.includes('--format')).length ===
+        3
+    )
+    const resumeCall = harness.calls.filter((call) =>
+      call.args.includes('--format')
+    )[2]!
+    expect(stagingDirOf(resumeCall)).toBe(pausedStagingDir)
+    await fs.writeFile(`${outputBase(resumeCall)}.mp4`, Buffer.from('resumed'))
+    resumeCall.child.close(0)
+    const result = await resumed
+    expect(result.filePath).toBe(
+      path.join(harness.downloadDir, 'Example video (2).mp4')
+    )
+    await expect(fs.stat(pausedStagingDir)).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
   it('saves the final file as the sanitized title without the job id', async () => {
     const harness = await makeHarness({
       analyzeJson: sampleInfo({ title: 'I Got My FAVORITE Synergy' }),
