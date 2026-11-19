@@ -220,4 +220,28 @@ describe('production resolver re-validates a caller-resolved target', () => {
       })
     ).resolves.toEqual({ finalUrl: 'https://example.com/files/real.funscript' })
   })
+
+  it('hands aria2 the final validated URL, not the redirecting original', async () => {
+    // H3: aria2 replays --header on download-time redirects, so a Cookie job
+    // must be added with the preflight-observed final URL. The original URL
+    // can legitimately redirect, so it must never be what aria2 receives.
+    const finalUrl = 'https://discuss.example/uploads/real.funscript?token=1'
+    const resolver = vi.fn(async () => ({ finalUrl }))
+    const { manager, calls } = createManager(resolver)
+
+    await manager.add({
+      url: ORIGINAL,
+      requestHeaders: { cookie: COOKIE }
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe(finalUrl)
+    expect(calls[0]!.options.header).toEqual([`Cookie: ${COOKIE}`])
+    // A retry also reuses the already-resolved target, never the original, so
+    // aria2 is still not asked to follow the download-time redirect chain.
+    const record = manager.getSnapshot().downloads[0]!
+    await manager.cancel(record.id)
+    await manager.retry(record.id)
+    expect(calls[calls.length - 1]!.url).toBe(finalUrl)
+  })
 })

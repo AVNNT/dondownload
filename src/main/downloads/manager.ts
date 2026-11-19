@@ -2258,8 +2258,9 @@ export class DownloadManager {
       if (headers.cookie !== undefined) {
         // Defence in depth: the Cookie may only be emitted for the exact host
         // the resolver approved. Every caller (initial add, policy submit,
-        // retry, history resume) passes that host, so a future caller cannot
-        // bypass the redirect check by supplying raw headers.
+        // retry, history resume) passes that host and the resolver's final URL,
+        // so a future caller cannot pair a credential with an unvalidated
+        // redirecting URL.
         if (cookieHost === undefined || new URL(url).host !== cookieHost) {
           throw new AppError(
             'DOWNLOAD_COOKIE_HOST_UNRESOLVED',
@@ -2268,6 +2269,19 @@ export class DownloadManager {
         }
         options.header = [`Cookie: ${headers.cookie}`]
       }
+      // H3 limitation, documented deliberately. The bundled aria2 1.37.0 has no
+      // option to cap, disable or host-scope redirects, and --header is replayed
+      // on every request it makes, including any redirect it follows at download
+      // time. The mitigation is therefore to hand aria2 only the URL the
+      // hand-off preflight or the manager's resolver already followed and
+      // validated (never the redirecting original), with the Cookie guard above
+      // refusing any other pairing. Residual risk: if that exact URL answers an
+      // un-verified range/redirect request with another redirect at download
+      // time (a signed link rotating mid-download is the realistic case), aria2
+      // will follow it and replay the Cookie. Only an aria2 option that bounds
+      // or scopes redirects, a filtering proxy, or dropping the Cookie entirely
+      // would close that; none is available here. Do not remove this comment
+      // without replacing the mitigation.
     }
 
     // Per-download aria2 options. The effective connection count is the user's
