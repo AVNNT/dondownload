@@ -194,7 +194,7 @@ function makeChecker(
 ) {
   return createAppUpdateChecker({
     userDataPath,
-    appVersion: '1.3.2',
+    appVersion: '1.3.3',
     repo: REPO,
     signingPublicKey: SIGNING_PUBLIC_KEY,
     ...overrides
@@ -224,7 +224,7 @@ describe('release configuration', () => {
   it('configures the default checker without a network request', async () => {
     const checker = createAppUpdateChecker({
       userDataPath: await makeTemp(),
-      appVersion: '1.3.2'
+      appVersion: '1.3.3'
     })
     const state = checker.getState()
     expect(state.configured).toBe(true)
@@ -272,9 +272,9 @@ describe('app update checker', () => {
   it('ignores older, equal and prerelease releases', async () => {
     const dir = await makeTemp()
 
-    for (const tag of ['v0.0.9', 'v1.0.0', 'v1.3.2', 'v1.3.2-beta.1']) {
+    for (const tag of ['v0.0.9', 'v1.0.0', 'v1.3.3', 'v1.3.3-beta.1']) {
       const { fetchImpl, calls } = createFetch({
-        api: () => response(releaseJson('1.3.2', { tag }), {
+        api: () => response(releaseJson('1.3.3', { tag }), {
           url: 'https://api.github.com/repos/acme/dondownload/releases/latest'
         })
       })
@@ -459,7 +459,7 @@ describe('app update checker', () => {
       expect(init.redirect).toBe('manual')
       expect(init.headers.Cookie).toBeUndefined()
       expect(init.headers.Authorization).toBeUndefined()
-      expect(init.headers['User-Agent']).toBe('DonDownload/1.3.2')
+      expect(init.headers['User-Agent']).toBe('DonDownload/1.3.3')
     }
   })
 

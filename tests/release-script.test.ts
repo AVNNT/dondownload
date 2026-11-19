@@ -39,7 +39,7 @@ import {
   selectExtensionFiles
 } from '../scripts/release-lib.mjs'
 
-const VERSION = '1.3.2'
+const VERSION = '1.3.3'
 
 const tempDirs: string[] = []
 
@@ -56,15 +56,15 @@ function decode(bytes: Uint8Array): string {
 describe('release asset names', () => {
   it('matches the electron-builder artifactName and the updater pattern', () => {
     expect(installerAssetName(VERSION)).toBe(
-      'DonDownload-1.3.2-x64-setup.exe'
+      'DonDownload-1.3.3-x64-setup.exe'
     )
     expect(installerBlockmapAssetName(VERSION)).toBe(
-      'DonDownload-1.3.2-x64-setup.exe.blockmap'
+      'DonDownload-1.3.3-x64-setup.exe.blockmap'
     )
-    expect(releaseTag(VERSION)).toBe('v1.3.2')
+    expect(releaseTag(VERSION)).toBe('v1.3.3')
     expect(extensionAssetNames(VERSION)).toEqual({
-      chromium: 'dondownload-extension-chromium-1.3.2.zip',
-      firefox: 'dondownload-extension-firefox-1.3.2.xpi'
+      chromium: 'dondownload-extension-chromium-1.3.3.zip',
+      firefox: 'dondownload-extension-firefox-1.3.3.xpi'
     })
   })
 
@@ -77,9 +77,9 @@ describe('release asset names', () => {
 
   it('builds the uploaded asset list in a stable order', () => {
     expect(buildReleaseAssetList({ version: VERSION })).toEqual([
-      'DonDownload-1.3.2-x64-setup.exe',
-      'dondownload-extension-chromium-1.3.2.zip',
-      'dondownload-extension-firefox-1.3.2.xpi',
+      'DonDownload-1.3.3-x64-setup.exe',
+      'dondownload-extension-chromium-1.3.3.zip',
+      'dondownload-extension-firefox-1.3.3.xpi',
       'SHA256SUMS.txt',
       'SHA256SUMS.txt.sig',
       'THIRD-PARTY-SOURCES.txt'
@@ -106,7 +106,7 @@ describe('release asset names', () => {
       hasBlockmap: true,
       sourceArchives: ['aria2-1.37.0.tar.bz2']
     })
-    expect(assets).toContain('DonDownload-1.3.2-x64-setup.exe.blockmap')
+    expect(assets).toContain('DonDownload-1.3.3-x64-setup.exe.blockmap')
     expect(assets[assets.length - 1]).toBe('aria2-1.37.0.tar.bz2')
     expect(assets).toHaveLength(8)
   })
@@ -118,23 +118,23 @@ describe('checksummed files', () => {
       'SHA256SUMS.txt',
       'SHA256SUMS.txt.sig',
       'THIRD-PARTY-SOURCES.txt',
-      'dondownload-extension-firefox-1.3.2.xpi',
-      'DonDownload-1.3.2-x64-setup.exe.blockmap',
-      'dondownload-extension-chromium-1.3.2.zip',
-      'DonDownload-1.3.2-x64-setup.exe',
+      'dondownload-extension-firefox-1.3.3.xpi',
+      'DonDownload-1.3.3-x64-setup.exe.blockmap',
+      'dondownload-extension-chromium-1.3.3.zip',
+      'DonDownload-1.3.3-x64-setup.exe',
       'builder-debug.yml'
     ])
     expect(selection.installers).toEqual([
-      'DonDownload-1.3.2-x64-setup.exe'
+      'DonDownload-1.3.3-x64-setup.exe'
     ])
     expect(selection.extensions).toEqual([
-      'dondownload-extension-chromium-1.3.2.zip',
-      'dondownload-extension-firefox-1.3.2.xpi'
+      'dondownload-extension-chromium-1.3.3.zip',
+      'dondownload-extension-firefox-1.3.3.xpi'
     ])
-    expect(selection.all[0]).toBe('DonDownload-1.3.2-x64-setup.exe')
+    expect(selection.all[0]).toBe('DonDownload-1.3.3-x64-setup.exe')
     expect(isChecksummedAssetName('builder-debug.yml')).toBe(false)
     expect(
-      isChecksummedAssetName('dondownload-extension-firefox-1.3.2.xpi')
+      isChecksummedAssetName('dondownload-extension-firefox-1.3.3.xpi')
     ).toBe(true)
   })
 })
@@ -212,7 +212,7 @@ describe('zip writer', () => {
 
   it('produces a readable archive with the manifest at the root', () => {
     const files = [
-      { path: 'manifest.json', data: Buffer.from('{"version":"1.3.2"}') },
+      { path: 'manifest.json', data: Buffer.from('{"version":"1.3.3"}') },
       {
         path: 'icons/icon16.png',
         data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3])
@@ -265,7 +265,7 @@ describe('changelog section extraction', () => {
     '',
     '- pending',
     '',
-    '## [1.3.2] - 2026-11-19',
+    '## [1.3.3] - 2026-11-19',
     '',
     '### Added',
     '',
@@ -278,7 +278,7 @@ describe('changelog section extraction', () => {
   ].join('\n')
 
   it('returns the body of the requested version only', () => {
-    expect(extractChangelogSection(changelog, '1.3.2')).toBe(
+    expect(extractChangelogSection(changelog, '1.3.3')).toBe(
       '### Added\n\n- first public release\n'
     )
     expect(extractChangelogSection(changelog, '0.1.0')).toBe('- old\n')
@@ -286,7 +286,7 @@ describe('changelog section extraction', () => {
 
   it('returns null when the section is missing or empty', () => {
     expect(extractChangelogSection(changelog, '2.0.0')).toBeNull()
-    expect(extractChangelogSection('## [1.3.2]\n\n## [0.9.0]\n', '1.3.2')).toBeNull()
+    expect(extractChangelogSection('## [1.3.3]\n\n## [0.9.0]\n', '1.3.3')).toBeNull()
   })
 })
 
@@ -350,7 +350,7 @@ describe('release checksum script', () => {
     const lines = decode(sums).trim().split('\n')
     expect(lines).toHaveLength(checksummed.length)
     expect(lines[0]).toMatch(
-      /^[0-9a-f]{64} {2}DonDownload-1\.3\.2-x64-setup\.exe$/
+      /^[0-9a-f]{64} {2}DonDownload-1\.3\.3-x64-setup\.exe$/
     )
     expect(lines[1]).toContain(extension.chromium)
     expect(lines[2]).toContain(extension.firefox)
@@ -644,7 +644,7 @@ describe('third-party source pointer', () => {
       version: VERSION,
       components
     })
-    expect(text).toContain('DonDownload 1.3.2')
+    expect(text).toContain('DonDownload 1.3.3')
     expect(text).toContain('aria2 1.37.0')
     expect(text).toContain('GPL-2.0-or-later')
     expect(text).toContain('aria2-1.37.0.tar.bz2')
