@@ -32,7 +32,7 @@ function config(
 }
 
 const environment: SmokeEnvironmentInfo = {
-  appVersion: '1.3.1',
+  appVersion: '1.3.2',
   electronVersion: '45.2.2',
   chromeVersion: '140.0.0.0',
   nodeVersion: '24.19.0',

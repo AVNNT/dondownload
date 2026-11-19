@@ -39,7 +39,7 @@
 
 ## Install
 
-1. Download **`DonDownload-1.3.1-x64-setup.exe`** from [Releases](https://github.com/AVNNT/dondownload/releases/latest).
+1. Download **`DonDownload-1.3.2-x64-setup.exe`** from [Releases](https://github.com/AVNNT/dondownload/releases/latest).
 2. Run it. No admin rights needed.
 
 > [!NOTE]
@@ -52,12 +52,12 @@
 Sends downloads, pages and videos from your browser to the app.
 
 **Chrome · Edge · Brave · Helium**
-1. Download and extract `dondownload-extension-chromium-1.3.1.zip`
+1. Download and extract `dondownload-extension-chromium-1.3.2.zip`
 2. Open `chrome://extensions`, turn on **Developer mode**
 3. **Load unpacked** → pick the folder
 
 **Firefox · Zen (140+)**
-1. Download `dondownload-extension-firefox-1.3.1.xpi`
+1. Download `dondownload-extension-firefox-1.3.2.xpi`
 2. Open the file (or drag it into a Firefox window) and confirm **Add**. It is
    signed by Mozilla, so it stays installed after a restart.
 
@@ -72,7 +72,7 @@ The app connects to the extension by itself.
 
 #### Chrome, Edge, Helium and Brave
 
-1. From the same GitHub release, download `dondownload-extension-chromium-1.3.1.zip`
+1. From the same GitHub release, download `dondownload-extension-chromium-1.3.2.zip`
    and extract it to a folder you keep (don't delete it while you use the
    extension).
 2. Open `chrome://extensions` (Edge: `edge://extensions`).
@@ -86,7 +86,7 @@ can be moved to another location without re-registering.
 
 #### Firefox and Zen (140 or newer)
 
-1. Download `dondownload-extension-firefox-1.3.1.xpi` from the same release.
+1. Download `dondownload-extension-firefox-1.3.2.xpi` from the same release.
 2. Open the file (double-click, or drag it into a Firefox window) and confirm
    **Add**. The `.xpi` in releases is signed by Mozilla through
    addons.mozilla.org, so Firefox 140+ installs it permanently: it stays

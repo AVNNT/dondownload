@@ -161,7 +161,8 @@ function withoutResolvedUrl(input: AddDownloadInput): AddDownloadInput {
   return rest
 }
 
-export function registerIpc(context: IpcContext): void {  const invoke = <T>(
+export function registerIpc(context: IpcContext): void {
+  const invoke = <T>(
     channel: string,
     handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T | Promise<T>
   ): void => {

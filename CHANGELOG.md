@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-19
+
+Security and reliability fixes from a full code review.
+
+### Security
+
+- A page in the app or an enabled site can no longer make the app request
+  loopback, home-network or cloud-metadata addresses. The "check file size"
+  probe, the browser bridge's queue-download route and the link preflight now
+  all refuse non-public hosts before any connection is made.
+- The link preflight no longer forwards the page's `Referer` (and any query
+  string in it) to a different host it redirects to, such as a CDN. It is sent
+  only to the original host and scheme, like a one-download cookie.
+- A download prepared by the page's own request can no longer replace the
+  verified final address with an unverified one; the main process re-checks it.
+- Downloads that carry a login cookie now hand the downloader only the verified
+  final address on the cookie's own host, and retries reuse that address. If
+  that address redirects again during the download, the downloader can still
+  follow it; closing that needs a downloader update.
+
+### Fixed
+
+- Removing a download at the same moment as pausing, resuming or restarting it
+  no longer brings the row back or leaves a download running in the engine.
+- A retry or a resume from history now continues the partially downloaded file
+  instead of leaving it behind and starting a second `name (2)` copy. A
+  complete or unrelated file is still never overwritten.
+- After a same-process restart of the download engine, downloads that still
+  have their saved login no longer show "needs login".
+- Clearing the download list now reports which part of the view failed and
+  restores only those rows; progress can no longer step backwards after a
+  window has been reopened.
+- Queueing a new download while another one is paused in the same folder no
+  longer deletes the paused download's temporary data.
+- For downloads taken from a page's media, the login cookie now goes to the
+  media engine through a private cookie file instead of the command line.
+- The app now keeps the history file's last good backup, starts from it (or a
+  fresh history) when the file is damaged instead of failing to launch, and
+  logs it clearly. A damaged or newer file is never silently replaced.
+- Shows, opens and deletes of a download now confirm the real path is inside
+  its own folder, and opening a download at startup no longer stalls.
+- If saving history fails, the app now keeps logging it (rate-limited) instead
+  of going quiet for the rest of the session.
+- The native-messaging registration now adopts an existing host path only when
+  it is the app's own host inside its install folder; otherwise it rewrites it.
+- Cancelling a media download while it is starting up no longer leaves a stray
+  temporary folder or a running child process.
+
 ## [1.3.1] - 2026-11-18
 
 A stability release: bug fixes only, no new features.
@@ -143,6 +191,7 @@ Initial tagged snapshot: the Electron app with aria2 downloads, SQLite history,
 tray behaviour, the browser extension, media downloads through yt-dlp and
 FFmpeg, the Smart Link Scanner, batches, settings and the Windows installer.
 
+[1.3.2]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.2
 [1.3.1]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.1
 [1.3.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.3.0
 [1.2.0]: https://github.com/AVNNT/dondownload/releases/tag/v1.2.0

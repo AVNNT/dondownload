@@ -586,7 +586,7 @@ export function createPreviewApi(
     return {
       status: 'not-configured',
       configured: false,
-      currentVersion: '1.3.1',
+      currentVersion: '1.3.2',
       latestVersion: null,
       progressPercent: null,
       message: 'Update source not configured',
