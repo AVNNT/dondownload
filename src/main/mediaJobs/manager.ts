@@ -36,7 +36,7 @@ import {
 } from '../downloads/deleteFile'
 import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
-import { logError } from '../logging'
+import { PersistenceErrorLogger } from '../logging/persistenceErrors'
 import { isPathInside, safeContainmentRoot } from '../pathContainment'
 
 /**
@@ -333,7 +333,8 @@ export class MediaJobsManager {
   /** Bumped by every change that the published snapshot must reflect. */
   private revision = 0
   private publishedRevision = 0
-  private persistenceErrorLogged = false
+  /** Rate-limited: one line per failure window, reset after a successful write. */
+  private readonly persistenceLog: PersistenceErrorLogger
   private closed = false
   private tool: MediaToolState = {
     status: 'stopped',
@@ -358,6 +359,9 @@ export class MediaJobsManager {
     this.onExtractorFailure = options.onExtractorFailure ?? null
     this.host = options.host ?? createNoopHost()
 
+    this.persistenceLog = new PersistenceErrorLogger('Media job history', () =>
+      this.now()
+    )
     this.loadPersistedJobs()
   }
 
@@ -1785,6 +1789,7 @@ export class MediaJobsManager {
     if (interrupted.length > 0) {
       try {
         this.database.saveManyMediaJobs(interrupted)
+        this.persistenceLog.succeeded()
       } catch {
         this.logPersistenceError('could not be saved')
       }
@@ -1796,6 +1801,7 @@ export class MediaJobsManager {
     try {
       this.database.saveMediaJob({ ...job.record })
       this.dirtyIds.delete(job.record.id)
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
       this.markDirty(job)
@@ -1862,6 +1868,7 @@ export class MediaJobsManager {
       for (const id of ids) {
         this.dirtyIds.delete(id)
       }
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
       this.scheduleFlush()
@@ -1869,9 +1876,7 @@ export class MediaJobsManager {
   }
 
   private logPersistenceError(context: string): void {
-    if (this.persistenceErrorLogged) return
-    this.persistenceErrorLogged = true
     // Never include URLs, paths or record payloads in logs.
-    logError(`Media job history ${context}.`)
+    this.persistenceLog.failed(context)
   }
 }
