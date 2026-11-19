@@ -76,7 +76,7 @@ import {
   PAIR_RENAME_VIDEO_FAILED,
   applyPairRename
 } from '../scanner/pairRename'
-import { logError } from '../logging'
+import { PersistenceErrorLogger } from '../logging/persistenceErrors'
 
 /**
  * Milestone 3B batch orchestration.
@@ -866,7 +866,8 @@ export class BatchManager {
   private pumpScheduled = false
   private closed = false
   private lastPublished: string | null = null
-  private persistenceErrorLogged = false
+  /** Rate-limited: one line per failure window, reset after a successful write. */
+  private readonly persistenceLog: PersistenceErrorLogger
 
   constructor(options: BatchManagerOptions) {
     this.downloads = options.downloads
@@ -888,6 +889,10 @@ export class BatchManager {
     this.resolvePairingFolder = options.resolvePairingFolder ?? null
     this.decryptMega = options.decryptMega ?? decryptMegaFile
 
+    // Built after `now` is assigned; its first use is the load below.
+    this.persistenceLog = new PersistenceErrorLogger('Batch history', () =>
+      this.now()
+    )
     this.loadPersistedBatches()
   }
 
@@ -3892,6 +3897,7 @@ export class BatchManager {
     try {
       this.database.saveBatchWithItems(batch.record, [...batch.items.values()])
       for (const item of batch.items.values()) this.dirtyItems.delete(item.id)
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
     }
@@ -3901,6 +3907,7 @@ export class BatchManager {
     if (!this.database) return
     try {
       this.database.saveBatch(batch.record)
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
     }
@@ -3911,6 +3918,7 @@ export class BatchManager {
     try {
       this.database.saveManyBatchItems([{ ...item }])
       this.dirtyItems.delete(item.id)
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
       this.markItemDirty(item)
@@ -3963,6 +3971,7 @@ export class BatchManager {
     try {
       this.database.saveManyBatchItems(records)
       this.dirtyItems.clear()
+      this.persistenceLog.succeeded()
     } catch {
       this.logPersistenceError('could not be saved')
       this.scheduleFlush()
@@ -3970,10 +3979,8 @@ export class BatchManager {
   }
 
   private logPersistenceError(context: string): void {
-    if (this.persistenceErrorLogged) return
-    this.persistenceErrorLogged = true
     // Never include URLs, paths or record payloads in logs.
-    logError(`Batch history ${context}.`)
+    this.persistenceLog.failed(context)
   }
 
   /* -------------------------------- polling -------------------------------- */

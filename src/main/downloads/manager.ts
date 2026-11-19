@@ -88,6 +88,7 @@ import {
 import { nextPollDelay } from './pollInterval'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
 import { logError } from '../logging'
+import { PersistenceErrorLogger } from '../logging/persistenceErrors'
 
 /** Progress is flushed at most this often; critical transitions write at once. */
 const PROGRESS_PERSIST_INTERVAL_MS = 2_500
@@ -308,7 +309,11 @@ export class DownloadManager {
    */
   private revision = 0
   private publishedRevision = 0
-  private persistenceErrorLogged = false
+  /** Rate-limited: one line per failure window, reset after a successful write. */
+  private readonly persistenceLog = new PersistenceErrorLogger(
+    'Download history',
+    () => this.now()
+  )
   /**
    * Downloads added into the plain default root while sorting is on, before
    * aria2 could reveal the final Content-Disposition name. They may need one
@@ -398,10 +403,15 @@ export class DownloadManager {
 
         const blockReason = this.blockReasons.get(record.id) ?? null
 
-        // The browser Cookie was memory-only. A restart cannot replay the
-        // authenticated request, so fail with a clear message and never fall
-        // back to an anonymous re-download.
-        if (this.needsLoginIds.has(record.id)) {
+        // The browser Cookie is memory-only. Without live credentials in this
+        // process the request cannot be replayed, so fail with a clear message
+        // and never fall back to an anonymous re-download. A same-process aria2
+        // restart keeps the in-memory headers, so that row is reconciled
+        // normally instead of being failed while its Cookie is still held.
+        if (
+          this.needsLoginIds.has(record.id) &&
+          !this.requestHeaders.has(record.id)
+        ) {
           this.updateRecord(record, {
             gid: '',
             status: 'error',
@@ -471,6 +481,7 @@ export class DownloadManager {
           this.applyStatus(record, tracked)
         } else if (outcome === 'interrupt') {
           this.updateRecord(record, {
+            gid: '',
             status: 'interrupted',
             speedBps: 0,
             etaSeconds: null,
@@ -1061,6 +1072,8 @@ export class DownloadManager {
           throw this.wrapRpcError(error, 'The download could not be paused.')
         }
       }
+      // Removed while aria2 was being reached: never persist it back.
+      if (!this.records.has(record.id)) return this.getSnapshot()
     }
 
     this.startNowIds.delete(record.id)
@@ -1140,6 +1153,8 @@ export class DownloadManager {
     this.clearAutoRetry(record.id)
     this.startNowIds.add(record.id)
     const client = await this.aria2.getClient()
+    // Removed while aria2 was being reached. `submitWaiting` re-checks too.
+    if (!this.records.has(record.id)) return this.getSnapshot()
 
     if (record.gid === '') {
       await this.ensureDownloadDirectory()
@@ -1147,6 +1162,7 @@ export class DownloadManager {
     } else {
       try {
         await client.call('aria2.unpause', [record.gid])
+        if (!this.records.has(record.id)) return this.getSnapshot()
         this.updateRecord(record, {
           status: 'waiting',
           errorMessage: null,
@@ -1158,13 +1174,15 @@ export class DownloadManager {
           throw this.wrapRpcError(error, 'The download could not be resumed.')
         }
         // aria2 cannot reattach a paused GID across a process restart. The user
-        // explicitly chose Resume, so re-add with continuation enabled. aria2's
-        // global --continue/--allow-overwrite=false/--auto-file-renaming settings
-        // keep any partial file and never overwrite an existing one.
+        // explicitly chose Resume, so re-add with continuation enabled: the
+        // job keeps its output name, aria2 continues the partial file and
+        // never overwrites it, and the rename fallback stays for an unrelated
+        // existing file.
         await this.resumeFromHistory(client, record)
       }
     }
 
+    if (!this.records.has(record.id)) return this.getSnapshot()
     this.persistNow(record)
     this.persistBlockReason(record)
     this.publish()
@@ -1192,6 +1210,8 @@ export class DownloadManager {
     this.clearAutoRetry(record.id)
     this.startNowIds.add(record.id)
     const client = await this.aria2.getClient()
+    // Removed while aria2 was being reached. `submitWaiting` re-checks too.
+    if (!this.records.has(record.id)) return this.getSnapshot()
 
     if (record.gid === '') {
       await this.ensureDownloadDirectory()
@@ -1199,6 +1219,7 @@ export class DownloadManager {
     } else {
       try {
         await client.call('aria2.unpause', [record.gid])
+        if (!this.records.has(record.id)) return this.getSnapshot()
         this.updateRecord(record, {
           status: 'waiting',
           speedBps: 0,
@@ -1215,6 +1236,7 @@ export class DownloadManager {
       }
     }
 
+    if (!this.records.has(record.id)) return this.getSnapshot()
     this.persistNow(record)
     this.persistBlockReason(record)
     this.publish(true)
@@ -1273,12 +1295,17 @@ export class DownloadManager {
     }
 
     const client = await this.aria2.getClient()
+    // Remove may have finished while aria2 was being reached: a removed record
+    // must be neither persisted again (its row would be re-inserted) nor given
+    // a live GID that nothing observes.
+    if (!this.records.has(record.id)) return
     if (record.gid !== '') await this.removeFromAria2(client, record.gid)
 
     // Retry is explicit and must not be immediately re-blocked by schedule or
     // allowed hours. It keeps the stored controls for the next restart.
     this.startNowIds.add(record.id)
     await this.ensureDownloadDirectory(record.dir)
+    if (!this.records.has(record.id)) return
     const explicitFilename = this.explicitFilenames.get(record.id)
     const gid = await this.addUri(
       client,
@@ -1288,8 +1315,18 @@ export class DownloadManager {
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
       record.dir,
-      this.allowsOutsideRoot(record.id)
+      this.allowsOutsideRoot(record.id),
+      // Keep the exact output name and continue the partial file instead of
+      // letting aria2 auto-rename to `name (2)` / `.1` and orphan the old one.
+      { record }
     )
+    if (!this.records.has(record.id)) {
+      // A retry of an unrelated missing file re-adds with auto-renaming; that
+      // replacement must not outlive its removed record either.
+      await this.removeFromAria2(client, gid)
+      this.publish(true)
+      return
+    }
 
     this.updateRecord(record, {
       gid,
@@ -1663,6 +1700,9 @@ export class DownloadManager {
     this.submittingIds.add(record.id)
     try {
       await this.ensureDownloadDirectory(record.dir)
+      // Remove may have completed while the folder was being created. Adding
+      // now would hand aria2 a job nothing observes.
+      if (!this.records.has(record.id)) return
       const gid = await this.addUri(
         client,
         this.resolvedUrls.get(record.id) ?? record.url,
@@ -1673,6 +1713,12 @@ export class DownloadManager {
         record.dir,
         this.allowsOutsideRoot(record.id)
       )
+      if (!this.records.has(record.id)) {
+        // Removed during the add: drop the new GID instead of persisting the
+        // captured record back into the list as a zombie row.
+        await this.removeFromAria2(client, gid)
+        return
+      }
       this.updateRecord(record, {
         gid,
         status: 'queued',
@@ -1687,6 +1733,7 @@ export class DownloadManager {
       this.persistDownloadControls(record)
     } catch (error) {
       if (propagateError) throw error
+      if (!this.records.has(record.id)) return
       this.updateRecord(record, {
         status: 'error',
         speedBps: 0,
@@ -2007,8 +2054,14 @@ export class DownloadManager {
       this.requestHeaders.get(record.id),
       this.cookieHosts.get(record.id),
       record.dir,
-      this.allowsOutsideRoot(record.id)
+      this.allowsOutsideRoot(record.id),
+      { record }
     )
+    if (!this.records.has(record.id)) {
+      // The record was removed during the add; its GID would be orphaned.
+      await this.removeFromAria2(client, gid)
+      return
+    }
 
     this.updateRecord(record, {
       gid,
@@ -2136,6 +2189,17 @@ export class DownloadManager {
     }
   }
 
+  /**
+   * Hand one job to aria2.
+   *
+   * A genuinely new download keeps aria2's auto-renaming so it can never
+   * overwrite an unrelated file. A retry/restart of an existing record passes
+   * `resume` so the job keeps its exact output name: `continue` then resumes
+   * the partial file already on disk instead of writing a second `name (2)` /
+   * `.1` copy and orphaning the first. That only happens when the name holds
+   * this record's own reported partial; any other file keeps auto-renaming and
+   * is never overwritten.
+   */
   private async addUri(
     client: Aria2Client,
     rawUrl: string,
@@ -2144,7 +2208,9 @@ export class DownloadManager {
     headers?: DownloadRequestHeaders,
     cookieHost?: string,
     directory: string = this.downloadDir,
-    allowOutsideRoot = false
+    allowOutsideRoot = false,
+    /** Retry/restart of an existing record: keep `out` and continue the partial. */
+    resume: { record: DownloadItem } | null = null
   ): Promise<string> {
     // Re-validate even for records loaded from SQLite; the database is not a
     // trusted source for URL schemes if it was modified outside the app.
@@ -2216,6 +2282,33 @@ export class DownloadManager {
       options['max-download-limit'] = String(controls.speedLimitBps)
     }
 
+    // A retry keeps the exact output name so aria2's `continue` resumes the
+    // partial file already on disk instead of writing `name (2)` / `.1` and
+    // orphaning the old one. The file behind that name is classified before
+    // the add: aria2 can start a new job immediately, so a check afterwards
+    // could no longer undo an overwrite.
+    let keepOutputName = false
+    const outputName = options.out
+    if (resume !== null && typeof outputName === 'string') {
+      const target = await this.continuationTarget(resume.record, outputName)
+      const onDisk = await fs
+        .stat(path.join(outputDirectory, outputName))
+        .catch(() => null)
+      // Only a partial whose bytes aria2 itself reported (`target === 'own'`)
+      // can be continued safely: aria2's `continue` resumes from the first
+      // reported byte *below* the file size, so any larger or unreported file
+      // (e.g. an earlier full download with the same name) would be corrupted.
+      // A cancelled row keeps only what aria2 reported; a failed row also
+      // keeps the known size. Everything else keeps aria2's auto-renaming and
+      // a free suffixed name.
+      const known = resume.record.completedBytes
+      keepOutputName =
+        target === 'own' &&
+        onDisk !== null &&
+        (known > 0 ? onDisk.size < known : onDisk.size > 0)
+    }
+    options['auto-file-renaming'] = keepOutputName ? 'false' : 'true'
+
     try {
       // aria2.addUri returns the new GID directly, not an object.
       const result = await client.call<unknown>('aria2.addUri', [
@@ -2230,6 +2323,42 @@ export class DownloadManager {
         'Check that the URL is reachable and that the download folder is writable.'
       )
     }
+  }
+
+  /**
+   * Classify the output file at a retry/restart's explicit name:
+   *
+   * - `own`: it can only be this record's partial (nothing else unfinished
+   *   claims the name), so continuing it is safe;
+   * - `foreign`: another unfinished record claims the name (the case where
+   *   aria2 auto-renaming chose a suffixed name), or the file is already as
+   *   large as the total reported for this job;
+   * - `unknown`: no file exists yet.
+   */
+  private async continuationTarget(
+    record: DownloadItem,
+    filename: string
+  ): Promise<'own' | 'foreign' | 'unknown'> {
+    const directory = path.resolve(record.dir)
+    for (const other of this.records.values()) {
+      if (other.id === record.id || !UNFINISHED_STATUSES.has(other.status)) {
+        continue
+      }
+      if (other.filename === filename && path.resolve(other.dir) === directory) {
+        return 'foreign'
+      }
+    }
+    const stat = await fs
+      .stat(path.join(directory, filename))
+      .catch(() => null)
+    if (stat === null) return 'unknown'
+    if (!stat.isFile()) return 'foreign'
+    // Without a reported byte count, the total is the only evidence: a file
+    // smaller than the total is a partial, while one at least as large is a
+    // finished copy of the same name (possibly from another job).
+    const known = Math.max(record.completedBytes, record.totalBytes)
+    if (known === 0) return 'unknown'
+    return stat.size < known ? 'own' : 'foreign'
   }
 
   private wrapRpcError(
@@ -2609,6 +2738,7 @@ export class DownloadManager {
       this.database.save(entry)
       this.persistedSignatures.set(record.id, signature)
       this.dirtyIds.delete(record.id)
+      this.persistenceLog.succeeded()
     } catch (error) {
       this.logPersistenceError('could not be saved', error)
       this.markDirty(record)
@@ -2707,6 +2837,7 @@ export class DownloadManager {
       for (const id of ids) {
         this.dirtyIds.delete(id)
       }
+      this.persistenceLog.succeeded()
     } catch (error) {
       this.logPersistenceError('could not be saved', error)
       this.scheduleFlush()
@@ -2714,11 +2845,10 @@ export class DownloadManager {
   }
 
   private logPersistenceError(context: string, error: unknown): void {
-    if (this.persistenceErrorLogged) return
-    this.persistenceErrorLogged = true
     const detail = error instanceof Error ? error.message : 'unknown error'
-    // Never include download URLs (or any payload) in logs.
-    logError(`Download history ${context}: %s`, detail)
+    // Never include download URLs (or any payload) in logs. The rate limiter
+    // keeps a broken-and-retried store visible without a line per attempt.
+    this.persistenceLog.failed(`${context}: ${detail}`)
   }
 
   private ensurePolling(): void {

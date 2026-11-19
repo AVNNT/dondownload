@@ -660,6 +660,78 @@ runIntegration('aria2 HTTP integration', () => {
     expect(downloaded.equals(rangePayload)).toBe(true)
   }, 60_000)
 
+  it('retries a cancelled transfer into the same partial file with Range, not a second copy', async () => {
+    if (!httpServer) throw new Error('HTTP test server is not ready.')
+
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'dondownload-retry-integration-')
+    )
+    tempDirs.push(root)
+    const retryDir = path.join(root, 'downloads')
+    const filename = 'retry-same-file.bin'
+    const filePath = path.join(retryDir, filename)
+    const service = new Aria2Service(() => retryDir)
+    const manager = new DownloadManager(service, retryDir, () => undefined)
+    services.push(service)
+    managers.push(manager)
+
+    await service.start()
+    const added = await manager.add({ url: rangeUrl, filename })
+    const id = added.downloads[0]?.id
+    if (!id) throw new Error('The added download has no id.')
+
+    const partial = await waitForDownload(
+      manager,
+      id,
+      (download) => download.status === 'active' && download.completedBytes > 0,
+      'the transfer to write a partial file',
+      20_000
+    )
+    expect(partial.completedBytes).toBeLessThan(rangePayload.length)
+
+    // Cancelling is not a failed attempt: Retry continues the partial file.
+    await manager.cancel(id)
+    const cancelled = getDownload(manager, id)
+    expect(cancelled.status).toBe('cancelled')
+    const keptSize = (await fs.stat(filePath)).size
+    expect(keptSize).toBeGreaterThan(0)
+    expect(keptSize).toBeLessThan(rangePayload.length)
+
+    const rangeCountBeforeRetry = httpServer.rangeRequests.length
+    const reusedName = getDownload(manager, id).filename
+    await manager.retry(id)
+
+    const completed = await waitForDownload(
+      manager,
+      id,
+      (download) => download.status === 'complete',
+      'the retried transfer to finish in the same file',
+      60_000
+    )
+    expect(completed.completedBytes).toBe(rangePayload.length)
+    // The retry touched the exact file it reports, never a
+    // `retry-same-file (2).bin` copy that would orphan the first one.
+    expect(completed.filename).toBe(reusedName)
+    // aria2 reports the path with forward slashes.
+    expect(path.resolve(completed.filePath ?? '')).toBe(path.resolve(filePath))
+    expect(
+      (await fs.readdir(retryDir)).filter((entry) => entry !== filename)
+    ).toEqual([])
+
+    // The retry either resumed from the kept bytes or was a deliberate fresh
+    // start in the same file, but the file it touched is the reported one.
+    const retryRanges = httpServer.rangeRequests.slice(rangeCountBeforeRetry)
+    const resumedFromPartial = retryRanges.some(
+      (range) => range.start > 0 && range.start <= keptSize
+    )
+    const restartedFromZero = retryRanges.some((range) => range.start === 0)
+    expect(resumedFromPartial || restartedFromZero).toBe(true)
+    if (resumedFromPartial) expect(restartedFromZero).toBe(false)
+
+    const downloaded = await fs.readFile(filePath)
+    expect(downloaded.equals(rangePayload)).toBe(true)
+  }, 90_000)
+
   it('holds a scheduled download before submitting it to real aria2, then starts it when due', async () => {
     if (!httpServer) throw new Error('HTTP test server is not ready.')
 
