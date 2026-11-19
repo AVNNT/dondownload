@@ -480,13 +480,25 @@ class FakePersistence implements BatchPersistencePort {
   loadCalls = 0
   loadError: Error | null = null
 
+  /** Read `loadBatchItems` calls, as the real store would see them. */
+  readonly itemLoads: string[] = []
   loadBatches(): StoredBatchRecord[] {
     this.loadCalls += 1
     if (this.loadError) throw this.loadError
     return [...this.rows.values()].map((entry) => ({
       record: { ...entry.record },
-      items: entry.items.map((item) => ({ ...item }))
+      // Finished batches load lazily, exactly like DownloadDatabase.
+      items:
+        entry.record.status === 'queued' || entry.record.status === 'running'
+          ? entry.items.map((item) => ({ ...item }))
+          : []
     }))
+  }
+
+  loadBatchItems(batchId: string): BatchItemRecord[] {
+    this.itemLoads.push(batchId)
+    const entry = this.rows.get(batchId)
+    return entry ? entry.items.map((item) => ({ ...item })) : []
   }
 
   saveBatch(record: BatchRecord): void {
@@ -670,6 +682,37 @@ describe('batch persistence and restart recovery', () => {
       'interrupted',
       'complete'
     ])
+  })
+
+  it('keeps a finished batch itemless at startup and hydrates it on demand', () => {
+    const database = new FakePersistence()
+    database.seed(
+      batchRecord({ id: 'batch_finished', status: 'complete', completedAt: NOW }),
+      [
+        batchItem({ id: 'bitem_finished_1', batchId: 'batch_finished' }),
+        batchItem({
+          id: 'bitem_finished_2',
+          batchId: 'batch_finished',
+          position: 1,
+          status: 'complete'
+        })
+      ]
+    )
+
+    const { manager } = createHarness({ database })
+
+    // Startup asked for the parent rows only.
+    expect(database.itemLoads).toEqual([])
+    // The snapshot needs the items, so it reads exactly that batch once.
+    const snapshot = manager.getBatchSnapshot()
+    expect(snapshot.batches[0]?.items.map((item) => item.id)).toEqual([
+      'bitem_finished_1',
+      'bitem_finished_2'
+    ])
+    expect(database.itemLoads).toEqual(['batch_finished'])
+    // Afterwards the rows stay in memory; no repeat read.
+    manager.getBatchSnapshot()
+    expect(database.itemLoads).toEqual(['batch_finished'])
   })
 
   it('persists terminal progress and child mappings', async () => {

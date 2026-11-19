@@ -246,7 +246,14 @@ export interface BatchMegaPort {
 }
 
 export interface BatchPersistencePort {
+  /**
+   * Every batch; `items` is populated only for unfinished batches. A finished
+   * batch's items are read on demand through `loadBatchItems`, when it is
+   * still in memory.
+   */
   loadBatches(): StoredBatchRecord[]
+  /** Items of one batch, for a finished batch loaded without them. */
+  loadBatchItems?(batchId: string): BatchItemRecord[]
   saveBatch(record: BatchRecord): void
   saveBatchWithItems(
     record: BatchRecord,
@@ -312,6 +319,11 @@ export interface BatchManagerOptions {
 interface ManagedBatch {
   record: BatchRecord
   items: Map<string, BatchItemRecord>
+  /**
+   * True for a finished batch loaded at startup without its item rows. They
+   * are fetched once through `loadBatchItems` when something needs them.
+   */
+  itemsUnloaded?: boolean
 }
 
 /**
@@ -3797,6 +3809,13 @@ export class BatchManager {
     const now = this.now()
     for (const entry of stored) {
       const record = entry.record
+      // Only a finished batch with no rows and a port that can read them back
+      // is lazy; anything else keeps exactly what the port returned.
+      const itemsUnloaded =
+        entry.items.length === 0 &&
+        !isActiveBatchStatus(record.status) &&
+        record.status !== 'cancelled' &&
+        typeof this.database.loadBatchItems === 'function'
       let repaired = false
 
       if (record.sourceUrl !== null) {
@@ -3843,10 +3862,14 @@ export class BatchManager {
       }
 
       const batch: ManagedBatch = { record, items }
+      if (itemsUnloaded) batch.itemsUnloaded = true
       this.batches.set(record.id, batch)
 
+      // A finished batch loaded with lazy items has no rows in memory; write
+      // its parent row alone rather than submitting an empty item list.
       if (repaired) {
-        this.persistBatchWithItems(batch)
+        if (batch.itemsUnloaded) this.persistBatchNow(batch)
+        else this.persistBatchWithItems(batch)
       }
     }
   }
@@ -3998,6 +4021,7 @@ export class BatchManager {
     itemId: string
   }): { batch: ManagedBatch; item: BatchItemRecord } {
     const batch = this.requireBatch(input.batchId)
+    this.ensureBatchItemsLoaded(batch)
     const item = batch.items.get(input.itemId)
     if (!item) {
       throw new AppError(
@@ -4040,8 +4064,41 @@ export class BatchManager {
 
   private toPublicBatch(batch: ManagedBatch): Batch {
     return parseBatch(
-      toPublicBatch(batch.record, [...batch.items.values()])
+      toPublicBatch(batch.record, this.itemsForPublicView(batch))
     )
+  }
+
+  /**
+   * Items for a published batch. A finished batch loaded at startup keeps no
+   * item rows in memory, so it is hydrated on first use. A hydrate that fails
+   * degrades to the parent row alone rather than breaking every snapshot.
+   */
+  private itemsForPublicView(batch: ManagedBatch): BatchItemRecord[] {
+    if (!batch.itemsUnloaded) return [...batch.items.values()]
+    this.ensureBatchItemsLoaded(batch)
+    return [...batch.items.values()]
+  }
+
+  /** Load a finished batch's item rows into memory once. Never throws. */
+  private ensureBatchItemsLoaded(batch: ManagedBatch): void {
+    if (!batch.itemsUnloaded) return
+    const loadItems = this.database?.loadBatchItems
+    if (!this.database || typeof loadItems !== 'function') {
+      // The port cannot supply them; treat the batch as genuinely itemless.
+      batch.itemsUnloaded = false
+      return
+    }
+    let loaded: BatchItemRecord[]
+    try {
+      loaded = loadItems.call(this.database, batch.record.id)
+    } catch {
+      this.logPersistenceError('could not be loaded')
+      return
+    }
+    for (const loadedItem of loaded) {
+      batch.items.set(loadedItem.id, { ...loadedItem })
+    }
+    batch.itemsUnloaded = false
   }
 
   private sortedBatches(): ManagedBatch[] {

@@ -58,6 +58,8 @@ class FakeRegistry implements NativeHostRegistry {
 class FakeFileSystem implements RegistrationFileSystem {
   readonly files = new Map<string, string>()
   readonly existingExecutables = new Set<string>()
+  /** Simulated links: an existing path maps to the path it really resolves to. */
+  readonly links = new Map<string, string>()
   readonly writes: Array<{ path: string; contents: string }> = []
   readonly removed: string[] = []
 
@@ -77,6 +79,12 @@ class FakeFileSystem implements RegistrationFileSystem {
 
   async exists(filePath: string): Promise<boolean> {
     return this.files.has(filePath) || this.existingExecutables.has(filePath)
+  }
+
+  async realPath(filePath: string): Promise<string | null> {
+    const linked = this.links.get(filePath)
+    if (linked !== undefined) return linked
+    return this.existingExecutables.has(filePath) ? filePath : null
   }
 }
 
@@ -111,7 +119,10 @@ function readManifest(fs: FakeFileSystem): {
   type: string
   allowed_origins: string[]
 } {
-  const raw = fs.files.get(MANIFEST_PATH)
+  // The last manifest the run wrote, or the seeded one when a run happened to
+  // leave it byte-identical (an idempotent repair writes nothing).
+  const written = fs.writes.filter((write) => write.path === MANIFEST_PATH).at(-1)
+  const raw = written?.contents ?? fs.files.get(MANIFEST_PATH)
   if (raw === undefined) throw new Error('manifest was not written')
   return JSON.parse(raw) as ReturnType<typeof readManifest>
 }
@@ -172,7 +183,8 @@ describe('native messaging auto-registration', () => {
 
   it('keeps existing valid origins and drops invalid or wildcard entries', async () => {
     const { deps, fs } = dependencies()
-    const existingHost = path.join(ROOT, 'native', 'dondownload-native-host.exe')
+    // The packaged app's own host, inside its resources folder.
+    const existingHost = path.join(RESOURCES, 'native', 'dondownload-native-host.exe')
     fs.existingExecutables.add(existingHost)
     fs.files.set(
       MANIFEST_PATH,
@@ -277,6 +289,51 @@ describe('native messaging auto-registration', () => {
         path.join(RESOURCES, 'native', 'dondownload-native-host.exe')
       )
     }
+  })
+
+  it('never adopts a planted host binary outside the trusted install folder', async () => {
+    const trusted = path.join(RESOURCES, 'native', 'dondownload-native-host.exe')
+    const planted = path.join(
+      APP_DATA,
+      'DonDownload',
+      'evil',
+      'dondownload-native-host.exe'
+    )
+    for (const existingPath of [
+      // A same-user process can write here; same basename, still untrusted.
+      planted,
+      // A sibling folder whose name merely starts with the trusted one.
+      'C:\\Program Files\\DonDownload\\resources\\native2\\dondownload-native-host.exe'
+    ]) {
+      const { deps, fs } = dependencies()
+      fs.existingExecutables.add(existingPath)
+      // Even the trusted executable exists, so adoption is decided on its own.
+      fs.existingExecutables.add(trusted)
+      fs.files.set(
+        MANIFEST_PATH,
+        JSON.stringify({ path: existingPath, allowed_origins: [EXTENSION_ORIGIN] })
+      )
+
+      const status = await registerNativeHost(deps)
+
+      expect(status.hostPath).toBe(trusted)
+      expect(readManifest(fs).path).toBe(trusted)
+    }
+  })
+
+  it('keeps adopting the in-folder host path that the app itself wrote', async () => {
+    const trusted = path.join(RESOURCES, 'native', 'dondownload-native-host.exe')
+    const { deps, fs } = dependencies()
+    fs.existingExecutables.add(trusted)
+
+    await registerNativeHost(deps)
+    expect(readManifest(fs).path).toBe(trusted)
+    const writeCount = fs.writes.length
+
+    // A second run adopts it and writes nothing.
+    await registerNativeHost(deps)
+    expect(readManifest(fs).path).toBe(trusted)
+    expect(fs.writes).toHaveLength(writeCount)
   })
 
   it('uses the repository executable in the dev app', async () => {

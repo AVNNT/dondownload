@@ -967,6 +967,23 @@ if (unregisterRequested) {
     }
     try {
       database = openDownloadDatabase(databasePath)
+      // A damaged file is now quarantined and either the last good backup or
+      // an empty history is in use, so persistence keeps working. Say so
+      // plainly and point at the preserved file; never log URLs or payloads.
+      const recovery = database.openReport
+      if (recovery.status === 'recovered' || recovery.status === 'recreated') {
+        logError(
+          recovery.status === 'recovered'
+            ? 'Download history was damaged and restored from the last backup (%s).'
+            : 'Download history was damaged and could not be restored; a new empty history was created (%s).',
+          recovery.corruptPath ?? 'unknown file'
+        )
+        if (!app.isPackaged) {
+          console.error(
+            `Download history ${recovery.status}: ${recovery.detail ?? 'unknown error'}`
+          )
+        }
+      }
     } catch (error) {
       // Keep the app usable if storage is unavailable; downloads still work but
       // history will not survive a relaunch. Do not log URLs or payloads.

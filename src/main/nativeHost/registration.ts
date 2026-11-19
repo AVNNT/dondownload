@@ -38,6 +38,11 @@ export interface RegistrationFileSystem {
   writeFileAtomic(filePath: string, contents: string): Promise<void>
   removeFile(filePath: string): Promise<void>
   exists(filePath: string): Promise<boolean>
+  /**
+   * Follow links to the real path, or null when it cannot be resolved. Used
+   * before an existing manifest's host path is adopted.
+   */
+  realPath?(filePath: string): Promise<string | null>
 }
 
 export interface RegistrationDependencies {
@@ -187,23 +192,58 @@ function parseManifest(raw: string | null): ParsedNativeManifest | null {
   }
 }
 
+/** The folder this installation writes its own host executable into. */
+export function trustedNativeHostDirectory(
+  deps: Pick<RegistrationDependencies, 'isPackaged' | 'resourcesPath' | 'appPath'>
+): string {
+  return path.dirname(
+    deps.isPackaged
+      ? packagedNativeHostPath(deps.resourcesPath)
+      : developmentNativeHostPath(deps.appPath)
+  )
+}
+
+/**
+ * An existing manifest's host path is adopted only when it is the app's own
+ * executable in the app's own install/resources folder and really resolves
+ * there. The manifest lives in a user-writable location, so a same-user
+ * process could otherwise plant a binary elsewhere and receive this app's
+ * bridge token and cookies. Anything else is replaced on the next write.
+ */
 async function resolveHostPath(
   deps: RegistrationDependencies,
   existing: ParsedNativeManifest | null
 ): Promise<string> {
+  const trustedPath = deps.isPackaged
+    ? packagedNativeHostPath(deps.resourcesPath)
+    : developmentNativeHostPath(deps.appPath)
   const existingPath =
     existing && typeof existing.path === 'string' ? existing.path : null
   if (
-    existingPath !== null &&
-    path.basename(existingPath).toLowerCase() === HOST_EXE_NAME &&
-    (await deps.fileSystem.exists(existingPath))
+    existingPath === null ||
+    path.basename(existingPath).toLowerCase() !== HOST_EXE_NAME
   ) {
-    return existingPath
+    return trustedPath
   }
-
-  return deps.isPackaged
-    ? packagedNativeHostPath(deps.resourcesPath)
-    : developmentNativeHostPath(deps.appPath)
+  const trustedDirectory = trustedNativeHostDirectory(deps)
+  const platform = deps.platform ?? process.platform
+  if (!isPathInsideDirectory(trustedDirectory, existingPath, platform)) {
+    return trustedPath
+  }
+  if (!(await deps.fileSystem.exists(existingPath))) return trustedPath
+  // Follow links so a junction planted in the folder cannot redirect the
+  // registration to a binary somewhere else. A checker that cannot resolve
+  // the path falls back to the lexical answer above.
+  if (deps.fileSystem.realPath !== undefined) {
+    const resolved = await deps.fileSystem.realPath(existingPath)
+    if (
+      resolved !== null &&
+      !isPathInsideDirectory(trustedDirectory, resolved, platform)
+    ) {
+      return trustedPath
+    }
+  }
+  return existingPath
 }
 
 function buildManifest(hostPath: string, allowedOrigins: string[]): NativeManifest {
@@ -556,6 +596,13 @@ export function createNodeFileSystem(): RegistrationFileSystem {
         return true
       } catch {
         return false
+      }
+    },
+    async realPath(filePath: string): Promise<string | null> {
+      try {
+        return await fs.realpath(filePath)
+      } catch {
+        return null
       }
     }
   }
