@@ -58,6 +58,7 @@ import { AppError } from '../errors'
 import { createNoopHost, type CoreHost } from '../host'
 import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
+import { assertPublicTarget } from '../net/publicTarget'
 import { isUnsafeLocalPath } from '../scanner/manualMatch'
 import type { PickedVideoFolder } from '../scanner/manualMatch'
 import {
@@ -185,10 +186,19 @@ export type CookieTargetResolver = (
  * Production resolver: reuses a caller's verified final URL when present,
  * otherwise performs the same bounded public preflight as the hand-off path.
  * `allowMedia` is required because the scanner can queue media containers.
+ *
+ * A `resolvedUrl` is never trusted blindly: the IPC path drops it entirely, and
+ * a main-process caller's value is canonicalized and run through the public
+ * target guard again so a private or invented target cannot skip preflight.
+ * The Cookie host/scheme scope is still enforced by the manager afterwards.
  */
-const defaultResolveCookieTarget: CookieTargetResolver = async (input) => {
+export const defaultResolveCookieTarget: CookieTargetResolver = async (input) => {
   if (input.resolvedUrl !== undefined) {
-    return { finalUrl: input.resolvedUrl }
+    const parsed = new URL(input.resolvedUrl)
+    parsed.hash = ''
+    const finalUrl = parsed.href
+    await assertPublicTarget(finalUrl)
+    return { finalUrl }
   }
   const result = await preflightPublicResource({
     url: input.url,

@@ -17,6 +17,7 @@ import type {
 import type {
   ApiResult,
   AppSnapshot,
+  AddDownloadInput,
   BatchSnapshot,
   SmartBatchSubmitResult,
   UrlSizeProbe
@@ -145,8 +146,22 @@ function assertTrustedSender(
   }
 }
 
-export function registerIpc(context: IpcContext): void {
-  const invoke = <T>(
+/**
+ * A `resolvedUrl` is a redirect chain that only a trusted main-process caller
+ * (the scanner probe, the hand-off preflight) may resolve. The renderer can
+ * reach `addDownload`, and accepting its value would let the page replace the
+ * verified final URL with an unvalidated one that the manager then hands to
+ * aria2 without a preflight. Drop it here; the Cookie host/scheme check still
+ * runs, but the chain is resolved by the manager's own progress-checked
+ * resolver instead of trusting the caller.
+ */
+function withoutResolvedUrl(input: AddDownloadInput): AddDownloadInput {
+  if (input.resolvedUrl === undefined) return input
+  const { resolvedUrl: _dropped, ...rest } = input
+  return rest
+}
+
+export function registerIpc(context: IpcContext): void {  const invoke = <T>(
     channel: string,
     handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T | Promise<T>
   ): void => {
@@ -221,7 +236,7 @@ export function registerIpc(context: IpcContext): void {
     // Validate before resolving the folder token, so a malformed payload never
     // touches the destination store. A save-to token is optional; without one
     // the normal, root-scoped add path is used unchanged.
-    const input = parseAddDownloadInput(rawInput)
+    const input = withoutResolvedUrl(parseAddDownloadInput(rawInput))
     if (input.destinationToken === undefined) {
       return withRevision(context.manager.add(input))
     }
