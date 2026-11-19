@@ -37,7 +37,11 @@ import {
 import { MERGE_PROGRESS_POLL_MS, readMergeProgress } from './mergeProgress'
 import type { TaskbarActiveProgress } from '../taskbar/progress'
 import { logError } from '../logging'
-import { isPathInside, safeContainmentRoot } from '../pathContainment'
+import {
+  isPathReallyInside,
+  isPathInside,
+  safeContainmentRoot
+} from '../pathContainment'
 
 /**
  * Product-side media job orchestration for Milestone 3A.
@@ -1149,7 +1153,12 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isPathInside(this.mediaContainmentRoot(record), record.filePath)) {
+    if (
+      !(await isPathReallyInside(
+        this.mediaContainmentRoot(record),
+        record.filePath
+      ))
+    ) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'
@@ -1177,7 +1186,12 @@ export class MediaJobsManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The media file is not ready yet.')
     }
-    if (!isPathInside(this.mediaContainmentRoot(record), record.filePath)) {
+    if (
+      !(await isPathReallyInside(
+        this.mediaContainmentRoot(record),
+        record.filePath
+      ))
+    ) {
       throw new AppError(
         'FILE_OUTSIDE_MEDIA_DIR',
         'The reported media file is outside the configured media folder.'

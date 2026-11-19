@@ -1,4 +1,11 @@
-import { mkdirSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import {
@@ -885,9 +892,188 @@ export function resolveDownloadDatabasePath(userDataPath: string): string {
   return path.join(userDataPath, DATABASE_FILENAME)
 }
 
-function databaseError(context: string, error: unknown): AppError {
+/** Last known-good copy of the history file, refreshed on every clean open. */
+export function backupDatabasePath(filePath: string): string {
+  return `${filePath}.bak`
+}
+
+/** What `openDownloadDatabase` had to do to get a working history file. */
+export interface DatabaseOpenReport {
+  /**
+   * `ok` — the existing file opened as-is.
+   * `fresh` — no history file existed yet.
+   * `recovered` — the file was unusable; the backup was restored.
+   * `recreated` — the file was unusable and no backup existed; a new empty
+   *   history was created and the old file kept for inspection.
+   */
+  status: 'ok' | 'fresh' | 'recovered' | 'recreated'
+  /** The quarantined file, when one was moved aside. */
+  corruptPath: string | null
+  /** A one-line, non-sensitive explanation for the log line. */
+  detail: string | null
+}
+
+/**
+ * WAL sidecar files belong to the main database file and must travel with it.
+ * Each entry pairs the live sidecar with the suffix it gets when quarantined.
+ */
+function databaseSidecars(filePath: string): Array<{ live: string; label: string }> {
+  return [
+    { live: `${filePath}-wal`, label: '-wal' },
+    { live: `${filePath}-shm`, label: '-shm' }
+  ]
+}
+
+/**
+ * Run `PRAGMA quick_check` on an already-open connection and return its
+ * problems. A healthy database answers a single `ok` row. quick_check is far
+ * cheaper than integrity_check and still catches malformed pages and trees.
+ */
+function quickCheckProblems(db: DatabaseSync): string[] {
+  const rows = db.prepare('PRAGMA quick_check').all() as Record<string, unknown>[]
+  const problems: string[] = []
+  for (const row of rows) {
+    const value = Object.values(row)[0]
+    if (typeof value === 'string' && value.trim().toLowerCase() !== 'ok') {
+      problems.push(value)
+    }
+  }
+  return problems
+}
+
+/**
+ * Validate the history file before it is migrated: a readable SQLite header,
+ * a schema that reads back, and no quick_check problems. Throws when the file
+ * looks damaged; the caller then quarantines it and restores the backup.
+ */
+function verifyExistingHistory(db: DatabaseSync): void {
+  // Reading the schema forces SQLite to parse the header and page 1. A file
+  // that is not a database at all is damage, not a schema or permission
+  // problem.
+  try {
+    db.prepare('SELECT count(*) FROM sqlite_master').get()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (/not a database|malformed|corrupt|checksum/i.test(detail)) {
+      throw new DatabaseOpenError(
+        `Download history is damaged (${detail}).`,
+        true
+      )
+    }
+    throw error
+  }
+  const problems = quickCheckProblems(db)
+  if (problems.length > 0) {
+    throw new DatabaseOpenError(
+      `Download history is damaged (quick_check: ${problems[0]}).`,
+      true
+    )
+  }
+}
+
+/** Keep `<file>.bak` in step with the current good file, atomically. */
+function refreshBackup(filePath: string): void {
+  const temporary = `${filePath}.bak.tmp`
+  const backupPath = backupDatabasePath(filePath)
+  try {
+    copyFileSync(filePath, temporary)
+    renameSync(temporary, backupPath)
+  } catch {
+    // A backup is an optimisation for the next start; never fail an open.
+    try {
+      rmSync(temporary, { force: true })
+    } catch {
+      // Nothing useful to do if the temporary copy cannot be removed.
+    }
+  }
+}
+
+/**
+ * Move an unusable history file (and its WAL sidecars) to
+ * `<name>.corrupt-<timestamp>` so it is preserved for diagnosis but never
+ * read again. `reason` is written next to it as a plain note. Returns the
+ * quarantined path, or null when nothing existed or the file could not move.
+ */
+function quarantineCorruptHistory(filePath: string, reason: string): string | null {
+  if (!existsSync(filePath)) return null
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  let corruptPath = `${filePath}.corrupt-${stamp}`
+  if (existsSync(corruptPath)) corruptPath = `${filePath}.corrupt-${stamp}-1`
+  try {
+    writeFileSync(`${corruptPath}.txt`, `${reason}\n`, 'utf8')
+  } catch {
+    // The note is informational; losing it must not block recovery.
+  }
+  try {
+    renameSync(filePath, corruptPath)
+  } catch {
+    // Windows can keep the file open; the caller then reports the failure and
+    // the app continues without persistence instead of guessing.
+    return null
+  }
+  for (const sidecar of databaseSidecars(filePath)) {
+    try {
+      if (existsSync(sidecar.live)) {
+        renameSync(sidecar.live, `${corruptPath}${sidecar.label}`)
+      }
+    } catch {
+      // Sidecars are worthless once the main file has moved.
+    }
+  }
+  return corruptPath
+}
+
+/**
+ * Restore the previous good copy over a quarantined file. Only a backup that
+ * itself passes `quick_check` is used, so a damaged backup is never resurrected.
+ */
+function restoreBackup(filePath: string): boolean {
+  const backupPath = backupDatabasePath(filePath)
+  if (!existsSync(backupPath)) return false
+  try {
+    const check = new DatabaseSync(backupPath, { readOnly: true })
+    try {
+      if (quickCheckProblems(check).length > 0) return false
+    } finally {
+      check.close()
+    }
+    copyFileSync(backupPath, filePath)
+    return true
+  } catch {
+    try {
+      rmSync(filePath, { force: true })
+    } catch {
+      // Leaving the partial copy behind lets the caller report the failure.
+    }
+    return false
+  }
+}
+
+/**
+ * A database failure the user sees like any other AppError. `recoverable`
+ * marks failures caused by the history file being damaged (a bad header or a
+ * failed quick_check), which `openDownloadDatabase` may quarantine and
+ * replace. A failed migration is not recoverable: its file is structurally
+ * sound, so replacing it would throw away rows that could still be salvaged.
+ */
+class DatabaseOpenError extends AppError {
+  constructor(
+    message: string,
+    readonly recoverable: boolean
+  ) {
+    super('DATABASE_ERROR', message)
+    this.name = 'DatabaseOpenError'
+  }
+}
+
+function databaseError(
+  context: string,
+  error: unknown,
+  /** True only when the history file itself looks damaged. */
+  recoverable = false
+): AppError {
   const detail = error instanceof Error ? error.message : 'unknown SQLite error'
-  return new AppError('DATABASE_ERROR', `${context}: ${detail}`)
+  return new DatabaseOpenError(`${context}: ${detail}`, recoverable)
 }
 
 /**
@@ -1246,7 +1432,9 @@ function rowToBatchItemRecord(
 }
 
 export class DownloadDatabase {
-  private readonly db: DatabaseSync
+  private db: DatabaseSync
+  /** What this open had to do; read by `openDownloadDatabase`'s caller. */
+  private report: DatabaseOpenReport = { status: 'fresh', corruptPath: null, detail: null }
   private readonly upsertStatement: StatementSync
   private readonly durableRowStatement: StatementSync
   private readonly selectAllStatement: StatementSync
@@ -1278,7 +1466,7 @@ export class DownloadDatabase {
 
   constructor(private readonly filePath: string) {
     mkdirSync(path.dirname(filePath), { recursive: true })
-    this.db = new DatabaseSync(filePath)
+    this.db = this.openWithRecovery()
 
     try {
       // WAL keeps small progress writes fast. synchronous=NORMAL is durable
@@ -1507,8 +1695,14 @@ export class DownloadDatabase {
           updated_at = excluded.updated_at,
           completed_at = excluded.completed_at
       `)
+      // Only unfinished batches need their items at startup. A finished batch
+      // keeps its aggregates on the parent row, so its (possibly thousands of)
+      // item rows are read on demand by `loadBatch` instead of on every launch.
       this.batchItemSelectAllStatement = this.db.prepare(`
-        SELECT * FROM batch_items ORDER BY batch_id, position
+        SELECT items.* FROM batch_items AS items
+        JOIN batches ON batches.id = items.batch_id
+        WHERE batches.status IN ('queued', 'running')
+        ORDER BY items.batch_id, items.position
       `)
       this.batchItemSelectByBatchStatement = this.db.prepare(`
         SELECT * FROM batch_items WHERE batch_id = ? ORDER BY position
@@ -1522,10 +1716,101 @@ export class DownloadDatabase {
       } catch {
         // Ignore close failures while reporting the original problem.
       }
+      // A failed migration keeps its own AppError; it must never look like a
+      // damaged file, so the recovery path leaves it alone.
       throw error instanceof AppError
         ? error
         : databaseError('Could not open download history', error)
     }
+
+    // The file opened and migrated cleanly: it becomes the next backup. Done
+    // with `copyFileSync`, so startup reads each byte once and never migrates
+    // a database from disk twice.
+    refreshBackup(this.filePath)
+  }
+
+  /**
+   * Open the history file, recovering from damage instead of silently running
+   * without persistence:
+   *
+   * 1. An existing file is accepted only when `quick_check` passes.
+   * 2. A damaged or unreadable file is moved to `<name>.corrupt-<timestamp>`.
+   * 3. The last known-good `<name>.bak` is restored when it passes its own
+   *    check; otherwise an empty history is created.
+   *
+   * Errors that are not about damage (a newer schema, an unwritable folder)
+   * still throw, so the caller can report them precisely.
+   */
+  private openWithRecovery(): DatabaseSync {
+    const existed = existsSync(this.filePath)
+    if (existed) {
+      let check: DatabaseSync | null = null
+      try {
+        check = new DatabaseSync(this.filePath)
+        verifyExistingHistory(check)
+        // Refuse a newer schema before treating the file as usable.
+        const version = schemaVersion(check)
+        if (version > SCHEMA_VERSION) {
+          throw new AppError(
+            'DATABASE_VERSION_UNSUPPORTED',
+            `Download history was created by a newer version (schema ${version}).`
+          )
+        }
+        check.close()
+        this.report = { status: 'ok', corruptPath: null, detail: null }
+        return new DatabaseSync(this.filePath)
+      } catch (error) {
+        try {
+          check?.close()
+        } catch {
+          // A connection that failed its check may already be unusable.
+        }
+        // Only damage is recoverable. A newer schema belongs to the user and
+        // an unreadable file (a lock, a denied folder) is not ours to replace.
+        if (!(error instanceof DatabaseOpenError && error.recoverable)) {
+          throw error instanceof AppError
+            ? error
+            : databaseError('Could not open download history', error)
+        }
+        const reason = error.message
+        const corruptPath = quarantineCorruptHistory(this.filePath, reason)
+        if (corruptPath === null) {
+          throw databaseError('Could not open download history', error)
+        }
+        // `restoreBackup` only copies a backup that passed its own check.
+        if (restoreBackup(this.filePath)) {
+          this.report = {
+            status: 'recovered',
+            corruptPath,
+            detail: reason
+          }
+          return new DatabaseSync(this.filePath)
+        }
+        this.report = {
+          status: 'recreated',
+          corruptPath,
+          detail: reason
+        }
+        return new DatabaseSync(this.filePath)
+      }
+    }
+
+    this.report = { status: 'fresh', corruptPath: null, detail: null }
+    return new DatabaseSync(this.filePath)
+  }
+
+  /** How this history file was opened, for the startup log line. */
+  get openReport(): DatabaseOpenReport {
+    return this.report
+  }
+
+  /** Record a recovery performed by `openDownloadDatabase`. */
+  markRecovered(
+    status: 'recovered' | 'recreated',
+    corruptPath: string,
+    detail: string
+  ): void {
+    this.report = { status, corruptPath, detail }
   }
 
   get path(): string {
@@ -2052,6 +2337,12 @@ export class DownloadDatabase {
     }
   }
 
+  /**
+   * Load every batch. Items are included only for unfinished (queued/running)
+   * batches, whose in-flight state the manager must reconcile on startup.
+   * A finished batch comes back with an empty `items` array; call
+   * `loadBatchItems` for one when its item list is actually needed.
+   */
   loadBatches(): StoredBatch[] {
     this.assertOpen()
     try {
@@ -2080,6 +2371,25 @@ export class DownloadDatabase {
         stored.push({ record, items: itemsByBatch.get(record.id) ?? [] })
       }
       return stored
+    } catch (error) {
+      throw databaseError('Could not load batch history', error)
+    }
+  }
+
+  /** Items of one batch, used when a finished batch was loaded lazily. */
+  loadBatchItems(batchId: string): BatchItemRecord[] {
+    this.assertOpen()
+    try {
+      const rows = this.batchItemSelectByBatchStatement.all(batchId) as Record<
+        string,
+        unknown
+      >[]
+      const items: BatchItemRecord[] = []
+      for (const row of rows) {
+        const item = rowToBatchItemRecord(row)
+        if (item) items.push(item)
+      }
+      return items
     } catch (error) {
       throw databaseError('Could not load batch history', error)
     }
@@ -2307,6 +2617,42 @@ export class DownloadDatabase {
   }
 }
 
+/**
+ * Open (and migrate) the download history.
+ *
+ * A damaged file that surfaces while migrating is quarantined and the last
+ * good backup — or an empty history — is used instead, so one bad file never
+ * leaves the app running without persistence. A failed migration, a newer
+ * schema, or a folder that cannot host a database still throws: none of those
+ * mean the rows are garbage.
+ */
 export function openDownloadDatabase(filePath: string): DownloadDatabase {
-  return new DownloadDatabase(filePath)
+  try {
+    return new DownloadDatabase(filePath)
+  } catch (error) {
+    // Only file damage is recoverable; everything else is reported as-is.
+    if (
+      !(error instanceof DatabaseOpenError) ||
+      !error.recoverable
+    ) {
+      throw error
+    }
+    const reason = error.message
+    const corruptPath = quarantineCorruptHistory(filePath, reason)
+    if (corruptPath === null) throw error
+    const restored = restoreBackup(filePath)
+    try {
+      const database = new DownloadDatabase(filePath)
+      database.markRecovered(
+        restored ? 'recovered' : 'recreated',
+        corruptPath,
+        reason
+      )
+      return database
+    } catch {
+      // Even a fresh file cannot be created here (permissions, disk full);
+      // report the original failure for the caller's diagnostics.
+      throw error
+    }
+  }
 }

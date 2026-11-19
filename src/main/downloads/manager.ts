@@ -60,7 +60,11 @@ import { isCookieHopSafe } from '../net/cookieScope'
 import { preflightPublicResource } from '../net/publicPreflight'
 import { isUnsafeLocalPath } from '../scanner/manualMatch'
 import type { PickedVideoFolder } from '../scanner/manualMatch'
-import { isFileSystemRoot, isPathInside } from '../pathContainment'
+import {
+  isFileSystemRoot,
+  isPathInside,
+  isPathReallyInside
+} from '../pathContainment'
 import {
   checkDeleteTarget,
   deleteTargetError,
@@ -1381,7 +1385,12 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
+    if (
+      !(await isPathReallyInside(
+        this.recordContainmentRoot(record),
+        record.filePath
+      ))
+    ) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'
@@ -1412,7 +1421,12 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
+    if (
+      !(await isPathReallyInside(
+        this.recordContainmentRoot(record),
+        record.filePath
+      ))
+    ) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'
@@ -1469,6 +1483,18 @@ export class DownloadManager {
       throw new AppError(info.code, info.message, info.hint)
     }
 
+    // The policy check is lexical. A junction or symlink inside the folder
+    // that points elsewhere must not let the Recycle Bin reach outside it.
+    if (
+      !(await isPathReallyInside(
+        this.recordContainmentRoot(record),
+        record.filePath as string
+      ))
+    ) {
+      const info = deleteTargetError('outside-directory')
+      throw new AppError(info.code, info.message, info.hint)
+    }
+
     try {
       await this.host.trashItem(record.filePath as string)
     } catch {
@@ -1493,7 +1519,12 @@ export class DownloadManager {
     if (record.status !== 'complete' || !record.filePath) {
       throw new AppError('FILE_NOT_READY', 'The file is not ready yet.')
     }
-    if (!isPathInside(this.recordContainmentRoot(record), record.filePath)) {
+    if (
+      !(await isPathReallyInside(
+        this.recordContainmentRoot(record),
+        record.filePath
+      ))
+    ) {
       throw new AppError(
         'FILE_OUTSIDE_DOWNLOAD_DIR',
         'The reported file is outside this download’s folder.'

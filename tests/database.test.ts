@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, rm, stat } from 'node:fs/promises'
+﻿import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -154,6 +162,128 @@ describe('download database path', () => {
         DATABASE_FILENAME
       )
     )
+  })
+})
+
+describe('damaged history recovery', () => {
+  it('restores the last good backup when the history file is corrupt', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+    first.save({ record: sample(), explicitFilename: null })
+    close(first)
+    // The first clean open wrote `<file>.bak`; a second open refreshes it with
+    // the same healthy contents.
+    const second = open(filePath)
+    expect(second.openReport.status).toBe('ok')
+    close(second)
+
+    await writeFile(filePath, 'this is not a sqlite database at all', 'utf8')
+    const recovered = open(filePath)
+
+    expect(recovered.openReport.status).toBe('recovered')
+    expect(recovered.openReport.corruptPath).not.toBeNull()
+    expect(recovered.schemaVersion).toBe(SCHEMA_VERSION)
+    // The backup held the saved row, so history did not disappear.
+    expect(recovered.loadAll().map((entry) => entry.record.id)).toEqual([
+      sample().id
+    ])
+    const names = await readdir(path.dirname(filePath))
+    expect(
+      names.some((name) => name.startsWith(`${DATABASE_FILENAME}.corrupt-`))
+    ).toBe(true)
+    // The preserved copy is the damaged bytes, not the restored file.
+    const corruptName = path.basename(recovered.openReport.corruptPath as string)
+    expect(await readFile(path.join(path.dirname(filePath), corruptName), 'utf8'))
+      .toBe('this is not a sqlite database at all')
+    close(recovered)
+  })
+
+  it('replaces an unmigratable file only when the damage is structural', async () => {
+    const filePath = await makeDatabasePath()
+    const first = open(filePath)
+    const record = sample()
+    for (let index = 0; index < 200; index += 1) {
+      first.save({
+        explicitFilename: null,
+        record: { ...record, id: `row-${index}`, gid: `gid-${index}` }
+      })
+    }
+    close(first)
+
+    // Leave a database whose header parses (so it reads like an old schema)
+    // but whose table B-tree pages are garbage. quick_check catches this, and
+    // the damaged file is moved aside rather than debated.
+    const raw = new DatabaseSync(filePath)
+    raw.exec('PRAGMA journal_mode = DELETE')
+    raw.exec('PRAGMA user_version = 0')
+    raw.close()
+    const bytes = await readFile(filePath)
+    for (let offset = 8192; offset < Math.min(12288, bytes.length); offset += 1) {
+      bytes[offset] = 0xff
+    }
+    await writeFile(filePath, bytes)
+
+    const recovered = open(filePath)
+
+    expect(recovered.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(
+      recovered.openReport.status === 'recovered' ||
+        recovered.openReport.status === 'recreated'
+    ).toBe(true)
+    expect(await readdir(path.dirname(filePath))).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(new RegExp(`^${DATABASE_FILENAME}\\.corrupt-`))
+      ])
+    )
+    close(recovered)
+  })
+
+  it('starts a fresh history when the file is corrupt and no backup exists', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    await writeFile(filePath, 'garbage'.repeat(1_000), 'utf8')
+
+    const recovered = open(filePath)
+
+    expect(recovered.openReport.status).toBe('recreated')
+    expect(recovered.openReport.corruptPath).not.toBeNull()
+    expect(recovered.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(recovered.loadAll()).toEqual([])
+    // Persistence works again in this very process.
+    recovered.save({ record: sample(), explicitFilename: null })
+    expect(recovered.loadAll()).toHaveLength(1)
+    close(recovered)
+
+    const reopened = open(filePath)
+    expect(reopened.loadAll()).toHaveLength(1)
+    close(reopened)
+  })
+
+  it('still refuses a newer schema without quarantining it', async () => {
+    const filePath = await makeDatabasePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const raw = new DatabaseSync(filePath)
+    raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`)
+    raw.close()
+
+    expect(() => openDownloadDatabase(filePath)).toThrow(/newer version/i)
+    const names = await readdir(path.dirname(filePath))
+    expect(names.some((name) => name.includes('.corrupt-'))).toBe(false)
+    expect((await stat(filePath)).isFile()).toBe(true)
+  })
+
+  it('reports a healthy open and refreshes the backup', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+    expect(database.openReport.status).toBe('fresh')
+    close(database)
+
+    const names = await readdir(path.dirname(filePath))
+    expect(names).toContain(`${DATABASE_FILENAME}.bak`)
+    const reopened = open(filePath)
+    expect(reopened.openReport.status).toBe('ok')
+    expect(reopened.openReport.corruptPath).toBeNull()
+    close(reopened)
   })
 })
 

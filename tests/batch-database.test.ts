@@ -923,6 +923,52 @@ describe('v3 to v5 batch_items migration', () => {
   })
 })
 
+describe('batch item loading at startup', () => {
+  it('loads items only for unfinished batches and reads a finished batch on demand', async () => {
+    const filePath = await makeDatabasePath()
+    const database = open(filePath)
+
+    database.saveBatchWithItems(
+      batchRecord({ id: 'batch_running', status: 'running', completedAt: null }),
+      [
+        batchItem({ id: 'item_running', batchId: 'batch_running', status: 'running' })
+      ]
+    )
+    database.saveBatchWithItems(
+      batchRecord({ id: 'batch_done', status: 'complete', completedAt: NOW }),
+      [
+        batchItem({ id: 'item_done_1', batchId: 'batch_done', position: 0 }),
+        batchItem({
+          id: 'item_done_2',
+          batchId: 'batch_done',
+          position: 1,
+          status: 'complete'
+        })
+      ]
+    )
+
+    const loaded = database.loadBatches()
+    const byId = new Map(loaded.map((entry) => [entry.record.id, entry]))
+    expect(byId.get('batch_running')?.items.map((item) => item.id)).toEqual([
+      'item_running'
+    ])
+    // The finished batch keeps its parent row but none of its item rows.
+    expect(byId.get('batch_done')?.record.status).toBe('complete')
+    expect(byId.get('batch_done')?.items).toEqual([])
+
+    expect(
+      database.loadBatchItems('batch_done').map((item) => item.id)
+    ).toEqual(['item_done_1', 'item_done_2'])
+    // A second read is stable, and the single-batch loader still agrees.
+    expect(database.loadBatchItems('batch_done')).toHaveLength(2)
+    expect(
+      database.loadBatch('batch_done')?.items.map((item) => item.id)
+    ).toEqual(['item_done_1', 'item_done_2'])
+
+    close(database)
+  })
+})
+
 describe('batch status constraints', () => {
   it('accepts every stable batch status and rejects unknown ones', async () => {
     const filePath = await makeDatabasePath()

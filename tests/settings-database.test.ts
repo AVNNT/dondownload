@@ -925,7 +925,10 @@ describe.each([1, 2, 3, 4])('v%s to v5 migration', (version) => {
         status: 'partial',
         sourceUrl: 'https://example.com/playlist?list=abc'
       })
-      const itemStatuses = batches[0]?.items.map((item) => item.status)
+      // Finished batches load lazily, so their items come from one batch read.
+      const itemStatuses = database
+        .loadBatchItems('batch_0123456789abcdef')
+        .map((item) => item.status)
       if (version >= 4) {
         expect(itemStatuses).toEqual([
           'complete',
@@ -1302,8 +1305,11 @@ describe('v14 to v15 MEGA folder migration', () => {
       sourceUrl: 'https://pixeldrain.com/l/abcd1234'
     })
     // The parent table is rebuilt, so the cascade must not eat the children.
-    expect(batches[0]!.items).toHaveLength(2)
-    expect(batches[0]!.items.map((item) => item.id).sort()).toEqual([
+    // A finished batch loads without items; one batch read returns them.
+    expect(batches[0]!.items).toEqual([])
+    const items = migrated.loadBatchItems('batch_legacy')
+    expect(items).toHaveLength(2)
+    expect(items.map((item) => item.id).sort()).toEqual([
       'bitem_legacy_1',
       'bitem_legacy_2'
     ])
