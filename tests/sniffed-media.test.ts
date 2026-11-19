@@ -137,7 +137,7 @@ describe('detected media contract', () => {
 })
 
 describe('detected media download arguments', () => {
-  it('adds Referer, User-Agent and one Cookie header before --', () => {
+  it('adds Referer and User-Agent before -- and keeps cookies out of argv', () => {
     const args = buildDownloadArgs({
       sourceUrl: 'https://cdn.example/master.m3u8',
       formatSelector: 'bestvideo*+bestaudio/best',
@@ -147,13 +147,17 @@ describe('detected media download arguments', () => {
       ffmpegLocation: 'C:\\tools\\ffmpeg.exe',
       referer: PAGE,
       userAgent: 'Browser UA',
-      cookie: 'auth=1; theme=dark'
+      cookiesPath: 'C:\\staging\\.dondownload-cookies-abc.txt'
     })
     expect(args[args.indexOf('--referer') + 1]).toBe(PAGE)
     expect(args[args.indexOf('--user-agent') + 1]).toBe('Browser UA')
-    expect(args[args.indexOf('--add-header') + 1]).toBe(
-      'Cookie: auth=1; theme=dark'
+    // The cookie is only ever a Netscape file; a Cookie header on the command
+    // line would be readable by any local process.
+    expect(args[args.indexOf('--cookies') + 1]).toBe(
+      'C:\\staging\\.dondownload-cookies-abc.txt'
     )
+    expect(args).not.toContain('--add-header')
+    expect(args.join(' ')).not.toContain('Cookie:')
     expect(args[args.length - 2]).toBe('--')
     expect(args[args.length - 1]).toBe('https://cdn.example/master.m3u8')
     expect(args).toContain('--concurrent-fragments')
@@ -171,6 +175,7 @@ describe('detected media download arguments', () => {
       userAgent: 'Browser UA'
     })
     expect(args).not.toContain('--add-header')
+    expect(args).not.toContain('--cookies')
     expect(args).toContain('--referer')
   })
 })

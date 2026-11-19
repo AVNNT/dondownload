@@ -515,6 +515,15 @@ export interface BulkRemovalIds {
   mediaIds: string[]
 }
 
+/**
+ * Per-source outcome of a bulk removal. A channel that failed (or threw) left
+ * its rows in the backend, so the renderer must show them again.
+ */
+export interface BulkRemovalChannels {
+  downloads: { ok: boolean }
+  media: { ok: boolean }
+}
+
 /** Split a removal plan into the per-source id lists the bulk channels take. */
 export function removalIds(plan: readonly ActionPlanEntry[]): BulkRemovalIds {
   const downloadIds: string[] = []
@@ -534,7 +543,7 @@ export function removalIds(plan: readonly ActionPlanEntry[]): BulkRemovalIds {
 export async function executeBulkRemoval(
   plan: readonly ActionPlanEntry[],
   api: BulkRemovalApi
-): Promise<ActionExecution> {
+): Promise<ActionExecution & { channels: BulkRemovalChannels }> {
   const errors: AppErrorInfo[] = []
   const { downloadIds, mediaIds } = removalIds(plan)
 
@@ -544,7 +553,15 @@ export async function executeBulkRemoval(
       : Promise.resolve(null),
     mediaIds.length > 0 ? api.removeMediaJobs(mediaIds) : Promise.resolve(null)
   ])
-  for (const result of results) {
+  let downloadOk = true
+  let mediaOk = true
+  results.forEach((result, index) => {
+    // An empty channel resolves to `null`: it never ran, so nothing to undo.
+    const ok =
+      result.status === 'fulfilled' &&
+      (result.value === null || result.value.ok)
+    if (index === 0) downloadOk = ok
+    else mediaOk = ok
     if (result.status === 'rejected') {
       errors.push({
         code: 'ACTION_FAILED',
@@ -553,10 +570,34 @@ export async function executeBulkRemoval(
             ? result.reason.message
             : 'The entries could not be removed.'
       })
-      continue
+      return
     }
     if (result.value !== null) collect(result.value, errors)
-  }
+  })
 
-  return { errors, analyzeAgain: [], copyUrls: [] }
+  return {
+    errors,
+    analyzeAgain: [],
+    copyUrls: [],
+    channels: { downloads: { ok: downloadOk }, media: { ok: mediaOk } }
+  }
+}
+
+/**
+ * The rows a failed bulk removal must show again: only the ids whose source
+ * channel did not succeed. A channel that succeeded already removed its rows,
+ * so hiding those until the next snapshot is correct (and harmless).
+ */
+export function removalKeysToRestore(
+  plan: readonly ActionPlanEntry[],
+  channels: BulkRemovalChannels
+): string[] {
+  const keys: string[] = []
+  for (const entry of plan) {
+    if (entry.action !== 'remove') continue
+    const ok =
+      entry.row.source === 'download' ? channels.downloads.ok : channels.media.ok
+    if (!ok) keys.push(entry.row.key)
+  }
+  return keys
 }

@@ -268,6 +268,91 @@ describe('renderer snapshot store', () => {
     expect(resyncs).toBe(2)
     store.dispose()
   })
+
+  it('ignores an invoke payload older than the deltas already applied', () => {
+    const updates: number[] = []
+    const store = createSnapshotDeltaStore<Row, Fields>({
+      rowVersion,
+      onChange: (state) => updates.push(state.revision),
+      requestResync: () => undefined,
+      schedule: (flush) => {
+        flush()
+        return () => undefined
+      }
+    })
+    store.applyDelta({
+      kind: 'full',
+      revision: 1,
+      ...payload([{ id: 'a', value: 10, label: 'A' }])
+    })
+    store.applyDelta({
+      kind: 'patch',
+      revision: 2,
+      baseRevision: 1,
+      fields: {},
+      upserted: [{ id: 'a', value: 60, label: 'A' }],
+      removedIds: []
+    })
+    store.applyDelta({
+      kind: 'patch',
+      revision: 3,
+      baseRevision: 2,
+      fields: {},
+      upserted: [{ id: 'a', value: 90, label: 'A' }],
+      removedIds: []
+    })
+    const before = updates.length
+
+    // The response was built when main was still at revision 1.
+    store.replacePayload(
+      { ...payload([{ id: 'a', value: 10, label: 'A' }]), revision: 1 },
+      1
+    )
+    expect(store.getState()?.revision).toBe(3)
+    expect(store.getState()?.rows[0]?.value).toBe(90)
+    expect(updates).toHaveLength(before)
+
+    // A payload that carries its own (older) revision is treated the same way.
+    store.replacePayload({ ...payload([{ id: 'a', value: 20, label: 'A' }]), revision: 2 })
+    expect(store.getState()?.rows[0]?.value).toBe(90)
+
+    // A current-or-newer payload still applies and keeps the local revision
+    // so the next patch lines up.
+    store.replacePayload(
+      { ...payload([{ id: 'a', value: 90, label: 'A' }, { id: 'b', value: 1, label: 'B' }]), revision: 3 },
+      3
+    )
+    expect(store.getState()?.revision).toBe(3)
+    expect(store.getState()?.rows.map((row) => row.id)).toEqual(['a', 'b'])
+    store.dispose()
+  })
+
+  it('trusts a payload without a revision so older callers keep working', () => {
+    const store = createSnapshotDeltaStore<Row, Fields>({
+      rowVersion,
+      onChange: () => undefined,
+      requestResync: () => undefined,
+      schedule: (flush) => {
+        flush()
+        return () => undefined
+      }
+    })
+    store.applyDelta({
+      kind: 'full',
+      revision: 7,
+      ...payload([{ id: 'a', value: 1, label: 'A' }])
+    })
+    store.replacePayload(payload([{ id: 'a', value: 2, label: 'A2' }]))
+    expect(store.getState()?.revision).toBe(7)
+    expect(store.getState()?.rows[0]?.value).toBe(2)
+
+    // A payload that carries no revision is trusted, so the next payload is
+    // adopted as long as nothing newer has been applied locally.
+    store.replacePayload({ ...payload([{ id: 'a', value: 3, label: 'A3' }]), revision: 8 })
+    expect(store.getState()?.revision).toBe(7)
+    expect(store.getState()?.rows[0]?.value).toBe(3)
+    store.dispose()
+  })
 })
 
 describe('SnapshotDeltaPublisher hidden window handling', () => {
@@ -328,9 +413,78 @@ describe('SnapshotDeltaPublisher hidden window handling', () => {
     expect(sent).toHaveLength(2)
     const resent = sent[1]
     expect(resent?.kind).toBe('full')
+    // Revisions keep counting across a reset: a renderer that survived can
+    // never see an older revision number than the one it already holds.
     expect(resent?.revision).toBe(2)
+    expect(resent?.kind === 'full' && resent.replaces).toBe(true)
     const state = applySnapshotDelta(null, resent as SnapshotDelta<Row, Fields>)
     expect(state.state?.rows.map((row) => row.id)).toEqual(['a'])
+  })
+
+  it('a reset full snapshot replaces state a surviving renderer still holds', () => {
+    const { publisher: instance, sent, setWindowVisible } = publisher(true)
+    instance.publish(payload([{ id: 'a', value: 1, label: 'A' }]))
+    instance.publish(payload([{ id: 'a', value: 2, label: 'A2' }]))
+    // What an open renderer holds when the app is hidden to the tray.
+    let survivor = applyAll(null, sent.slice())
+    expect(survivor?.revision).toBe(2)
+
+    setWindowVisible(false)
+    instance.publish(payload([{ id: 'b', value: 1, label: 'B' }]))
+    instance.reset()
+    setWindowVisible(true)
+    const resent = sent[sent.length - 1]
+    expect(resent).toBeDefined()
+    expect(resent?.kind).toBe('full')
+    expect(resent?.revision).toBe(3)
+
+    const result = applySnapshotDelta(
+      survivor,
+      resent as SnapshotDelta<Row, Fields>
+    )
+    expect(result.status).toBe('applied')
+    survivor = result.state
+    expect(survivor?.revision).toBe(3)
+    expect(survivor?.rows.map((row) => row.id)).toEqual(['b'])
+  })
+
+  it('accepts a marked full whose revision is not newer than the receiver', () => {
+    // The exact frozen-UI case: a renderer kept revision 5 from a previous
+    // publisher, and the recreated publisher sends its first full as 1.
+    const current = applyAll(null, [
+      { kind: 'full', revision: 5, ...payload([{ id: 'stale', value: 1, label: 'S' }]) }
+    ])
+    const result = applySnapshotDelta(current, {
+      kind: 'full',
+      revision: 1,
+      replaces: true,
+      ...payload([{ id: 'a', value: 1, label: 'A' }])
+    })
+    expect(result.status).toBe('applied')
+    expect(result.state?.revision).toBe(1)
+    expect(result.state?.rows.map((row) => row.id)).toEqual(['a'])
+
+    // An unmarked full is still the first-message contract; it applies to a
+    // receiver without state and never blocks the stream afterwards.
+    const first = applySnapshotDelta(null, {
+      kind: 'full',
+      revision: 1,
+      ...payload([{ id: 'a', value: 1, label: 'A' }])
+    })
+    expect(first.status).toBe('applied')
+    expect(first.state?.revision).toBe(1)
+  })
+
+  it('keeps revisions monotonic when a reset is followed by a fresh publisher flush', () => {
+    const { publisher: instance, sent, setWindowVisible } = publisher(false)
+    instance.reset()
+    instance.publish(payload([{ id: 'a', value: 1, label: 'A' }]))
+    setWindowVisible(true)
+    expect(sent).toHaveLength(1)
+    const resent = sent[0]
+    expect(resent?.kind).toBe('full')
+    expect(resent?.kind === 'full' && resent.replaces).toBe(true)
+    expect(resent?.revision).toBe(1)
   })
 
   it('does not send anything when re-shown with no changes', () => {

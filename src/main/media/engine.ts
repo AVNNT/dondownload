@@ -266,6 +266,25 @@ export function createMediaEngine(
    * next download call for that job, or discarded if the job is cancelled.
    */
   const pausedStagingDirs = new Map<string, string>()
+  /**
+   * The staging directory every known job of this process owns, including jobs
+   * whose download has not started yet. A directory in here is registered with
+   * the staging manager as protected, so another job's stale cleanup in the
+   * same output folder can never delete a paused or queued job's partial data.
+   */
+  const jobStagingDirs = new Map<string, string>()
+
+  function rememberJobStagingDir(jobId: string, stagingDir: string): void {
+    jobStagingDirs.set(jobId, stagingDir)
+    staging.protect(stagingDir)
+  }
+
+  function forgetJobStagingDir(jobId: string): void {
+    const stagingDir = jobStagingDirs.get(jobId)
+    if (stagingDir === undefined) return
+    jobStagingDirs.delete(jobId)
+    staging.release(stagingDir)
+  }
   // Every in-flight download run promise. `cancel(jobId)` only signals the
   // child; shutdown also needs to know when the run promise has settled so a
   // late finalize/progress callback cannot race persistence close.
@@ -565,8 +584,7 @@ export function createMediaEngine(
       }
       directHeaders = {
         referer: direct.referer,
-        userAgent: direct.userAgent,
-        ...(direct.cookie === undefined ? {} : { cookie: direct.cookie })
+        userAgent: direct.userAgent
       }
     } else {
       const current = Math.floor(now())
@@ -720,6 +738,9 @@ export function createMediaEngine(
     }
 
     await staging.prepare(outputDir, stagingDir)
+    // From here the job owns this directory even while paused, queued or
+    // running; stale cleanup of other jobs must skip it.
+    rememberJobStagingDir(jobId, stagingDir)
     if (pending.pauseRequested) {
       // Keep the staging directory and any partial files for a resume.
       throw new AppError('MEDIA_DOWNLOAD_PAUSED', 'The download was paused.')
@@ -729,15 +750,20 @@ export function createMediaEngine(
       throw new AppError('MEDIA_DOWNLOAD_CANCELLED', 'The download was cancelled.')
     }
 
+    // Both job kinds use the one-job Netscape file. A Cookie header passed as a
+    // yt-dlp argument would be visible in the process command line of any other
+    // process on the machine, so it is never placed in argv.
+    const downloadCookie = direct === null ? requestCookie : direct.cookie
     let downloadCookieFile: string | null = null
-    if (direct === null && requestCookie !== undefined) {
+    if (downloadCookie !== undefined) {
       try {
         downloadCookieFile = await writeCookieFile(
           stagingDir,
-          requestCookie,
+          downloadCookie,
           downloadTargetUrl
         )
       } catch {
+        forgetJobStagingDir(jobId)
         await staging.discard(stagingDir)
         throw new AppError(
           'MEDIA_COOKIE_UNAVAILABLE',
@@ -745,7 +771,26 @@ export function createMediaEngine(
         )
       }
     }
-
+    // A cancel (or pause) that arrived while the cookie file was being written
+    // must stop the job here, before any child exists. Otherwise the download
+    // would keep running with no row in the UI to control it. The cookie file
+    // is removed first so the cancel/pause exit below leaves nothing behind.
+    if (pending.cancelRequested || pending.pauseRequested) {
+      if (downloadCookieFile !== null) {
+        await removeCookieFile(downloadCookieFile)
+        downloadCookieFile = null
+      }
+      if (pending.pauseRequested) {
+        // Keep the staging directory and any partial files for a resume.
+        throw new AppError('MEDIA_DOWNLOAD_PAUSED', 'The download was paused.')
+      }
+      forgetJobStagingDir(jobId)
+      await staging.discard(stagingDir)
+      throw new AppError(
+        'MEDIA_DOWNLOAD_CANCELLED',
+        'The download was cancelled.'
+      )
+    }
     const needsFfmpeg =
       outputChoice.mergeOutputFormat !== null ||
       outputChoice.remuxOutputFormat !== null
@@ -821,6 +866,10 @@ export function createMediaEngine(
         if (settled) return
         settled = true
         activeDownloads.delete(jobId)
+        // The run no longer holds the directory; the early exits (pause,
+        // cancel after the cookie write) discard it, a finished run must not
+        // leave a stale protection behind that hides its leftovers.
+        forgetJobStagingDir(jobId)
         if (job.cancelTimer) {
           clearTimeout(job.cancelTimer)
           job.cancelTimer = null
@@ -978,6 +1027,7 @@ export function createMediaEngine(
     const pausedDir = pausedStagingDirs.get(id)
     if (pausedDir !== undefined) {
       pausedStagingDirs.delete(id)
+      forgetJobStagingDir(id)
       void staging.discard(pausedDir)
     }
 

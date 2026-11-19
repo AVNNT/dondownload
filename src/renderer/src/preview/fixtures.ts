@@ -272,14 +272,16 @@ export function createPreviewApi(
   function downloadSnapshot(): AppSnapshot {
     return {
       aria2: { ...PREVIEW_ARIA2 },
-      downloads: downloads.map(cloneDownload)
+      downloads: downloads.map(cloneDownload),
+      revision: downloadRevision
     }
   }
 
   function mediaSnapshot(): MediaSnapshot {
     return {
       tool: { ...PREVIEW_MEDIA_TOOL },
-      jobs: mediaJobs.map(cloneMediaJob)
+      jobs: mediaJobs.map(cloneMediaJob),
+      revision: mediaRevision
     }
   }
 

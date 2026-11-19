@@ -97,6 +97,7 @@ import {
   executeBulkRemoval,
   planBulkAction,
   planRowAction,
+  removalKeysToRestore,
   type ActionPlanEntry,
   type RowActionId
 } from './lib/actions'
@@ -874,7 +875,9 @@ export default function App(): JSX.Element {
   /**
    * Commits a deferred removal: runs the stored plan through the bulk removal
    * channels (one call per source, never one per row), then drops the keys from
-   * the hidden set. On failure the rows come back and the error banner shows.
+   * the hidden set. On failure only the rows whose channel failed come back
+   * (removed rows stay hidden until the snapshot catches up) and the error
+   * banner shows.
    */
   const commitRemoval = useCallback(
     async (keys: readonly string[], plan: readonly ActionPlanEntry[]): Promise<void> => {
@@ -883,7 +886,9 @@ export default function App(): JSX.Element {
       await refreshAll()
       if (result.errors.length > 0) {
         setBanner(result.errors[0] ?? null)
-        setPendingRemoval((current) => failPendingRemoval(current, keys))
+        setPendingRemoval((current) =>
+          failPendingRemoval(current, removalKeysToRestore(plan, result.channels))
+        )
         return
       }
       setPendingRemoval((current) => settlePendingRemoval(current, keys))

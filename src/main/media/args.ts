@@ -128,12 +128,15 @@ export interface DownloadArgumentInput {
    */
   referer?: string
   userAgent?: string
-  cookie?: string
   /** Verified curl_cffi Chrome impersonation support for this yt-dlp build. */
   impersonate?: boolean
   /** Per-job output cap; yt-dlp refuses a known larger file up front. */
   maxBytes?: number | null
-  /** Short-lived Netscape file for this one job; removed after the child exits. */
+  /**
+   * Short-lived Netscape file for this one job; removed after the child exits.
+   * The only way a browser cookie reaches a download: a Cookie header in argv
+   * would be readable from the process command line by any local process.
+   */
   cookiesPath?: string | null
 }
 
@@ -213,11 +216,6 @@ export function buildDownloadArgs(input: DownloadArgumentInput): string[] {
   }
   if (input.userAgent !== undefined) {
     args.push('--user-agent', input.userAgent)
-  }
-  if (input.cookie !== undefined) {
-    // A single fixed Cookie header, only for a job the user explicitly opted
-    // into for that exact origin. `--` below still terminates option parsing.
-    args.push('--add-header', `Cookie: ${input.cookie}`)
   }
 
   args.push('--', input.sourceUrl)

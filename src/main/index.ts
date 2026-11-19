@@ -1600,6 +1600,9 @@ if (unregisterRequested) {
         resolve: (token) => downloadDestinationStore.resolve(token)
       },
       requestSnapshotResync,
+      // An invoke response carries the revision of the last download delta the
+      // renderer may already hold; an older response is ignored there.
+      downloadSnapshotRevision: () => downloadPublisher?.revision ?? 0,
       // The log folder is main's own path (app data under the user profile);
       // the renderer never supplies one.
       openLogFolder: async () => {
